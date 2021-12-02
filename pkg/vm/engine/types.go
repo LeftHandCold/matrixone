@@ -144,7 +144,7 @@ type Summarizer interface {
 	Sum(string, *roaring.Bitmap) (int64, uint64, error)
 }
 
-type SparseFilter interface {
+/*type SparseFilter interface {
 	Eq(string, interface{}) (Reader, error)
 	Ne(string, interface{}) (Reader, error)
 	Lt(string, interface{}) (Reader, error)
@@ -152,6 +152,16 @@ type SparseFilter interface {
 	Gt(string, interface{}) (Reader, error)
 	Ge(string, interface{}) (Reader, error)
 	Btw(string, interface{}, interface{}) (Reader, error)
+}*/
+
+type SparseFilter interface {
+	Eq(string, interface{}) ([]string, error)
+	Ne(string, interface{}) ([]string, error)
+	Lt(string, interface{}) ([]string, error)
+	Le(string, interface{}) ([]string, error)
+	Gt(string, interface{}) ([]string, error)
+	Ge(string, interface{}) ([]string, error)
+	Btw(string, interface{}, interface{}) ([]string, error)
 }
 
 type Database interface {

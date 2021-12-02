@@ -127,7 +127,8 @@ func (r *relation) NewReader(num int) []engine.Reader {
 	blocks := make([]aoe.Block, 0)
 	for _, sid := range r.segments {
 		segment := r.Segment(sid)
-		ids := segment.Blocks()
+		//ids := segment.Blocks()
+		ids := segment.SparseFilterBlocks()
 		blockNum += len(ids)
 		for _, id := range ids {
 			blocks = append(blocks, segment.Block(id))

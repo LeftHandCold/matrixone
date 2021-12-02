@@ -67,6 +67,12 @@ func (seg *Segment) Block(id string) aoe.Block {
 	return blk
 }
 
+func (seg *Segment) SparseFilterBlocks() []string {
+	filter := NewSegmentSparseFilter(seg)
+	ids, _ := filter.Btw("LO_ORDERDATE", int32(19940101), int32(19941231))
+	return ids
+}
+
 // NewFilter generates a Filter for segment.
 func (seg *Segment) NewFilter() engine.Filter {
 	if !seg.Data.GetIndexHolder().Inited {

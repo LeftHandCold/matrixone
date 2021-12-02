@@ -11,6 +11,7 @@ type Segment interface {
 
 	ID() string
 	Blocks() []string
+	SparseFilterBlocks() []string
 	Block(string) Block
 }
 
