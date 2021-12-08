@@ -17,9 +17,11 @@ package engine
 import (
 	"bytes"
 	catalog3 "github.com/matrixorigin/matrixone/pkg/catalog"
+	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/aoe"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/aoe/storage/aoedb/v2"
+	"sync"
 )
 
 // aoe engine
@@ -36,10 +38,34 @@ type SegmentInfo struct {
 }
 
 type aoeReader struct {
-	zs     []int64
-	cds    []*bytes.Buffer
-	dds    []*bytes.Buffer
-	blocks []aoe.Block
+	reader *store
+	id 		int
+}
+
+type store struct {
+	rel	   		*relation
+	readers 	[]engine.Reader
+	rhs    		chan *batch.Batch
+	blocks 		[]aoe.Block
+	workers		int
+	start    	bool
+	mu   		sync.RWMutex
+	batnum		int
+}
+
+type worker struct {
+	id 			int32
+	zs     		[]int64
+	cds    		[][]*bytes.Buffer
+	dds    		[][]*bytes.Buffer
+	blocks 		[]aoe.Block
+	storeReader *store
+	batnum		int
+}
+
+type AoeSparseFilter struct {
+	storeReader 		*store
+	reader 				*aoeReader
 }
 
 type database struct {
@@ -56,4 +82,5 @@ type relation struct {
 	segments []SegmentInfo           //segments of the table
 	tablets  []aoe.TabletInfo        //tablets of the table
 	mp       map[string]*aoedb.Relation //a map of each tablet and its relation
+	reader	 *store
 }
