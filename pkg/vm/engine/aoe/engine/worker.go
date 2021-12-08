@@ -28,6 +28,8 @@ func (w *worker) Start(refCount []uint64, attrs []string)  {
 	}
 	var j int
 	j = 0;
+	var r int
+	r = 0;
 	for i :=0; i < len(w.blocks); i++ {
 		if i < len(w.blocks) - 1 {
 			w.blocks[i+1].Prefetch(attrs)
@@ -47,6 +49,7 @@ func (w *worker) Start(refCount []uint64, attrs []string)  {
 				}
 			}
 		}*/
+		w.batnum++
 		n := vector.Length(bat.Vecs[0])
 		if n > cap(w.zs) {
 			w.zs = make([]int64, n)
@@ -55,9 +58,17 @@ func (w *worker) Start(refCount []uint64, attrs []string)  {
 		for i := 0; i < n; i++ {
 			bat.Zs[i] = 1
 		}
-		w.storeReader.SetBatch(bat)
+		if r == len(w.rhs) {
+			r = 0
+		}
+		w.rhs[r] <- bat
+		r++
 		j++
 	}
 	logutil.Infof("reader %p, i is %d", w, w.batnum)
-	w.storeReader.RemoveWorker(w.id)
+	for _, rhs := range w.rhs {
+		rhs <- nil
+		close(rhs)
+	}
+	//w.storeReader.RemoveWorker(w.id)
 }

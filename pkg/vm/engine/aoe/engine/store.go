@@ -10,7 +10,7 @@ func (s *store) SetBlocks(blocks []aoe.Block){
 	s.blocks = blocks
 }
 
-func (s *store) GetBatch(refCount []uint64, attrs []string) *batch.Batch {
+func (s *store) GetBatch(refCount []uint64, attrs []string, id int) *batch.Batch {
 	if !s.start {
 		s.mu.Lock()
 		if s.start {
@@ -22,7 +22,7 @@ func (s *store) GetBatch(refCount []uint64, attrs []string) *batch.Batch {
 		s.ReadStart(refCount, attrs)
 	}
 
-GET:bat, ok := <-s.rhs
+GET:bat, ok := <-s.rhs[id]
 	s.batnum++
 	if !ok {
 		return nil
@@ -30,13 +30,14 @@ GET:bat, ok := <-s.rhs
 	return bat
 }
 
-func (s *store) SetBatch(bat *batch.Batch){
-	s.rhs <- bat
+func (s *store) SetBatch(bat *batch.Batch, id int){
+	s.rhs[id] <- bat
 }
 
 func (s *store) ReadStart(refCount []uint64, attrs []string) {
 	num := 4
 	mod := len(s.blocks) / num
+	rmod := len(s.rhs) /num
 	logutil.Infof("blocks is %d", len(s.blocks))
 	if mod == 0 {
 		mod = 1
@@ -46,6 +47,7 @@ func (s *store) ReadStart(refCount []uint64, attrs []string) {
 		if i == num-1 || i == len(s.blocks)-1 {
 
 			wk := worker{
+				rhs: s.rhs[i*rmod:],
 				blocks: s.blocks[i*mod:],
 				id:		int32(i),
 				storeReader: s,
@@ -54,16 +56,12 @@ func (s *store) ReadStart(refCount []uint64, attrs []string) {
 			break
 		}
 		wk := worker{
+			rhs: s.rhs[i*rmod : (i+1)*rmod],
 			blocks: s.blocks[i*mod : (i+1)*mod],
 			id:		int32(i),
 			storeReader: s,
 		}
 		workers = append(workers, wk)
-	}
-	if len(workers) == 0 {
-		s.SetBatch(nil)
-		close(s.rhs)
-		return
 	}
 	s.workers = len(workers)
 	for j := 0; j < len(workers); j++{
@@ -85,11 +83,9 @@ func (s *store) RemoveWorker(id int32) {
 			s.workers = append(s.workers[:i], s.workers[i+1:]...)
 		}
 	}*/
-	if s.workers == 0 {
+	/*if s.workers == 0 {
 		logutil.Infof("batnum is %d", s.batnum)
 		s.SetBatch(nil)
-		logutil.Infof("SetBatch is end")
 		close(s.rhs)
-		logutil.Infof("close is rhs")
-	}
+	}*/
 }

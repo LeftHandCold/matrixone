@@ -18,9 +18,8 @@ func (a *aoeReader) NewSparseFilter() engine.SparseFilter {
 	//return NewAoeSparseFilter(a.reader, a)
 	return nil
 }
-
 func (a *aoeReader) Read(refCount []uint64, attrs []string) (*batch.Batch, error) {
-	bat := a.reader.GetBatch(refCount, attrs)
+	bat := a.reader.GetBatch(refCount, attrs, a.id)
 	if bat == nil {
 		logutil.Infof("num1 is %d, bat is %v, reader %p", a.reader.batnum, bat, a)
 	}

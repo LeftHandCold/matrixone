@@ -44,8 +44,7 @@ type aoeReader struct {
 
 type store struct {
 	rel	   		*relation
-	readers 	[]engine.Reader
-	rhs    		chan *batch.Batch
+	rhs    		[]chan *batch.Batch
 	blocks 		[]aoe.Block
 	workers		int
 	start    	bool
@@ -59,6 +58,7 @@ type worker struct {
 	cds    		[][]*bytes.Buffer
 	dds    		[][]*bytes.Buffer
 	blocks 		[]aoe.Block
+	rhs    		[]chan *batch.Batch
 	storeReader *store
 	batnum		int
 }
