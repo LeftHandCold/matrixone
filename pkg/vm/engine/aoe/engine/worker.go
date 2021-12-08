@@ -13,17 +13,17 @@ func (w *worker) ID() int32 {
 func (w *worker) Start(refCount []uint64, attrs []string)  {
 
 	if len(w.cds) == 0 {
-		w.cds = make([][]*bytes.Buffer, 0)
-		w.dds = make([][]*bytes.Buffer, 0)
-		for i := 0; i < 100; i++ {
+		w.cds = make([][]*bytes.Buffer, 32)
+		w.dds = make([][]*bytes.Buffer, 32)
+		for i := 0; i < 32; i++ {
 			cds := make([]*bytes.Buffer, len(attrs))
 			dds := make([]*bytes.Buffer, len(attrs))
 			for a := range attrs {
 				cds[a] = bytes.NewBuffer(make([]byte, 1<<10))
 				dds[a] = bytes.NewBuffer(make([]byte, 1<<10))
 			}
-			w.cds = append(w.cds, cds)
-			w.dds = append(w.dds, dds)
+			w.cds[i] = cds
+			w.dds[i] = dds
 		}
 	}
 	var j int
@@ -33,7 +33,7 @@ func (w *worker) Start(refCount []uint64, attrs []string)  {
 			w.blocks[i+1].Prefetch(attrs)
 		}
 
-		if j == 100 {
+		if j == 32 {
 			j = 0
 		}
 		bat, err := w.blocks[i].Read(refCount, attrs, w.cds[j], w.dds[j])

@@ -88,6 +88,8 @@ func (s *store) RemoveWorker(id int32) {
 	if s.workers == 0 {
 		logutil.Infof("batnum is %d", s.batnum)
 		s.SetBatch(nil)
+		logutil.Infof("SetBatch is end")
 		close(s.rhs)
+		logutil.Infof("close is rhs")
 	}
 }
