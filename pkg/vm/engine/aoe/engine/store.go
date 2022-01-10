@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/aoe"
 	"time"
@@ -11,7 +10,7 @@ func (s *store) SetBlocks(blocks []aoe.Block){
 	s.blocks = blocks
 }
 
-func (s *store) GetBatch(refCount []uint64, attrs []string) *batch.Batch {
+func (s *store) GetBatch(refCount []uint64, attrs []string) *data {
 	if !s.start {
 		s.mu.Lock()
 		if s.start {
@@ -31,7 +30,7 @@ GET:tim := time.Now()
 	return bat
 }
 
-func (s *store) SetBatch(bat *batch.Batch){
+func (s *store) SetBatch(bat *data){
 	tim := time.Now()
 	s.rhs <- bat
 	s.enqueue += time.Since(tim).Milliseconds()

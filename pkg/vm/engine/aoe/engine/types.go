@@ -27,6 +27,7 @@ import (
 // aoe engine
 type aoeEngine struct {
 	catalog *catalog3.Catalog
+
 }
 
 type SegmentInfo struct {
@@ -37,17 +38,22 @@ type SegmentInfo struct {
 	Node     engine.Node
 }
 
+type data struct {
+	bat 		*batch.Batch
+	cds    		[]*bytes.Buffer
+	dds    		[]*bytes.Buffer
+}
+
 type aoeReader struct {
 	reader *store
 	id 		int
-	refCount []uint64
-	attrs 	 []string
+	prav	*data
 }
 
 type store struct {
 	rel	   		*relation
 	readers 	[]engine.Reader
-	rhs    		chan *batch.Batch
+	rhs    		chan *data
 	blocks 		[]aoe.Block
 	workers		int
 	start    	bool
@@ -63,6 +69,7 @@ type worker struct {
 	dds    		[][]*bytes.Buffer
 	blocks 		[]aoe.Block
 	storeReader *store
+	dequeue int64
 }
 
 type AoeSparseFilter struct {
