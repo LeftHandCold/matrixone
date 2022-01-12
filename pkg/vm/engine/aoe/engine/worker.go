@@ -41,7 +41,7 @@ func (w *worker) Alloc(attrs []string) *batData{
 			}
 			if !w.batDatas[j].use {
 				w.batDatas[j].use = true
-				w.allocTime += time.Since(t).Milliseconds()
+				w.allocLatency += time.Since(t).Milliseconds()
 				return w.batDatas[j]
 			}
 		}
@@ -52,7 +52,6 @@ func (w *worker) Alloc(attrs []string) *batData{
 func (w *worker) Start(refCount []uint64, attrs []string)  {
 	for  {
 		exec := false
-		tim := time.Now()
 		for i := range w.readers{
 			if w.readers[i].(*aoeReader).blocks == nil || len(w.readers[i].(*aoeReader).blocks) == 0 {
 				if !w.readers[i].(*aoeReader).rclose {
@@ -67,7 +66,9 @@ func (w *worker) Start(refCount []uint64, attrs []string)  {
 				w.readers[i].(*aoeReader).blocks[1].Prefetch(attrs)
 			}
 			data := w.Alloc(attrs)
+			readLate := time.Now()
 			bat, err := w.readers[i].(*aoeReader).blocks[0].Read(refCount, attrs, data.cds, data.dds)
+			w.readLatency += time.Since(readLate).Milliseconds()
 			if err != nil {
 				panic("error")
 			}
@@ -80,6 +81,7 @@ func (w *worker) Start(refCount []uint64, attrs []string)  {
 				bat.Zs[i] = 1
 			}
 			data.bat = bat
+			tim := time.Now()
 			w.storeReader.SetBatch(data, w.readers[i].(*aoeReader))
 			w.readers[i].(*aoeReader).blocks = w.readers[i].(*aoeReader).blocks[1:]
 			w.enqueue += time.Since(tim).Milliseconds()
@@ -88,6 +90,7 @@ func (w *worker) Start(refCount []uint64, attrs []string)  {
 			break
 		}
 	}
-	logutil.Infof("workerId: %d, alloc latency: %d, enqueue latency: %d", w.id, w.allocTime, w.enqueue)
+	logutil.Infof("workerId: %d, alloc latency: %d, enqueue latency: %d, read latency: %d",
+		w.id, w.allocLatency, w.enqueue, w.readLatency)
 	w.storeReader.RemoveWorker(w.id)
 }

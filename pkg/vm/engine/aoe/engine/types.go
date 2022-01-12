@@ -71,8 +71,9 @@ type worker struct {
 	batDatas   	[]*batData
 	readers 	[]engine.Reader
 	storeReader *store
-	enqueue 	int64
-	allocTime   int64
+	enqueue      int64
+	allocLatency int64
+	readLatency int64
 }
 
 type AoeSparseFilter struct {
