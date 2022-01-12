@@ -8,7 +8,7 @@ func (s *store) SetBlocks(blocks []aoe.Block){
 	s.blocks = blocks
 }
 
-func (s *store) GetBatch(refCount []uint64, attrs []string) *batData {
+func (s *store) GetBatch(refCount []uint64, attrs []string, reader *aoeReader) *batData {
 	if !s.start {
 		s.mu.Lock()
 		if s.start {
@@ -20,20 +20,20 @@ func (s *store) GetBatch(refCount []uint64, attrs []string) *batData {
 		s.ReadStart(refCount, attrs)
 	}
 GET:
-	bat, ok := <-s.rhs
+	bat, ok := <-reader.rhs
 	if !ok {
 		return nil
 	}
 	return bat
 }
 
-func (s *store) SetBatch(bat *batData){
-	s.rhs <- bat
+func (s *store) SetBatch(bat *batData, reader *aoeReader){
+	reader.rhs <- bat
 }
 
 func (s *store) ReadStart(refCount []uint64, attrs []string) {
 	num := 4
-	mod := len(s.blocks) / num
+	mod := len(s.readers) / num
 	if mod == 0 {
 		mod = 1
 	}
@@ -42,7 +42,7 @@ func (s *store) ReadStart(refCount []uint64, attrs []string) {
 		if i == num-1 || i == len(s.blocks)-1 {
 
 			wk := worker{
-				blocks: s.blocks[i*mod:],
+				readers: s.readers[i*mod:],
 				id:		int32(i),
 				storeReader: s,
 			}
@@ -50,16 +50,11 @@ func (s *store) ReadStart(refCount []uint64, attrs []string) {
 			break
 		}
 		wk := worker{
-			blocks: s.blocks[i*mod : (i+1)*mod],
+			readers: s.readers[i*mod : (i+1)*mod],
 			id:		int32(i),
 			storeReader: s,
 		}
 		workers = append(workers, wk)
-	}
-	if len(workers) == 0 {
-		s.SetBatch(nil)
-		close(s.rhs)
-		return
 	}
 	s.workers = len(workers)
 	for j := 0; j < len(workers); j++{
@@ -72,8 +67,8 @@ func (s *store) RemoveWorker(id int32) {
 		panic("workers error")
 	}
 	s.workers--
-	if s.workers == 0 {
+	/*if s.workers == 0 {
 		s.SetBatch(nil)
 		close(s.rhs)
-	}
+	}*/
 }

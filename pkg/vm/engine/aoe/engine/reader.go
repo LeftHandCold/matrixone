@@ -20,11 +20,14 @@ func (a *aoeReader) NewSparseFilter() engine.SparseFilter {
 }
 
 func (a *aoeReader) Read(refCount []uint64, attrs []string) (*batch.Batch, error) {
+	/*if a.blocks == nil || len(a.blocks) == 0 {
+		return nil, nil
+	}*/
 	if a.prv != nil {
 		a.prv.use = false
 	}
 	tim := time.Now()
-	bat := a.reader.GetBatch(refCount, attrs)
+	bat := a.reader.GetBatch(refCount, attrs, a)
 	a.dequeue += time.Since(tim).Milliseconds()
 	a.prv = bat
 	if bat == nil {

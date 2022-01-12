@@ -41,13 +41,16 @@ type aoeReader struct {
 	reader *store
 	id 		int
 	prv 	*batData
+	blocks 	[]aoe.Block
+	rhs    	chan *batData
+	rclose	bool
 	dequeue int64
 }
 
 type store struct {
 	rel	   		*relation
 	readers 	[]engine.Reader
-	rhs    		chan *batData
+	//rhs    		[]chan *batData
 	blocks 		[]aoe.Block
 	workers		int
 	start    	bool
@@ -66,7 +69,7 @@ type worker struct {
 	id 			int32
 	zs     		[]int64
 	batDatas   	[]*batData
-	blocks 		[]aoe.Block
+	readers 	[]engine.Reader
 	storeReader *store
 	enqueue 	int64
 	allocTime   int64

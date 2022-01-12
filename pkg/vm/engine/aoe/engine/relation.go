@@ -129,31 +129,57 @@ func (r *relation) DelTableDef(u uint64, def engine.TableDef) error {
 }
 
 func (r *relation) NewReader(num int) []engine.Reader {
-	readers := make([]engine.Reader, num)
+	readStore := &store{
+		start: false,
+		readers: make([]engine.Reader, num),
+	}
 	var i int
 	logutil.Infof("segments is %d", len(r.segments))
 	if len(r.segments) == 0 {
 		for i = 0; i < num; i++ {
-			readers[i] = &aoeReader{reader: nil}
+			readStore.readers[i] = &aoeReader{reader: nil}
 		}
-		return readers
+		return readStore.readers
 	}
-	readStore := &store{
-		rhs: make(chan *batData, 256),
-		start: false,
-	}
+	blockNum := 0
 	blocks := make([]aoe.Block, 0)
 	for _, sid := range r.segments {
 		segment := r.Segment(sid)
 		ids := segment.Blocks()
+		blockNum += len(ids)
 		for _, id := range ids {
 			blocks = append(blocks, segment.Block(id))
 		}
 	}
-	readStore.SetBlocks(blocks)
-	for i := 0; i < num; i++ {
-		readers[i] = &aoeReader{reader: readStore, id: i+1}
+	mod := blockNum / num
+	if mod == 0 {
+		mod = 1
 	}
-	return readers
+	for i = 0; i < num; i++ {
+		if i == num-1 || i == blockNum-1 {
+			readStore.readers[i] = &aoeReader{
+				blocks: blocks[i*mod:],
+				rhs:	make(chan *batData, 8),
+				reader: readStore,
+				id:i,
+				rclose:false,
+			}
+			break
+		}
+		readStore.readers[i] = &aoeReader{
+			blocks: blocks[i*mod : (i+1)*mod],
+			rhs:	make(chan *batData, 8),
+			reader: readStore,
+			id:i,
+			rclose:false,
+		}
+	}
+	i++
+	if i < num {
+		for j := i; j < num; j++ {
+			readStore.readers[j] = &aoeReader{blocks: nil, id:j,rclose:true}
+		}
+	}
+	return readStore.readers
 }
 
