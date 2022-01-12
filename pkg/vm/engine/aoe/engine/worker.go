@@ -62,8 +62,12 @@ func (w *worker) Start(refCount []uint64, attrs []string)  {
 				continue
 			}
 			exec = true
-			if len(w.readers[i].(*aoeReader).blocks) > 1 {
-				w.readers[i].(*aoeReader).blocks[1].Prefetch(attrs)
+			j := i+1
+			if j == len(w.readers) {
+				j = 0
+			}
+			if len(w.readers[j].(*aoeReader).blocks) > 1 {
+				w.readers[j].(*aoeReader).blocks[0].Prefetch(attrs)
 			}
 			data := w.Alloc(attrs)
 			readLate := time.Now()
