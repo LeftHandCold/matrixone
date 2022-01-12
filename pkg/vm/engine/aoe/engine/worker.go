@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/encoding"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"time"
 )
@@ -50,6 +51,10 @@ func (w *worker) Alloc(attrs []string) *batData{
 }
 
 func (w *worker) Start(refCount []uint64, attrs []string)  {
+	block := 0
+	for _, reader := range w.readers {
+		block += len(reader.(*aoeReader).blocks)
+	}
 	for  {
 		exec := false
 		for i := range w.readers{
@@ -66,11 +71,22 @@ func (w *worker) Start(refCount []uint64, attrs []string)  {
 			if j == len(w.readers) {
 				j = 0
 			}
-			if len(w.readers[j].(*aoeReader).blocks) > 1 {
+			if len(w.readers[j].(*aoeReader).blocks) > 0 {
 				w.readers[j].(*aoeReader).blocks[0].Prefetch(attrs)
+				if w.id == 0 {
+					logutil.Infof("nom is %v", encoding.DecodeUint64(([]byte)(w.readers[j].(*aoeReader).blocks[0].ID())))
+				}
+			} else if len(w.readers[i].(*aoeReader).blocks) > 1 {
+				w.readers[i].(*aoeReader).blocks[1].Prefetch(attrs)
+				if w.id == 0 {
+					logutil.Infof("iblocks is %v", encoding.DecodeUint64(([]byte)(w.readers[i].(*aoeReader).blocks[1].ID())))
+				}
 			}
 			data := w.Alloc(attrs)
 			readLate := time.Now()
+			if w.id == 0 {
+				logutil.Infof("read is %v", encoding.DecodeUint64(([]byte)(w.readers[i].(*aoeReader).blocks[0].ID())))
+			}
 			bat, err := w.readers[i].(*aoeReader).blocks[0].Read(refCount, attrs, data.cds, data.dds)
 			w.readLatency += time.Since(readLate).Milliseconds()
 			if err != nil {
@@ -96,5 +112,6 @@ func (w *worker) Start(refCount []uint64, attrs []string)  {
 	}
 	logutil.Infof("workerId: %d, alloc latency: %d, enqueue latency: %d, read latency: %d",
 		w.id, w.allocLatency, w.enqueue, w.readLatency)
+	logutil.Infof("reader is %d, blocks is %d", len(w.readers), block)
 	w.storeReader.RemoveWorker(w.id)
 }

@@ -159,7 +159,7 @@ func (r *relation) NewReader(num int) []engine.Reader {
 		if i == num-1 || i == blockNum-1 {
 			readStore.readers[i] = &aoeReader{
 				blocks: blocks[i*mod:],
-				rhs:	make(chan *batData, 8),
+				rhs:	make(chan *batData, 2),
 				reader: readStore,
 				id:i,
 				rclose:false,
@@ -168,7 +168,7 @@ func (r *relation) NewReader(num int) []engine.Reader {
 		}
 		readStore.readers[i] = &aoeReader{
 			blocks: blocks[i*mod : (i+1)*mod],
-			rhs:	make(chan *batData, 8),
+			rhs:	make(chan *batData, 2),
 			reader: readStore,
 			id:i,
 			rclose:false,

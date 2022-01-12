@@ -32,7 +32,7 @@ func (s *store) SetBatch(bat *batData, reader *aoeReader){
 }
 
 func (s *store) ReadStart(refCount []uint64, attrs []string) {
-	num := 4
+	num := 2
 	mod := len(s.readers) / num
 	if mod == 0 {
 		mod = 1

@@ -20,9 +20,6 @@ func (a *aoeReader) NewSparseFilter() engine.SparseFilter {
 }
 
 func (a *aoeReader) Read(refCount []uint64, attrs []string) (*batch.Batch, error) {
-	/*if a.blocks == nil || len(a.blocks) == 0 {
-		return nil, nil
-	}*/
 	if a.prv != nil {
 		a.prv.use = false
 	}
