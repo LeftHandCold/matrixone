@@ -27,7 +27,7 @@ func (a *aoeReader) Read(refCount []uint64, attrs []string) (*batch.Batch, error
 	dequeue := time.Now()
 	bat := a.reader.GetBatch(refCount, attrs, a)
 	a.dequeue += time.Since(dequeue).Milliseconds()
-	if a.prv != nil && bat != nil {
+	if a.prv != nil {
 		enqueue := time.Now()
 		a.reader.PutBuffer(a.prv, a.workerid)
 		a.enqueue += time.Since(enqueue).Milliseconds()

@@ -85,8 +85,18 @@ func (w *worker) Start(refCount []uint64, attrs []string) {
 		w.storeReader.SetBatch(data, w.id)
 		w.enqueue += time.Since(enqueue).Microseconds()
 	}
-	logutil.Infof("workerId: %d, alloc latency: %d ms, enqueue latency: %d us, read latency: %d ms",
-		w.id, w.allocLatency, w.enqueue, w.readLatency)
+	release := time.Now()
 	w.storeReader.SetBatch(nil, w.id)
 	w.storeReader.CloseRhs(w.id)
+	var total = 0
+	for {
+		w.storeReader.GetBuffer(w.id)
+		total++
+		if total == w.bufferCount{
+			w.storeReader.CloseChs(w.id)
+			break
+		}
+	}
+	logutil.Infof("workerId: %d, alloc latency: %d ms, enqueue latency: %d us, read latency: %d ms, free latency: %d ms",
+		w.id, w.allocLatency, w.enqueue, w.readLatency, time.Since(release).Milliseconds())
 }
