@@ -50,6 +50,7 @@ const (
 	blkRangeSize = 24
 	colSizeSize  = 8
 	colPosSize   = 8
+	pageSize     = 4096
 )
 
 const Version uint64 = 1
@@ -436,13 +437,17 @@ func processColumn(column []*vector.Vector, metaBuf, dataBuf *bytes.Buffer) (int
 			return 0, err
 		}
 		colSize := len(colBuf)
-		cbuf := make([]byte, lz4.CompressBlockBound(colSize))
+		cbufLen := (pageSize - (lz4.CompressBlockBound(colSize) % pageSize)) + lz4.CompressBlockBound(colSize)
+		cbuf := make([]byte, cbufLen)
+		logutil.Infof("cubf len is %d, com len is %d", len(cbuf), lz4.CompressBlockBound(colSize))
+		//cbuf := make([]byte, lz4.CompressBlockBound(colSize))
 		if cbuf, err = compress.Compress(colBuf, cbuf, compress.Lz4); err != nil {
 			return 0, err
 		}
 		if err = binary.Write(metaBuf, binary.BigEndian, uint64(len(cbuf))); err != nil {
 			return 0, err
 		}
+
 		if err = binary.Write(metaBuf, binary.BigEndian, uint64(colSize)); err != nil {
 			return 0, err
 		}
