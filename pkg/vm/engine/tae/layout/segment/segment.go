@@ -114,6 +114,10 @@ func (s *Segment) Init(name string) error {
 }
 
 func (s *Segment) Open(name string) (err error) {
+	if _, err = os.Stat(name); os.IsNotExist(err) {
+		err = s.Init(name)
+		return err
+	}
 	s.segFile, err = os.OpenFile(name, os.O_RDWR, os.ModePerm)
 	s.name = name
 	s.super = SuperBlock{
@@ -121,9 +125,13 @@ func (s *Segment) Open(name string) (err error) {
 		blockSize: BLOCK_SIZE,
 		inodeSize: INODE_SIZE,
 	}
-	if err != nil {
-		return err
+	log := &Inode{
+		magic: MAGIC,
+		inode: 1,
+		size:  0,
+		state: RESIDENT,
 	}
+	s.super.lognode = log
 	return nil
 }
 
@@ -166,19 +174,6 @@ func (s *Segment) Destroy() {
 }
 
 func (s *Segment) Replay(cache *bytes.Buffer) error {
-	s.super = SuperBlock{
-		version:   1,
-		blockSize: BLOCK_SIZE,
-		inodeSize: INODE_SIZE,
-	}
-	log := &Inode{
-		magic: MAGIC,
-		inode: 1,
-		size:  0,
-		state: RESIDENT,
-	}
-	s.super.lognode = log
-	s.Mount()
 	err := s.log.Replay(cache)
 	if err != nil {
 		return err

@@ -28,10 +28,6 @@ import (
 )
 
 var SegmentFileIOFactory = func(name string, id uint64) file.Segment {
-	return newSegmentFile(name, id)
-}
-
-var SegmentFileIOOpenFactory = func(name string, id uint64) file.Segment {
 	return openSegment(name, id)
 }
 
@@ -55,6 +51,7 @@ func openSegment(name string, id uint64) *segmentFile {
 	if err != nil {
 		panic(any(err.Error()))
 	}
+	sf.seg.Mount()
 	sf.id = &common.ID{
 		SegmentID: id,
 	}
@@ -162,25 +159,6 @@ func (sf *segmentFile) Replay(colCnt int, indexCnt map[int]int, cache *bytes.Buf
 
 	}
 	return nil
-}
-
-func newSegmentFile(name string, id uint64) *segmentFile {
-	sf := &segmentFile{
-		blocks: make(map[uint64]*blockFile),
-		name:   name,
-	}
-	sf.seg = &segment.Segment{}
-	err := sf.seg.Init(sf.name)
-	if err != nil {
-		panic(any(err.Error()))
-	}
-	sf.seg.Mount()
-	sf.id = &common.ID{
-		SegmentID: id,
-	}
-	sf.Ref()
-	sf.OnZeroCB = sf.close
-	return sf
 }
 
 func (sf *segmentFile) Fingerprint() *common.ID { return sf.id }

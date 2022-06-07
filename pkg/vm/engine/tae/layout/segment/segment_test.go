@@ -22,7 +22,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
 	"github.com/stretchr/testify/assert"
-	"os"
 	"path"
 	"testing"
 )
@@ -284,12 +283,10 @@ func TestSegment_Replay2(t *testing.T) {
 		err = seg.Append(file, []byte(fmt.Sprintf("this is tests %d", i)))
 		assert.Nil(t, err)
 	}
-	segfile, err := os.OpenFile(name, os.O_RDWR, os.ModePerm)
+	seg1 := Segment{}
+	err = seg1.Open(name)
 	assert.Nil(t, err)
-	seg1 := Segment{
-		name:    name,
-		segFile: segfile,
-	}
+	seg1.Mount()
 	cache := bytes.NewBuffer(make([]byte, 2*1024*1024))
 	err = seg1.Replay(cache)
 	assert.Nil(t, err)
@@ -361,12 +358,10 @@ func TestSegment_Replay(t *testing.T) {
 	assert.Equal(t, 2, int(level0[l0pos+1]))
 	ret = 0xFFFFFFFFFFFFFFFA - level1[l1pos]
 	assert.Equal(t, 0, int(ret))
-	segfile, err := os.OpenFile(name, os.O_RDWR, os.ModePerm)
+	seg1 := Segment{}
+	err = seg1.Open(name)
 	assert.Nil(t, err)
-	seg1 := Segment{
-		name:    name,
-		segFile: segfile,
-	}
+	seg1.Mount()
 	cache := bytes.NewBuffer(make([]byte, LOG_SIZE))
 	err = seg1.Replay(cache)
 	assert.Nil(t, err)
@@ -414,12 +409,10 @@ func TestSegment_Replay3(t *testing.T) {
 		file = seg.nodes[fmt.Sprintf("test_%d.blk", i*2)]
 		seg.ReleaseFile(file)
 	}
-	segfile, err := os.OpenFile(name, os.O_RDWR, os.ModePerm)
+	seg1 := Segment{}
+	err = seg1.Open(name)
 	assert.Nil(t, err)
-	seg1 := Segment{
-		name:    name,
-		segFile: segfile,
-	}
+	seg1.Mount()
 	cache := bytes.NewBuffer(make([]byte, LOG_SIZE))
 	err = seg1.Replay(cache)
 	assert.Nil(t, err)
