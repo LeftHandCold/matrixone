@@ -56,7 +56,8 @@ func (b *BitmapAllocator) Init(capacity uint64, pageSize uint32) {
 	l0granularity := pageSize
 	l1granularity := l0granularity * BITS_PER_UNITSET
 	//l0UnitCount := capacity / uint64(l0granularity) / BITS_PER_UNIT
-	b.level0 = make([]uint64, 64)
+	//b.level0 = make([]uint64, l0UnitCount)
+	b.level0 = make([]uint64, BITS_PER_UNITSET)
 	for i := range b.level0 {
 		b.level0[i] = ALL_UNIT_SET
 	}
