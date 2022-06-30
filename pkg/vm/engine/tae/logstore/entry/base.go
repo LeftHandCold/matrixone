@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ var (
 	_basePool = sync.Pool{New: func() any {
 		return &Base{
 			descriptor: newDescriptor(),
+			trace:      make([]uintptr, 8),
 		}
 	}}
 )
@@ -44,6 +46,10 @@ type Base struct {
 	t0        time.Time
 	printTime bool
 	err       error
+
+	trace     []uintptr
+	onused    bool
+	usedTimes int
 }
 
 type Info struct {
@@ -300,10 +306,32 @@ func GetBase() *Base {
 	b := _basePool.Get().(*Base)
 	if b.GetPayloadSize() != 0 {
 		logutil.Infof("payload size is %d", b.GetPayloadSize())
+		b.PrintTrace()
 		panic("wrong payload size")
 	}
+	if b.onused {
+		b.PrintTrace()
+		panic("get twice")
+	}
+	b.onused = true
+	b.usedTimes++
+	b.RecordTrace()
+
 	b.wg.Add(1)
 	return b
+}
+func (b *Base) RecordTrace() {
+	runtime.Callers(1, b.trace)
+}
+func (b *Base) PrintTrace() {
+	frames := runtime.CallersFrames(b.trace)
+	for frame, more := frames.Next(); more; frame, more = frames.Next() {
+		fmt.Print(frame.File)
+		fmt.Print(":")
+		fmt.Print(frame.Line)
+		fmt.Print("\n")
+	}
+	fmt.Printf("used %d times\n", b.usedTimes)
 }
 func (b *Base) StartTime() {
 	b.t0 = time.Now()
@@ -355,8 +383,15 @@ func (b *Base) Free() {
 	b.reset()
 	if b.GetPayloadSize() != 0 {
 		logutil.Infof("payload size is %d", b.GetPayloadSize())
+		b.PrintTrace()
 		panic("wrong payload size")
 	}
+	if !b.onused {
+		b.PrintTrace()
+		panic("free twice")
+	}
+	b.onused = false
+	b.RecordTrace()
 	_basePool.Put(b)
 }
 
