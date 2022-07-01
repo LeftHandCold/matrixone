@@ -233,7 +233,21 @@ func (s *Driver) Append(fd *DriverFile, pl []byte) (err error) {
 	if err != nil {
 		return
 	}
-	return s.log.Append(fd)
+	err = s.log.Append(fd)
+	if err != nil {
+		return
+	}
+	logutil.Infof("%s-%s | Driver Append | %d-%d | %d-%d | %x-%x-%x-%x-%x-%x-%x-%x | %d ", s.name, fd.name, len(buf), len(pl), fd.snode.extents[0].offset, fd.snode.extents[0].length,
+		s.allocator.(*BitmapAllocator).level0[0],
+		s.allocator.(*BitmapAllocator).level0[1],
+		s.allocator.(*BitmapAllocator).level0[2],
+		s.allocator.(*BitmapAllocator).level0[3],
+		s.allocator.(*BitmapAllocator).level0[4],
+		s.allocator.(*BitmapAllocator).level0[5],
+		s.allocator.(*BitmapAllocator).level0[6],
+		s.allocator.(*BitmapAllocator).level0[7],
+		fd.snode.logExtents.offset)
+	return nil
 }
 
 func (s *Driver) Update(fd *DriverFile, pl []byte, fOffset uint64) error {
@@ -297,15 +311,22 @@ func (s *Driver) GetNodes() map[string]*DriverFile {
 }
 
 func (s *Driver) PrintLog(name, info string) {
-	s.log.allocator.(*BitmapAllocator).mutex.RLock()
-	defer s.log.allocator.(*BitmapAllocator).mutex.RUnlock()
-	logutil.Debugf(" %s-%p | %s | %s-%d-%d | Log Level1 %p-%x",
+	s.allocator.(*BitmapAllocator).mutex.RLock()
+	defer s.allocator.(*BitmapAllocator).mutex.RUnlock()
+	logutil.Debugf(" %s-%p | %s | %s-%d-%d | Log Level1 %x-%x-%x-%x-%x-%x-%x-%x-%x",
 		s.name,
 		&(s.name),
 		info,
 		name,
 		len(s.nodes),
 		s.lastInode,
-		&(s.log.allocator.(*BitmapAllocator).level1[0]),
-		s.log.allocator.(*BitmapAllocator).level1[0])
+		s.log.allocator.(*BitmapAllocator).level0[0],
+		s.allocator.(*BitmapAllocator).level0[0],
+		s.allocator.(*BitmapAllocator).level0[1],
+		s.allocator.(*BitmapAllocator).level0[2],
+		s.allocator.(*BitmapAllocator).level0[3],
+		s.allocator.(*BitmapAllocator).level0[4],
+		s.allocator.(*BitmapAllocator).level0[5],
+		s.allocator.(*BitmapAllocator).level0[6],
+		s.allocator.(*BitmapAllocator).level0[7])
 }
