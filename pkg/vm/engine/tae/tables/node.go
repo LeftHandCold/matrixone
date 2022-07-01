@@ -156,6 +156,9 @@ func (node *appendableNode) OnLoad() {
 		opts); err != nil {
 		node.exception.Store(err)
 	}
+	if err != nil {
+		logutil.Infof("err is %v")
+	}
 	if node.data.Length() != int(node.rows) {
 		logutil.Fatalf("Load %d rows but %d expected: %s", node.data.Length(), node.rows, node.block.meta.String())
 	}
