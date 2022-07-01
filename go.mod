@@ -28,7 +28,7 @@ require (
 	github.com/minio/minio-go/v7 v7.0.27
 	github.com/panjf2000/ants/v2 v2.4.6
 	github.com/pierrec/lz4 v2.6.1+incompatible
-	github.com/pierrec/lz4/v4 v4.1.14
+	github.com/pierrec/lz4/v4 v4.1.15
 	github.com/plar/go-adaptive-radix-tree v1.0.4
 	github.com/prashantv/gostub v1.1.0
 	github.com/sirupsen/logrus v1.8.1
