@@ -234,6 +234,10 @@ func (s *Driver) Append(fd *DriverFile, pl []byte) (err error) {
 	if err != nil {
 		return
 	}
+	err = s.log.Append(fd)
+	if err != nil {
+		return
+	}
 	logutil.Infof("%s-%s | Driver Append | %d-%d | %d-%d | %s | %d ", s.name, fd.name, len(buf), len(pl), fd.snode.extents[0].offset, fd.snode.extents[0].length,
 		s.PrintBitmap(),
 		fd.snode.logExtents.offset)
@@ -315,6 +319,8 @@ func (s *Driver) PrintLog(name, info string) {
 }
 
 func (s *Driver) PrintBitmap() string {
+	s.allocator.(*BitmapAllocator).mutex.RLock()
+	defer s.allocator.(*BitmapAllocator).mutex.RUnlock()
 	var str string
 	str = ""
 	var y = 0
