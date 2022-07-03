@@ -234,10 +234,6 @@ func (s *Driver) Append(fd *DriverFile, pl []byte) (err error) {
 	if err != nil {
 		return
 	}
-	err = fd.Append(DATA_START+offset, buf, uint32(len(pl)))
-	if err != nil {
-		return
-	}
 	logutil.Infof("%s-%s | Driver Append | %d-%d | %d-%d | %s | %d ", s.name, fd.name, len(buf), len(pl), fd.snode.extents[0].offset, fd.snode.extents[0].length,
 		s.PrintBitmap(),
 		fd.snode.logExtents.offset)
