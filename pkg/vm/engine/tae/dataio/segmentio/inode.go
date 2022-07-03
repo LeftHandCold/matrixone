@@ -34,6 +34,7 @@ type Inode struct {
 	rows       uint32
 	cols       uint32
 	idxs       uint32
+	cksum      uint32
 	mutex      sync.RWMutex
 	extents    []Extent
 	logExtents Extent
