@@ -125,6 +125,9 @@ func (entry *BlockEntry) PPString(level common.PPLevel, depth int, prefix string
 
 func (entry *BlockEntry) Repr() string {
 	id := entry.AsCommonID()
+	if entry.segment != nil && entry.segment.segData != nil {
+		return fmt.Sprintf("[%s]BLOCK[%s][%s]", entry.state.Repr(), id.String(), entry.segment.segData.GetSegmentFile().Name())
+	}
 	return fmt.Sprintf("[%s]BLOCK[%s]", entry.state.Repr(), id.String())
 }
 
@@ -135,6 +138,9 @@ func (entry *BlockEntry) String() string {
 }
 
 func (entry *BlockEntry) StringLocked() string {
+	if entry.segment != nil && entry.segment.segData != nil {
+		return fmt.Sprintf("[%s]BLOCK%s[%s]", entry.state.Repr(), entry.BaseEntry.String(), entry.segment.segData.GetSegmentFile().Name())
+	}
 	return fmt.Sprintf("[%s]BLOCK%s", entry.state.Repr(), entry.BaseEntry.String())
 }
 

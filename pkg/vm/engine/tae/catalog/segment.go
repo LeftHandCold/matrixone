@@ -163,12 +163,12 @@ func (entry *SegmentEntry) PPString(level common.PPLevel, depth int, prefix stri
 }
 
 func (entry *SegmentEntry) StringLocked() string {
-	return fmt.Sprintf("[%s]SEGMENT%s", entry.state.Repr(), entry.BaseEntry.String())
+	return fmt.Sprintf("[%s]SEGMENT%s[%s]", entry.state.Repr(), entry.BaseEntry.String(), entry.segData.GetSegmentFile().Name())
 }
 
 func (entry *SegmentEntry) Repr() string {
 	id := entry.AsCommonID()
-	return fmt.Sprintf("[%s]SEGMENT[%s]", entry.state.Repr(), id.String())
+	return fmt.Sprintf("[%s]SEGMENT[%s][%s]", entry.state.Repr(), id.String(), entry.segData.GetSegmentFile().Name())
 }
 
 func (entry *SegmentEntry) String() string {
