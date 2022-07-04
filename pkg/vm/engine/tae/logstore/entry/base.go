@@ -31,7 +31,7 @@ var (
 	_basePool = sync.Pool{New: func() any {
 		return &Base{
 			descriptor: newDescriptor(),
-			trace:      make([]uintptr, 8),
+			trace:      make([][]uintptr, 4),
 		}
 	}}
 )
@@ -47,7 +47,7 @@ type Base struct {
 	printTime bool
 	err       error
 
-	trace     []uintptr
+	trace     [][]uintptr
 	onused    bool
 	usedTimes int
 }
@@ -321,15 +321,23 @@ func GetBase() *Base {
 	return b
 }
 func (b *Base) RecordTrace() {
-	runtime.Callers(1, b.trace)
+	trace := make([]uintptr, 8)
+	runtime.Callers(1, trace)
+	if len(b.trace) == 4 {
+		b.trace = b.trace[1:]
+	}
+	b.trace = append(b.trace, trace)
 }
 func (b *Base) PrintTrace() {
-	frames := runtime.CallersFrames(b.trace)
-	for frame, more := frames.Next(); more; frame, more = frames.Next() {
-		fmt.Print(frame.File)
-		fmt.Print(":")
-		fmt.Print(frame.Line)
-		fmt.Print("\n")
+	for i, trace := range b.trace {
+		fmt.Printf("===================[%d]=================\n", i)
+		frames := runtime.CallersFrames(trace)
+		for frame, more := frames.Next(); more; frame, more = frames.Next() {
+			fmt.Print(frame.File)
+			fmt.Print(":")
+			fmt.Print(frame.Line)
+			fmt.Print("\n")
+		}
 	}
 	fmt.Printf("used %d times\n", b.usedTimes)
 }
