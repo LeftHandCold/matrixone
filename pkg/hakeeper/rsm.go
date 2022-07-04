@@ -24,7 +24,6 @@ import (
 	sm "github.com/lni/dragonboat/v4/statemachine"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
-	hapb "github.com/matrixorigin/matrixone/pkg/pb/hakeeper"
 	pb "github.com/matrixorigin/matrixone/pkg/pb/logservice"
 )
 
@@ -59,18 +58,19 @@ const (
 type StateQuery struct{}
 type logShardIDQuery struct{ name string }
 type logShardIDQueryResult struct{ id uint64 }
+type ScheduleCommandQuery struct{ UUID string }
 
 type stateMachine struct {
 	replicaID uint64
-	state     hapb.RSMState
+	state     pb.HAKeeperRSMState
 }
 
 func parseCmdTag(cmd []byte) uint16 {
 	return binaryEnc.Uint16(cmd)
 }
 
-func GetUpdateCommandsCmd(term uint64, cmds []hapb.ScheduleCommand) []byte {
-	b := hapb.CommandBatch{
+func GetUpdateCommandsCmd(term uint64, cmds []pb.ScheduleCommand) []byte {
+	b := pb.CommandBatch{
 		Term:     term,
 		Commands: cmds,
 	}
@@ -176,7 +176,7 @@ func NewStateMachine(shardID uint64, replicaID uint64) sm.IStateMachine {
 	}
 	return &stateMachine{
 		replicaID: replicaID,
-		state:     hapb.NewRSMState(),
+		state:     pb.NewRSMState(),
 	}
 }
 
@@ -191,7 +191,7 @@ func (s *stateMachine) assignID() uint64 {
 
 func (s *stateMachine) handleUpdateCommandsCmd(cmd []byte) sm.Result {
 	data := cmd[headerSize:]
-	var b hapb.CommandBatch
+	var b pb.CommandBatch
 	if err := b.Unmarshal(data); err != nil {
 		panic(err)
 	}
@@ -201,12 +201,12 @@ func (s *stateMachine) handleUpdateCommandsCmd(cmd []byte) sm.Result {
 	}
 
 	s.state.Term = b.Term
-	s.state.ScheduleCommands = make(map[string]hapb.CommandBatch)
+	s.state.ScheduleCommands = make(map[string]pb.CommandBatch)
 	for _, c := range b.Commands {
 		l, ok := s.state.ScheduleCommands[c.UUID]
 		if !ok {
-			l = hapb.CommandBatch{
-				Commands: make([]hapb.ScheduleCommand, 0),
+			l = pb.CommandBatch{
+				Commands: make([]pb.ScheduleCommand, 0),
 			}
 		}
 		l.Commands = append(l.Commands, c)
@@ -283,7 +283,7 @@ func (s *stateMachine) Update(e sm.Entry) (sm.Result, error) {
 
 func (s *stateMachine) handleStateQuery() interface{} {
 	// FIXME: pretty sure we need to deepcopy here
-	return &hapb.HAKeeperState{
+	return &pb.HAKeeperState{
 		Tick:        s.state.Tick,
 		ClusterInfo: s.state.ClusterInfo,
 		DNState:     s.state.DNState,
@@ -299,11 +299,20 @@ func (s *stateMachine) handleShardIDQuery(name string) *logShardIDQueryResult {
 	return &logShardIDQueryResult{}
 }
 
+func (s *stateMachine) handleScheduleCommandQuery(uuid string) *pb.CommandBatch {
+	if batch, ok := s.state.ScheduleCommands[uuid]; ok {
+		return &batch
+	}
+	return &pb.CommandBatch{}
+}
+
 func (s *stateMachine) Lookup(query interface{}) (interface{}, error) {
 	if q, ok := query.(*logShardIDQuery); ok {
 		return s.handleShardIDQuery(q.name), nil
 	} else if _, ok := query.(*StateQuery); ok {
 		return s.handleStateQuery(), nil
+	} else if q, ok := query.(*ScheduleCommandQuery); ok {
+		return s.handleScheduleCommandQuery(q.UUID), nil
 	}
 	panic("unknown query type")
 }

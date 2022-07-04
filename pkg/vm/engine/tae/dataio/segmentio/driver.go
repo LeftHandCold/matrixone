@@ -17,6 +17,7 @@ package segmentio
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"sync"
 
@@ -237,15 +238,8 @@ func (s *Driver) Append(fd *DriverFile, pl []byte) (err error) {
 	if err != nil {
 		return
 	}
-	logutil.Infof("%s-%s | Driver Append | %d-%d | %d-%d | %x-%x-%x-%x-%x-%x-%x-%x | %d ", s.name, fd.name, len(buf), len(pl), fd.snode.extents[0].offset, fd.snode.extents[0].length,
-		s.allocator.(*BitmapAllocator).level0[0],
-		s.allocator.(*BitmapAllocator).level0[1],
-		s.allocator.(*BitmapAllocator).level0[2],
-		s.allocator.(*BitmapAllocator).level0[3],
-		s.allocator.(*BitmapAllocator).level0[4],
-		s.allocator.(*BitmapAllocator).level0[5],
-		s.allocator.(*BitmapAllocator).level0[6],
-		s.allocator.(*BitmapAllocator).level0[7],
+	logutil.Infof("%s-%s | Driver Append | %d-%d | %d-%d | %s | %d ", s.name, fd.name, len(buf), len(pl), fd.snode.extents[0].offset, fd.snode.extents[0].length,
+		s.PrintBitmap(),
 		fd.snode.logExtents.offset)
 	return nil
 }
@@ -311,22 +305,33 @@ func (s *Driver) GetNodes() map[string]*DriverFile {
 }
 
 func (s *Driver) PrintLog(name, info string) {
-	s.allocator.(*BitmapAllocator).mutex.RLock()
-	defer s.allocator.(*BitmapAllocator).mutex.RUnlock()
-	logutil.Debugf(" %s-%p | %s | %s-%d-%d | Log Level1 %x-%x-%x-%x-%x-%x-%x-%x-%x",
+	s.log.allocator.(*BitmapAllocator).mutex.RLock()
+	defer s.log.allocator.(*BitmapAllocator).mutex.RUnlock()
+	logutil.Infof(" %s-%p | %s | %s-%d-%d | Log Level1 %p-%s",
 		s.name,
 		&(s.name),
 		info,
 		name,
 		len(s.nodes),
 		s.lastInode,
-		s.log.allocator.(*BitmapAllocator).level0[0],
-		s.allocator.(*BitmapAllocator).level0[0],
-		s.allocator.(*BitmapAllocator).level0[1],
-		s.allocator.(*BitmapAllocator).level0[2],
-		s.allocator.(*BitmapAllocator).level0[3],
-		s.allocator.(*BitmapAllocator).level0[4],
-		s.allocator.(*BitmapAllocator).level0[5],
-		s.allocator.(*BitmapAllocator).level0[6],
-		s.allocator.(*BitmapAllocator).level0[7])
+		&(s.log.allocator.(*BitmapAllocator).level1[0]),
+		s.PrintBitmap())
+}
+
+func (s *Driver) PrintBitmap() string {
+	s.allocator.(*BitmapAllocator).mutex.RLock()
+	defer s.allocator.(*BitmapAllocator).mutex.RUnlock()
+	var str string
+	str = ""
+	var y = 0
+	for i, bit := range s.allocator.(*BitmapAllocator).level0 {
+		if bit != ALL_UNIT_CLEAR {
+			str = fmt.Sprintf("%s-%d:%x", str, i, bit)
+			y++
+			if y >= 10 {
+				break
+			}
+		}
+	}
+	return str
 }

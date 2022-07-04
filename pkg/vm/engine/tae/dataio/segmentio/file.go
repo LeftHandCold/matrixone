@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
+	"hash/crc32"
 	"io"
 )
 
@@ -57,6 +58,7 @@ func (b *DriverFile) GetName() string {
 
 func (b *DriverFile) Append(offset uint64, data []byte, originSize uint32) (err error) {
 	cbufLen := uint32(p2roundup(uint64(len(data)), uint64(b.driver.super.blockSize)))
+	b.snode.cksum = crc32.ChecksumIEEE(data)
 	_, err = b.driver.segFile.WriteAt(data, int64(offset))
 	if err != nil {
 		return err
@@ -238,6 +240,9 @@ func (b *DriverFile) Read(data []byte) (n int, err error) {
 		n += int(dataLen)
 		boff += ext.GetData().GetLength()
 		roff += ext.Length()
+	}
+	if b.snode.cksum != crc32.ChecksumIEEE(data) {
+		panic(any("checksum Failed"))
 	}
 	return n, nil
 }

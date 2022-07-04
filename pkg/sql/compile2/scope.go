@@ -17,10 +17,11 @@ package compile2
 import (
 	"context"
 	"fmt"
+	"runtime"
+
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec2/deletion"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec2/insert"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec2/update"
-	"runtime"
 
 	"github.com/matrixorigin/matrixone/pkg/errno"
 
@@ -135,6 +136,9 @@ func (s *Scope) Delete(ts uint64, snapshot engine.Snapshot, engine engine.Engine
 	s.Magic = Merge
 	arg := s.Instructions[len(s.Instructions)-1].Arg.(*deletion.Argument)
 	arg.Ts = ts
+	if arg.CanTruncate {
+		return arg.TableSource.Truncate(snapshot)
+	}
 	defer arg.TableSource.Close(snapshot)
 	if err := s.MergeRun(engine); err != nil {
 		return 0, err
@@ -299,7 +303,7 @@ func (s *Scope) NumCPU() int {
 
 // Run read data from storage engine and run the instructions of scope.
 func (s *Scope) Run(e engine.Engine) (err error) {
-	p := pipeline2.New(s.DataSource.Attributes, s.Instructions, s.Reg)
+	p := pipeline2.New(s.DataSource.Attributes, s.DataSource.AttributeTypes, s.Instructions, s.Reg)
 	if s.DataSource.Bat != nil {
 		if _, err = p.ConstRun(s.DataSource.Bat, s.Proc); err != nil {
 			return err
@@ -447,10 +451,11 @@ func (s *Scope) ParallelRun(e engine.Engine) error {
 		ss[i] = &Scope{
 			Magic: Normal,
 			DataSource: &Source{
-				R:            rds[i],
-				SchemaName:   s.DataSource.SchemaName,
-				RelationName: s.DataSource.RelationName,
-				Attributes:   s.DataSource.Attributes,
+				R:              rds[i],
+				SchemaName:     s.DataSource.SchemaName,
+				RelationName:   s.DataSource.RelationName,
+				Attributes:     s.DataSource.Attributes,
+				AttributeTypes: s.DataSource.AttributeTypes,
 			},
 		}
 		ss[i].Proc = process.New(mheap.New(s.Proc.Mp.Gm))
