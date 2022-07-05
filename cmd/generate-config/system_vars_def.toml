@@ -449,15 +449,14 @@ comment = "default is true. if true, metrics can be scraped through host:status/
 update-mode = "dynamic"
 
 [[parameter]]
-name = "needInitdb"
+name = "enableMetric"
 scope = ["global"]
 access = ["file"]
 type = "bool"
 domain-type = "set"
 values = ["true", "false"]
-comment = "default is true. if true, initdb for tae in every booting"
+comment = "default is true. if true, enable metric at booting"
 update-mode = "dynamic"
-
 
 # Cluster Configs
 pre-allocated-group-num = 20
