@@ -17,6 +17,7 @@ package segmentio
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -36,6 +37,9 @@ const DATA_SIZE = SIZE - DATA_START
 const LOG_SIZE = INODE_NUM * INODE_SIZE
 const HOLE_SIZE = 512 * INODE_SIZE
 const MAGIC = 0xFFFFFFFF
+
+var ErrInodeLimit = errors.New("tae driver: Too many inodes")
+var ErrNoSpace = errors.New("tae driver: No space")
 
 type SuperBlock struct {
 	version   uint64
@@ -248,7 +252,7 @@ func (s *Driver) Append(fd *DriverFile, pl []byte) (err error) {
 	offset, allocated := s.allocator.Allocate(uint64(len(buf)))
 	if allocated == 0 {
 		//panic(any("no space"))
-		panic(any("no space"))
+		return ErrNoSpace
 	}
 	err = fd.Append(DATA_START+offset, buf, uint32(len(pl)))
 	if err != nil {
