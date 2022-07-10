@@ -13,7 +13,7 @@
 // limitations under the License.
 
 package objectio
-
+import "github.com/matrixorigin/matrixone/pkg/compress"
 type fileStat struct {
 	name       string
 	size       int64
@@ -24,4 +24,4 @@ type fileStat struct {
 func (stat *fileStat) Name() string      { return stat.name }
 func (stat *fileStat) Size() int64       { return stat.size }
 func (stat *fileStat) OriginSize() int64 { return stat.originSize }
-func (stat *fileStat) CompressAlgo() int { return int(stat.algo) }
+func (stat *fileStat) CompressAlgo() int { return compress.None }
