@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
 	"sync"
 
 	"github.com/matrixorigin/matrixone/pkg/logutil"
@@ -76,12 +75,12 @@ func (replayer *Replayer) scanFiles() map[uint64]string {
 		if info.IsDir() {
 			continue
 		}
-		name := info.Name()
+		/*name := info.Name()
 		id, err := replayer.db.FileFactory.DecodeName(name)
 		if err != nil {
 			continue
 		}
-		files[id] = path.Join(replayer.db.Dir, name)
+		files[id] = path.Join(replayer.db.Dir, name)*/
 	}
 	return files
 }
