@@ -97,7 +97,10 @@ func (df *dataFile) Read(buf []byte) (n int, err error) {
 	}
 	file := df.GetFile()
 	n, err = file.Read(buf)
-	return n, nil
+	if err != nil {
+		return
+	}
+	return
 }
 
 func (df *dataFile) GetFileCnt() int {
