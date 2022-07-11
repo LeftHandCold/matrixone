@@ -2,9 +2,7 @@ package db
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
-	"os"
 	"sync"
 
 	"github.com/matrixorigin/matrixone/pkg/logutil"
@@ -157,7 +155,7 @@ func (replayer *Replayer) PostReplayWal() {
 	}
 	_ = replayer.db.Catalog.RecurLoop(processor)
 
-	files := replayer.scanFiles()
+	/*files := replayer.scanFiles()
 	for id := range activeSegs {
 		_, ok := files[id]
 		if !ok {
@@ -171,7 +169,7 @@ func (replayer *Replayer) PostReplayWal() {
 		if err := os.Remove(file); err != nil {
 			panic(err)
 		}
-	}
+	}*/
 
 	logutil.Info(replayer.db.Catalog.SimplePPString(common.PPL1))
 }
