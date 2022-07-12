@@ -7,7 +7,6 @@ import (
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/RoaringBitmap/roaring/roaring64"
-	"github.com/matrixorigin/matrixone/pkg/compress"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/stl"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/stl/containers"
@@ -289,31 +288,20 @@ func (vec *vector[T]) ReadFromFile(f common.IVFile, buffer *bytes.Buffer) (err e
 	stat := f.Stat()
 	var n stl.MemNode
 	var buf []byte
-	if stat.CompressAlgo() != compress.None {
-		osize := int(stat.OriginSize())
-		size := stat.Size()
-		tmpNode := vec.GetAllocator().Alloc(int(size))
-		defer vec.GetAllocator().Free(tmpNode)
-		srcBuf := tmpNode.GetBuf()[:size]
-		if _, err = f.Read(srcBuf); err != nil {
-			return
+	osize := int(stat.OriginSize())
+
+	if buffer == nil {
+		n = vec.GetAllocator().Alloc(osize)
+		buf = n.GetBuf()[:osize]
+	} else {
+		buffer.Reset()
+		if osize > buffer.Cap() {
+			buffer.Grow(osize)
 		}
-		if buffer == nil {
-			n = vec.GetAllocator().Alloc(osize)
-			buf = n.GetBuf()[:osize]
-		} else {
-			buffer.Reset()
-			if osize > buffer.Cap() {
-				buffer.Grow(osize)
-			}
-			buf = buffer.Bytes()[:osize]
-		}
-		if _, err = compress.Decompress(srcBuf, buf, compress.Lz4); err != nil {
-			if n != nil {
-				vec.GetAllocator().Free(n)
-			}
-			return
-		}
+		buf = buffer.Bytes()[:osize]
+	}
+	if _, err = f.Read(buf); err != nil {
+		return
 	}
 	vec.typ = types.DecodeType(buf[:types.TypeSize])
 	buf = buf[types.TypeSize:]
