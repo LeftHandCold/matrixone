@@ -52,6 +52,7 @@ func (d *ObjectDir) Stat() common.FileInfo {
 	stat.size = int64(len(d.nodes))
 	stat.dataSize = int64(len(d.nodes))
 	stat.oType = d.inode.typ
+	stat.name = d.inode.name
 	return stat
 }
 
@@ -140,7 +141,7 @@ func (d *ObjectDir) LookUp() ([]common.FileInfo, error) {
 }
 
 func (d *ObjectDir) LoadFileWithExtent(extent Extent, data *bytes.Buffer) (tfs.File, error) {
-	_, err := d.fs.Read(extent, data.Bytes())
+	_, err := d.fs.driver.Read(extent, data.Bytes())
 	if err != nil {
 		return nil, err
 	}

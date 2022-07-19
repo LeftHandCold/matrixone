@@ -60,6 +60,11 @@ func (o *ObjectFS) SetDir(dir string) {
 	o.attr.dir = dir
 }
 
+func (o *ObjectFS) Mount() {
+	o.RebuildObject()
+	o.driver.Replay()
+}
+
 func (o *ObjectFS) OpenDir(name string, nodes *map[string]tfs.File) (*map[string]tfs.File, tfs.File, error) {
 	dir := (*nodes)[name]
 	if dir == nil {
@@ -101,9 +106,13 @@ func (o *ObjectFS) OpenFile(name string, flag int) (file tfs.File, err error) {
 func (o *ObjectFS) ReadDir(dir string) ([]common.FileInfo, error) {
 	o.RWMutex.Lock()
 	defer o.RWMutex.Unlock()
-	entry := o.nodes[dir]
+	name := strings.Split(dir, "/")
+	entry := o.nodes[name[0]]
 	if entry == nil {
 		return nil, os.ErrNotExist
+	}
+	if len(name) > 1 {
+		entry = entry.(*ObjectDir).nodes[name[1]]
 	}
 	return entry.(*ObjectDir).LookUp()
 }
@@ -142,8 +151,6 @@ func (o *ObjectFS) GetData(size uint64) (object *Object, err error) {
 }
 
 func (o *ObjectFS) GetDataWithId(id uint64) *Object {
-	o.RWMutex.RLock()
-	defer o.RWMutex.RUnlock()
 	for _, object := range o.data {
 		if object.id == id {
 			return object

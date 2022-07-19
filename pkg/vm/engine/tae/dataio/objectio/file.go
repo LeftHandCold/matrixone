@@ -72,6 +72,7 @@ func (b *ObjectFile) Stat() common.FileInfo {
 	stat.dataSize = int64(b.inode.dataSize)
 	stat.algo = b.fs.attr.algo
 	stat.oType = b.inode.typ
+	stat.name = b.inode.name
 	return stat
 }
 

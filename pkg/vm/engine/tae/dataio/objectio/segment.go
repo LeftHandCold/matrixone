@@ -16,12 +16,13 @@ package objectio
 
 import (
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/tfs"
-	"sync"
-
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/file"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/tfs"
+	"strconv"
+	"strings"
+	"sync"
 )
 
 var SegmentFactory file.SegmentFactory
@@ -44,6 +45,9 @@ func (factory *segmentFactory) DecodeName(name string) (id uint64, err error) {
 
 func (factory *segmentFactory) Build(dir string, id uint64) file.Segment {
 	factory.fs.(*ObjectFS).SetDir(dir)
+	if len(factory.fs.(*ObjectFS).nodes) == 0 {
+		factory.fs.(*ObjectFS).Mount()
+	}
 	return openSegment(dir, id, factory.fs)
 }
 
@@ -65,6 +69,17 @@ func openSegment(name string, id uint64, fs tfs.FS) *segmentFile {
 	sf.fs = fs
 	sf.id = &common.ID{
 		SegmentID: id,
+	}
+	seg := fs.(*ObjectFS).nodes[fmt.Sprintf("%v", id)]
+	if seg != nil {
+		for _, block := range seg.(*ObjectDir).nodes {
+			info := strings.Split(block.Stat().Name(), "-")
+			id, err := strconv.ParseUint(info[1], 10, 32)
+			if err != nil {
+				return nil
+			}
+			sf.OpenBlock(id, 0, nil)
+		}
 	}
 	sf.Ref()
 	sf.OnZeroCB = sf.close

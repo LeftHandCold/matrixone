@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/tfs"
 	"io"
+	"os"
 	"unsafe"
 )
 
@@ -47,10 +48,26 @@ func (m *MetaDriver) Append(file *ObjectFile) (err error) {
 	}
 	file.parent.inode.mutex.Lock()
 	file.parent.inode.objectId = page.object.id
+	file.parent.inode.extents = append(file.parent.inode.extents, file.extent)
 	file.parent.extent = page.extent
 	file.parent.inode.mutex.Unlock()
 	_, err = page.object.Append(buf, int64(page.extent.offset))
 	return err
+}
+
+func (m *MetaDriver) Read(extent Extent, data []byte) (n int, err error) {
+	for _, object := range m.blk {
+		if object.id == extent.oid {
+			return object.oFile.ReadAt(data, int64(extent.offset))
+		}
+	}
+
+	for _, object := range m.inode {
+		if object.id == extent.oid {
+			return object.oFile.ReadAt(data, int64(extent.offset))
+		}
+	}
+	return 0, os.ErrNotExist
 }
 
 // GetPage Find a metadata object based on type and allocate a page
@@ -81,6 +98,7 @@ func (m *MetaDriver) GetPage(size uint64, typ ObjectType) (page *MetaPage, err e
 	page.object = object
 	page.extent = Extent{
 		typ:    APPEND,
+		oid:    object.id,
 		offset: uint32(offset),
 		length: uint32(length),
 		data:   entry{offset: 0, length: uint32(size)},

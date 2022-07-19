@@ -107,6 +107,7 @@ func TestSegmentFile_Replay(t *testing.T) {
 		colBlk0.Close()
 	}
 
+	SegmentFactory.(*segmentFactory).fs = NewObjectFS()
 	seg = SegmentFactory.Build(dir, id)
 	for i := 0; i < 20; i++ {
 		block, err := seg.OpenBlock(ids[i], colCnt, indexCnt)
