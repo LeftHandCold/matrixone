@@ -110,7 +110,8 @@ func (sf *segmentFile) OpenBlock(id uint64, colCnt int, indexCnt map[int]int) (b
 		bf = newBlock(id, sf, colCnt, indexCnt)
 		sf.blocks[id] = bf
 	} else {
-		files, err := bf.seg.fs.ReadDir(EncodeDir(bf.id))
+		var files []common.FileInfo
+		files, err = sf.fs.ReadDir(EncodeDir(bf.id))
 		if err != nil {
 			return nil, err
 		}
