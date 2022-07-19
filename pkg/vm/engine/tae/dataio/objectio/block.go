@@ -274,3 +274,7 @@ func (bf *blockFile) LoadDeletes() (mask *roaring.Bitmap, err error) {
 func (bf *blockFile) LoadUpdates() (masks map[uint16]*roaring.Bitmap, vals map[uint16]map[uint32]any) {
 	return bf.reader.LoadUpdates()
 }
+
+func (bf *blockFile) buildTree(files []common.FileInfo) error {
+	return nil
+}

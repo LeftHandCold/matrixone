@@ -109,6 +109,15 @@ func (sf *segmentFile) OpenBlock(id uint64, colCnt int, indexCnt map[int]int) (b
 	if bf == nil {
 		bf = newBlock(id, sf, colCnt, indexCnt)
 		sf.blocks[id] = bf
+	} else {
+		files, err := bf.seg.fs.ReadDir(EncodeDir(bf.id))
+		if err != nil {
+			return nil, err
+		}
+		err = bf.buildTree(files)
+		if err != nil {
+			return
+		}
 	}
 	block = bf
 	return

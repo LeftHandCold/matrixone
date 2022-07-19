@@ -101,11 +101,11 @@ func (o *ObjectFS) OpenFile(name string, flag int) (file tfs.File, err error) {
 func (o *ObjectFS) ReadDir(dir string) ([]common.FileInfo, error) {
 	o.RWMutex.Lock()
 	defer o.RWMutex.Unlock()
-	fileInfos := make([]common.FileInfo, 0)
 	entry := o.nodes[dir]
-	info := entry.Stat()
-	fileInfos = append(fileInfos, info)
-	return fileInfos, nil
+	if entry == nil {
+		return nil, os.ErrNotExist
+	}
+	return entry.(*ObjectDir).LookUp()
 }
 
 func (o *ObjectFS) Remove(name string) error {
@@ -172,6 +172,7 @@ func (o *ObjectFS) Append(file *ObjectFile, data []byte) (n int, err error) {
 	file.inode.mutex.Lock()
 	file.inode.extents = append(file.inode.extents, Extent{
 		typ:    APPEND,
+		oid:    dataObject.id,
 		offset: uint32(offset),
 		length: uint32(allocated),
 		data:   entry{offset: 0, length: uint32(len(buf))},
@@ -184,14 +185,13 @@ func (o *ObjectFS) Append(file *ObjectFile, data []byte) (n int, err error) {
 	return int(allocated), err
 }
 
-func (o *ObjectFS) Read(file *ObjectFile, data []byte) (n int, err error) {
+func (o *ObjectFS) Read(extent Extent, data []byte) (n int, err error) {
 	bufLen := len(data)
 	if bufLen == 0 {
 		return 0, nil
 	}
-	inode := file.GetInode()
-	dataObject := o.GetDataWithId(inode.objectId)
-	return dataObject.oFile.ReadAt(data, int64(inode.extents[0].offset))
+	dataObject := o.GetDataWithId(extent.oid)
+	return dataObject.oFile.ReadAt(data, int64(extent.offset))
 }
 
 func (o *ObjectFS) Sync(file *ObjectFile) error {

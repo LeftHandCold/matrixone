@@ -89,7 +89,7 @@ func (b *ObjectFile) GetExtents() *[]Extent {
 }
 
 func (b *ObjectFile) Read(data []byte) (n int, err error) {
-	return b.fs.Read(b, data)
+	return b.fs.Read(b.inode.extents[0], data)
 }
 
 func (b *ObjectFile) Destroy() {
@@ -105,4 +105,8 @@ func (b *ObjectFile) Sync() error {
 
 func (b *ObjectFile) GetFileType() common.FileType {
 	return common.DiskFile
+}
+
+func (b *ObjectFile) LoadInode(extent Extent) {
+
 }

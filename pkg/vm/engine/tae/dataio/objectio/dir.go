@@ -15,6 +15,7 @@
 package objectio
 
 import (
+	"bytes"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/tfs"
 	"os"
@@ -111,4 +112,49 @@ func (d *ObjectDir) Marshal() (buf []byte, err error) {
 	}
 	d.inode.mutex.RUnlock()
 	return d.inode.Marshal()
+}
+
+func (d *ObjectDir) LookUp() ([]common.FileInfo, error) {
+	fileInfos := make([]common.FileInfo, 0)
+	if len(d.nodes) > 0 {
+		for _, file := range d.nodes {
+			info := file.Stat()
+			fileInfos = append(fileInfos, info)
+		}
+		return fileInfos, nil
+	}
+	if len(d.inode.extents) > 0 {
+		data := bytes.NewBuffer(make([]byte, MetaSize))
+		for _, extent := range d.inode.extents {
+			file, err := d.LoadFileWithExtent(extent, data)
+			if err != nil {
+				return nil, err
+			}
+			stat := file.Stat()
+			d.nodes[stat.Name()] = file
+			fileInfos = append(fileInfos, stat)
+		}
+		return fileInfos, nil
+	}
+	return nil, nil
+}
+
+func (d *ObjectDir) LoadFileWithExtent(extent Extent, data *bytes.Buffer) (tfs.File, error) {
+	_, err := d.fs.Read(extent, data.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	inode := &Inode{}
+	n, err := inode.UnMarshal(data, inode)
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, os.ErrNotExist
+	}
+	file := &ObjectFile{}
+	file.inode = inode
+	file.fs = d.fs
+	file.parent = d
+	return file, nil
 }
