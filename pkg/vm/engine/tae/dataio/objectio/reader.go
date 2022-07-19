@@ -56,8 +56,8 @@ func (r *Reader) LoadIndexMeta(id *common.ID) (any, error) {
 	return indices, nil
 }
 
-func (r *Reader) LoadDeletes(id *common.ID) (mask *roaring.Bitmap, err error) {
-	name := EncodeDeleteName(id, r.fs)
+func (r *Reader) LoadDeletes(id *common.ID, version uint64) (mask *roaring.Bitmap, err error) {
+	name := EncodeDeleteNameWithVersion(id, version, r.fs)
 	f, err := r.fs.OpenFile(name, os.O_RDWR)
 	if err != nil {
 		return nil, err

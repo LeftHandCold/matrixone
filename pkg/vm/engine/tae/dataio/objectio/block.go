@@ -16,6 +16,7 @@ package objectio
 
 import (
 	"bytes"
+	"strings"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
@@ -268,7 +269,7 @@ func (bf *blockFile) WriteSnapshot(
 }
 
 func (bf *blockFile) LoadDeletes() (mask *roaring.Bitmap, err error) {
-	return bf.reader.LoadDeletes(bf.id)
+	return bf.reader.LoadDeletes(bf.id, bf.ts)
 }
 
 func (bf *blockFile) LoadUpdates() (masks map[uint16]*roaring.Bitmap, vals map[uint16]map[uint32]any) {
@@ -276,5 +277,72 @@ func (bf *blockFile) LoadUpdates() (masks map[uint16]*roaring.Bitmap, vals map[u
 }
 
 func (bf *blockFile) buildTree(files []common.FileInfo) error {
+	for _, file := range files {
+		err := bf.OnFileInfo(file)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (bf *blockFile) OnFileInfo(file common.FileInfo) error {
+	fileName := strings.Split(file.Name(), ".")
+	switch fileName[1] {
+	case ExtName[ColumnBlockExt]:
+	case ExtName[ColumnUpdatesExt]:
+		id, version, err := DecodeColBlkOrUpdateName(file.Name())
+		if err != nil {
+			return err
+		}
+		if version > bf.ts {
+			bf.ts = version
+		}
+		id.BlockID = bf.id.BlockID
+		id.SegmentID = bf.id.SegmentID
+		cb := bf.columns[id.Idx]
+		if cb == nil {
+			cb = &columnBlock{
+				block: bf,
+				id:    id,
+				ts:    version,
+			}
+			cb.vfs = &VFS{cb: cb}
+			cb.OnZeroCB = cb.close
+			cb.Ref()
+			bf.columns[id.Idx] = cb
+		}
+	case ExtName[IndexExt]:
+		id, idx, err := DecodeIndexName(file.Name())
+		if err != nil {
+			return err
+		}
+		id.BlockID = bf.id.BlockID
+		id.SegmentID = bf.id.SegmentID
+		cb := bf.columns[id.Idx]
+		if cb == nil {
+			cb = &columnBlock{
+				block:   bf,
+				indexes: int(idx),
+				id:      id,
+			}
+			cb.vfs = &VFS{cb: cb}
+			cb.OnZeroCB = cb.close
+			cb.Ref()
+			bf.columns[id.Idx] = cb
+			break
+		}
+		if int(idx) > cb.indexes {
+			cb.indexes = int(idx)
+		}
+	case ExtName[DeletesExt]:
+		_, version, err := DecodeDeleteName(file.Name())
+		if err != nil {
+			return err
+		}
+		if version > bf.ts {
+			bf.ts = version
+		}
+	}
 	return nil
 }
