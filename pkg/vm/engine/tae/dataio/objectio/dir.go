@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/tfs"
+	"io"
 	"os"
 )
 
@@ -50,7 +51,7 @@ func (d *ObjectDir) Stat() common.FileInfo {
 	defer d.inode.mutex.RUnlock()
 	stat := &objectFileStat{}
 	stat.size = int64(len(d.nodes))
-	stat.dataSize = int64(len(d.nodes))
+	stat.dataSize = int64(d.inode.rows)
 	stat.oType = d.inode.typ
 	stat.name = d.inode.name
 	return stat
@@ -111,6 +112,7 @@ func (d *ObjectDir) Marshal() (buf []byte, err error) {
 	for _, node := range d.nodes {
 		d.inode.extents = append(d.inode.extents, node.(*ObjectFile).extent)
 	}
+	d.inode.seq++
 	d.inode.mutex.RUnlock()
 	return d.inode.Marshal()
 }
@@ -125,10 +127,10 @@ func (d *ObjectDir) LookUp() ([]common.FileInfo, error) {
 		return fileInfos, nil
 	}
 	if len(d.inode.extents) > 0 {
-		data := bytes.NewBuffer(make([]byte, MetaSize))
 		for _, extent := range d.inode.extents {
+			data := bytes.NewBuffer(make([]byte, MetaSize))
 			file, err := d.LoadFileWithExtent(extent, data)
-			if err != nil {
+			if err != nil && err != io.EOF {
 				return nil, err
 			}
 			stat := file.Stat()
@@ -142,7 +144,7 @@ func (d *ObjectDir) LookUp() ([]common.FileInfo, error) {
 
 func (d *ObjectDir) LoadFileWithExtent(extent Extent, data *bytes.Buffer) (tfs.File, error) {
 	_, err := d.fs.driver.Read(extent, data.Bytes())
-	if err != nil {
+	if err != nil && err != io.EOF {
 		return nil, err
 	}
 	inode := &Inode{}

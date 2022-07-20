@@ -187,6 +187,7 @@ func (o *ObjectFS) Append(file *ObjectFile, data []byte) (n int, err error) {
 	file.inode.size += uint64(len(buf))
 	file.inode.dataSize += uint64(len(data))
 	file.inode.objectId = dataObject.id
+	file.inode.seq++
 	file.inode.mutex.Unlock()
 	err = o.driver.Append(file)
 	return int(allocated), err

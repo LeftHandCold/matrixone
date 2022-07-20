@@ -53,6 +53,7 @@ type Inode struct {
 	state    StateType
 	create   uint64
 	objectId uint64
+	seq      uint64
 }
 
 func (i *Inode) GetFileSize() int64 {
@@ -108,6 +109,9 @@ func (i *Inode) Marshal() (buf []byte, err error) {
 		return
 	}
 	if err = binary.Write(&buffer, binary.BigEndian, i.create); err != nil {
+		return
+	}
+	if err = binary.Write(&buffer, binary.BigEndian, i.seq); err != nil {
 		return
 	}
 	if err = binary.Write(&buffer, binary.BigEndian, i.algo); err != nil {
@@ -207,6 +211,10 @@ func (i *Inode) UnMarshal(cache *bytes.Buffer, inode *Inode) (n int, err error) 
 		return
 	}
 	n += int(unsafe.Sizeof(inode.create))
+	if err = binary.Read(cache, binary.BigEndian, &inode.seq); err != nil {
+		return
+	}
+	n += int(unsafe.Sizeof(inode.seq))
 	if err = binary.Read(cache, binary.BigEndian, &inode.algo); err != nil {
 		return
 	}

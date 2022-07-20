@@ -61,6 +61,15 @@ func newBlock(id uint64, seg *segmentFile, colCnt int, indexCnt map[int]int) *bl
 	return bf
 }
 
+func (bf *blockFile) AddNilToColumn(col int) {
+	colCnt := len(bf.columns)
+	if col > colCnt {
+		for i := colCnt; i < col; i++ {
+			bf.columns = append(bf.columns, nil)
+		}
+	}
+}
+
 func (bf *blockFile) Fingerprint() *common.ID {
 	return bf.id
 }
@@ -300,6 +309,9 @@ func (bf *blockFile) OnFileInfo(file common.FileInfo) error {
 		}
 		id.BlockID = bf.id.BlockID
 		id.SegmentID = bf.id.SegmentID
+		if id.Idx+1 > uint16(len(bf.columns)) {
+			bf.AddNilToColumn(int(id.Idx + 1))
+		}
 		cb := bf.columns[id.Idx]
 		if cb == nil {
 			cb = &columnBlock{
@@ -311,6 +323,10 @@ func (bf *blockFile) OnFileInfo(file common.FileInfo) error {
 			cb.OnZeroCB = cb.close
 			cb.Ref()
 			bf.columns[id.Idx] = cb
+			break
+		}
+		if version > cb.ts {
+			cb.ts = version
 		}
 	case ExtName[IndexExt]:
 		id, idx, err := DecodeIndexName(file.Name())
@@ -319,6 +335,9 @@ func (bf *blockFile) OnFileInfo(file common.FileInfo) error {
 		}
 		id.BlockID = bf.id.BlockID
 		id.SegmentID = bf.id.SegmentID
+		if id.Idx+1 > uint16(len(bf.columns)) {
+			bf.AddNilToColumn(int(id.Idx + 1))
+		}
 		cb := bf.columns[id.Idx]
 		if cb == nil {
 			cb = &columnBlock{

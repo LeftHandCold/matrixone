@@ -48,7 +48,6 @@ func (m *MetaDriver) Append(file *ObjectFile) (err error) {
 	}
 	file.parent.inode.mutex.Lock()
 	file.parent.inode.objectId = page.object.id
-	file.parent.inode.extents = append(file.parent.inode.extents, file.extent)
 	file.parent.extent = page.extent
 	file.parent.inode.mutex.Unlock()
 	_, err = page.object.Append(buf, int64(page.extent.offset))
@@ -167,8 +166,11 @@ func (m *MetaDriver) RebuildTree(data *bytes.Buffer, offset int64, object *Objec
 			file.inode = inode
 			file.nodes = make(map[string]tfs.File)
 			block := dir.(*ObjectDir).nodes[file.inode.name]
-			if (block == nil || block.(*ObjectDir).inode.create < file.inode.create) &&
+			if (block == nil || block.(*ObjectDir).inode.seq < file.inode.seq) &&
 				file.inode.state == RESIDENT {
+				if block != nil {
+					block.Unref()
+				}
 				dir.(*ObjectDir).nodes[file.inode.name] = file
 				file.Ref()
 				//file.OnZeroCB = file.(*ObjectDir).Close

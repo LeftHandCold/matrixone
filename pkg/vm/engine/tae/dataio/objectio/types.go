@@ -79,7 +79,7 @@ func DecodeColBlkOrUpdateName(name string) (id *common.ID, version uint64, err e
 		return
 	}
 	id = &common.ID{Idx: uint16(idx)}
-	version, err = strconv.ParseUint(info[2], 10, 64)
+	version, err = strconv.ParseUint(info[1], 10, 64)
 	if err != nil {
 		return
 	}
@@ -100,7 +100,7 @@ func DecodeIndexName(name string) (id *common.ID, idx uint64, err error) {
 		return
 	}
 	id = &common.ID{Idx: uint16(col)}
-	idx, err = strconv.ParseUint(info[2], 10, 32)
+	idx, err = strconv.ParseUint(info[1], 10, 32)
 	if err != nil {
 		return
 	}
@@ -138,7 +138,7 @@ func DecodeDeleteName(name string) (id *common.ID, version uint64, err error) {
 		return
 	}
 	id = &common.ID{BlockID: blockID}
-	version, err = strconv.ParseUint(info[2], 10, 32)
+	version, err = strconv.ParseUint(info[1], 10, 32)
 	if err != nil {
 		return
 	}

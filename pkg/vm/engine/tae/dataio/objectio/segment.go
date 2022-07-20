@@ -78,7 +78,11 @@ func openSegment(name string, id uint64, fs tfs.FS) *segmentFile {
 			if err != nil {
 				return nil
 			}
-			sf.OpenBlock(id, 0, nil)
+			_, err = sf.OpenBlock(id, 0, nil)
+			if err != nil {
+				return nil
+			}
+
 		}
 	}
 	sf.Ref()
