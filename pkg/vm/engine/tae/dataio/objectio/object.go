@@ -22,6 +22,8 @@ import (
 
 	"os"
 	"path"
+	// "strconv"
+	// "strings"
 )
 
 type ObjectType uint8
@@ -53,6 +55,7 @@ type Object struct {
 	oFile     *os.File
 	allocator *ObjectAllocator
 	oType     ObjectType
+	// mutex     sync.Mutex // unused
 }
 
 func OpenObject(id uint64, oType ObjectType, dir string) (object *Object, err error) {

@@ -12,19 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package checkpoint
+package merge
 
-import "testing"
-
-type mockUnit struct{}
-
-func (u *mockUnit) EstimateScore() int {
-	return 10
+type Container struct {
+	i int
 }
 
-func TestDriver(t *testing.T) {
-	// driver := NewDriver()
-	// driver.Start()
-	// defer driver.Stop()
-	// driver.OnUpdateColumn(new(mockUnit))
+type Argument struct {
+	ctr *Container
 }
