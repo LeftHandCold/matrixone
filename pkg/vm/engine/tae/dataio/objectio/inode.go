@@ -132,9 +132,6 @@ func (i *Inode) Marshal() (buf []byte, err error) {
 	if err = binary.Write(&buffer, binary.BigEndian, i.idxs); err != nil {
 		return
 	}
-	if err = binary.Write(&buffer, binary.BigEndian, i.objectId); err != nil {
-		return
-	}
 	if err = binary.Write(&buffer, binary.BigEndian, uint64(len(i.extents))); err != nil {
 		return
 	}
@@ -143,9 +140,6 @@ func (i *Inode) Marshal() (buf []byte, err error) {
 	i.mutex.RUnlock()
 	for _, ext := range extents {
 		if err = binary.Write(&buffer, binary.BigEndian, ext.typ); err != nil {
-			return
-		}
-		if err = binary.Write(&buffer, binary.BigEndian, ext.oid); err != nil {
 			return
 		}
 		if err = binary.Write(&buffer, binary.BigEndian, ext.offset); err != nil {
@@ -239,10 +233,6 @@ func (i *Inode) UnMarshal(cache *bytes.Buffer, inode *Inode) (n int, err error) 
 		return
 	}
 	n += int(unsafe.Sizeof(inode.idxs))
-	if err = binary.Read(cache, binary.BigEndian, &inode.objectId); err != nil {
-		return
-	}
-	n += int(unsafe.Sizeof(inode.objectId))
 	if err = binary.Read(cache, binary.BigEndian, &extentLen); err != nil {
 		return
 	}
@@ -253,10 +243,6 @@ func (i *Inode) UnMarshal(cache *bytes.Buffer, inode *Inode) (n int, err error) 
 			return
 		}
 		n += int(unsafe.Sizeof(inode.extents[i].typ))
-		if err = binary.Read(cache, binary.BigEndian, &inode.extents[i].oid); err != nil {
-			return
-		}
-		n += int(unsafe.Sizeof(inode.extents[i].oid))
 		if err = binary.Read(cache, binary.BigEndian, &inode.extents[i].offset); err != nil {
 			return
 		}

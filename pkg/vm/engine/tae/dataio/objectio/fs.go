@@ -188,13 +188,13 @@ func (o *ObjectFS) Append(file *ObjectFile, data []byte) (n int, err error) {
 	return int(allocated), err
 }
 
-func (o *ObjectFS) Read(extent Extent, data []byte) (n int, err error) {
+func (o *ObjectFS) Read(inode *Inode, data []byte) (n int, err error) {
 	bufLen := len(data)
 	if bufLen == 0 {
 		return 0, nil
 	}
-	dataObject := o.GetDataWithId(extent.oid)
-	return dataObject.oFile.ReadAt(data, int64(extent.offset))
+	dataObject := o.GetDataWithId(inode.parent)
+	return dataObject.oFile.ReadAt(data, int64(inode.extents[0].offset))
 }
 
 func (o *ObjectFS) Sync(file *ObjectFile) error {

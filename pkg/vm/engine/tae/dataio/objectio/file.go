@@ -33,6 +33,7 @@ func openObjectFile(fs *ObjectFS, dir *ObjectDir, name string) *ObjectFile {
 		typ:    FILE,
 		name:   name,
 		create: fs.seq,
+		parent: dir.inode.name,
 	}
 	file := &ObjectFile{}
 	file.fs = fs
@@ -90,7 +91,7 @@ func (b *ObjectFile) GetExtents() *[]Extent {
 }
 
 func (b *ObjectFile) Read(data []byte) (n int, err error) {
-	return b.fs.Read(b.inode.extents[0], data)
+	return b.fs.Read(b.inode, data)
 }
 
 func (b *ObjectFile) Destroy() {
