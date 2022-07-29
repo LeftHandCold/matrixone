@@ -28,7 +28,7 @@ type entry struct {
 
 type Extent struct {
 	typ    ExtentType
-	oid    uint64
+	oid    string
 	offset uint32
 	length uint32
 	data   entry

@@ -19,7 +19,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/tfs"
 	"github.com/pierrec/lz4"
-	"io/ioutil"
 	"os"
 	gsort "sort"
 	"strings"
@@ -30,7 +29,7 @@ type ObjectFS struct {
 	sync.RWMutex
 	common.RefHelper
 	nodes     map[string]tfs.File
-	data      []*Object
+	data      map[string]*Object
 	driver    *MetaDriver
 	attr      *Attr
 	lastId    uint64
@@ -49,6 +48,7 @@ func NewObjectFS() tfs.FS {
 			algo: compress.Lz4,
 		},
 		nodes: make(map[string]tfs.File),
+		data:  make(map[string]*Object),
 	}
 	fs.driver = newMetaDriver(fs)
 	fs.lastId = 1
@@ -136,31 +136,26 @@ func (o *ObjectFS) MountInfo() *tfs.MountInfo {
 	return nil
 }
 
-func (o *ObjectFS) GetData(size uint64) (object *Object, err error) {
+func (o *ObjectFS) GetData(size uint64, file *ObjectFile) (object *Object, err error) {
 	o.RWMutex.Lock()
 	defer o.RWMutex.Unlock()
-	if len(o.data) == 0 ||
-		o.data[len(o.data)-1].GetSize()+size >= ObjectSize {
-		object, err = OpenObject(o.lastId, DataType, o.attr.dir)
+	objectName := file.parent.inode.name
+	object = o.data[objectName]
+	if object == nil {
+		object, err = OpenObject(objectName, DataType, o.attr.dir)
 		object.Mount(ObjectSize, PageSize)
-		o.data = append(o.data, object)
-		o.lastId++
+		o.data[objectName] = object
 		return
 	}
-	return o.data[len(o.data)-1], nil
+	return
 }
 
-func (o *ObjectFS) GetDataWithId(id uint64) *Object {
-	for _, object := range o.data {
-		if object.id == id {
-			return object
-		}
-	}
-	return nil
+func (o *ObjectFS) GetDataWithId(id string) *Object {
+	return o.data[id]
 }
 
 func (o *ObjectFS) Append(file *ObjectFile, data []byte) (n int, err error) {
-	dataObject, err := o.GetData(uint64(len(data)))
+	dataObject, err := o.GetData(uint64(len(data)), file)
 	if err != nil {
 		return
 	}
@@ -179,14 +174,14 @@ func (o *ObjectFS) Append(file *ObjectFile, data []byte) (n int, err error) {
 	file.inode.mutex.Lock()
 	file.inode.extents = append(file.inode.extents, Extent{
 		typ:    APPEND,
-		oid:    dataObject.id,
+		oid:    dataObject.name,
 		offset: uint32(offset),
 		length: uint32(allocated),
 		data:   entry{offset: 0, length: uint32(len(buf))},
 	})
 	file.inode.size += uint64(len(buf))
 	file.inode.dataSize += uint64(len(data))
-	file.inode.objectId = dataObject.id
+	file.inode.objectId = dataObject.name
 	file.inode.seq++
 	file.inode.mutex.Unlock()
 	err = o.driver.Append(file)
@@ -219,18 +214,22 @@ func (o *ObjectFS) Delete(file tfs.File) error {
 }
 
 func (o *ObjectFS) RebuildObject() error {
-	files, err := ioutil.ReadDir(o.attr.dir)
+	files, err := os.ReadDir(o.attr.dir)
 	if err != nil {
 		return err
 	}
-	for _, file := range files {
+	for _, info := range files {
+		file, err := info.Info()
+		if err != nil {
+			return err
+		}
 		id, oType, err := decodeName(file.Name())
 		if err != nil {
 			return err
 		}
-		if id > o.lastId {
+		/*if id > o.lastId {
 			o.lastId = id
-		}
+		}*/
 		if oType == DataType {
 			object, err := OpenObject(id, DataType, o.attr.dir)
 			if err != nil {
@@ -238,7 +237,7 @@ func (o *ObjectFS) RebuildObject() error {
 			}
 			object.Mount(ObjectSize, PageSize)
 			object.allocator.available = p2roundup(uint64(file.Size()), PageSize)
-			o.data = append(o.data, object)
+			o.data[object.name] = object
 		} else if oType == NodeType {
 			object, err := OpenObject(id, NodeType, o.attr.dir)
 			if err != nil {
@@ -257,9 +256,9 @@ func (o *ObjectFS) RebuildObject() error {
 			o.driver.blk = append(o.driver.blk, object)
 		}
 	}
-	Sort(o.data)
-	Sort(o.driver.inode)
-	Sort(o.driver.blk)
+	//Sort(o.data)
+	//Sort(o.driver.inode)
+	//Sort(o.driver.blk)
 	return nil
 }
 
@@ -267,7 +266,7 @@ type ObjectList []*Object
 
 func (s ObjectList) Len() int           { return len(s) }
 func (s ObjectList) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
-func (s ObjectList) Less(i, j int) bool { return s[i].id < s[j].id }
+func (s ObjectList) Less(i, j int) bool { return s[i].name < s[j].name }
 
 func Sort(data []*Object) {
 	gsort.Sort(ObjectList(data))

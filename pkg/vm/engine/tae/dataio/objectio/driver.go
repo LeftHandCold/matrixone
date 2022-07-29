@@ -2,6 +2,7 @@ package objectio
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/tfs"
 	"io"
 	"os"
@@ -47,7 +48,7 @@ func (m *MetaDriver) Append(file *ObjectFile) (err error) {
 		return err
 	}
 	file.parent.inode.mutex.Lock()
-	file.parent.inode.objectId = page.object.id
+	file.parent.inode.objectId = page.object.name
 	file.parent.extent = page.extent
 	file.parent.inode.mutex.Unlock()
 	_, err = page.object.Append(buf, int64(page.extent.offset))
@@ -56,13 +57,13 @@ func (m *MetaDriver) Append(file *ObjectFile) (err error) {
 
 func (m *MetaDriver) Read(extent Extent, data []byte) (n int, err error) {
 	for _, object := range m.blk {
-		if object.id == extent.oid {
+		if object.name == extent.oid {
 			return object.oFile.ReadAt(data, int64(extent.offset))
 		}
 	}
 
 	for _, object := range m.inode {
-		if object.id == extent.oid {
+		if object.name == extent.oid {
 			return object.oFile.ReadAt(data, int64(extent.offset))
 		}
 	}
@@ -82,7 +83,7 @@ func (m *MetaDriver) GetPage(size uint64, typ ObjectType) (page *MetaPage, err e
 	}
 	if len(*objects) == 0 ||
 		(*objects)[len(*objects)-1].GetSize()+size >= ObjectSize {
-		object, err = OpenObject(m.fs.lastId, typ, m.fs.attr.dir)
+		object, err = OpenObject(fmt.Sprintf("%d", m.fs.lastId), typ, m.fs.attr.dir)
 		if err != nil {
 			return
 		}
@@ -97,7 +98,7 @@ func (m *MetaDriver) GetPage(size uint64, typ ObjectType) (page *MetaPage, err e
 	page.object = object
 	page.extent = Extent{
 		typ:    APPEND,
-		oid:    object.id,
+		oid:    object.name,
 		offset: uint32(offset),
 		length: uint32(length),
 		data:   entry{offset: 0, length: uint32(size)},

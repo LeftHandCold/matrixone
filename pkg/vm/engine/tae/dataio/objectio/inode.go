@@ -52,7 +52,7 @@ type Inode struct {
 	typ      InodeType
 	state    StateType
 	create   uint64
-	objectId uint64
+	objectId string
 	seq      uint64
 }
 

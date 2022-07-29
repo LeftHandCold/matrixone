@@ -17,7 +17,6 @@ package objectio
 import (
 	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/file"
-	"strconv"
 	"strings"
 
 	"os"
@@ -51,19 +50,19 @@ const (
 )
 
 type Object struct {
-	id        uint64
+	name      string
 	oFile     *os.File
 	allocator *ObjectAllocator
 	oType     ObjectType
 	// mutex     sync.Mutex // unused
 }
 
-func OpenObject(id uint64, oType ObjectType, dir string) (object *Object, err error) {
+func OpenObject(name string, oType ObjectType, dir string) (object *Object, err error) {
 	object = &Object{
-		id:    id,
+		name:  name,
 		oType: oType,
 	}
-	path := path.Join(dir, encodeName(id, oType))
+	path := path.Join(dir, encodeName(name, oType))
 	if _, err = os.Stat(path); os.IsNotExist(err) {
 		object.oFile, err = os.Create(path)
 		return
@@ -96,27 +95,24 @@ func (o *Object) GetSize() uint64 {
 	return o.allocator.GetAvailable()
 }
 
-func encodeName(id uint64, oType ObjectType) string {
+func encodeName(name string, oType ObjectType) string {
 	if oType == NodeType {
-		return fmt.Sprintf("%d.%s", id, INODE)
+		return fmt.Sprintf("%s.%s", name, INODE)
 	} else if oType == MetadataSegType {
-		return fmt.Sprintf("%d.%s", id, SEG)
+		return fmt.Sprintf("%s.%s", name, SEG)
 	} else if oType == MetadataBlkType {
-		return fmt.Sprintf("%d.%s", id, BLK)
+		return fmt.Sprintf("%s.%s", name, BLK)
 	}
-	return fmt.Sprintf("%d.%s", id, DATA)
+	return fmt.Sprintf("%s.%s", name, DATA)
 }
 
-func decodeName(name string) (id uint64, oType ObjectType, err error) {
+func decodeName(name string) (id string, oType ObjectType, err error) {
 	oName := strings.Split(name, ".")
 	if len(oName) != 2 {
 		err = fmt.Errorf("%w: %s", file.ErrInvalidName, name)
 		return
 	}
-	id, err = strconv.ParseUint(oName[0], 10, 64)
-	if err != nil {
-		err = fmt.Errorf("%w: %s", file.ErrInvalidName, name)
-	}
+	id = oName[0]
 	if oName[1] == DATA {
 		oType = DataType
 	} else if oName[1] == INODE {
