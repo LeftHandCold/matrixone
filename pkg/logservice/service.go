@@ -67,13 +67,19 @@ type Service struct {
 }
 
 func NewService(cfg Config) (*Service, error) {
+	cfg.Fill()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	cfg.Fill()
 	store, err := newLogStore(cfg)
 	if err != nil {
 		plog.Errorf("failed to create log store %v", err)
+		return nil, err
+	}
+	if err := store.loadMetadata(); err != nil {
+		return nil, err
+	}
+	if err := store.startReplicas(); err != nil {
 		return nil, err
 	}
 	pool := &sync.Pool{}
@@ -90,7 +96,7 @@ func NewService(cfg Config) (*Service, error) {
 	// TODO: check and fix all these magic numbers
 	codec := morpc.NewMessageCodec(mf, 16*1024)
 	server, err := morpc.NewRPCServer(LogServiceRPCName, cfg.ServiceListenAddress, codec,
-		morpc.WithServerGoettyOptions(goetty.WithReleaseMsgFunc(func(i interface{}) {
+		morpc.WithServerGoettyOptions(goetty.WithSessionReleaseMsgFunc(func(i interface{}) {
 			respPool.Put(i)
 		})))
 	if err != nil {
@@ -123,6 +129,10 @@ func NewService(cfg Config) (*Service, error) {
 		}
 	}
 	return service, nil
+}
+
+func (s *Service) Start() error {
+	return nil
 }
 
 func (s *Service) Close() (err error) {
@@ -304,11 +314,7 @@ func (s *Service) handleLogHeartbeat(req pb.Request) pb.Response {
 	defer cancel()
 	hb := req.LogHeartbeat
 	resp := getResponse(req)
-	if err := s.store.addLogStoreHeartbeat(ctx, hb); err != nil {
-		resp.ErrorCode, resp.ErrorMessage = toErrorCode(err)
-		return resp
-	}
-	if cb, err := s.store.getCommandBatch(ctx, hb.UUID); err != nil {
+	if cb, err := s.store.addLogStoreHeartbeat(ctx, hb); err != nil {
 		resp.ErrorCode, resp.ErrorMessage = toErrorCode(err)
 		return resp
 	} else {
@@ -336,11 +342,7 @@ func (s *Service) handleDNHeartbeat(req pb.Request) pb.Response {
 	defer cancel()
 	hb := req.DNHeartbeat
 	resp := getResponse(req)
-	if err := s.store.addDNStoreHeartbeat(ctx, hb); err != nil {
-		resp.ErrorCode, resp.ErrorMessage = toErrorCode(err)
-		return resp
-	}
-	if cb, err := s.store.getCommandBatch(ctx, hb.UUID); err != nil {
+	if cb, err := s.store.addDNStoreHeartbeat(ctx, hb); err != nil {
 		resp.ErrorCode, resp.ErrorMessage = toErrorCode(err)
 		return resp
 	} else {

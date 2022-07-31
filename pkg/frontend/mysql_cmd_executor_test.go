@@ -15,7 +15,9 @@
 package frontend
 
 import (
+	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/config"
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
@@ -38,12 +40,20 @@ import (
 )
 
 func Test_mce(t *testing.T) {
+	ctx := context.TODO()
 	convey.Convey("boot mce succ", t, func() {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		eng := mock_frontend.NewMockEngine(ctrl)
-		eng.EXPECT().Database(gomock.Any(), nil).Return(nil, nil).AnyTimes()
+		eng := mock_frontend.NewMockTxnEngine(ctrl)
+		eng.EXPECT().Database(ctx, gomock.Any(), nil).Return(nil, nil).AnyTimes()
+
+		txn := mock_frontend.NewMockTxn(ctrl)
+		txn.EXPECT().GetCtx().Return(nil).AnyTimes()
+		txn.EXPECT().Commit().Return(nil).AnyTimes()
+		txn.EXPECT().Rollback().Return(nil).AnyTimes()
+		txn.EXPECT().String().Return("txn0").AnyTimes()
+		eng.EXPECT().StartTxn(nil).Return(txn, nil).AnyTimes()
 
 		ioses := mock_frontend.NewMockIOSession(ctrl)
 		ioses.EXPECT().OutBuf().Return(buf.NewByteBuf(1024)).AnyTimes()
@@ -176,6 +186,11 @@ func Test_mce(t *testing.T) {
 		var gSys GlobalSystemVariables
 		InitGlobalSystemVariables(&gSys)
 
+		config.StorageEngine = eng
+		defer func() {
+			config.StorageEngine = nil
+		}()
+
 		ses := NewSession(proto, guestMmu, pu.Mempool, pu, &gSys)
 
 		mce := NewMysqlCmdExecutor()
@@ -240,15 +255,16 @@ func Test_mce(t *testing.T) {
 }
 
 func Test_mce_selfhandle(t *testing.T) {
+	ctx := context.TODO()
 	convey.Convey("handleChangeDB", t, func() {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		eng := mock_frontend.NewMockEngine(ctrl)
+		eng := mock_frontend.NewMockTxnEngine(ctrl)
 
 		cnt := 0
-		eng.EXPECT().Database(gomock.Any(), nil).DoAndReturn(
-			func(db string, dump interface{}) (engine.Database, error) {
+		eng.EXPECT().Database(ctx, gomock.Any(), gomock.Any()).DoAndReturn(
+			func(ctx2 context.Context, db string, dump interface{}) (engine.Database, error) {
 				cnt++
 				if cnt == 1 {
 					return nil, nil
@@ -256,6 +272,13 @@ func Test_mce_selfhandle(t *testing.T) {
 				return nil, fmt.Errorf("fake error")
 			},
 		).AnyTimes()
+
+		txn := mock_frontend.NewMockTxn(ctrl)
+		txn.EXPECT().GetCtx().Return(nil).AnyTimes()
+		txn.EXPECT().Commit().Return(nil).AnyTimes()
+		txn.EXPECT().Rollback().Return(nil).AnyTimes()
+		txn.EXPECT().String().Return("txn0").AnyTimes()
+		eng.EXPECT().StartTxn(nil).Return(txn, nil).AnyTimes()
 
 		ioses := mock_frontend.NewMockIOSession(ctrl)
 		ioses.EXPECT().WriteAndFlush(gomock.Any()).Return(nil).AnyTimes()
@@ -271,6 +294,11 @@ func Test_mce_selfhandle(t *testing.T) {
 
 		var gSys GlobalSystemVariables
 		InitGlobalSystemVariables(&gSys)
+
+		config.StorageEngine = eng
+		defer func() {
+			config.StorageEngine = nil
+		}()
 
 		ses := NewSession(proto, guestMmu, pu.Mempool, pu, &gSys)
 
@@ -290,7 +318,7 @@ func Test_mce_selfhandle(t *testing.T) {
 
 		eng := mock_frontend.NewMockEngine(ctrl)
 
-		eng.EXPECT().Database(gomock.Any(), nil).Return(nil, nil).AnyTimes()
+		eng.EXPECT().Database(ctx, gomock.Any(), nil).Return(nil, nil).AnyTimes()
 
 		ioses := mock_frontend.NewMockIOSession(ctrl)
 		ioses.EXPECT().OutBuf().Return(buf.NewByteBuf(1024)).AnyTimes()
@@ -329,7 +357,12 @@ func Test_mce_selfhandle(t *testing.T) {
 		convey.So(err, convey.ShouldBeNil)
 
 		ses.Mrs = &MysqlResultSet{}
-		err = mce.handleCmdFieldList("A")
+		queryData := []byte("A")
+		queryData = append(queryData, 0)
+		query := string(queryData)
+		cflStmt, err := parseCmdFieldList(makeCmdFieldListSql(query))
+		convey.So(err, convey.ShouldBeNil)
+		err = mce.handleCmdFieldList(cflStmt)
 		convey.So(err, convey.ShouldBeError)
 
 		ses.Mrs = &MysqlResultSet{}
@@ -340,11 +373,11 @@ func Test_mce_selfhandle(t *testing.T) {
 			typ:  types.Type{Oid: types.T_varchar},
 		}}
 
-		err = mce.handleCmdFieldList("A")
+		err = mce.handleCmdFieldList(cflStmt)
 		convey.So(err, convey.ShouldBeNil)
 
 		mce.db = ses.protocol.GetDatabaseName()
-		err = mce.handleCmdFieldList("A")
+		err = mce.handleCmdFieldList(cflStmt)
 		convey.So(err, convey.ShouldBeNil)
 
 		set := "set @@tx_isolation=`READ-COMMITTED`"
@@ -366,13 +399,14 @@ func Test_mce_selfhandle(t *testing.T) {
 }
 
 func Test_getDataFromPipeline(t *testing.T) {
+	ctx := context.TODO()
 	convey.Convey("getDataFromPipeline", t, func() {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
 		eng := mock_frontend.NewMockEngine(ctrl)
 
-		eng.EXPECT().Database(gomock.Any(), nil).Return(nil, nil).AnyTimes()
+		eng.EXPECT().Database(ctx, gomock.Any(), nil).Return(nil, nil).AnyTimes()
 
 		ioses := mock_frontend.NewMockIOSession(ctrl)
 		ioses.EXPECT().OutBuf().Return(buf.NewByteBuf(1024)).AnyTimes()
@@ -626,12 +660,13 @@ func Test_mysqlerror(t *testing.T) {
 }
 
 func Test_handleSelectVariables(t *testing.T) {
+	ctx := context.TODO()
 	convey.Convey("handleSelectVariables succ", t, func() {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
 		eng := mock_frontend.NewMockEngine(ctrl)
-		eng.EXPECT().Database(gomock.Any(), nil).Return(nil, nil).AnyTimes()
+		eng.EXPECT().Database(ctx, gomock.Any(), nil).Return(nil, nil).AnyTimes()
 
 		ioses := mock_frontend.NewMockIOSession(ctrl)
 		ioses.EXPECT().OutBuf().Return(buf.NewByteBuf(1024)).AnyTimes()
@@ -663,12 +698,13 @@ func Test_handleSelectVariables(t *testing.T) {
 }
 
 func Test_handleShowVariables(t *testing.T) {
+	ctx := context.TODO()
 	convey.Convey("handleShowVariables succ", t, func() {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
 		eng := mock_frontend.NewMockEngine(ctrl)
-		eng.EXPECT().Database(gomock.Any(), nil).Return(nil, nil).AnyTimes()
+		eng.EXPECT().Database(ctx, gomock.Any(), nil).Return(nil, nil).AnyTimes()
 
 		ioses := mock_frontend.NewMockIOSession(ctrl)
 		ioses.EXPECT().OutBuf().Return(buf.NewByteBuf(1024)).AnyTimes()
@@ -812,12 +848,13 @@ func Test_handleShowColumns(t *testing.T) {
 }
 
 func runTestHandle(funName string, t *testing.T, handleFun func(*MysqlCmdExecutor) error) {
+	ctx := context.TODO()
 	convey.Convey(fmt.Sprintf("%s succ", funName), t, func() {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
 		eng := mock_frontend.NewMockEngine(ctrl)
-		eng.EXPECT().Database(gomock.Any(), nil).Return(nil, nil).AnyTimes()
+		eng.EXPECT().Database(ctx, gomock.Any(), nil).Return(nil, nil).AnyTimes()
 
 		ioses := mock_frontend.NewMockIOSession(ctrl)
 		ioses.EXPECT().OutBuf().Return(buf.NewByteBuf(1024)).AnyTimes()
@@ -870,5 +907,20 @@ func Test_HandleDeallocate(t *testing.T) {
 	runTestHandle("handleDeallocate", t, func(mce *MysqlCmdExecutor) error {
 		stmt := stmt.(*tree.Deallocate)
 		return mce.handleDeallocate(stmt)
+	})
+}
+
+func Test_CMD_FIELD_LIST(t *testing.T) {
+	convey.Convey("cmd field list", t, func() {
+		queryData := []byte("XYZ")
+		queryData = append(queryData, 0)
+		query := string(queryData)
+		cmdFieldListQuery := makeCmdFieldListSql(query)
+		convey.So(isCmdFieldListSql(cmdFieldListQuery), convey.ShouldBeTrue)
+		stmt, err := parseCmdFieldList(cmdFieldListQuery)
+		convey.So(err, convey.ShouldBeNil)
+		convey.So(stmt, convey.ShouldNotBeNil)
+		s := stmt.String()
+		convey.So(isCmdFieldListSql(s), convey.ShouldBeTrue)
 	})
 }

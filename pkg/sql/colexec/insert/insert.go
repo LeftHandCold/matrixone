@@ -16,6 +16,7 @@ package insert
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
@@ -75,7 +76,7 @@ func Call(_ int, proc *process.Process, arg interface{}) (bool, error) {
 					bat.Vecs[i].Typ.Oid = types.T(n.TargetColDefs[i].Typ.GetId())
 				}
 				switch bat.Vecs[i].Typ.Oid {
-				case types.T_char, types.T_varchar:
+				case types.T_char, types.T_varchar, types.T_blob:
 					bat.Vecs[i].Col = &types.Bytes{
 						Data:    nil,
 						Offsets: make([]uint32, len(bat.Zs)),
@@ -89,7 +90,8 @@ func Call(_ int, proc *process.Process, arg interface{}) (bool, error) {
 			bat.Vecs[i] = bat.Vecs[i].ConstExpand(proc.Mp)
 		}
 	}
-	err := n.TargetTable.Write(n.Ts, bat, proc.Snapshot)
+	ctx := context.TODO()
+	err := n.TargetTable.Write(ctx, bat)
 	n.Affected += uint64(len(bat.Zs))
 	return false, err
 }

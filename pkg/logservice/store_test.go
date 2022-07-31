@@ -55,6 +55,7 @@ func TestRaftConfig(t *testing.T) {
 
 func getStoreTestConfig() Config {
 	cfg := Config{
+		UUID:                uuid.New().String(),
 		RTTMillisecond:      10,
 		GossipSeedAddresses: []string{"127.0.0.1:9000"},
 		DeploymentID:        1,
@@ -361,7 +362,8 @@ func TestAddHeartbeat(t *testing.T) {
 		m := store.getHeartbeatMessage()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		assert.NoError(t, store.addLogStoreHeartbeat(ctx, m))
+		_, err := store.addLogStoreHeartbeat(ctx, m)
+		assert.NoError(t, err)
 
 		cnMsg := pb.CNStoreHeartbeat{
 			UUID: store.id(),
@@ -373,7 +375,8 @@ func TestAddHeartbeat(t *testing.T) {
 			Shards: make([]pb.DNShardInfo, 0),
 		}
 		dnMsg.Shards = append(dnMsg.Shards, pb.DNShardInfo{ShardID: 2, ReplicaID: 3})
-		assert.NoError(t, store.addDNStoreHeartbeat(ctx, dnMsg))
+		_, err = store.addDNStoreHeartbeat(ctx, dnMsg)
+		assert.NoError(t, err)
 	}
 	runStoreTest(t, fn)
 }

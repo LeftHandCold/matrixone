@@ -66,6 +66,9 @@ const (
 	// system family
 	T_sel   T = T(plan.Type_SEL)   //selection
 	T_tuple T = T(plan.Type_TUPLE) // immutable, size = 24
+
+	// blob family
+	T_blob T = T(plan.Type_BLOB)
 )
 
 type Type struct {
@@ -152,6 +155,7 @@ var Types map[string]T = map[string]T{
 	"varchar": T_varchar,
 
 	"json": T_json,
+	"text": T_blob,
 }
 
 func New(oid T, width, scale, precision int32) Type {
@@ -177,7 +181,16 @@ func (t Type) IsBoolean() bool {
 }
 
 func (t Type) IsString() bool {
-	return t.Oid == T_char || t.Oid == T_varchar
+	return t.Oid == T_char || t.Oid == T_varchar || t.Oid == T_blob
+}
+
+func (t Type) IsIntOrUint() bool {
+	switch t.Oid {
+	case T_uint8, T_uint16, T_uint32, T_uint64, T_int8, T_int16, T_int32, T_int64:
+		return true
+	default:
+		return false
+	}
 }
 
 func (t Type) String() string {
@@ -225,6 +238,8 @@ func (t T) ToType() Type {
 		typ.Size = 8
 	case T_decimal128:
 		typ.Size = 16
+	case T_blob:
+		typ.Size = 24
 	}
 	return typ
 }
@@ -275,6 +290,8 @@ func (t T) String() string {
 		return "DECIMAL64"
 	case T_decimal128:
 		return "DECIMAL128"
+	case T_blob:
+		return "TEXT"
 	}
 	return fmt.Sprintf("unexpected type: %d", t)
 }
@@ -322,6 +339,8 @@ func (t T) OidString() string {
 		return "T_decimal64"
 	case T_decimal128:
 		return "T_decimal128"
+	case T_blob:
+		return "T_blob"
 	}
 	return "unknown_type"
 }
@@ -367,13 +386,15 @@ func (t T) GoType() string {
 		return "decimal64"
 	case T_decimal128:
 		return "decimal128"
+	case T_blob:
+		return "string"
 	}
 	return "unknown type"
 }
 
 // GoGoType returns special go type string for T
 func (t T) GoGoType() string {
-	if t == T_char || t == T_varchar {
+	if t == T_char || t == T_varchar || t == T_blob {
 		return "Str"
 	}
 	k := t.GoType()
@@ -413,6 +434,8 @@ func (t T) TypeLen() int {
 		return 8
 	case T_decimal128:
 		return 16
+	case T_blob:
+		return 24
 	}
 	panic(moerr.NewInternalError("Unknow type %s", t))
 }
@@ -438,6 +461,8 @@ func (t T) FixedLength() int {
 		return -24
 	case T_sel:
 		return 8
+	case T_blob:
+		return -24
 	}
 	panic(moerr.NewInternalError("Unknow type %s", t))
 }

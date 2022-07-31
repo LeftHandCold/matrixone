@@ -26,8 +26,8 @@ var (
 		input  string
 		output string
 	}{
-		input:  "with t11 as (select * from t1) update t11 join t2 on t11.a = t2.b set t11.b = 1 where t2.a > 1",
-		output: "with t11 as (select * from t1) update t11 inner join t2 on t11.a = t2.b set t11.b = 1 where t2.a > 1",
+		input:  "DELETE a1, a2 FROM t1 AS a1 INNER JOIN t2 AS a2 WHERE a1.a = a2.b;",
+		output: "delete from a1, a2 using t1 as a1 inner join t2 as a2 where a1.a = a2.b",
 	}
 )
 
@@ -94,13 +94,13 @@ var (
 		input: "select cast(false as varchar)",
 	}, {
 		input:  "select cast(a as timestamp)",
-		output: "select cast(a as timestamp(26, 6))",
+		output: "select cast(a as timestamp(26))",
 	}, {
 		input:  "select cast(\"2022-01-30\" as varchar);",
 		output: "select cast(2022-01-30 as varchar)",
 	}, {
 		input:  "select cast(b as timestamp) from t2",
-		output: "select cast(b as timestamp(26, 6)) from t2",
+		output: "select cast(b as timestamp(26)) from t2",
 	}, {
 		input:  "select cast(\"2022-01-01 01:23:34\" as varchar)",
 		output: "select cast(2022-01-01 01:23:34 as varchar)",
@@ -173,7 +173,7 @@ var (
 		output: "set a = b",
 	}, {
 		input:  "CREATE TABLE t1 (datetime datetime, timestamp timestamp, date date)",
-		output: "create table t1 (datetime datetime(26, 6), timestamp timestamp(26, 6), date date)",
+		output: "create table t1 (datetime datetime(26), timestamp timestamp(26), date date)",
 	}, {
 		input:  "SET timestamp=DEFAULT;",
 		output: "set timestamp = default",
@@ -195,6 +195,15 @@ var (
 	}, {
 		input:  "SELECT * FROM t1 WHERE a = ANY ( SELECT 1 UNION ( SELECT 1 UNION SELECT 1 ) );",
 		output: "select * from t1 where a = any (select 1 union (select 1 union select 1))",
+	}, {
+		input:  "SELECT * FROM t1 WHERE a = ANY ( SELECT 1 except ( SELECT 1 except SELECT 1 ) );",
+		output: "select * from t1 where a = any (select 1 except (select 1 except select 1))",
+	}, {
+		input:  "SELECT * FROM t1 WHERE a = ANY ( SELECT 1 intersect ( SELECT 1 intersect SELECT 1 ) );",
+		output: "select * from t1 where a = any (select 1 intersect (select 1 intersect select 1))",
+	}, {
+		input:  "SELECT * FROM t1 WHERE a = ANY ( SELECT 1 minus ( SELECT 1 minus SELECT 1 ) );",
+		output: "select * from t1 where a = any (select 1 minus (select 1 minus select 1))",
 	}, {
 		input:  "SELECT * FROM t1 WHERE (a,b) = ANY (SELECT a, max(b) FROM t1 GROUP BY a);",
 		output: "select * from t1 where (a, b) = any (select a, max(b) from t1 group by a)",
@@ -760,6 +769,12 @@ var (
 	}, {
 		input: "explain select a from a union select b from b",
 	}, {
+		input: "explain select a from a intersect select b from b",
+	}, {
+		input: "explain select a from a except select b from b",
+	}, {
+		input: "explain select a from a minus select b from b",
+	}, {
 		input: "explain select a from a",
 	}, {
 		input:  "explain (format text) select a from A",
@@ -950,6 +965,20 @@ var (
 		input: "select * from t union all select c from t1",
 	}, {
 		input: "select * from t union distinct select c from t1",
+	}, {
+		input: "select * from t except select c from t1",
+	}, {
+		input: "select * from t except all select c from t1",
+	}, {
+		input: "select * from t except distinct select c from t1",
+	}, {
+		input: "select * from t intersect select c from t1",
+	}, {
+		input: "select * from t intersect all select c from t1",
+	}, {
+		input: "select * from t intersect distinct select c from t1",
+	}, {
+		input: "select * from t minus select c from t1",
 	}, {
 		input: "select * from (select a from t) as t1",
 	}, {

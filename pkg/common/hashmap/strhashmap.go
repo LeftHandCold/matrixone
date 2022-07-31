@@ -28,25 +28,31 @@ func init() {
 	for i := range OneInt64s {
 		OneInt64s[i] = 1
 	}
+	OneUInt8s = make([]uint8, UnitLimit)
+	for i := range OneUInt8s {
+		OneUInt8s[i] = 1
+	}
 }
 
 func NewStrMap(hasNull bool) *StrHashMap {
 	mp := &hashtable.StringHashMap{}
 	mp.Init()
 	return &StrHashMap{
-		hashMap:         mp,
-		hasNull:         hasNull,
-		values:          make([]uint64, UnitLimit),
-		zValues:         make([]int64, UnitLimit),
-		keys:            make([][]byte, UnitLimit),
-		strHashStates:   make([][3]uint64, UnitLimit),
-		decimal64Slice:  make([]types.Decimal64, UnitLimit),
-		decimal128Slice: make([]types.Decimal128, UnitLimit),
+		hashMap:       mp,
+		hasNull:       hasNull,
+		values:        make([]uint64, UnitLimit),
+		zValues:       make([]int64, UnitLimit),
+		keys:          make([][]byte, UnitLimit),
+		strHashStates: make([][3]uint64, UnitLimit),
 	}
 }
 
-func (m *StrHashMap) NewIterator() Iterator {
-	return &strHashmapIterator{mp: m}
+func (m *StrHashMap) NewIterator(ibucket, nbucket uint64) Iterator {
+	return &strHashmapIterator{
+		mp:      m,
+		ibucket: ibucket,
+		nbucket: nbucket,
+	}
 }
 
 func (m *StrHashMap) GroupCount() uint64 {
@@ -55,6 +61,14 @@ func (m *StrHashMap) GroupCount() uint64 {
 
 func (m *StrHashMap) AddGroup() {
 	m.rows++
+}
+
+func (m *StrHashMap) AddGroups(rows uint64) {
+	m.rows += rows
+}
+
+func (m *StrHashMap) Cardinality() uint64 {
+	return m.hashMap.Cardinality()
 }
 
 // InsertValue insert a value, return true if it is new, otherwise false
@@ -87,6 +101,12 @@ func (m *StrHashMap) InsertValue(val any) bool {
 		m.keys[0] = append(m.keys[0], encoding.EncodeFixed(v)...)
 	case []byte:
 		m.keys[0] = append(m.keys[0], v...)
+	case types.Date:
+		m.keys[0] = append(m.keys[0], encoding.EncodeFixed(v)...)
+	case types.Datetime:
+		m.keys[0] = append(m.keys[0], encoding.EncodeFixed(v)...)
+	case types.Timestamp:
+		m.keys[0] = append(m.keys[0], encoding.EncodeFixed(v)...)
 	case types.Decimal64:
 		m.keys[0] = append(m.keys[0], encoding.EncodeFixed(v)...)
 	case types.Decimal128:
@@ -113,30 +133,6 @@ func (m *StrHashMap) Insert(vecs []*vector.Vector, row int) bool {
 		return true
 	}
 	return false
-}
-
-func (m *StrHashMap) encodeHashKeysWithScale(vecs []*vector.Vector, start, count int, scales []int32) {
-	for i, vec := range vecs {
-		switch typLen := vec.Typ.TypeSize(); typLen {
-		case 1:
-			fillGroupStr[uint8](m, vec, count, 1, start, scales[i])
-		case 2:
-			fillGroupStr[uint16](m, vec, count, 2, start, scales[i])
-		case 4:
-			fillGroupStr[uint32](m, vec, count, 4, start, scales[i])
-		case 8:
-			fillGroupStr[uint64](m, vec, count, 8, start, scales[i])
-		case 16:
-			fillGroupStr[types.Decimal128](m, vec, count, 16, start, scales[i])
-		default:
-			fillStringGroupStr(m, vec, count, start)
-		}
-	}
-	for i := 0; i < count; i++ {
-		if l := len(m.keys[i]); l < 16 {
-			m.keys[i] = append(m.keys[i], hashtable.StrKeyPadding[l:]...)
-		}
-	}
 }
 
 func (m *StrHashMap) encodeHashKeys(vecs []*vector.Vector, start, count int) {
@@ -195,23 +191,8 @@ func fillStringGroupStr(m *StrHashMap, vec *vector.Vector, n int, start int) {
 }
 
 func fillGroupStr[T any](m *StrHashMap, vec *vector.Vector, n int, sz int, start int, scale int32) {
-	var data []byte
-
-	if scale > 0 {
-		if vec.Typ.Oid == types.T_decimal64 {
-			src := vector.GetFixedVectorValues[types.Decimal64](vec, sz)
-			vs := types.AlignDecimal64UsingScaleDiffBatch(src[start:start+n], m.decimal64Slice[:n], scale)
-			data = unsafe.Slice((*byte)(unsafe.Pointer(&vs[0])), cap(vs)*sz)[:len(vs)*sz]
-		} else if vec.Typ.Oid == types.T_decimal128 {
-			src := vector.GetFixedVectorValues[types.Decimal128](vec, sz)
-			vs := m.decimal128Slice[:n]
-			types.AlignDecimal128UsingScaleDiffBatch(src[start:start+n], vs, scale)
-			data = unsafe.Slice((*byte)(unsafe.Pointer(&vs[0])), cap(vs)*sz)[:len(vs)*sz]
-		}
-	} else {
-		vs := vector.GetFixedVectorValues[T](vec, int(sz))
-		data = unsafe.Slice((*byte)(unsafe.Pointer(&vs[0])), cap(vs)*sz)[:len(vs)*sz]
-	}
+	vs := vector.GetFixedVectorValues[T](vec, int(sz))
+	data := unsafe.Slice((*byte)(unsafe.Pointer(&vs[0])), cap(vs)*sz)[:len(vs)*sz]
 	if !vec.GetNulls().Any() {
 		for i := 0; i < n; i++ {
 			if m.hasNull {
