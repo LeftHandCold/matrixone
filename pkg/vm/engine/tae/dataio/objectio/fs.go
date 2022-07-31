@@ -107,12 +107,12 @@ func (o *ObjectFS) ReadDir(dir string) ([]common.FileInfo, error) {
 	o.RWMutex.Lock()
 	defer o.RWMutex.Unlock()
 	name := strings.Split(dir, "/")
-	entry := o.nodes[name[0]]
+	entry := o.nodes[name[1]]
 	if entry == nil {
 		return nil, os.ErrNotExist
 	}
-	if len(name) > 1 {
-		entry = entry.(*ObjectDir).nodes[name[1]]
+	if len(name) > 2 {
+		entry = entry.(*ObjectDir).nodes[name[2]]
 	}
 	return entry.(*ObjectDir).LookUp()
 }

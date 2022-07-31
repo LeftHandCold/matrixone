@@ -74,7 +74,7 @@ func openSegment(name string, id uint64, fs tfs.FS) *segmentFile {
 	if seg != nil {
 		for _, block := range seg.(*ObjectDir).nodes {
 			info := strings.Split(block.Stat().Name(), "-")
-			id, err := strconv.ParseUint(info[1], 10, 32)
+			id, err := strconv.ParseUint(info[2], 10, 32)
 			if err != nil {
 				return nil
 			}
