@@ -139,7 +139,9 @@ func (bf *blockFile) Destroy() error {
 	return nil
 }
 
-func (bf *blockFile) Sync() error { return nil }
+func (bf *blockFile) Sync() error {
+	return bf.writer.Sync(bf.id)
+}
 
 func (bf *blockFile) LoadBatch(
 	colTypes []types.Type,

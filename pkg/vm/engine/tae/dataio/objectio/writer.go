@@ -169,3 +169,14 @@ func (w *Writer) WriteZonemapIndexFromSource(
 	// TODO
 	return
 }
+
+func (w *Writer) Sync(id *common.ID) (err error) {
+	name := EncodeDir(id)
+	f, err := w.fs.OpenFile(name, os.O_RDWR)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	err = f.Sync()
+	return
+}

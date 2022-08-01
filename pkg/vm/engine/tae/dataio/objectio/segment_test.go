@@ -105,6 +105,8 @@ func TestSegmentFile_Replay(t *testing.T) {
 		err = colBlk0.WriteUpdates(w.Bytes())
 		assert.Nil(t, err)
 		colBlk0.Close()
+		err = block.Sync()
+		assert.Nil(t, err)
 	}
 
 	SegmentFactory.(*segmentFactory).fs = NewObjectFS()
