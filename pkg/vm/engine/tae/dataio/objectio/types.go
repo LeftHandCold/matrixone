@@ -59,11 +59,9 @@ func DecodeName(name string) []string {
 }
 
 func EncodeDir(id *common.ID) (dir string) {
-	tableDir := fmt.Sprintf("%d", id.TableID)
 	segDir := fmt.Sprintf("%d", id.SegmentID)
-	blkDir := fmt.Sprintf("%d-%d-%d", id.TableID, id.SegmentID, id.BlockID)
+	blkDir := fmt.Sprintf("%d-%d", id.SegmentID, id.BlockID)
 	name := filepath.Join(segDir, blkDir)
-	name = filepath.Join(tableDir, name)
 	return name
 }
 
