@@ -35,6 +35,8 @@ type ObjectFS struct {
 	lastId    uint64
 	lastInode uint64
 	seq       uint64
+	uploader  *uploaderQueue
+	work      *workHandler
 }
 
 type Attr struct {
@@ -61,6 +63,9 @@ func (o *ObjectFS) SetDir(dir string) {
 }
 
 func (o *ObjectFS) Mount() {
+	o.work = NewWorkHandler(64, o)
+	o.uploader = NewUploaderQueue(20000, 1000, o.work.OnObjects)
+	o.uploader.Start()
 	o.RebuildObject()
 	o.driver.Replay()
 }

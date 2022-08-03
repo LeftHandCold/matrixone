@@ -28,7 +28,12 @@ func NewWorkHandler(num int, fs *ObjectFS) *workHandler {
 func (w *workHandler) doHandle(object *Object) {
 	closure := func(object *Object, wg *sync.WaitGroup) func() {
 		return func() {
-			w.fs.Sync(nil)
+			if object != nil {
+				logutil.Infof("Sync: %s End", object.name)
+			} else {
+				logutil.Infof("Sync: object Not Exist")
+			}
+			object.wg.Done()
 			wg.Done()
 		}
 	}

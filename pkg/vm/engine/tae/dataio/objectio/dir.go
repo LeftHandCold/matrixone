@@ -16,7 +16,6 @@ package objectio
 
 import (
 	"bytes"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/tfs"
 	"io"
@@ -72,12 +71,8 @@ func (d *ObjectDir) Write(p []byte) (n int, err error) {
 
 func (d *ObjectDir) Sync() error {
 	object := d.fs.data[d.inode.name]
-	if object != nil {
-		logutil.Infof("Sync: %s End", object.name)
-	} else {
-		logutil.Infof("Sync: %s Not Exist", d.inode.name)
-		return os.ErrNotExist
-	}
+	d.fs.uploader.Enqueue(object)
+	object.wg.Wait()
 	return nil
 }
 

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/file"
 	"strings"
+	"sync"
 
 	"os"
 	"path"
@@ -54,6 +55,7 @@ type Object struct {
 	oFile     *os.File
 	allocator *ObjectAllocator
 	oType     ObjectType
+	wg        sync.WaitGroup
 	// mutex     sync.Mutex // unused
 }
 
@@ -61,6 +63,7 @@ func OpenObject(name string, oType ObjectType, dir string) (object *Object, err 
 	object = &Object{
 		name:  name,
 		oType: oType,
+		wg:    sync.WaitGroup{},
 	}
 	path := path.Join(dir, encodeName(name, oType))
 	if _, err = os.Stat(path); os.IsNotExist(err) {
