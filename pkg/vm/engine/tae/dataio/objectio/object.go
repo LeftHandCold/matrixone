@@ -16,69 +16,56 @@ package objectio
 
 import (
 	"fmt"
-	// "github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/file"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/file"
+	"strings"
+	"sync"
+
 	"os"
 	"path"
 	// "strconv"
 	// "strings"
 )
 
-const OBJECT_SIZE = 64 * 1024 * 1024
-const PAGE_SIZE = 4096
-
 type ObjectType uint8
 
 const (
-	DATATYPE ObjectType = iota
-	METADATA
+	DataType ObjectType = iota
+	MetadataSegType
+	MetadataBlkType
+	NodeType
 )
 
 const (
-	DATA = "data"
-	META = "meta"
+	ObjectSize = 64 * 1024 * 1024
+	PageSize   = 4096
+	MetaSize   = 512
+	HoleSize   = 8 * MetaSize
+)
+
+const (
+	DATA  = "data"
+	META  = "meta"
+	SEG   = "seg"
+	BLK   = "blk"
+	INODE = "inode"
 )
 
 type Object struct {
-	id uint64
-	// mutex     sync.Mutex // unused
+	name      string
 	oFile     *os.File
 	allocator *ObjectAllocator
 	oType     ObjectType
+	wg        sync.WaitGroup
+	// mutex     sync.Mutex // unused
 }
 
-func encodeName(id uint64, oType ObjectType) string {
-	if oType == DATATYPE {
-		return fmt.Sprintf("%d.%s", id, DATA)
-	}
-	return fmt.Sprintf("%d.%s", id, META)
-}
-
-// Unused
-// func decodeName(name string) (id uint64, oType ObjectType, err error) {
-// 	oName := strings.Split(name, ".")
-// 	if len(oName) != 2 {
-// 		err = fmt.Errorf("%w: %s", file.ErrInvalidName, name)
-// 		return
-// 	}
-// 	id, err = strconv.ParseUint(oName[0], 10, 64)
-// 	if err != nil {
-// 		err = fmt.Errorf("%w: %s", file.ErrInvalidName, name)
-// 	}
-// 	if oName[1] == DATA {
-// 		oType = DATATYPE
-// 	} else {
-// 		oType = METADATA
-// 	}
-// 	return
-// }
-
-func OpenObject(id uint64, oType ObjectType, dir string) (object *Object, err error) {
+func OpenObject(name string, oType ObjectType, dir string) (object *Object, err error) {
 	object = &Object{
-		id:    id,
+		name:  name,
 		oType: oType,
+		wg:    sync.WaitGroup{},
 	}
-	object.allocator = NewObjectAllocator(OBJECT_SIZE, PAGE_SIZE)
-	path := path.Join(dir, encodeName(id, oType))
+	path := path.Join(dir, encodeName(name, oType))
 	if _, err = os.Stat(path); os.IsNotExist(err) {
 		object.oFile, err = os.Create(path)
 		return
@@ -90,9 +77,12 @@ func OpenObject(id uint64, oType ObjectType, dir string) (object *Object, err er
 	return
 }
 
-func (o *Object) Append(data []byte) (offset, allocated uint64, err error) {
-	offset, allocated = o.allocator.Allocate(uint64(len(data)))
-	_, err = o.oFile.WriteAt(data, int64(offset))
+func (o *Object) Mount(capacity uint64, pageSize uint32) {
+	o.allocator = NewObjectAllocator(capacity, pageSize)
+}
+
+func (o *Object) Append(data []byte, offset int64) (n int, err error) {
+	n, err = o.oFile.WriteAt(data, offset)
 	if err != nil {
 		return
 	}
@@ -106,4 +96,34 @@ func (o *Object) Read(offset int64, data []byte) (length int, err error) {
 
 func (o *Object) GetSize() uint64 {
 	return o.allocator.GetAvailable()
+}
+
+func encodeName(name string, oType ObjectType) string {
+	if oType == NodeType {
+		return fmt.Sprintf("%s.%s", name, INODE)
+	} else if oType == MetadataSegType {
+		return fmt.Sprintf("%s.%s", name, SEG)
+	} else if oType == MetadataBlkType {
+		return fmt.Sprintf("%s.%s", name, BLK)
+	}
+	return fmt.Sprintf("%s.%s", name, DATA)
+}
+
+func decodeName(name string) (id string, oType ObjectType, err error) {
+	oName := strings.Split(name, ".")
+	if len(oName) != 2 {
+		err = fmt.Errorf("%w: %s", file.ErrInvalidName, name)
+		return
+	}
+	id = oName[0]
+	if oName[1] == DATA {
+		oType = DataType
+	} else if oName[1] == INODE {
+		oType = NodeType
+	} else if oName[1] == SEG {
+		oType = MetadataSegType
+	} else if oName[1] == BLK {
+		oType = MetadataBlkType
+	}
+	return
 }

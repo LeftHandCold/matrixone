@@ -27,7 +27,6 @@ import (
 
 type Writer struct {
 	fs tfs.FS
-	// block blockFile // unused
 }
 
 func NewWriter(fs tfs.FS) *Writer {
@@ -168,5 +167,16 @@ func (w *Writer) WriteZonemapIndexFromSource(
 	id *common.ID,
 	source *vector.Vector) (err error) {
 	// TODO
+	return
+}
+
+func (w *Writer) Sync(id *common.ID) (err error) {
+	name := EncodeDir(id)
+	f, err := w.fs.OpenFile(name, os.O_RDWR)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	err = f.Sync()
 	return
 }

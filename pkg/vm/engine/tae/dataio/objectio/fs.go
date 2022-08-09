@@ -18,7 +18,9 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/compress"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/tfs"
+	"github.com/pierrec/lz4"
 	"os"
+	gsort "sort"
 	"strings"
 	"sync"
 )
@@ -26,12 +28,15 @@ import (
 type ObjectFS struct {
 	sync.RWMutex
 	common.RefHelper
-	dirs      map[string]tfs.File
-	data      []*Object
-	meta      []*Object
+	nodes     map[string]tfs.File
+	data      map[string]*Object
+	driver    *MetaDriver
 	attr      *Attr
 	lastId    uint64
 	lastInode uint64
+	seq       uint64
+	uploader  *uploaderQueue
+	work      *workHandler
 }
 
 type Attr struct {
@@ -42,10 +47,12 @@ type Attr struct {
 func NewObjectFS() tfs.FS {
 	fs := &ObjectFS{
 		attr: &Attr{
-			algo: compress.None,
+			algo: compress.Lz4,
 		},
-		dirs: make(map[string]tfs.File),
+		nodes: make(map[string]tfs.File),
+		data:  make(map[string]*Object),
 	}
+	fs.driver = newMetaDriver(fs)
 	fs.lastId = 1
 	fs.lastInode = 1
 	return fs
@@ -55,35 +62,71 @@ func (o *ObjectFS) SetDir(dir string) {
 	o.attr.dir = dir
 }
 
-func (o *ObjectFS) OpenFile(name string, flag int) (tfs.File, error) {
+func (o *ObjectFS) Mount() {
+	o.work = NewWorkHandler(64, o)
+	o.uploader = NewUploaderQueue(20000, 1000, o.work.OnObjects)
+	o.uploader.Start()
+	o.RebuildObject()
+	o.driver.Replay()
+}
+
+func (o *ObjectFS) OpenDir(name string, nodes *map[string]tfs.File) (*map[string]tfs.File, tfs.File, error) {
+	dir := (*nodes)[name]
+	if dir == nil {
+		o.seq++
+		dir = openObjectDir(o, name)
+		(*nodes)[name] = dir
+	}
+	return &dir.(*ObjectDir).nodes, dir, nil
+}
+
+func (o *ObjectFS) OpenFile(name string, flag int) (file tfs.File, err error) {
 	o.RWMutex.Lock()
 	defer o.RWMutex.Unlock()
 	fileName := strings.Split(name, "/")
-	dir := o.dirs[fileName[0]]
-	if dir == nil {
-		dir = openObjectDir(o, fileName[0])
-		o.dirs[fileName[0]] = dir
+	nodes := &o.nodes
+	var dir tfs.File
+	paths := len(fileName)
+	if strings.Contains(name, ".") {
+		paths--
 	}
-	if len(fileName) == 1 {
+	for i := 0; i < paths; i++ {
+		parent := fileName[i]
+		if i > 0 {
+			parent = fileName[i-1]
+		}
+		nodes, dir, err = o.OpenDir(fileName[i], nodes)
+		dir.(*ObjectDir).inode.parent = parent
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !strings.Contains(name, ".") {
 		return dir, nil
 	}
-	file := dir.(*ObjectDir).OpenFile(o, fileName[1])
+	file = dir.(*ObjectDir).OpenFile(o, fileName[paths])
 	return file, nil
 }
 
 func (o *ObjectFS) ReadDir(dir string) ([]common.FileInfo, error) {
-	fileInfos := make([]common.FileInfo, 0)
-	entry := o.dirs[dir]
-	info := entry.Stat()
-	fileInfos = append(fileInfos, info)
-	return fileInfos, nil
+	o.RWMutex.Lock()
+	defer o.RWMutex.Unlock()
+	name := strings.Split(dir, "/")
+	entry := o.nodes[name[0]]
+	if entry == nil {
+		return nil, os.ErrNotExist
+	}
+	if len(name) > 1 {
+		entry = entry.(*ObjectDir).nodes[name[1]]
+	}
+	return entry.(*ObjectDir).LookUp()
 }
 
 func (o *ObjectFS) Remove(name string) error {
 	o.RWMutex.Lock()
 	defer o.RWMutex.Unlock()
 	fileName := strings.Split(name, "/")
-	dir := o.dirs[fileName[0]]
+	dir := o.nodes[fileName[0]]
 	if dir == nil {
 		return os.ErrNotExist
 	}
@@ -98,83 +141,64 @@ func (o *ObjectFS) MountInfo() *tfs.MountInfo {
 	return nil
 }
 
-func (o *ObjectFS) GetData(size uint64) (object *Object, err error) {
+func (o *ObjectFS) GetData(size uint64, file *ObjectFile) (object *Object, err error) {
 	o.RWMutex.Lock()
 	defer o.RWMutex.Unlock()
-	if len(o.data) == 0 ||
-		o.data[len(o.data)-1].GetSize()+size >= OBJECT_SIZE {
-		object, err = OpenObject(o.lastId, DATATYPE, o.attr.dir)
-		o.data = append(o.data, object)
-		o.lastId++
+	objectName := file.parent.inode.name
+	object = o.data[objectName]
+	if object == nil {
+		object, err = OpenObject(objectName, DataType, o.attr.dir)
+		object.Mount(ObjectSize, PageSize)
+		o.data[objectName] = object
 		return
 	}
-	return o.data[len(o.data)-1], nil
+	return
 }
 
-func (o *ObjectFS) GetMeta(size uint64) (object *Object, err error) {
-	o.RWMutex.Lock()
-	defer o.RWMutex.Unlock()
-	if len(o.meta) == 0 ||
-		o.meta[len(o.meta)-1].GetSize()+size >= OBJECT_SIZE {
-		object, err = OpenObject(o.lastId, METADATA, o.attr.dir)
-		o.meta = append(o.meta, object)
-		o.lastId++
-		return
-	}
-	return o.meta[len(o.meta)-1], nil
-}
-
-func (o *ObjectFS) GetDataWithId(id uint64) *Object {
-	o.RWMutex.RLock()
-	defer o.RWMutex.RUnlock()
-	for _, object := range o.data {
-		if object.id == id {
-			return object
-		}
-	}
-	return nil
+func (o *ObjectFS) GetDataWithId(id string) *Object {
+	return o.data[id]
 }
 
 func (o *ObjectFS) Append(file *ObjectFile, data []byte) (n int, err error) {
-	dataObject, err := o.GetData(uint64(len(data)))
+	dataObject, err := o.GetData(uint64(len(data)), file)
 	if err != nil {
 		return
 	}
-	offset, allocated, err := dataObject.Append(data)
+	buf := data
+	if o.attr.algo == compress.Lz4 {
+		buf = make([]byte, lz4.CompressBlockBound(len(buf)))
+		if buf, err = compress.Compress(data, buf, compress.Lz4); err != nil {
+			return
+		}
+	}
+	offset, allocated := dataObject.allocator.Allocate(uint64(len(buf)))
+	_, err = dataObject.Append(buf, int64(offset))
 	if err != nil {
 		return int(allocated), err
 	}
 	file.inode.mutex.Lock()
 	file.inode.extents = append(file.inode.extents, Extent{
 		typ:    APPEND,
+		oid:    dataObject.name,
 		offset: uint32(offset),
-		length: uint32(len(data)),
-		data:   entry{offset: 0, length: uint32(len(data))},
+		length: uint32(allocated),
+		data:   entry{offset: 0, length: uint32(len(buf))},
 	})
-	file.inode.size += uint64(len(data))
+	file.inode.size += uint64(len(buf))
 	file.inode.dataSize += uint64(len(data))
+	file.inode.objectId = dataObject.name
 	file.inode.seq++
-	file.inode.objectId = dataObject.id
 	file.inode.mutex.Unlock()
-	inode, err := file.inode.Marshal()
-	if err != nil {
-		return int(allocated), err
-	}
-	metaObject, err := o.GetMeta(uint64(len(inode)))
-	if err != nil {
-		return
-	}
-	_, _, err = metaObject.Append(inode)
+	err = o.driver.Append(file)
 	return int(allocated), err
 }
 
-func (o *ObjectFS) Read(file *ObjectFile, data []byte) (n int, err error) {
+func (o *ObjectFS) Read(inode *Inode, data []byte) (n int, err error) {
 	bufLen := len(data)
 	if bufLen == 0 {
 		return 0, nil
 	}
-	inode := file.GetInode()
-	dataObject := o.GetDataWithId(inode.objectId)
+	dataObject := o.GetDataWithId(inode.parent)
 	return dataObject.oFile.ReadAt(data, int64(inode.extents[0].offset))
 }
 
@@ -186,6 +210,69 @@ func (o *ObjectFS) Sync(file *ObjectFile) error {
 	return data.oFile.Sync()
 }
 
+func (o *ObjectFS) GetLastId() {
+
+}
+
 func (o *ObjectFS) Delete(file tfs.File) error {
 	return nil
+}
+
+func (o *ObjectFS) RebuildObject() error {
+	files, err := os.ReadDir(o.attr.dir)
+	if err != nil {
+		return err
+	}
+	for _, info := range files {
+		file, err := info.Info()
+		if err != nil {
+			return err
+		}
+		id, oType, err := decodeName(file.Name())
+		if err != nil {
+			return err
+		}
+		/*if id > o.lastId {
+			o.lastId = id
+		}*/
+		if oType == DataType {
+			object, err := OpenObject(id, DataType, o.attr.dir)
+			if err != nil {
+				return err
+			}
+			object.Mount(ObjectSize, PageSize)
+			object.allocator.available = p2roundup(uint64(file.Size()), PageSize)
+			o.data[object.name] = object
+		} else if oType == NodeType {
+			object, err := OpenObject(id, NodeType, o.attr.dir)
+			if err != nil {
+				return err
+			}
+			object.Mount(ObjectSize, MetaSize)
+			object.allocator.available = p2roundup(uint64(file.Size()), MetaSize)
+			o.driver.inode = append(o.driver.inode, object)
+		} else if oType == MetadataBlkType {
+			object, err := OpenObject(id, MetadataBlkType, o.attr.dir)
+			if err != nil {
+				return err
+			}
+			object.Mount(ObjectSize, MetaSize)
+			object.allocator.available = p2roundup(uint64(file.Size()), MetaSize)
+			o.driver.blk = append(o.driver.blk, object)
+		}
+	}
+	//Sort(o.data)
+	//Sort(o.driver.inode)
+	//Sort(o.driver.blk)
+	return nil
+}
+
+type ObjectList []*Object
+
+func (s ObjectList) Len() int           { return len(s) }
+func (s ObjectList) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+func (s ObjectList) Less(i, j int) bool { return s[i].name < s[j].name }
+
+func Sort(data []*Object) {
+	gsort.Sort(ObjectList(data))
 }
