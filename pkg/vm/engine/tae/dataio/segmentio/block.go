@@ -193,21 +193,23 @@ func (bf *blockFile) LoadBatch(
 		if f, err = colBlk.OpenDataFile(); err != nil {
 			return
 		}
-		defer f.Unref()
 		vec := containers.MakeVector(colTypes[i], nullables[i], opts)
 		bat.AddVector(colNames[i], vec)
 		size := f.Stat().Size()
 		if size == 0 {
+			f.Unref()
 			continue
 		}
 		buf := make([]byte, size)
 		if _, err = f.Read(buf); err != nil {
+			f.Unref()
 			return
 		}
 		if f.Stat().CompressAlgo() == compress.Lz4 {
 			decompress := make([]byte, f.Stat().OriginSize())
 			decompress, err = compress.Decompress(buf, decompress, compress.Lz4)
 			if err != nil {
+				f.Unref()
 				return nil, err
 			}
 			if len(decompress) != int(f.Stat().OriginSize()) {
@@ -216,15 +218,18 @@ func (bf *blockFile) LoadBatch(
 			}
 			r := bytes.NewBuffer(decompress)
 			if _, err = vec.ReadFrom(r); err != nil {
+				f.Unref()
 				return
 			}
 		} else {
 			r := bytes.NewBuffer(buf)
 			if _, err = vec.ReadFrom(r); err != nil {
+				f.Unref()
 				return
 			}
 		}
 		bat.Vecs[i] = vec
+		f.Unref()
 	}
 	return
 }
@@ -319,9 +324,9 @@ func (bf *blockFile) WriteSnapshot(
 		if err != nil {
 			return err
 		}
-		defer cb.Close()
 		err = cb.WriteTS(ts)
 		if err != nil {
+			cb.Close()
 			return err
 		}
 		vec := bat.Vecs[colIdx]
@@ -332,7 +337,6 @@ func (bf *blockFile) WriteSnapshot(
 			if err != nil {
 				panic(err)
 			}
-			defer uf.Unref()
 			mask := masks[uint16(colIdx)]
 			buffer.Reset()
 			if err = bf.PrepareUpdates(tool, buffer, vec.GetType(), vec.Nullable(), mask, updates); err != nil {
@@ -340,19 +344,27 @@ func (bf *blockFile) WriteSnapshot(
 			}
 			buffer.Reset()
 			if _, err = tool.WriteTo(buffer); err != nil {
+				uf.Unref()
+				cb.Close()
 				return
 			}
 			if _, err = uf.Write(buffer.Bytes()); err != nil {
+				uf.Unref()
+				cb.Close()
 				return
 			}
+			uf.Unref()
 		}
 		buffer.Reset()
 		if _, err = vec.WriteTo(buffer); err != nil {
+			cb.Close()
 			return err
 		}
 		if err = cb.WriteData(buffer.Bytes()); err != nil {
+			cb.Close()
 			return err
 		}
+		cb.Close()
 	}
 	return
 }
@@ -389,8 +401,8 @@ func (bf *blockFile) LoadUpdates() (masks map[uint16]*roaring.Bitmap, vals map[u
 		if err != nil {
 			panic(err)
 		}
-		defer uf.Unref()
 		if uf.Stat().OriginSize() == 0 {
+			uf.Unref()
 			continue
 		}
 		if err := tool.ReadFromFile(uf, nil); err != nil {
@@ -410,7 +422,6 @@ func (bf *blockFile) LoadUpdates() (masks map[uint16]*roaring.Bitmap, vals map[u
 		if _, err = vec.ReadFrom(r); err != nil {
 			panic(err)
 		}
-		defer vec.Close()
 		val := make(map[uint32]any)
 		it := mask.Iterator()
 		pos := 0
@@ -426,6 +437,8 @@ func (bf *blockFile) LoadUpdates() (masks map[uint16]*roaring.Bitmap, vals map[u
 		}
 		vals[uint16(i)] = val
 		masks[uint16(i)] = mask
+		vec.Close()
+		uf.Unref()
 	}
 	return
 }
