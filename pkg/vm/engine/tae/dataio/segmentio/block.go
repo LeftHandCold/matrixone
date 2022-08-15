@@ -156,7 +156,7 @@ func (bf *blockFile) OpenColumn(colIdx int) (colBlk file.ColumnBlock, err error)
 }
 
 func (bf *blockFile) Close() error {
-	bf.Close()
+	bf.Unref()
 	return nil
 }
 
