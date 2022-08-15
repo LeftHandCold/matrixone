@@ -18,14 +18,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/config"
 	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/fagongzi/goetty/buf"
+	"github.com/fagongzi/goetty/v2/buf"
 	"github.com/golang/mock/gomock"
+	"github.com/matrixorigin/matrixone/pkg/config"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -56,6 +56,7 @@ func Test_load(t *testing.T) {
 		eng := mock_frontend.NewMockTxnEngine(ctrl)
 		txn := mock_frontend.NewMockTxn(ctrl)
 		txn.EXPECT().GetCtx().Return(nil).AnyTimes()
+		txn.EXPECT().GetID().Return(uint64(0)).AnyTimes()
 		txn.EXPECT().Commit().Return(nil).AnyTimes()
 		txn.EXPECT().Rollback().Return(nil).AnyTimes()
 		txn.EXPECT().String().Return("txn0").AnyTimes()
@@ -172,7 +173,7 @@ func Test_load(t *testing.T) {
 
 		ioses := mock_frontend.NewMockIOSession(ctrl)
 		ioses.EXPECT().OutBuf().Return(buf.NewByteBuf(1024)).AnyTimes()
-		ioses.EXPECT().WriteAndFlush(gomock.Any()).Return(nil).AnyTimes()
+		ioses.EXPECT().Write(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 		cws := []ComputationWrapper{}
 
@@ -357,7 +358,7 @@ func Test_load(t *testing.T) {
 
 		ioses := mock_frontend.NewMockIOSession(ctrl)
 		ioses.EXPECT().OutBuf().Return(buf.NewByteBuf(1024)).AnyTimes()
-		ioses.EXPECT().WriteAndFlush(gomock.Any()).Return(nil).AnyTimes()
+		ioses.EXPECT().Write(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 		cws := []*tree.Load{}
 
