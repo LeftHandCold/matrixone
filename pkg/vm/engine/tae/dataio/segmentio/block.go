@@ -81,7 +81,6 @@ func (bf *blockFile) Fingerprint() *common.ID {
 }
 
 func (bf *blockFile) close() {
-	bf.Close()
 	err := bf.Destroy()
 	if err != nil {
 		panic(any("Destroy error"))
@@ -157,6 +156,7 @@ func (bf *blockFile) OpenColumn(colIdx int) (colBlk file.ColumnBlock, err error)
 }
 
 func (bf *blockFile) Close() error {
+	bf.Close()
 	return nil
 }
 
@@ -340,6 +340,8 @@ func (bf *blockFile) WriteSnapshot(
 			mask := masks[uint16(colIdx)]
 			buffer.Reset()
 			if err = bf.PrepareUpdates(tool, buffer, vec.GetType(), vec.Nullable(), mask, updates); err != nil {
+				uf.Unref()
+				cb.Close()
 				return
 			}
 			buffer.Reset()
