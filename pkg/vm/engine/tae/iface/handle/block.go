@@ -82,7 +82,6 @@ type BlockReader interface {
 type BlockWriter interface {
 	io.Closer
 	Append(data *containers.Batch, offset uint32) (uint32, error)
-	Update(row uint32, col uint16, v any) error
 	RangeDelete(start, end uint32, dt DeleteType) error
 	UpdateMetaLoc(metaLoc string) error
 	UpdateDeltaLoc(deltaLoc string) error

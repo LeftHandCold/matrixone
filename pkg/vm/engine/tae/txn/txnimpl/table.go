@@ -479,45 +479,6 @@ func (tbl *txnTable) updateWithFineLock(node txnif.UpdateNode, txn txnif.AsyncTx
 	return
 }
 
-func (tbl *txnTable) Update(id *common.ID, row uint32, col uint16, v any) (err error) {
-	if tbl.entry.GetSchema().IsPartOfPK(int(col)) {
-		err = moerr.NewTAEError("update unique key")
-		return
-	}
-	if isLocalSegment(id) {
-		return tbl.UpdateLocalValue(row, col, v)
-	}
-	uid := *id
-	uid.Idx = col
-	node := tbl.updateNodes[uid]
-	if node != nil {
-		err = tbl.updateWithFineLock(node, tbl.store.txn, row, v)
-		if err != nil {
-			seg, _ := tbl.entry.GetSegmentByID(id.SegmentID)
-			blk, _ := seg.GetBlockEntryByID(id.BlockID)
-			tbl.store.warChecker.ReadBlock(tbl.entry.GetDB().ID, blk.AsCommonID())
-		}
-		return
-	}
-	seg, err := tbl.entry.GetSegmentByID(id.SegmentID)
-	if err != nil {
-		return
-	}
-	blk, err := seg.GetBlockEntryByID(id.BlockID)
-	if err != nil {
-		return
-	}
-	blkData := blk.GetBlockData()
-	node2, err := blkData.Update(tbl.store.txn, row, col, v)
-	if err == nil {
-		if err = tbl.AddUpdateNode(node2); err != nil {
-			return
-		}
-		tbl.store.warChecker.ReadBlock(tbl.entry.GetDB().ID, blk.AsCommonID())
-	}
-	return
-}
-
 func (tbl *txnTable) UpdateMetaLoc(id *common.ID, metaloc string) (err error) {
 	segMeta, err := tbl.entry.GetSegmentByID(id.SegmentID)
 	if err != nil {

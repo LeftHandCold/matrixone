@@ -99,22 +99,7 @@ func (entry *compactBlockEntry) PrepareCommit() (err error) {
 	if view == nil || err != nil {
 		return
 	}
-	deletes := entry.deletes
-	for colIdx, column := range view.Columns {
-		column.UpdateMask, column.UpdateVals, column.DeleteMask = compute.ShuffleByDeletes(
-			column.UpdateMask,
-			column.UpdateVals,
-			column.DeleteMask, deletes)
-		for row, v := range column.UpdateVals {
-			if entry.mapping != nil && len(entry.mapping) > int(row) {
-				row = entry.mapping[row]
-			}
-			if err = entry.to.Update(row, uint16(colIdx), v); err != nil {
-				return
-			}
-		}
-	}
-	_, _, view.DeleteMask = compute.ShuffleByDeletes(nil, nil, view.DeleteMask, deletes)
+	view.DeleteMask = compute.ShuffleByDeletes(view.DeleteMask, entry.deletes)
 	if view.DeleteMask != nil {
 		it := view.DeleteMask.Iterator()
 		for it.HasNext() {

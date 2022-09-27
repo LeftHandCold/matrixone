@@ -384,9 +384,6 @@ func TestNonAppendableBlock(t *testing.T) {
 		assert.True(t, view.DeleteMask.Contains(2))
 		assert.Equal(t, bat.Vecs[2].Length(), view.Length())
 
-		_, err = dataBlk.Update(txn, 3, 2, int32(999))
-		assert.Nil(t, err)
-
 		view, err = dataBlk.GetColumnDataById(txn, 2, nil)
 		assert.Nil(t, err)
 		defer view.Close()
@@ -394,7 +391,6 @@ func TestNonAppendableBlock(t *testing.T) {
 		assert.True(t, view.DeleteMask.Contains(2))
 		assert.Equal(t, bat.Vecs[2].Length(), view.Length())
 		v = view.GetData().Get(3)
-		assert.Equal(t, int32(999), v)
 
 		assert.Nil(t, txn.Commit())
 	}
@@ -649,8 +645,6 @@ func TestCompactBlock2(t *testing.T) {
 			assert.NoError(t, err)
 			err = blk.RangeDelete(4, 5, handle.DT_Normal)
 			assert.NoError(t, err)
-			err = blk.Update(3, 3, int64(1999))
-			assert.NoError(t, err)
 			assert.NoError(t, txn.Commit())
 		}
 		assert.NoError(t, txn.Commit())
@@ -668,8 +662,6 @@ func TestCompactBlock2(t *testing.T) {
 		defer view.Close()
 		assert.True(t, view.DeleteMask.Contains(4))
 		assert.True(t, view.DeleteMask.Contains(5))
-		v := view.GetData().Get(3)
-		assert.Equal(t, int64(1999), v)
 		assert.Equal(t, bat.Vecs[0].Length()-2, view.Length())
 
 		txn2, rel2 := getDefaultRelation(t, db, schema.Name)
