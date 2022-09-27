@@ -16,6 +16,10 @@ package db
 
 import (
 	"bytes"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/handle"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/options"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables/jobs"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils/config"
 	"sync"
 	"testing"
 	"time"
@@ -24,12 +28,8 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/handle"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/options"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables/jobs"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils/config"
 	"github.com/panjf2000/ants/v2"
 	"github.com/stretchr/testify/assert"
 )
@@ -203,7 +203,7 @@ func TestTxn2(t *testing.T) {
 	t.Log(db.Opts.Catalog.SimplePPString(common.PPL1))
 }
 
-func TestTxn3(t *testing.T) {
+/*func TestTxn3(t *testing.T) {
 	testutils.EnsureNoLeak(t)
 	db := initDB(t, nil)
 	defer db.Close()
@@ -332,7 +332,7 @@ func TestTxn3(t *testing.T) {
 		// t.Log(chain.StringLocked())
 	}
 }
-
+*/
 func TestTxn4(t *testing.T) {
 	testutils.EnsureNoLeak(t)
 	db := initDB(t, nil)
@@ -596,8 +596,8 @@ func TestMergeBlocks1(t *testing.T) {
 			rel, _ := database.GetRelationByName(schema.Name)
 			it := rel.MakeBlockIt()
 			blk := it.GetBlock()
-			err := blk.Update(2, 3, int64(22))
-			assert.Nil(t, err)
+			//err := blk.Update(2, 3, int64(22))
+			//assert.Nil(t, err)
 			pkv, err := rel.GetValue(blk.Fingerprint(), 2, uint16(schema.GetSingleSortKeyIdx()))
 			mapping[pkv.(int32)] = int64(22)
 			assert.Nil(t, err)

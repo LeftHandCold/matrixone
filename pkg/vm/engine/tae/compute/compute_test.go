@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestShuffleByDeletes(t *testing.T) {
+/*func TestShuffleByDeletes(t *testing.T) {
 	origMask := roaring.New()
 	origVals := make(map[uint32]any)
 	origMask.Add(1)
@@ -50,7 +50,7 @@ func TestShuffleByDeletes(t *testing.T) {
 	assert.True(t, destMask.Contains(8))
 	assert.True(t, destMask.Contains(18))
 	assert.True(t, destMask.Contains(27))
-}
+}*/
 
 func TestCheckRowExists(t *testing.T) {
 	typ := types.T_int32.ToType()

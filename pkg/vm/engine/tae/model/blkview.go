@@ -65,8 +65,6 @@ func (view *BlockView) SetUpdates(i int, mask *roaring.Bitmap, vals map[uint32]a
 		col = NewColumnView(view.Ts, i)
 		view.Columns[i] = col
 	}
-	col.UpdateMask = mask
-	col.UpdateVals = vals
 }
 
 func (view *BlockView) SetLogIndexes(i int, indexes []*wal.Index) {
@@ -76,15 +74,6 @@ func (view *BlockView) SetLogIndexes(i int, indexes []*wal.Index) {
 		view.Columns[i] = col
 	}
 	col.LogIndexes = indexes
-}
-
-func (view *BlockView) Eval(clear bool) (err error) {
-	for _, col := range view.Columns {
-		if err = col.Eval(clear); err != nil {
-			break
-		}
-	}
-	return
 }
 
 func (view *BlockView) Close() {

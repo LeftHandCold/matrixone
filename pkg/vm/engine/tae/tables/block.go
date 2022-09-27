@@ -409,14 +409,6 @@ func (blk *dataBlock) PPString(level common.PPLevel, depth int, prefix string) s
 	return s
 }
 
-func (blk *dataBlock) FillColumnUpdates(view *model.ColumnView) (err error) {
-	chain := blk.mvcc.GetColumnChain(uint16(view.ColIdx))
-	chain.RLock()
-	view.UpdateMask, view.UpdateVals, err = chain.CollectUpdatesLocked(view.Ts)
-	chain.RUnlock()
-	return
-}
-
 func (blk *dataBlock) FillColumnDeletes(view *model.ColumnView, rwlocker *sync.RWMutex) (err error) {
 	deleteChain := blk.mvcc.GetDeleteChain()
 	n, err := deleteChain.CollectDeletesLocked(view.Ts, false, rwlocker)
@@ -483,15 +475,11 @@ func (blk *dataBlock) ResolveColumnMVCCData(
 	view.SetData(raw)
 
 	blk.mvcc.RLock()
-	err = blk.FillColumnUpdates(view)
-	if err == nil {
-		err = blk.FillColumnDeletes(view, blk.mvcc.RWMutex)
-	}
+	err = blk.FillColumnDeletes(view, blk.mvcc.RWMutex)
 	blk.mvcc.RUnlock()
 	if err != nil {
 		return
 	}
-	err = view.Eval(true)
 	return
 }
 
@@ -524,16 +512,11 @@ func (blk *dataBlock) ResolveABlkColumnMVCCData(
 	}
 	view.SetData(data)
 	blk.mvcc.RLock()
-	err = blk.FillColumnUpdates(view)
-	if err == nil {
-		err = blk.FillColumnDeletes(view, blk.mvcc.RWMutex)
-	}
+	err = blk.FillColumnDeletes(view, blk.mvcc.RWMutex)
 	blk.mvcc.RUnlock()
 	if err != nil {
 		return
 	}
-
-	err = view.Eval(true)
 
 	return
 }
