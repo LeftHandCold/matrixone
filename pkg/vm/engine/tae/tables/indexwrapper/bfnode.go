@@ -18,7 +18,6 @@ import (
 	"github.com/RoaringBitmap/roaring"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 	"sync"
@@ -81,8 +80,9 @@ func (reader *BFReader) MayContainsAnyKeys(keys containers.Vector, visibility *r
 
 type BFWriter struct {
 	cType       CompressType
-	file        common.IRWFile
+	writer      objectio.Writer
 	impl        index.StaticFilter
+	block       objectio.BlockObject
 	data        containers.Vector
 	colIdx      uint16
 	internalIdx uint16
@@ -92,8 +92,9 @@ func NewBFWriter() *BFWriter {
 	return &BFWriter{}
 }
 
-func (writer *BFWriter) Init(file common.IRWFile, cType CompressType, colIdx uint16, internalIdx uint16) error {
-	writer.file = file
+func (writer *BFWriter) Init(wr objectio.Writer, block objectio.BlockObject, cType CompressType, colIdx uint16, internalIdx uint16) error {
+	writer.writer = wr
+	writer.block = block
 	writer.cType = cType
 	writer.colIdx = colIdx
 	writer.internalIdx = internalIdx
@@ -111,7 +112,7 @@ func (writer *BFWriter) Finalize() (*IndexMeta, error) {
 	writer.impl = sf
 	writer.data = nil
 
-	appender := writer.file
+	appender := writer.writer
 	meta := NewEmptyIndexMeta()
 	meta.SetIndexType(StaticFilterIndex)
 	meta.SetCompressType(writer.cType)
@@ -123,11 +124,15 @@ func (writer *BFWriter) Finalize() (*IndexMeta, error) {
 	if err != nil {
 		return nil, err
 	}
+	bf := objectio.NewBloomFilter(writer.colIdx, 0, iBuf)
+	if err != nil {
+		return nil, err
+	}
 	rawSize := uint32(len(iBuf))
 	compressed := Compress(iBuf, writer.cType)
 	exactSize := uint32(len(compressed))
 	meta.SetSize(rawSize, exactSize)
-	_, err = appender.Write(compressed)
+	err = appender.WriteIndex(writer.block, bf)
 	if err != nil {
 		return nil, err
 	}

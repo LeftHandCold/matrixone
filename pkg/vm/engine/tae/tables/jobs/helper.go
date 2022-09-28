@@ -49,14 +49,9 @@ func BuildColumnIndex(writer objectio.Writer, block objectio.BlockObject, colDef
 		return
 	}
 
-	/*bfPos := 1
+	bfPos := 1
 	bfWriter := indexwrapper.NewBFWriter()
-	bfFile, err := file.OpenIndexFile(bfPos)
-	if err != nil {
-		return
-	}
-	defer bfFile.Unref()
-	if err = bfWriter.Init(bfFile, indexwrapper.Plain, uint16(colDef.Idx), uint16(bfPos)); err != nil {
+	if err = bfWriter.Init(writer, block, indexwrapper.Plain, uint16(colDef.Idx), uint16(bfPos)); err != nil {
 		return
 	}
 	if err = bfWriter.AddValues(columnData); err != nil {
@@ -66,7 +61,7 @@ func BuildColumnIndex(writer objectio.Writer, block objectio.BlockObject, colDef
 	if err != nil {
 		return
 	}
-	metas = append(metas, *bfMeta)*/
+	metas = append(metas, *bfMeta)
 	return
 }
 
