@@ -324,7 +324,7 @@ func TestReplay1(t *testing.T) {
 	filter.Val = int32(5)
 	id, row, err := rel.GetByFilter(filter)
 	assert.Nil(t, err)
-	err = rel.Update(id, row-1, uint16(0), int32(33))
+	err = rel.UpdateByFilter(filter, uint16(0), int32(33))
 	assert.Nil(t, err)
 	assert.Nil(t, txn.Commit())
 
@@ -416,7 +416,8 @@ func TestReplay2(t *testing.T) {
 	filter.Val = int32(1500)
 	id, row, err := rel.GetByFilter(filter)
 	assert.Nil(t, err)
-	err = rel.Update(id, row-1, uint16(0), int32(33))
+	//err = rel.Update(id, row-1, uint16(0), int32(33))
+	err = rel.UpdateByFilter(filter, uint16(0), int32(33))
 	assert.Nil(t, err)
 	err = rel.RangeDelete(id, row+1, row+100, handle.DT_Normal)
 	assert.Nil(t, err)
@@ -581,7 +582,7 @@ func TestReplay3(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		blkID, row, err := tbl.GetByFilter(filter)
 		assert.Nil(t, err)
-		err = tbl.Update(blkID, row, 0, int32(33))
+		err = tbl.UpdateByFilter(filter, uint16(0), int32(33))
 		assert.Nil(t, err)
 		blkID, row, err = tbl.GetByFilter(filter)
 		assert.Nil(t, err)
@@ -596,7 +597,7 @@ func TestReplay3(t *testing.T) {
 		txn, rel := tae.getRelation()
 		blkID, row, err := rel.GetByFilter(filter)
 		assert.Nil(t, err)
-		err = rel.Update(blkID, row, 0, int32(33))
+		err = rel.UpdateByFilter(filter, uint16(0), int32(33))
 		assert.Nil(t, err)
 		assert.Nil(t, txn.Commit())
 

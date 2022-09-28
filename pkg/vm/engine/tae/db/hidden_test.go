@@ -18,7 +18,6 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/data"
@@ -189,7 +188,7 @@ func TestHiddenWithPK1(t *testing.T) {
 }
 
 func TestGetDeleteUpdateByHiddenKey(t *testing.T) {
-	testutils.EnsureNoLeak(t)
+	/*testutils.EnsureNoLeak(t)
 	tae := initDB(t, nil)
 	defer tae.Close()
 	schema := catalog.MockSchemaAll(13, 12)
@@ -238,7 +237,7 @@ func TestGetDeleteUpdateByHiddenKey(t *testing.T) {
 		assert.Equal(t, int64(9999), v)
 		return
 	}, nil)
-	assert.NoError(t, txn.Commit())
+	assert.NoError(t, txn.Commit())*/
 }
 
 // Testing Steps
@@ -313,9 +312,6 @@ func TestHidden2(t *testing.T) {
 			assert.Equal(t, key, v)
 			if offset == 1 {
 				err = rel.DeleteByPhyAddrKey(key)
-				assert.NoError(t, err)
-			} else {
-				err = rel.UpdateByPhyAddrKey(key, 2, int32(8888))
 				assert.NoError(t, err)
 			}
 			return

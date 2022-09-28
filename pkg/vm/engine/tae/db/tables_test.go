@@ -460,16 +460,17 @@ func TestTxn6(t *testing.T) {
 		id, row, err := rel.GetByFilter(filter)
 		assert.Nil(t, err)
 
-		err = rel.Update(id, row, uint16(3), int64(33))
+		err = rel.UpdateByFilter(filter, uint16(3), int64(33))
 		assert.Nil(t, err)
 
-		err = rel.Update(id, row, uint16(3), int64(44))
+		err = rel.UpdateByFilter(filter, uint16(3), int64(44))
 		assert.Nil(t, err)
 		v, err := rel.GetValue(id, row, uint16(3))
 		assert.Nil(t, err)
 		assert.Equal(t, int64(44), v)
 
-		err = rel.Update(id, row+1, uint16(3), int64(77))
+		//err = rel.Update(id, row+1, uint16(3), int64(77))
+		err = rel.UpdateByFilter(filter, uint16(3), int64(77))
 		assert.Nil(t, err)
 
 		err = rel.RangeDelete(id, row+1, row+1, handle.DT_Normal)
@@ -488,21 +489,25 @@ func TestTxn6(t *testing.T) {
 			assert.Nil(t, err)
 			assert.NotEqual(t, int64(44), v)
 
-			err = rel.Update(id, row, uint16(3), int64(55))
+			//err = rel.Update(id, row, uint16(3), int64(55))
+			err = rel.UpdateByFilter(filter, uint16(3), int64(55))
 			assert.NotNil(t, err)
 
-			err = rel.Update(id, row+2, uint16(3), int64(88))
+			//err = rel.Update(id, row+2, uint16(3), int64(88))
+			err = rel.UpdateByFilter(filter, uint16(3), int64(88))
 			assert.Nil(t, err)
 
 			// Update row that has uncommitted delete -- FAIL
-			err = rel.Update(id, row+1, uint16(3), int64(55))
+			//err = rel.Update(id, row+1, uint16(3), int64(55))
+			err = rel.UpdateByFilter(filter, uint16(3), int64(55))
 			assert.NotNil(t, err)
 			_, err = rel.GetValue(id, row+1, uint16(3))
 			assert.Nil(t, err)
 			err = txn.Rollback()
 			assert.Nil(t, err)
 		}
-		err = rel.Update(id, row+2, uint16(3), int64(99))
+		//err = rel.Update(id, row+2, uint16(3), int64(99))
+		err = rel.UpdateByFilter(filter, uint16(3), int64(99))
 		assert.Nil(t, err)
 
 		assert.Nil(t, txn.Commit())

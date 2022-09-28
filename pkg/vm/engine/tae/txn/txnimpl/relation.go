@@ -210,10 +210,6 @@ func (h *txnRelation) UpdateByFilter(filter *handle.Filter, col uint16, v any) (
 		return
 	}
 	schema := h.table.entry.GetSchema()
-	if !schema.IsPartOfPK(int(col)) {
-		err = h.Update(id, row, col, v)
-		return
-	}
 	bat := containers.NewBatch()
 	defer bat.Close()
 	for _, def := range schema.ColDefs {
