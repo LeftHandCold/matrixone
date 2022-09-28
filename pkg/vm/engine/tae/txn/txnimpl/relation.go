@@ -241,20 +241,6 @@ func (h *txnRelation) UpdateByFilter(filter *handle.Filter, col uint16, v any) (
 	return
 }
 
-func (h *txnRelation) UpdateByPhyAddrKey(key any, col int, v any) error {
-	sid, bid, row := model.DecodePhyAddrKeyFromValue(key)
-	id := &common.ID{
-		TableID:   h.table.entry.ID,
-		SegmentID: sid,
-		BlockID:   bid,
-	}
-	return h.Txn.GetStore().Update(h.table.entry.GetDB().ID, id, row, uint16(col), v)
-}
-
-func (h *txnRelation) Update(id *common.ID, row uint32, col uint16, v any) error {
-	return h.Txn.GetStore().Update(h.table.entry.GetDB().ID, id, row, col, v)
-}
-
 func (h *txnRelation) DeleteByFilter(filter *handle.Filter) (err error) {
 	id, row, err := h.GetByFilter(filter)
 	if err != nil {

@@ -54,7 +54,7 @@ func (rel *txnRelation) Write(_ context.Context, bat *batch.Batch) error {
 }
 
 func (rel *txnRelation) Update(_ context.Context, data *batch.Batch) error {
-	schema := rel.handle.GetMeta().(*catalog.TableEntry).GetSchema()
+	/*schema := rel.handle.GetMeta().(*catalog.TableEntry).GetSchema()
 	allNullables := schema.AllNullables()
 	bat := containers.NewEmptyBatch()
 	defer bat.Close()
@@ -81,7 +81,7 @@ func (rel *txnRelation) Update(_ context.Context, data *batch.Batch) error {
 				return err
 			}
 		}
-	}
+	}*/
 	return nil
 }
 

@@ -1645,10 +1645,8 @@ func TestUpdatePrimaryKey(t *testing.T) {
 	txn, rel := getDefaultRelation(t, tae, schema.Name)
 	v := bat.Vecs[schema.GetSingleSortKeyIdx()].Get(2)
 	filter := handle.NewEQFilter(v)
-	id, row, err := rel.GetByFilter(filter)
-	assert.NoError(t, err)
-	err = rel.Update(id, row, uint16(schema.GetSingleSortKeyIdx()), v)
-	assert.Error(t, err)
+	err := rel.UpdateByFilter(filter, uint16(schema.GetSingleSortKeyIdx()), v)
+	assert.Nil(t, err)
 	assert.NoError(t, txn.Commit())
 }
 
