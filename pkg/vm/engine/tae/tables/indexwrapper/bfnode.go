@@ -18,6 +18,7 @@ import (
 	"github.com/RoaringBitmap/roaring"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/buffer/base"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
@@ -97,6 +98,7 @@ func (writer *BFWriter) Finalize() (*IndexMeta, error) {
 	}
 	sf, err := index.NewBinaryFuseFilter(writer.data)
 	if err != nil {
+		logutil.Infof("NewBinaryFuseFilter is failed :%v", err.Error())
 		return nil, err
 	}
 	writer.impl = sf
@@ -112,6 +114,7 @@ func (writer *BFWriter) Finalize() (*IndexMeta, error) {
 	//var startOffset uint32
 	iBuf, err := writer.impl.Marshal()
 	if err != nil {
+		logutil.Infof("Marshal is failed :%v", err.Error())
 		return nil, err
 	}
 	bf := objectio.NewBloomFilter(writer.colIdx, uint8(writer.cType), iBuf)
@@ -122,6 +125,7 @@ func (writer *BFWriter) Finalize() (*IndexMeta, error) {
 
 	err = appender.WriteIndex(writer.block, bf)
 	if err != nil {
+		logutil.Infof("WriteIndex is failed :%v", err.Error())
 		return nil, err
 	}
 	//meta.SetStartOffset(startOffset)
