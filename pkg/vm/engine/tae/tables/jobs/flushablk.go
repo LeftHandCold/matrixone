@@ -16,6 +16,7 @@ package jobs
 
 import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
@@ -59,6 +60,7 @@ func (task *flushABlkTask) Execute() error {
 		return err
 	}
 	if err = BuildBlockIndex(task.file.GetWriter(), block, task.meta, task.data, false); err != nil {
+		logutil.Infof("BuildBlockIndex failed err :%v", err.Error())
 		return err
 	}
 

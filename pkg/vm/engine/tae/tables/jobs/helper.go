@@ -15,6 +15,7 @@
 package jobs
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
@@ -38,10 +39,12 @@ func BuildColumnIndex(writer objectio.Writer, block objectio.BlockObject, colDef
 		err = zoneMapWriter.AddValues(columnData)
 	}
 	if err != nil {
+		logutil.Infof("BuildColumnIndex failed err :%v", err.Error())
 		return
 	}
 	zmMeta, err := zoneMapWriter.Finalize()
 	if err != nil {
+		logutil.Infof("BuildColumnIndex Finalize failed err :%v", err.Error())
 		return
 	}
 	metas = append(metas, *zmMeta)
@@ -53,13 +56,16 @@ func BuildColumnIndex(writer objectio.Writer, block objectio.BlockObject, colDef
 	bfPos := 1
 	bfWriter := indexwrapper.NewBFWriter()
 	if err = bfWriter.Init(writer, block, common.Plain, uint16(colDef.Idx), uint16(bfPos)); err != nil {
+		logutil.Infof("BuildColumnIndex  Init Finalize failed err :%v", err.Error())
 		return
 	}
 	if err = bfWriter.AddValues(columnData); err != nil {
+		logutil.Infof("BuildColumnIndex  AddValues Finalize failed err :%v", err.Error())
 		return
 	}
 	bfMeta, err := bfWriter.Finalize()
 	if err != nil {
+		logutil.Infof("BuildColumnIndex  bfWriter Finalize failed err :%v", err.Error())
 		return
 	}
 	metas = append(metas, *bfMeta)
@@ -82,6 +88,7 @@ func BuildBlockIndex(writer objectio.Writer, block objectio.BlockObject, meta *c
 		isPk := colDef.Idx == pkIdx
 		colMetas, err := BuildColumnIndex(writer, block, colDef, data, isPk, isSorted)
 		if err != nil {
+			logutil.Infof("BuildBlockIndex failed err :%v, colDef :%v-%d", err.Error(), colDef.Name, colDef.Idx)
 			return err
 		}
 		blkMetas.AddIndex(colMetas...)

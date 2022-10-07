@@ -147,6 +147,7 @@ func (task *compactBlockTask) Execute() (err error) {
 		newMeta,
 		preparer.Columns)
 	if err = task.scheduler.Schedule(ioTask); err != nil {
+		logutil.Infof("ioTask failed err :%v", err.Error())
 		return
 	}
 	if err = ioTask.WaitDone(); err != nil {
@@ -191,6 +192,7 @@ func (task *compactBlockTask) Execute() (err error) {
 			return
 		}
 		if err = ablockTask.WaitDone(); err != nil {
+			logutil.Infof("ablockTask failed err :%v", err.Error())
 			return
 		}
 		metaLocABlk := blockio.EncodeBlkMetaLoc(aBlockFile.Fingerprint(),
