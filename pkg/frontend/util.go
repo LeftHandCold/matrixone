@@ -454,6 +454,7 @@ func logStatementStatus(ctx context.Context, ses *Session, stmt tree.Statement, 
 }
 
 func logStatementStringStatus(ctx context.Context, ses *Session, stmtStr string, status statementStatus, err error) {
+	return
 	str := SubStringFromBegin(stmtStr, int(ses.Pu.SV.LengthOfQueryPrinted))
 	if status == success {
 		logutil.Infof("Connection id: %d Status: %s Statement: %s", ses.GetConnectionID(), status, str)
