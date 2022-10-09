@@ -19,6 +19,8 @@ import (
 	"context"
 	"encoding/gob"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	apipb "github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/pb/txn"
 	"github.com/matrixorigin/matrixone/pkg/txn/storage"
@@ -33,7 +35,8 @@ func (s *taeStorage) Read(
 	txnMeta txn.TxnMeta,
 	op uint32,
 	payload []byte) (res storage.ReadResult, err error) {
-
+	logutil.Infof("op read is %d", op)
+	logutil.Infof("meta.GetSnapshotTS() Read is %v", types.TimestampToTS(txnMeta.GetSnapshotTS()))
 	switch op {
 
 	case uint32(apipb.OpCode_OpGetLogTail):

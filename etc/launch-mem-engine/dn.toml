@@ -20,7 +20,7 @@ type = "memory"
 uuid = "42"
 
 [dn.Txn.Storage]
-backend = "MEM"
+backend = "TAE"
 
 [[fileservice]]
 name = "LOCAL"

@@ -68,4 +68,14 @@ type Handler interface {
 		req memoryengine.OpenDatabaseReq,
 		resp *memoryengine.OpenDatabaseResp,
 	) error
+	HandleCreateDatabaseTmp(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req memoryengine.OpenDatabaseReq,
+		resp *memoryengine.OpenDatabaseResp) (err error)
+	HandleCreateRelationTmp(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req memoryengine.CreateRelationReq,
+		resp *memoryengine.CreateRelationResp) (err error)
 }

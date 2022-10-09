@@ -17,6 +17,7 @@ package rpc
 import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/memoryengine"
 	"os"
 	"syscall"
 
@@ -117,19 +118,6 @@ func (h *Handle) HandleDestroy() (err error) {
 }
 
 func (h *Handle) HandleGetLogTail(
-	meta txn.TxnMeta,
-	req apipb.SyncLogTailReq,
-	resp *apipb.SyncLogTailResp) (err error) {
-	tae := h.eng.GetTAE(context.Background())
-	res, err := logtail.HandleSyncLogTailReq(tae.LogtailMgr, tae.Catalog, req)
-	if err != nil {
-		return err
-	}
-	*resp = res
-	return nil
-}
-
-func (h *Handle) HandleOpenDatabase(
 	meta txn.TxnMeta,
 	req apipb.SyncLogTailReq,
 	resp *apipb.SyncLogTailResp) (err error) {
@@ -254,6 +242,29 @@ func (h *Handle) HandlePreCommit(
 
 }
 
+func (h *Handle) HandleOpenDatabase(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req memoryengine.OpenDatabaseReq,
+	resp *memoryengine.OpenDatabaseResp) (err error) {
+	txn, err := h.eng.GetTxnByID(meta.GetID())
+	if err != nil {
+		return err
+	}
+	//	ctx := context.Background()
+	ctx = context.WithValue(ctx, defines.TenantIDKey{}, req.AccessInfo.AccountID)
+	ctx = context.WithValue(ctx, defines.UserIDKey{}, req.AccessInfo.UserID)
+	ctx = context.WithValue(ctx, defines.RoleIDKey{}, req.AccessInfo.RoleID)
+	db, err := h.eng.GetDatabase(ctx, req.Name, txn)
+	if err != nil {
+		return err
+	}
+	id := db.GetDatabaseID(ctx)
+	resp.ID = memoryengine.ID(id)
+	resp.Name = req.Name
+	return nil
+}
+
 //Handle DDL commands.
 
 func (h *Handle) HandleCreateDatabase(
@@ -279,6 +290,31 @@ func (h *Handle) HandleCreateDatabase(
 		return
 	}
 	resp.ID = db.GetDatabaseID(ctx)
+	return
+}
+
+func (h *Handle) HandleCreateDatabaseTmp(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req memoryengine.OpenDatabaseReq,
+	resp *memoryengine.OpenDatabaseResp) (err error) {
+
+	txn, err := h.eng.GetOrCreateTxnWithMeta(nil, meta.GetID(),
+		types.TimestampToTS(meta.GetSnapshotTS()))
+	logutil.Infof("meta.GetSnapshotTS()111 is %v", types.TimestampToTS(meta.GetSnapshotTS()))
+	if err != nil {
+		return err
+	}
+	err = h.eng.CreateDatabase(ctx, req.Name, txn)
+	if err != nil {
+		return
+	}
+	db, err := h.eng.GetDatabase(ctx, req.Name, txn)
+	if err != nil {
+		return
+	}
+	resp.ID = memoryengine.ID(db.GetDatabaseID(ctx))
+	resp.Name = req.Name
 	return
 }
 
@@ -316,6 +352,7 @@ func (h *Handle) HandleCreateRelation(
 
 	txn, err := h.eng.GetOrCreateTxnWithMeta(nil, meta.GetID(),
 		types.TimestampToTS(meta.GetSnapshotTS()))
+	logutil.Infof("meta.GetSnapshotTS() is %v", types.TimestampToTS(meta.GetSnapshotTS()))
 	if err != nil {
 		return
 	}
@@ -337,6 +374,35 @@ func (h *Handle) HandleCreateRelation(
 		return
 	}
 	resp.ID = tb.GetRelationID(context.TODO())
+	return
+}
+
+func (h *Handle) HandleCreateRelationTmp(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req memoryengine.CreateRelationReq,
+	resp *memoryengine.CreateRelationResp) (err error) {
+
+	txn, err := h.eng.GetOrCreateTxnWithMeta(nil, meta.GetID(),
+		types.TimestampToTS(meta.GetSnapshotTS()))
+	logutil.Infof("meta.GetSnapshotTS() is %v", types.TimestampToTS(meta.GetSnapshotTS()))
+	if err != nil {
+		return
+	}
+	db, err := h.eng.GetDatabase(ctx, req.DatabaseName, txn)
+	if err != nil {
+		return
+	}
+	err = db.CreateRelation(context.TODO(), req.Name, req.Defs)
+	if err != nil {
+		return
+	}
+
+	tb, err := db.GetRelation(context.TODO(), req.Name)
+	if err != nil {
+		return
+	}
+	resp.ID = memoryengine.ID(tb.GetRelationID(context.TODO()))
 	return
 }
 
