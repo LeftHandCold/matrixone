@@ -22,6 +22,7 @@ import (
 	apipb "github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/pb/txn"
 	"github.com/matrixorigin/matrixone/pkg/txn/storage"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/memoryengine"
 	"io"
 )
 
@@ -39,6 +40,11 @@ func (s *taeStorage) Read(
 		return handleRead(
 			s, txnMeta, payload,
 			s.taeHandler.HandleGetLogTail,
+		)
+	case uint32(memoryengine.OpOpenDatabase):
+		return handleReadTmp(
+			ctx, txnMeta, payload,
+			s.taeHandler.HandleOpenDatabase,
 		)
 	default:
 		panic(moerr.NewInfo("op is not supported"))
@@ -76,6 +82,52 @@ func handleRead[Req any, Resp any](
 	}()
 
 	err = fn(txnMeta, req, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	buf := new(bytes.Buffer)
+	if err := gob.NewEncoder(buf).Encode(resp); err != nil {
+		return nil, err
+	}
+	res = &readResult{
+		payload: buf.Bytes(),
+	}
+
+	return res, nil
+}
+
+func handleReadTmp[Req any, Resp any](
+	ctx context.Context,
+	txnMeta txn.TxnMeta,
+	payload []byte,
+	fn func(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req Req,
+		resp *Resp,
+	) (
+		err error,
+	),
+) (
+	res storage.ReadResult,
+	err error,
+) {
+
+	var req Req
+	if err := gob.NewDecoder(bytes.NewReader(payload)).Decode(&req); err != nil {
+		return nil, err
+	}
+
+	var resp Resp
+	defer logReq("read", req, txnMeta, &resp, &err)()
+	defer func() {
+		if closer, ok := (any)(resp).(io.Closer); ok {
+			_ = closer.Close()
+		}
+	}()
+
+	err = fn(ctx, txnMeta, req, &resp)
 	if err != nil {
 		return nil, err
 	}

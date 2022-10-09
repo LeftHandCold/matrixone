@@ -15,9 +15,11 @@
 package rpchandle
 
 import (
+	"context"
 	apipb "github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/pb/txn"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/memoryengine"
 )
 
 type Handler interface {
@@ -58,5 +60,12 @@ type Handler interface {
 		meta txn.TxnMeta,
 		req apipb.PrecommitWriteCmd,
 		resp *apipb.SyncLogTailResp,
+	) error
+
+	HandleOpenDatabase(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req memoryengine.OpenDatabaseReq,
+		resp *memoryengine.OpenDatabaseResp,
 	) error
 }

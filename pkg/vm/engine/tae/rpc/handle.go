@@ -129,6 +129,19 @@ func (h *Handle) HandleGetLogTail(
 	return nil
 }
 
+func (h *Handle) HandleOpenDatabase(
+	meta txn.TxnMeta,
+	req apipb.SyncLogTailReq,
+	resp *apipb.SyncLogTailResp) (err error) {
+	tae := h.eng.GetTAE(context.Background())
+	res, err := logtail.HandleSyncLogTailReq(tae.LogtailMgr, tae.Catalog, req)
+	if err != nil {
+		return err
+	}
+	*resp = res
+	return nil
+}
+
 // TODO:: need to handle resp.
 func (h *Handle) HandlePreCommit(
 	meta txn.TxnMeta,
