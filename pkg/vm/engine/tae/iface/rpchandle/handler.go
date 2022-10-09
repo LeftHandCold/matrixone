@@ -78,4 +78,34 @@ type Handler interface {
 		meta txn.TxnMeta,
 		req memoryengine.CreateRelationReq,
 		resp *memoryengine.CreateRelationResp) (err error)
+	HandleOpenRelation(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req memoryengine.OpenRelationReq,
+		resp *memoryengine.OpenRelationResp,
+	) error
+	HandleGetRelations(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req memoryengine.GetRelationsReq,
+		resp *memoryengine.GetRelationsResp,
+	) error
+	HandleGetTableDefs(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req memoryengine.GetTableDefsReq,
+		resp *memoryengine.GetTableDefsResp,
+	) error
+	HandleTableStats(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req memoryengine.TableStatsReq,
+		resp *memoryengine.TableStatsResp,
+	) error
+	HandleNewTableIter(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req memoryengine.NewTableIterReq,
+		resp *memoryengine.NewTableIterResp,
+	) error
 }

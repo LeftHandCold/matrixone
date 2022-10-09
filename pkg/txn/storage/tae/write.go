@@ -34,7 +34,7 @@ func (s *taeStorage) Write(
 	op uint32,
 	payload []byte) (result []byte, err error) {
 	logutil.Infof("op is %d", op)
-	logutil.Infof("meta.GetSnapshotTS() Write is %v", types.TimestampToTS(txnMeta.GetSnapshotTS()))
+	logutil.Infof("meta.GetSnapshotTS() Write is %v", types.TimestampToTS(txnMeta.GetSnapshotTS()).ToString())
 	switch op {
 
 	case uint32(apipb.OpCode_OpPreCommit):

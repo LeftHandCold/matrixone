@@ -35,3 +35,6 @@ name = "ETL"
 backend = "DISK-ETL"
 data-dir = "mo-data/etl/dn"
 
+[observability]
+disableTrace = true
+disableMetric = true

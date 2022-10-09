@@ -36,7 +36,7 @@ func (s *taeStorage) Read(
 	op uint32,
 	payload []byte) (res storage.ReadResult, err error) {
 	logutil.Infof("op read is %d", op)
-	logutil.Infof("meta.GetSnapshotTS() Read is %v", types.TimestampToTS(txnMeta.GetSnapshotTS()))
+	logutil.Infof("meta.GetSnapshotTS() Read is %v", types.TimestampToTS(txnMeta.GetSnapshotTS()).ToString())
 	switch op {
 
 	case uint32(apipb.OpCode_OpGetLogTail):
@@ -48,6 +48,31 @@ func (s *taeStorage) Read(
 		return handleReadTmp(
 			ctx, txnMeta, payload,
 			s.taeHandler.HandleOpenDatabase,
+		)
+	case uint32(memoryengine.OpOpenRelation):
+		return handleReadTmp(
+			ctx, txnMeta, payload,
+			s.taeHandler.HandleOpenRelation,
+		)
+	case uint32(memoryengine.OpGetRelations):
+		return handleReadTmp(
+			ctx, txnMeta, payload,
+			s.taeHandler.HandleGetRelations,
+		)
+	case uint32(memoryengine.OpGetTableDefs):
+		return handleReadTmp(
+			ctx, txnMeta, payload,
+			s.taeHandler.HandleGetTableDefs,
+		)
+	case uint32(memoryengine.OpTableStats):
+		return handleReadTmp(
+			ctx, txnMeta, payload,
+			s.taeHandler.HandleTableStats,
+		)
+	case uint32(memoryengine.OpNewTableIter):
+		return handleReadTmp(
+			ctx, txnMeta, payload,
+			s.taeHandler.HandleTableStats,
 		)
 	default:
 		panic(moerr.NewInfo("op is not supported"))

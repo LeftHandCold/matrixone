@@ -127,7 +127,8 @@ func (d *Database) Relations(ctx context.Context) ([]string, error) {
 		d.engine.anyShard,
 		OpGetRelations,
 		GetRelationsReq{
-			DatabaseID: d.id,
+			DatabaseID:   d.id,
+			DatabaseName: d.name,
 		},
 	)
 	if err != nil {

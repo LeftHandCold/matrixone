@@ -2,7 +2,7 @@ service-type = "CN"
 
 [log]
 level = "info"
-format = "json"
+format = "console"
 max-size = 512
 
 [hakeeper-client]
@@ -29,3 +29,6 @@ name = "ETL"
 backend = "DISK-ETL"
 data-dir = "mo-data/etl/cn"
 
+[observability]
+disableTrace = true
+disableMetric = true

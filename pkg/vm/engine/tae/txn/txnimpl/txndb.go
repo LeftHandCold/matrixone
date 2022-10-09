@@ -212,6 +212,7 @@ func (db *txnDB) GetRelationByName(name string) (relation handle.Relation, err e
 		return
 	}
 	relation = newRelation(table)
+	logutil.Infof(db.store.catalog.SimplePPString(common.PPL1))
 	return
 }
 

@@ -17,6 +17,7 @@ package rpc
 import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/memoryengine"
 	"os"
 	"syscall"
@@ -36,7 +37,9 @@ import (
 )
 
 type Handle struct {
-	eng moengine.TxnEngine
+	eng     moengine.TxnEngine
+	rels    map[memoryengine.ID]moengine.Relation
+	readers map[memoryengine.ID]engine.Reader
 }
 
 func (h *Handle) GetTxnEngine() moengine.TxnEngine {
@@ -52,7 +55,9 @@ func NewTAEHandle(opt *options.Options) *Handle {
 	}
 
 	h := &Handle{
-		eng: moengine.NewEngine(tae),
+		eng:     moengine.NewEngine(tae),
+		rels:    make(map[memoryengine.ID]moengine.Relation),
+		readers: make(map[memoryengine.ID]engine.Reader),
 	}
 	return h
 }
@@ -251,7 +256,8 @@ func (h *Handle) HandleOpenDatabase(
 	meta txn.TxnMeta,
 	req memoryengine.OpenDatabaseReq,
 	resp *memoryengine.OpenDatabaseResp) (err error) {
-	txn, err := h.eng.GetTxnByID(meta.GetID())
+	txn, err := h.eng.GetOrCreateTxnWithMeta(nil, meta.GetID(),
+		types.TimestampToTS(meta.GetSnapshotTS()))
 	if err != nil {
 		return err
 	}
@@ -266,6 +272,89 @@ func (h *Handle) HandleOpenDatabase(
 	id := db.GetDatabaseID(ctx)
 	resp.ID = memoryengine.ID(id)
 	resp.Name = req.Name
+	return nil
+}
+
+func (h *Handle) HandleOpenRelation(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req memoryengine.OpenRelationReq,
+	resp *memoryengine.OpenRelationResp,
+) error {
+	txn, err := h.eng.GetOrCreateTxnWithMeta(nil, meta.GetID(),
+		types.TimestampToTS(meta.GetSnapshotTS()))
+	db, err := h.eng.GetDatabase(ctx, req.DatabaseName, txn)
+	if err != nil {
+		return err
+	}
+	rel, err := db.GetRelation(ctx, req.Name)
+	if err != nil {
+		return err
+	}
+
+	resp.ID = memoryengine.ID(rel.GetRelationID(ctx))
+	resp.RelationName = req.Name
+	resp.DatabaseName = req.DatabaseName
+	resp.Type = memoryengine.RelationTable
+	h.rels[resp.ID] = rel
+	return nil
+}
+
+func (h *Handle) HandleGetRelations(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req memoryengine.GetRelationsReq,
+	resp *memoryengine.GetRelationsResp,
+) error {
+	txn, err := h.eng.GetOrCreateTxnWithMeta(nil, meta.GetID(),
+		types.TimestampToTS(meta.GetSnapshotTS()))
+	db, err := h.eng.GetDatabase(ctx, req.DatabaseName, txn)
+	if err != nil {
+		return err
+	}
+	rels, err := db.RelationNames(ctx)
+	if err != nil {
+		return err
+	}
+	resp.Names = rels
+	return nil
+}
+
+func (h *Handle) HandleGetTableDefs(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req memoryengine.GetTableDefsReq,
+	resp *memoryengine.GetTableDefsResp,
+) error {
+	_, err := h.eng.GetOrCreateTxnWithMeta(nil, meta.GetID(),
+		types.TimestampToTS(meta.GetSnapshotTS()))
+	if err != nil {
+		return err
+	}
+	rel := h.rels[req.TableID]
+	resp.Defs, err = rel.TableDefs(ctx)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (h *Handle) HandleTableStats(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req memoryengine.TableStatsReq,
+	resp *memoryengine.TableStatsResp,
+) error {
+	resp.Rows = 0
+	return nil
+}
+
+func (h *Handle) HandleNewTableIter(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req memoryengine.NewTableIterReq,
+	resp *memoryengine.NewTableIterResp,
+) error {
 	return nil
 }
 
@@ -500,7 +589,7 @@ func openTAE(targetDir string, opt *options.Options) (tae *db.DB, err error) {
 			return nil, err
 		}
 		syscall.Umask(mask)
-		tae, err = db.Open(targetDir+"/tae", nil)
+		tae, err = db.Open(targetDir+"/tae", opt)
 		if err != nil {
 			logutil.Infof("Open tae failed. error:%v", err)
 			return nil, err

@@ -182,7 +182,9 @@ func (t *Table) TableDefs(ctx context.Context) ([]engine.TableDef, error) {
 		t.engine.anyShard,
 		OpGetTableDefs,
 		GetTableDefsReq{
-			TableID: t.id,
+			TableID:      t.id,
+			TableName:    t.tableName,
+			DatabaseName: t.databaseName,
 		},
 	)
 	if err != nil {

@@ -180,7 +180,8 @@ type OpenRelationResp struct {
 }
 
 type GetRelationsReq struct {
-	DatabaseID ID
+	DatabaseID   ID
+	DatabaseName string
 }
 
 type GetRelationsResp struct {
@@ -228,7 +229,10 @@ type GetPrimaryKeysResp struct {
 }
 
 type GetTableDefsReq struct {
-	TableID ID
+	TableID      ID
+	DatabaseName string
+	TableName    string
+	RelationName string
 }
 
 type GetTableDefsResp struct {

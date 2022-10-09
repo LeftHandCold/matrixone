@@ -308,7 +308,8 @@ func (mp *MysqlProtocolImpl) SetSkipCheckUser(b bool) {
 func (mp *MysqlProtocolImpl) GetSkipCheckUser() bool {
 	mp.m.Lock()
 	defer mp.m.Unlock()
-	return mp.skipCheckUser
+	return true
+	//return mp.skipCheckUser
 }
 
 func (mp *MysqlProtocolImpl) GetDatabaseName() string {
