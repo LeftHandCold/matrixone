@@ -191,12 +191,15 @@ func (task *compactBlockTask) Execute() (err error) {
 			data,
 			deletes,
 		)
-		if err = task.scheduler.Schedule(ablockTask); err != nil {
+		if err = ablockTask.Execute(); err != nil {
+			return
+		}
+		/*if err = task.scheduler.Schedule(ablockTask); err != nil {
 			return
 		}
 		if err = ablockTask.WaitDone(); err != nil {
 			return
-		}
+		}*/
 		metaLocABlk := blockio.EncodeBlkMetaLoc(aBlockFile.Fingerprint(),
 			ablockTask.file.GetMeta().GetExtent(),
 			uint32(data.Length()))
