@@ -70,6 +70,7 @@ func (h *Handle) HandleCommit(meta txn.TxnMeta) (err error) {
 	if txn.Is2PC() {
 		txn.SetCommitTS(types.TimestampToTS(meta.GetCommitTS()))
 	}
+	logutil.Infof("sfsdfsdfsdf")
 	err = txn.Commit()
 	return
 }
@@ -339,6 +340,25 @@ func (h *Handle) HandleGetTableDefs(
 	return nil
 }
 
+func (h *Handle) HandleGetPrimaryKeys(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req memoryengine.GetPrimaryKeysReq,
+	resp *memoryengine.GetPrimaryKeysResp,
+) error {
+	_, err := h.eng.GetOrCreateTxnWithMeta(nil, meta.GetID(),
+		types.TimestampToTS(meta.GetSnapshotTS()))
+	if err != nil {
+		return err
+	}
+	rel := h.rels[req.TableID]
+	resp.Attrs, err = rel.GetPrimaryKeys(ctx)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (h *Handle) HandleTableStats(
 	ctx context.Context,
 	meta txn.TxnMeta,
@@ -355,6 +375,7 @@ func (h *Handle) HandleNewTableIter(
 	req memoryengine.NewTableIterReq,
 	resp *memoryengine.NewTableIterResp,
 ) error {
+	resp.IterID = memoryengine.EmptyID
 	return nil
 }
 
@@ -529,6 +550,34 @@ func (h *Handle) HandleDropRelation(
 		return
 	}
 	return
+}
+
+func (h *Handle) HandleWriteTmp(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req memoryengine.WriteReq,
+	resp *memoryengine.WriteResp,
+) error {
+	txn, err := h.eng.GetOrCreateTxnWithMeta(nil, meta.GetID(),
+		types.TimestampToTS(meta.GetSnapshotTS()))
+	if err != nil {
+		return err
+	}
+
+	dbase, err := h.eng.GetDatabase(ctx, req.DatabaseName, txn)
+	if err != nil {
+		return err
+	}
+	tb, err := dbase.GetRelation(context.TODO(), req.TableName)
+	if err != nil {
+		return err
+	}
+
+	err = tb.Write(context.TODO(), req.Batch)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // HandleWrite Handle DML commands

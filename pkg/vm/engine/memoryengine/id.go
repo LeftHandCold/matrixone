@@ -34,11 +34,11 @@ func (i ID) Less(than ID) bool {
 }
 
 func (i ID) IsEmpty() bool {
-	return i == emptyID
+	return i == EmptyID
 }
 
 var (
-	emptyID ID
+	EmptyID ID
 )
 
 func (i ID) ToRowID() types.Rowid {

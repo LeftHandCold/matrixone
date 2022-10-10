@@ -17,6 +17,7 @@ package memoryengine
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	apipb "github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
@@ -202,6 +203,7 @@ func handle(
 	err error,
 ) {
 
+	logutil.Infof("memoryengine op is %d", op)
 	switch op {
 
 	case OpCreateDatabase:

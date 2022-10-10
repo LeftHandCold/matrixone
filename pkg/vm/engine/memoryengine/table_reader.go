@@ -103,7 +103,7 @@ func (t *Table) NewReader(
 
 	iterInfoSets := make([][]IterInfo, parallel)
 	for i, resp := range resps {
-		if resp.IterID == emptyID {
+		if resp.IterID == EmptyID {
 			continue
 		}
 		iterInfo := IterInfo{

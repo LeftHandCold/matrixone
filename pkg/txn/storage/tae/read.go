@@ -72,7 +72,12 @@ func (s *taeStorage) Read(
 	case uint32(memoryengine.OpNewTableIter):
 		return handleReadTmp(
 			ctx, txnMeta, payload,
-			s.taeHandler.HandleTableStats,
+			s.taeHandler.HandleNewTableIter,
+		)
+	case uint32(memoryengine.OpGetPrimaryKeys):
+		return handleReadTmp(
+			ctx, txnMeta, payload,
+			s.taeHandler.HandleGetPrimaryKeys,
 		)
 	default:
 		panic(moerr.NewInfo("op is not supported"))

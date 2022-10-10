@@ -108,4 +108,17 @@ type Handler interface {
 		req memoryengine.NewTableIterReq,
 		resp *memoryengine.NewTableIterResp,
 	) error
+	HandleWriteTmp(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req memoryengine.WriteReq,
+		resp *memoryengine.WriteResp,
+	) error
+
+	HandleGetPrimaryKeys(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req memoryengine.GetPrimaryKeysReq,
+		resp *memoryengine.GetPrimaryKeysResp,
+	) error
 }

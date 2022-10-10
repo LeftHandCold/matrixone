@@ -28,7 +28,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/config"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
-	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	plan2 "github.com/matrixorigin/matrixone/pkg/sql/plan"
@@ -635,11 +634,10 @@ func (ses *Session) SetOutputCallback(callback func(interface{}, *batch.Batch) e
 // AuthenticateUser verifies the password of the user.
 func (ses *Session) AuthenticateUser(userInput string) ([]byte, error) {
 	var defaultRoleID int64
-	var defaultRole string
+	//var defaultRole string
 	var tenant *TenantInfo
 	var err error
 	var rsset []ExecResult
-	var tenantID int64
 	var userID int64
 	var pwd string
 	//Get tenant info
@@ -650,49 +648,9 @@ func (ses *Session) AuthenticateUser(userInput string) ([]byte, error) {
 
 	ses.SetTenantInfo(tenant)
 
-	//step1 : check tenant exists or not in SYS tenant context
-	sysTenantCtx := context.WithValue(ses.requestCtx, defines.TenantIDKey{}, uint32(sysAccountID))
-	sysTenantCtx = context.WithValue(sysTenantCtx, defines.UserIDKey{}, uint32(rootID))
-	sysTenantCtx = context.WithValue(sysTenantCtx, defines.RoleIDKey{}, uint32(moAdminRoleID))
-	sqlForCheckTenant := getSqlForCheckTenant(tenant.GetTenant())
-	rsset, err = executeSQLInBackgroundSession(sysTenantCtx, ses.Mp, ses.Pu, sqlForCheckTenant)
-	if err != nil {
-		return nil, err
-	}
-	if len(rsset) < 1 || rsset[0].GetRowCount() < 1 {
-		return nil, moerr.NewInternalError("there is no tenant %s", tenant.GetTenant())
-	}
-
-	tenantID, err = rsset[0].GetInt64(0, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	tenant.SetTenantID(uint32(tenantID))
+	tenant.SetTenantID(uint32(0))
 	//step2 : check user exists or not in general tenant.
 	//step3 : get the password of the user
-
-	tenantCtx := context.WithValue(ses.requestCtx, defines.TenantIDKey{}, uint32(tenantID))
-
-	//Get the password of the user in an independent session
-	sqlForPasswordOfUser := getSqlForPasswordOfUser(tenant.GetUser())
-	rsset, err = executeSQLInBackgroundSession(tenantCtx, ses.Mp, ses.Pu, sqlForPasswordOfUser)
-	if err != nil {
-		return nil, err
-	}
-	if len(rsset) < 1 || rsset[0].GetRowCount() < 1 {
-		return nil, moerr.NewInternalError("there is no user %s", tenant.GetUser())
-	}
-
-	userID, err = rsset[0].GetInt64(0, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	pwd, err = rsset[0].GetString(0, 1)
-	if err != nil {
-		return nil, err
-	}
 
 	//the default_role in the mo_user table.
 	//the default_role is always valid. public or other valid role.
@@ -716,49 +674,9 @@ func (ses *Session) AuthenticateUser(userInput string) ([]byte, error) {
 	*/
 	//it denotes that there is no default role in the input
 	if tenant.HasDefaultRole() {
-		//step4 : check role exists or not
-		sqlForCheckRoleExists := getSqlForRoleIdOfRole(tenant.GetDefaultRole())
-		rsset, err = executeSQLInBackgroundSession(tenantCtx, ses.Mp, ses.Pu, sqlForCheckRoleExists)
-		if err != nil {
-			return nil, err
-		}
-
-		if len(rsset) < 1 || rsset[0].GetRowCount() < 1 {
-			return nil, moerr.NewInternalError("there is no role %s", tenant.GetDefaultRole())
-		}
-
-		//step4.2 : check the role has been granted to the user or not
-		sqlForRoleOfUser := getSqlForRoleOfUser(userID, tenant.GetDefaultRole())
-		rsset, err = executeSQLInBackgroundSession(tenantCtx, ses.Mp, ses.Pu, sqlForRoleOfUser)
-		if err != nil {
-			return nil, err
-		}
-		if len(rsset) < 1 || rsset[0].GetRowCount() < 1 {
-			return nil, moerr.NewInternalError("the role %s has not been granted to the user %s",
-				tenant.GetDefaultRole(), tenant.GetUser())
-		}
-
-		defaultRoleID, err = rsset[0].GetInt64(0, 0)
-		if err != nil {
-			return nil, err
-		}
-		tenant.SetDefaultRoleID(uint32(defaultRoleID))
+		tenant.SetDefaultRoleID(uint32(0))
 	} else {
-		//the get name of default_role from mo_role
-		sql := getSqlForRoleNameOfRoleId(defaultRoleID)
-		rsset, err = executeSQLInBackgroundSession(tenantCtx, ses.Mp, ses.Pu, sql)
-		if err != nil {
-			return nil, err
-		}
-		if len(rsset) < 1 || rsset[0].GetRowCount() < 1 {
-			return nil, moerr.NewInternalError("get the default role of the user %s failed", tenant.GetUser())
-		}
-
-		defaultRole, err = rsset[0].GetString(0, 0)
-		if err != nil {
-			return nil, err
-		}
-		tenant.SetDefaultRole(defaultRole)
+		tenant.SetDefaultRole("defaultRole")
 	}
 
 	logutil.Info(tenant.String())

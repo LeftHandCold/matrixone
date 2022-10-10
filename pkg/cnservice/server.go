@@ -200,9 +200,7 @@ func (s *service) initMOServer(ctx context.Context, pu *config.ParameterUnit) er
 	if err != nil {
 		return err
 	}
-
 	s.createMOServer(cancelMoServerCtx, pu)
-
 	return nil
 }
 

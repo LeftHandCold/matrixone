@@ -53,6 +53,11 @@ func (s *taeStorage) Write(
 			ctx, txnMeta, payload,
 			s.taeHandler.HandleCreateRelationTmp,
 		)
+	case uint32(memoryengine.OpWrite):
+		return handleWriteTmp(
+			ctx, txnMeta, payload,
+			s.taeHandler.HandleWriteTmp,
+		)
 	default:
 		panic(moerr.NewInfo("OpCode is not supported"))
 

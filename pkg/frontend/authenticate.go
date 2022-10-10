@@ -17,6 +17,7 @@ package frontend
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"strings"
 	"time"
 
@@ -59,11 +60,11 @@ func (ti *TenantInfo) GetTenantID() uint32 {
 }
 
 func (ti *TenantInfo) SetTenantID(id uint32) {
-	ti.TenantID = id
+	ti.TenantID = sysAccountID
 }
 
 func (ti *TenantInfo) GetUser() string {
-	return ti.User
+	return rootName
 }
 
 func (ti *TenantInfo) GetUserID() uint32 {
@@ -71,7 +72,7 @@ func (ti *TenantInfo) GetUserID() uint32 {
 }
 
 func (ti *TenantInfo) SetUserID(id uint32) {
-	ti.UserID = id
+	ti.UserID = rootID
 }
 
 func (ti *TenantInfo) GetDefaultRole() string {
@@ -79,7 +80,7 @@ func (ti *TenantInfo) GetDefaultRole() string {
 }
 
 func (ti *TenantInfo) SetDefaultRole(r string) {
-	ti.DefaultRole = r
+	ti.DefaultRole = moAdminRoleName
 }
 
 func (ti *TenantInfo) HasDefaultRole() bool {
@@ -91,7 +92,7 @@ func (ti *TenantInfo) GetDefaultRoleID() uint32 {
 }
 
 func (ti *TenantInfo) SetDefaultRoleID(id uint32) {
-	ti.DefaultRoleID = id
+	ti.DefaultRoleID = moAdminRoleID
 }
 
 func (ti *TenantInfo) IsSysTenant() bool {
@@ -4065,13 +4066,14 @@ func InitSysTenant(ctx context.Context) error {
 	}
 
 	err = bh.Exec(ctx, "begin;")
+	logutil.Infof("begin is ssssssss")
 	if err != nil {
 		goto handleFailed
 	}
 
 	exists, err = checkSysExistsOrNot(ctx, bh, pu)
 	if err != nil {
-		goto handleFailed
+		err = nil
 	}
 
 	if !exists {
@@ -4079,14 +4081,15 @@ func InitSysTenant(ctx context.Context) error {
 		if err != nil {
 			goto handleFailed
 		}
-
-		err = createTablesInInformationSchema(ctx, bh, tenant, pu)
+		logutil.Infof("commit1111 is ssssssss")
+		/*err = createTablesInInformationSchema(ctx, bh, tenant, pu)
 		if err != nil {
 			goto handleFailed
-		}
+		}*/
 	}
-
+	logutil.Infof("commit is ssssssss")
 	err = bh.Exec(ctx, "commit;")
+	logutil.Infof("commit is eeeeeee")
 	if err != nil {
 		goto handleFailed
 	}
@@ -4103,7 +4106,7 @@ handleFailed:
 // createTablesInMoCatalog creates catalog tables in the database mo_catalog.
 func createTablesInMoCatalog(ctx context.Context, bh BackgroundExec, tenant *TenantInfo, pu *config.ParameterUnit) error {
 	var err error
-	var initMoAccount string
+	//var initMoAccount string
 	var initDataSqls []string
 	if !tenant.IsSysTenant() {
 		return moerr.NewInternalError("only sys tenant can execute the function")
@@ -4117,61 +4120,6 @@ func createTablesInMoCatalog(ctx context.Context, bh BackgroundExec, tenant *Ten
 	for _, sql := range createSqls {
 		addSqlIntoSet(sql)
 	}
-
-	//initialize the default data of tables for the tenant
-	//step 1: add new tenant entry to the mo_account
-	initMoAccount = fmt.Sprintf(initMoAccountFormat, sysAccountID, sysAccountName, sysAccountStatus, types.CurrentTimestamp().String2(time.UTC, 0), sysAccountComments)
-	addSqlIntoSet(initMoAccount)
-
-	//step 2:add new role entries to the mo_role
-
-	initMoRole1 := fmt.Sprintf(initMoRoleFormat, moAdminRoleID, moAdminRoleName, rootID, moAdminRoleID, types.CurrentTimestamp().String2(time.UTC, 0), "")
-	initMoRole2 := fmt.Sprintf(initMoRoleFormat, publicRoleID, publicRoleName, rootID, moAdminRoleID, types.CurrentTimestamp().String2(time.UTC, 0), "")
-	addSqlIntoSet(initMoRole1)
-	addSqlIntoSet(initMoRole2)
-
-	//step 3:add new user entry to the mo_user
-
-	initMoUser1 := fmt.Sprintf(initMoUserFormat, rootID, rootHost, rootName, rootPassword, rootStatus, types.CurrentTimestamp().String2(time.UTC, 0), rootExpiredTime, rootLoginType, rootCreatorID, rootOwnerRoleID, rootDefaultRoleID)
-	initMoUser2 := fmt.Sprintf(initMoUserFormat, dumpID, dumpHost, dumpName, dumpPassword, dumpStatus, types.CurrentTimestamp().String2(time.UTC, 0), dumpExpiredTime, dumpLoginType, dumpCreatorID, dumpOwnerRoleID, dumpDefaultRoleID)
-	addSqlIntoSet(initMoUser1)
-	addSqlIntoSet(initMoUser2)
-
-	//step4: add new entries to the mo_role_privs
-	//moadmin role
-	for _, t := range entriesOfMoAdminForMoRolePrivsFor {
-		entry := privilegeEntriesMap[t]
-		initMoRolePriv := fmt.Sprintf(initMoRolePrivFormat,
-			moAdminRoleID, moAdminRoleName,
-			entry.objType, entry.objId,
-			entry.privilegeId, entry.privilegeId.String(), entry.privilegeLevel,
-			rootID, types.CurrentTimestamp().String2(time.UTC, 0),
-			entry.withGrantOption)
-		addSqlIntoSet(initMoRolePriv)
-	}
-
-	//public role
-	for _, t := range entriesOfPublicForMoRolePrivsFor {
-		entry := privilegeEntriesMap[t]
-		initMoRolePriv := fmt.Sprintf(initMoRolePrivFormat,
-			publicRoleID, publicRoleName,
-			entry.objType, entry.objId,
-			entry.privilegeId, entry.privilegeId.String(), entry.privilegeLevel,
-			rootID, types.CurrentTimestamp().String2(time.UTC, 0),
-			entry.withGrantOption)
-		addSqlIntoSet(initMoRolePriv)
-	}
-
-	//step5: add new entries to the mo_user_grant
-
-	initMoUserGrant1 := fmt.Sprintf(initMoUserGrantFormat, moAdminRoleID, rootID, types.CurrentTimestamp().String2(time.UTC, 0), false)
-	initMoUserGrant2 := fmt.Sprintf(initMoUserGrantFormat, publicRoleID, rootID, types.CurrentTimestamp().String2(time.UTC, 0), false)
-	addSqlIntoSet(initMoUserGrant1)
-	addSqlIntoSet(initMoUserGrant2)
-	initMoUserGrant4 := fmt.Sprintf(initMoUserGrantFormat, moAdminRoleID, dumpID, types.CurrentTimestamp().String2(time.UTC, 0), false)
-	initMoUserGrant5 := fmt.Sprintf(initMoUserGrantFormat, publicRoleID, dumpID, types.CurrentTimestamp().String2(time.UTC, 0), false)
-	addSqlIntoSet(initMoUserGrant4)
-	addSqlIntoSet(initMoUserGrant5)
 
 	//fill the mo_account, mo_role, mo_user, mo_role_privs, mo_user_grant
 	for _, sql := range initDataSqls {

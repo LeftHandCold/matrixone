@@ -16,6 +16,7 @@ package memorystorage
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -27,7 +28,7 @@ import (
 func (m *MemHandler) HandlePreCommit(ctx context.Context, meta txn.TxnMeta, req apipb.PrecommitWriteCmd,
 	resp *apipb.SyncLogTailResp) (err error) {
 	var e any
-
+	logutil.Infof("sdfdsfsdfdsfdsfsdfsdf")
 	es := req.EntryList
 	for len(es) > 0 {
 		e, es, err = catalog.ParseEntryList(es)
