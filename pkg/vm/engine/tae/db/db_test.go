@@ -17,7 +17,11 @@ package db
 import (
 	"bytes"
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"math/rand"
+	"path"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -3849,4 +3853,90 @@ func TestBlockRead(t *testing.T) {
 	assert.Equal(t, []string{catalog.AttrRowID}, b4.Attrs)
 	assert.Equal(t, 1, len(b4.Vecs))
 	assert.Equal(t, 16, b4.Vecs[0].Length())
+}
+
+func TestObjectRead(t *testing.T) {
+	opts := config.WithLongScanAndCKPOpts(nil)
+	tae := newTestEngine(t, opts)
+	defer tae.Close()
+	tsAlloc := types.NewTsAlloctor(opts.Clock)
+	schema := catalog.MockSchemaAll(2, 1)
+	schema.BlockMaxRows = 20
+	schema.SegmentMaxBlocks = 2
+	tae.bindSchema(schema)
+	bat := catalog.MockBatch(schema, 40)
+	moBat := batch.New(true, bat.Attrs)
+	moBat.Vecs = containers.UnmarshalToMoVecs(bat.Vecs)
+	beforeDel := tsAlloc.Alloc()
+	afterDel := tsAlloc.Alloc()
+
+	rowIDVec := containers.MakeVector(types.T_Rowid.ToType(), false)
+	commitTSVec := containers.MakeVector(types.T_TS.ToType(), false)
+	abortVec := containers.MakeVector(types.T_bool.ToType(), false)
+	ID := &common.ID{
+		TableID:   1000,
+		SegmentID: 1001,
+		BlockID:   1002,
+	}
+	prefix := model.EncodeBlockKeyPrefix(ID.SegmentID, ID.BlockID)
+	rowIDVec.Append(model.EncodePhyAddrKeyWithPrefix(prefix, 3))
+	commitTSVec.Append(afterDel)
+	abortVec.Append(false)
+	delBat := containers.NewBatch()
+	delBat.AddVector(catalog.PhyAddrColumnName, rowIDVec)
+	delBat.AddVector(catalog.AttrCommitTs, commitTSVec)
+	delBat.AddVector(catalog.AttrAborted, abortVec)
+	moDelBat := batch.New(true, delBat.Attrs)
+	moDelBat.Vecs = containers.UnmarshalToMoVecs(delBat.Vecs)
+	dir := path.Join(tae.Dir, "/local")
+	name := blockio.EncodeBlkName(ID, types.TS{})
+	c := fileservice.Config{
+		Name:    "LOCAL",
+		Backend: "DISK",
+		DataDir: dir,
+	}
+	service, err := fileservice.NewFileService(c)
+	assert.Nil(t, err)
+	objectWriter, err := objectio.NewObjectWriter(name, service)
+	assert.Nil(t, err)
+	_, err = objectWriter.Write(moBat)
+	assert.Nil(t, err)
+	_, err = objectWriter.Write(moDelBat)
+	assert.Nil(t, err)
+	blocks, err := objectWriter.WriteEnd()
+	assert.Nil(t, err)
+
+	columns := make([]string, 0)
+	colIdxs := make([]uint16, 0)
+	colTyps := make([]types.Type, 0)
+	colNulls := make([]bool, 0)
+	defs := schema.ColDefs[:2]
+	rand.Shuffle(len(defs), func(i, j int) { defs[i], defs[j] = defs[j], defs[i] })
+	for _, col := range defs {
+		columns = append(columns, col.Name)
+		colIdxs = append(colIdxs, uint16(col.Idx))
+		colTyps = append(colTyps, col.Type)
+		colNulls = append(colNulls, col.NullAbility)
+	}
+	time.Sleep(1000 * time.Millisecond)
+	pool, err := mpool.NewMPool("test", 0, mpool.NoFixed)
+	assert.NoError(t, err)
+	metaLoc := blockio.EncodeBlkMetaLoc(ID, types.TS{},
+		blocks[0].GetExtent(),
+		uint32(moDelBat.Length()))
+	deltaLoc := blockio.EncodeBlkDeltaLoc(ID, types.TS{},
+		blocks[1].GetExtent())
+	b1, err := blockio.BlockReadInner(context.Background(), columns, colIdxs, colTyps, colNulls, metaLoc, deltaLoc, beforeDel, service, pool)
+	assert.NoError(t, err)
+	defer b1.Close()
+	assert.Equal(t, columns, b1.Attrs)
+	assert.Equal(t, len(columns), len(b1.Vecs))
+	assert.Equal(t, 40, b1.Vecs[0].Length())
+
+	b2, err := blockio.BlockReadInner(context.Background(), columns, colIdxs, colTyps, colNulls, metaLoc, deltaLoc, afterDel, service, pool)
+	assert.NoError(t, err)
+	defer b1.Close()
+	assert.Equal(t, columns, b1.Attrs)
+	assert.Equal(t, len(columns), len(b1.Vecs))
+	assert.Equal(t, 39, b2.Vecs[0].Length())
 }
