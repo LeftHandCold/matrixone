@@ -75,20 +75,24 @@ import (
 //    | Empty | ---------> | Active | ---------> | Collecting | -------+
 //    +-------+   Epoch    +--------+  Resource  +------------+        | Stale Locations
 //       /|\                                                           |
-//        |                                          Persist      +---------+
-//        + ----------------------------------------------------- | Logging |
-//        | Enqueue                                 ObjectTbl     +---------+
+//        |                                          Persist      +----------+
+//        + ----------------------------------------------------- | Updating |
+//        | Enqueue                                 ObjectTbl     +----------+
 //        | PruneEvent
-//       \|/
-//     +--------+   OnEvent     +-------+
-//    (| Queue (|) -----------> | Prune | ----------
-//     +--------+  PruneEvent   +-------+
+//       \|/                    (scan object table and hard delete resources)
+//     +--------+   OnEvent     +--------+
+//    (| Queue (|) -----------> | Prunng |
+//     +--------+  PruneEvent   +--------+
 //       /|\
 //        |
 //        | Enqueue
 //        | PruneEvent
 //        |
 //      CronJob
+
+// Q: How to optimize IO?
+//    A cron job periodically scan the object table and find all objects that are shared by
+//    limited blocks. Schedule a merge block or merge metadata task to optimize the IO
 
 type GCEventT int8
 
