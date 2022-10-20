@@ -142,6 +142,7 @@ func (h *Handle) HandleGetLogTail(
 		return err
 	}
 	*resp = res
+	logutil.Infof("res is %v", res.String())
 	return nil
 }
 

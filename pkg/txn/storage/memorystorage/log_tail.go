@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sort"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
@@ -252,7 +253,7 @@ func (m *MemHandler) HandleGetLogTail(ctx context.Context, meta txn.TxnMeta, req
 			DatabaseName: string(dbRow.Name),
 		})
 	}
-
+	logutil.Infof("res is %v", resp.String())
 	return nil
 }
 
