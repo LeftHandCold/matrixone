@@ -68,8 +68,11 @@ type TxnHandle interface {
 	GetTenantID() uint32
 	GetUserAndRoleID() (uint32, uint32)
 	CreateDatabase(name string) (handle.Database, error)
+	CreateDatabaseWithID(name string, id uint64) (handle.Database, error)
 	DropDatabase(name string) (handle.Database, error)
+	DropDatabaseByID(id uint64) (handle.Database, error)
 	GetDatabase(name string) (handle.Database, error)
+	GetDatabaseByID(id uint64) (handle.Database, error)
 	DatabaseNames() []string
 }
 
@@ -217,12 +220,18 @@ type TxnStore interface {
 	GetValue(dbId uint64, id *common.ID, row uint32, col uint16) (any, error)
 
 	CreateRelation(dbId uint64, def any) (handle.Relation, error)
+	CreateRelationWithTableId(dbId uint64, tableId uint64, def any) (handle.Relation, error)
 	DropRelationByName(dbId uint64, name string) (handle.Relation, error)
+	DropRelationByID(dbId uint64, tid uint64) (handle.Relation, error)
 	GetRelationByName(dbId uint64, name string) (handle.Relation, error)
+	GetRelationByID(dbId uint64, tid uint64) (handle.Relation, error)
 
 	CreateDatabase(name string) (handle.Database, error)
+	CreateDatabaseWithID(name string, id uint64) (handle.Database, error)
 	GetDatabase(name string) (handle.Database, error)
+	GetDatabaseByID(id uint64) (handle.Database, error)
 	DropDatabase(name string) (handle.Database, error)
+	DropDatabaseByID(id uint64) (handle.Database, error)
 	DatabaseNames() []string
 
 	GetSegment(dbId uint64, id *common.ID) (handle.Segment, error)

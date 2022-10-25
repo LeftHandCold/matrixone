@@ -270,7 +270,10 @@ func Test_checkTenantExistsOrNot(t *testing.T) {
 			DefaultRoleID: moAdminRoleID,
 		}
 
-		err = InitGeneralTenant(ctx, tenant, &tree.CreateAccount{
+		ses := newSes(nil)
+		ses.tenant = tenant
+
+		err = InitGeneralTenant(ctx, ses, &tree.CreateAccount{
 			Name:        "test",
 			IfNotExists: true,
 			AuthOption: tree.AccountAuthOption{
@@ -578,6 +581,7 @@ func Test_determineCreateAccount(t *testing.T) {
 		convey.So(err, convey.ShouldBeNil)
 		convey.So(ok, convey.ShouldBeTrue)
 	})
+
 	convey.Convey("create/drop/alter account fail", t, func() {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
@@ -3477,15 +3481,15 @@ func Test_determineDML(t *testing.T) {
 				}
 			}
 			for _, entry := range priv.entries {
-				if entry.peTyp == privilegeEntryTypeGeneral {
+				if entry.privilegeEntryTyp == privilegeEntryTypeGeneral {
 					makeSql(entry)
-				} else if entry.peTyp == privilegeEntryTypeMulti {
-					for _, mi := range entry.mEntry.privs {
-						tempEntry := privilegeEntriesMap[mi.pt]
+				} else if entry.privilegeEntryTyp == privilegeEntryTypeMulti {
+					for _, mi := range entry.compound.items {
+						tempEntry := privilegeEntriesMap[mi.privilegeTyp]
 						tempEntry.databaseName = mi.dbName
 						tempEntry.tableName = mi.tableName
-						tempEntry.peTyp = privilegeEntryTypeGeneral
-						tempEntry.mEntry = nil
+						tempEntry.privilegeEntryTyp = privilegeEntryTypeGeneral
+						tempEntry.compound = nil
 						makeSql(tempEntry)
 					}
 				}
@@ -3570,15 +3574,15 @@ func Test_determineDML(t *testing.T) {
 			}
 
 			for _, entry := range priv.entries {
-				if entry.peTyp == privilegeEntryTypeGeneral {
+				if entry.privilegeEntryTyp == privilegeEntryTypeGeneral {
 					makeSql(entry)
-				} else if entry.peTyp == privilegeEntryTypeMulti {
-					for _, mi := range entry.mEntry.privs {
-						tempEntry := privilegeEntriesMap[mi.pt]
+				} else if entry.privilegeEntryTyp == privilegeEntryTypeMulti {
+					for _, mi := range entry.compound.items {
+						tempEntry := privilegeEntriesMap[mi.privilegeTyp]
 						tempEntry.databaseName = mi.dbName
 						tempEntry.tableName = mi.tableName
-						tempEntry.peTyp = privilegeEntryTypeGeneral
-						tempEntry.mEntry = nil
+						tempEntry.privilegeEntryTyp = privilegeEntryTypeGeneral
+						tempEntry.compound = nil
 						makeSql(tempEntry)
 					}
 				}
@@ -3656,15 +3660,15 @@ func Test_determineDML(t *testing.T) {
 			}
 
 			for _, entry := range priv.entries {
-				if entry.peTyp == privilegeEntryTypeGeneral {
+				if entry.privilegeEntryTyp == privilegeEntryTypeGeneral {
 					makeSql(entry)
-				} else if entry.peTyp == privilegeEntryTypeMulti {
-					for _, mi := range entry.mEntry.privs {
-						tempEntry := privilegeEntriesMap[mi.pt]
+				} else if entry.privilegeEntryTyp == privilegeEntryTypeMulti {
+					for _, mi := range entry.compound.items {
+						tempEntry := privilegeEntriesMap[mi.privilegeTyp]
 						tempEntry.databaseName = mi.dbName
 						tempEntry.tableName = mi.tableName
-						tempEntry.peTyp = privilegeEntryTypeGeneral
-						tempEntry.mEntry = nil
+						tempEntry.privilegeEntryTyp = privilegeEntryTypeGeneral
+						tempEntry.compound = nil
 						makeSql(tempEntry)
 					}
 				}
@@ -5617,6 +5621,10 @@ func Test_doDropUser(t *testing.T) {
 				{i, "111", "public"},
 			})
 			bh.sql2result[sql] = mrs
+
+			sql = getSqlForCheckUserHasRole(user.Username, moAdminRoleID)
+			mrs = newMrsForSqlForCheckUserHasRole([][]interface{}{})
+			bh.sql2result[sql] = mrs
 		}
 
 		for i := range stmt.Users {
@@ -5629,6 +5637,7 @@ func Test_doDropUser(t *testing.T) {
 		err := doDropUser(ses.GetRequestContext(), ses, stmt)
 		convey.So(err, convey.ShouldBeNil)
 	})
+
 	convey.Convey("drop user succ (if exists)", t, func() {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
@@ -5668,6 +5677,9 @@ func Test_doDropUser(t *testing.T) {
 			}
 
 			bh.sql2result[sql] = mrs
+			sql = getSqlForCheckUserHasRole(user.Username, moAdminRoleID)
+			mrs = newMrsForSqlForCheckUserHasRole([][]interface{}{})
+			bh.sql2result[sql] = mrs
 		}
 
 		for i := range stmt.Users {
@@ -5680,6 +5692,7 @@ func Test_doDropUser(t *testing.T) {
 		err := doDropUser(ses.GetRequestContext(), ses, stmt)
 		convey.So(err, convey.ShouldBeNil)
 	})
+
 	convey.Convey("drop user fail", t, func() {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
@@ -5718,6 +5731,10 @@ func Test_doDropUser(t *testing.T) {
 				})
 			}
 
+			bh.sql2result[sql] = mrs
+
+			sql = getSqlForCheckUserHasRole(user.Username, moAdminRoleID)
+			mrs = newMrsForSqlForCheckUserHasRole([][]interface{}{})
 			bh.sql2result[sql] = mrs
 		}
 
@@ -6076,6 +6093,27 @@ func (bt *backgroundExecTest) ClearExecResultSet() {
 }
 
 var _ BackgroundExec = &backgroundExecTest{}
+
+func newMrsForSqlForCheckUserHasRole(rows [][]interface{}) *MysqlResultSet {
+	mrs := &MysqlResultSet{}
+
+	col1 := &MysqlColumn{}
+	col1.SetName("user_id")
+	col1.SetColumnType(defines.MYSQL_TYPE_LONGLONG)
+
+	col2 := &MysqlColumn{}
+	col2.SetName("role_id")
+	col2.SetColumnType(defines.MYSQL_TYPE_LONGLONG)
+
+	mrs.AddColumn(col1)
+	mrs.AddColumn(col2)
+
+	for _, row := range rows {
+		mrs.AddRow(row)
+	}
+
+	return mrs
+}
 
 func newMrsForRoleIdOfRole(rows [][]interface{}) *MysqlResultSet {
 	mrs := &MysqlResultSet{}

@@ -40,8 +40,6 @@ var (
 	constTimestampType  = types.Type{Oid: types.T_timestamp}
 )
 
-// EvalExpr return a vector corresponding to an expression.
-// if vector not one of batch's vectors. generate it.
 func EvalExpr(bat *batch.Batch, proc *process.Process, expr *plan.Expr) (*vector.Vector, error) {
 	var vec *vector.Vector
 
@@ -54,7 +52,11 @@ func EvalExpr(bat *batch.Batch, proc *process.Process, expr *plan.Expr) (*vector
 	switch t := e.(type) {
 	case *plan.Expr_C:
 		if t.C.GetIsnull() {
-			vec = vector.NewConstNull(types.Type{Oid: types.T(expr.Typ.GetId())}, length)
+			if types.T(expr.Typ.GetId()) == types.T_any {
+				vec = vector.NewConstNull(types.Type{Oid: types.T(expr.Typ.GetId())}, length)
+			} else {
+				vec = vector.NewConstNullWithData(types.Type{Oid: types.T(expr.Typ.GetId())}, length, proc.Mp())
+			}
 		} else {
 			switch t.C.GetValue().(type) {
 			case *plan.Const_Bval:
@@ -77,7 +79,7 @@ func EvalExpr(bat *batch.Batch, proc *process.Process, expr *plan.Expr) (*vector
 				vec = vector.NewConstFixed(constDecimal64Type, length, d64, proc.Mp())
 			case *plan.Const_Decimal128Val:
 				cd128 := t.C.GetDecimal128Val()
-				d128 := types.Decimal64FromInt64Raw(cd128.A)
+				d128 := types.Decimal128FromInt64Raw(cd128.A, cd128.B)
 				vec = vector.NewConstFixed(constDecimal128Type, length, d128, proc.Mp())
 			case *plan.Const_Timestampval:
 				vec = vector.NewConstFixed(constTimestampType, length, t.C.GetTimestampval(), proc.Mp())
@@ -88,6 +90,7 @@ func EvalExpr(bat *batch.Batch, proc *process.Process, expr *plan.Expr) (*vector
 				return nil, moerr.NewNYI(fmt.Sprintf("const expression %v", t.C.GetValue()))
 			}
 		}
+		vec.SetIsBin(t.C.IsBin)
 		return vec, nil
 	case *plan.Expr_T:
 		// return a vector recorded type information but without real data
@@ -110,17 +113,17 @@ func EvalExpr(bat *batch.Batch, proc *process.Process, expr *plan.Expr) (*vector
 			return nil, err
 		}
 		vs := make([]*vector.Vector, len(t.F.Args))
-		mp := make(map[*vector.Vector]struct{})
-		for i := range bat.Vecs {
-			mp[bat.Vecs[i]] = struct{}{}
-		}
 		for i := range vs {
 			v, err := EvalExpr(bat, proc, t.F.Args[i])
 			if err != nil {
 				if proc != nil {
+					mp := make(map[*vector.Vector]uint8)
+					for i := range bat.Vecs {
+						mp[bat.Vecs[i]] = 0
+					}
 					for j := 0; j < i; j++ {
 						if _, ok := mp[vs[j]]; !ok {
-							vs[j].Free(proc.Mp())
+							vector.Clean(vs[j], proc.Mp())
 						}
 					}
 				}
@@ -128,13 +131,20 @@ func EvalExpr(bat *batch.Batch, proc *process.Process, expr *plan.Expr) (*vector
 			}
 			vs[i] = v
 		}
-
-		vec, err = f.VecFn(vs, proc)
-		for i := range vs {
-			if _, ok := mp[vs[i]]; !ok {
-				vs[i].Free(proc.Mp())
+		defer func() {
+			if proc != nil {
+				mp := make(map[*vector.Vector]uint8)
+				for i := range bat.Vecs {
+					mp[bat.Vecs[i]] = 0
+				}
+				for i := range vs {
+					if _, ok := mp[vs[i]]; !ok {
+						vector.Clean(vs[i], proc.Mp())
+					}
+				}
 			}
-		}
+		}()
+		vec, err = f.VecFn(vs, proc)
 		if err != nil {
 			return nil, err
 		}
@@ -154,7 +164,11 @@ func JoinFilterEvalExpr(r, s *batch.Batch, rRow int, proc *process.Process, expr
 	case *plan.Expr_C:
 		length := 1
 		if t.C.GetIsnull() {
-			vec = vector.NewConstNull(types.Type{Oid: types.T(expr.Typ.GetId())}, length)
+			if types.T(expr.Typ.GetId()) == types.T_any {
+				vec = vector.NewConstNull(types.Type{Oid: types.T(expr.Typ.GetId())}, length)
+			} else {
+				vec = vector.NewConstNullWithData(types.Type{Oid: types.T(expr.Typ.GetId())}, length, proc.Mp())
+			}
 		} else {
 			switch t.C.GetValue().(type) {
 			case *plan.Const_Bval:
@@ -177,7 +191,7 @@ func JoinFilterEvalExpr(r, s *batch.Batch, rRow int, proc *process.Process, expr
 				vec = vector.NewConstFixed(constDecimal64Type, length, d64, proc.Mp())
 			case *plan.Const_Decimal128Val:
 				cd128 := t.C.GetDecimal128Val()
-				d128 := types.Decimal64FromInt64Raw(cd128.A)
+				d128 := types.Decimal128FromInt64Raw(cd128.A, cd128.B)
 				vec = vector.NewConstFixed(constDecimal128Type, length, d128, proc.Mp())
 			case *plan.Const_Timestampval:
 				vec = vector.NewConstFixed(constTimestampType, length, t.C.GetTimestampval(), proc.Mp())
@@ -209,16 +223,13 @@ func JoinFilterEvalExpr(r, s *batch.Batch, rRow int, proc *process.Process, expr
 			return nil, err
 		}
 		vs := make([]*vector.Vector, len(t.F.Args))
-		mp := make(map[*vector.Vector]struct{})
-		for i := range r.Vecs {
-			mp[r.Vecs[i]] = struct{}{}
-		}
-		for i := range s.Vecs {
-			mp[s.Vecs[i]] = struct{}{}
-		}
 		for i := range vs {
 			v, err := JoinFilterEvalExpr(r, s, rRow, proc, t.F.Args[i])
 			if err != nil {
+				mp := make(map[*vector.Vector]uint8)
+				for i := range s.Vecs {
+					mp[s.Vecs[i]] = 0
+				}
 				for j := 0; j < i; j++ {
 					if _, ok := mp[vs[j]]; !ok {
 						vector.Clean(vs[j], proc.Mp())
@@ -228,12 +239,18 @@ func JoinFilterEvalExpr(r, s *batch.Batch, rRow int, proc *process.Process, expr
 			}
 			vs[i] = v
 		}
-		vec, err = f.VecFn(vs, proc)
-		for i := range vs {
-			if _, ok := mp[vs[i]]; !ok {
-				vector.Clean(vs[i], proc.Mp())
+		defer func() {
+			mp := make(map[*vector.Vector]uint8)
+			for i := range s.Vecs {
+				mp[s.Vecs[i]] = 0
 			}
-		}
+			for i := range vs {
+				if _, ok := mp[vs[i]]; !ok {
+					vector.Clean(vs[i], proc.Mp())
+				}
+			}
+		}()
+		vec, err = f.VecFn(vs, proc)
 		if err != nil {
 			return nil, err
 		}
@@ -258,7 +275,11 @@ func EvalExprByZonemapBat(bat *batch.Batch, proc *process.Process, expr *plan.Ex
 	switch t := e.(type) {
 	case *plan.Expr_C:
 		if t.C.GetIsnull() {
-			vec = vector.NewConstNull(types.Type{Oid: types.T(expr.Typ.GetId())}, length)
+			if types.T(expr.Typ.GetId()) == types.T_any {
+				vec = vector.NewConstNull(types.Type{Oid: types.T(expr.Typ.GetId())}, length)
+			} else {
+				vec = vector.NewConstNullWithData(types.Type{Oid: types.T(expr.Typ.GetId())}, length, proc.Mp())
+			}
 		} else {
 			switch t.C.GetValue().(type) {
 			case *plan.Const_Bval:
@@ -281,7 +302,7 @@ func EvalExprByZonemapBat(bat *batch.Batch, proc *process.Process, expr *plan.Ex
 				vec = vector.NewConstFixed(constDecimal64Type, length, d64, proc.Mp())
 			case *plan.Const_Decimal128Val:
 				cd128 := t.C.GetDecimal128Val()
-				d128 := types.Decimal64FromInt64Raw(cd128.A)
+				d128 := types.Decimal128FromInt64Raw(cd128.A, cd128.B)
 				vec = vector.NewConstFixed(constDecimal128Type, length, d128, proc.Mp())
 			case *plan.Const_Timestampval:
 				vec = vector.NewConstFixed(constTimestampType, length, t.C.GetTimestampval(), proc.Mp())
@@ -425,7 +446,11 @@ func JoinFilterEvalExprInBucket(r, s *batch.Batch, rRow, sRow int, proc *process
 	case *plan.Expr_C:
 		length := 1
 		if t.C.GetIsnull() {
-			vec = vector.NewConstNull(types.Type{Oid: types.T(expr.Typ.GetId())}, length)
+			if types.T(expr.Typ.GetId()) == types.T_any {
+				vec = vector.NewConstNull(types.Type{Oid: types.T(expr.Typ.GetId())}, length)
+			} else {
+				vec = vector.NewConstNullWithData(types.Type{Oid: types.T(expr.Typ.GetId())}, length, proc.Mp())
+			}
 		} else {
 			switch t.C.GetValue().(type) {
 			case *plan.Const_Bval:
@@ -448,7 +473,7 @@ func JoinFilterEvalExprInBucket(r, s *batch.Batch, rRow, sRow int, proc *process
 				vec = vector.NewConstFixed(constDecimal64Type, length, d64, proc.Mp())
 			case *plan.Const_Decimal128Val:
 				cd128 := t.C.GetDecimal128Val()
-				d128 := types.Decimal64FromInt64Raw(cd128.A)
+				d128 := types.Decimal128FromInt64Raw(cd128.A, cd128.B)
 				vec = vector.NewConstFixed(constDecimal128Type, length, d128, proc.Mp())
 			case *plan.Const_Timestampval:
 				vec = vector.NewConstFixed(constTimestampType, length, t.C.GetTimestampval(), proc.Mp())

@@ -70,6 +70,9 @@ func InitTxnHandler(storage engine.Engine, txnClient TxnClient) *TxnHandler {
 }
 
 type Session struct {
+	// account id
+	accountId uint32
+
 	//protocol layer
 	protocol Protocol
 
@@ -239,6 +242,11 @@ func (bgs *BackgroundSession) Close() {
 	if bgs.cancel != nil {
 		bgs.cancel()
 	}
+}
+
+// GetBackgroundExec generates a background executor
+func (ses *Session) GetBackgroundExec(ctx context.Context) BackgroundExec {
+	return NewBackgroundHandler(ctx, ses.GetMemPool(), ses.GetParameterUnit())
 }
 
 func (ses *Session) GetIsInternal() bool {
@@ -1147,6 +1155,8 @@ func (th *TxnHandler) CommitTxn() error {
 	defer cancel()
 	txnOp := th.GetTxnOperator()
 	if err := storage.Commit(ctx, txnOp); err != nil {
+		txnOp.Rollback(ctx)
+		th.SetInvalid()
 		return err
 	}
 	err := txnOp.Commit(ctx)
@@ -1170,6 +1180,7 @@ func (th *TxnHandler) RollbackTxn() error {
 	defer cancel()
 	txnOp := th.GetTxnOperator()
 	if err := storage.Rollback(ctx, txnOp); err != nil {
+		th.SetInvalid()
 		return err
 	}
 	err := txnOp.Rollback(ctx)
@@ -1241,6 +1252,12 @@ func (tcc *TxnCompilerContext) GetTxnHandler() *TxnHandler {
 	return tcc.txnHandler
 }
 
+func (tcc *TxnCompilerContext) GetUserName() string {
+	tcc.mu.Lock()
+	defer tcc.mu.Unlock()
+	return tcc.ses.GetUserName()
+}
+
 func (tcc *TxnCompilerContext) SetQueryType(qryTyp QueryType) {
 	tcc.mu.Lock()
 	defer tcc.mu.Unlock()
@@ -1261,6 +1278,10 @@ func (tcc *TxnCompilerContext) DefaultDatabase() string {
 
 func (tcc *TxnCompilerContext) GetRootSql() string {
 	return tcc.GetSession().GetSql()
+}
+
+func (tcc *TxnCompilerContext) GetAccountId() uint32 {
+	return tcc.ses.accountId
 }
 
 func (tcc *TxnCompilerContext) DatabaseExists(name string) bool {
@@ -1345,12 +1366,13 @@ func (tcc *TxnCompilerContext) Resolve(dbName string, tableName string) (*plan2.
 					Width:     attr.Attr.Type.Width,
 					Precision: attr.Attr.Type.Precision,
 					Scale:     attr.Attr.Type.Scale,
+					AutoIncr:  attr.Attr.AutoIncrement,
+					Table:     tableName,
 				},
-				Primary:       attr.Attr.Primary,
-				Default:       attr.Attr.Default,
-				OnUpdate:      attr.Attr.OnUpdate,
-				Comment:       attr.Attr.Comment,
-				AutoIncrement: attr.Attr.AutoIncrement,
+				Primary:  attr.Attr.Primary,
+				Default:  attr.Attr.Default,
+				OnUpdate: attr.Attr.OnUpdate,
+				Comment:  attr.Attr.Comment,
 			}
 			if isCPkey {
 				col.IsCPkey = isCPkey
@@ -1585,9 +1607,11 @@ func fakeDataSetFetcher(handle interface{}, dataSet *batch.Batch) error {
 	return nil
 }
 
-func convertIntoResultSet(values []interface{}) ([]ExecResult, error) {
-	rsset := make([]ExecResult, len(values))
-	for i, value := range values {
+// getResultSet extracts the result set
+func getResultSet(bh BackgroundExec) ([]ExecResult, error) {
+	results := bh.GetExecResultSet()
+	rsset := make([]ExecResult, len(results))
+	for i, value := range results {
 		if er, ok := value.(ExecResult); ok {
 			rsset[i] = er
 		} else {
@@ -1606,7 +1630,7 @@ func executeSQLInBackgroundSession(ctx context.Context, mp *mpool.MPool, pu *con
 	if err != nil {
 		return nil, err
 	}
-	rsset := bh.GetExecResultSet()
+
 	//get the result set
 	//TODO: debug further
 	//mrsArray := ses.GetAllMysqlResultSet()
@@ -1620,7 +1644,7 @@ func executeSQLInBackgroundSession(ctx context.Context, mp *mpool.MPool, pu *con
 	//	}
 	//}
 
-	return convertIntoResultSet(rsset)
+	return getResultSet(bh)
 }
 
 type BackgroundHandler struct {

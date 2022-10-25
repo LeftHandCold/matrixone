@@ -78,6 +78,8 @@ func BuildPlan(ctx CompilerContext, stmt tree.Statement) (*Plan, error) {
 		return buildCreateTable(stmt, ctx)
 	case *tree.DropTable:
 		return buildDropTable(stmt, ctx)
+	case *tree.TruncateTable:
+		return buildTruncateTable(stmt, ctx)
 	case *tree.DropView:
 		return buildDropView(stmt, ctx)
 	case *tree.CreateView:
@@ -106,6 +108,8 @@ func BuildPlan(ctx CompilerContext, stmt tree.Statement) (*Plan, error) {
 		return buildShowIndex(stmt, ctx)
 	case *tree.ShowGrants:
 		return buildShowGrants(stmt, ctx)
+	case *tree.ShowCollation:
+		return buildShowCollation(stmt, ctx)
 	case *tree.ShowVariables:
 		return buildShowVariables(stmt, ctx)
 	case *tree.ShowStatus:

@@ -34,7 +34,12 @@ func Call(_ int, proc *process.Process, arg any) (bool, error) {
 	reg := ap.Reg
 	bat := proc.InputBatch()
 	if bat == nil {
-		return true, nil
+		select {
+		case <-reg.Ctx.Done():
+			return true, nil
+		case reg.Ch <- bat:
+			return true, nil
+		}
 	}
 	if bat.Length() == 0 {
 		return false, nil
@@ -43,8 +48,10 @@ func Call(_ int, proc *process.Process, arg any) (bool, error) {
 		if bat.Vecs[i].IsOriginal() {
 			vec, err := vector.Dup(bat.Vecs[i], proc.Mp())
 			if err != nil {
+				bat.Clean(proc.Mp())
 				return false, err
 			}
+			vector.Clean(bat.Vecs[i], proc.Mp())
 			bat.Vecs[i] = vec
 		}
 	}

@@ -14,26 +14,24 @@
 
 package vm
 
-import "github.com/matrixorigin/matrixone/pkg/vm/process"
-
 const (
 	Top = iota
 	Join
 	Semi
 	Left
 	Limit
-	Merge
+	Merge //5
 	Order
-	Group
-	Output
+	Group  //7
+	Output //8
 	Offset
 	Product
 	Restrict
 	Dispatch
-	Connector
-	Projection
+	Connector  //13
+	Projection //14
 	Anti
-	Single
+	Single //16
 	Mark
 
 	LoopJoin
@@ -45,7 +43,7 @@ const (
 	MergeTop
 	MergeLimit
 	MergeOrder
-	MergeGroup
+	MergeGroup //26
 	MergeOffset
 
 	Deletion
@@ -62,37 +60,21 @@ const (
 	Unnest
 
 	GenerateSeries
-)
 
-type InstructionArgument interface {
-	// Free release all memory allocated from mPool in an operator.
-	Free(proc *process.Process, pipelineFailed bool)
-}
+	// LastInstructionOp is not a true operator and must set at last.
+	// It was used by unit testing to ensure that
+	// all functions related to instructions can reach 100% coverage.
+	LastInstructionOp
+)
 
 // Instruction contains relational algebra
 type Instruction struct {
 	// Op specified the operator code of an instruction.
 	Op int
-	// Idx specified the anaylze information index.
+	// Idx specified the analysis information index.
 	Idx int
 	// Arg contains the operand of this instruction.
-	Arg InstructionArgument
+	Arg any
 }
 
 type Instructions []Instruction
-
-func (ins *Instruction) IsBrokenNode() bool {
-	switch ins.Op {
-	case Order, MergeOrder:
-		return true
-	case Limit, MergeLimit:
-		return true
-	case Offset, MergeOffset:
-		return true
-	case Group, MergeGroup:
-		return true
-	case Top, MergeTop:
-		return true
-	}
-	return false
-}

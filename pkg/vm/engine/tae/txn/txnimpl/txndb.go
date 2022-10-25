@@ -175,8 +175,43 @@ func (db *txnDB) CreateRelation(def any) (relation handle.Relation, err error) {
 	return
 }
 
+func (db *txnDB) CreateRelationWithTableId(tableId uint64, def any) (relation handle.Relation, err error) {
+	schema := def.(*catalog.Schema)
+	var factory catalog.TableDataFactory
+	if db.store.dataFactory != nil {
+		factory = db.store.dataFactory.MakeTableFactory()
+	}
+	meta, err := db.entry.CreateTableEntryWithTableId(schema, db.store.txn, factory, tableId)
+	if err != nil {
+		return
+	}
+	table, err := db.getOrSetTable(meta.GetID())
+	if err != nil {
+		return
+	}
+	relation = newRelation(table)
+	table.SetCreateEntry(meta)
+	return
+}
+
 func (db *txnDB) DropRelationByName(name string) (relation handle.Relation, err error) {
 	hasNewTxnEntry, meta, err := db.entry.DropTableEntry(name, db.store.txn)
+	if err != nil {
+		return nil, err
+	}
+	table, err := db.getOrSetTable(meta.GetID())
+	if err != nil {
+		return nil, err
+	}
+	relation = newRelation(table)
+	if hasNewTxnEntry {
+		err = table.SetDropEntry(meta)
+	}
+	return
+}
+
+func (db *txnDB) DropRelationByID(id uint64) (relation handle.Relation, err error) {
+	hasNewTxnEntry, meta, err := db.entry.DropTableEntryByID(id, db.store.txn)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +240,20 @@ func (db *txnDB) UnsafeGetRelation(id uint64) (relation handle.Relation, err err
 }
 
 func (db *txnDB) GetRelationByName(name string) (relation handle.Relation, err error) {
-	meta, err := db.entry.GetTableEntry(name, db.store.txn)
+	meta, err := db.entry.TxnGetTableEntryByName(name, db.store.txn)
+	if err != nil {
+		return
+	}
+	table, err := db.getOrSetTable(meta.GetID())
+	if err != nil {
+		return
+	}
+	relation = newRelation(table)
+	return
+}
+
+func (db *txnDB) GetRelationByID(id uint64) (relation handle.Relation, err error) {
+	meta, err := db.entry.TxnGetTableEntryByID(id, db.store.txn)
 	if err != nil {
 		return
 	}
