@@ -26,6 +26,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/buffer"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/gc"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/options"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables"
 	w "github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks/worker"
@@ -107,8 +108,9 @@ func Open(dirname string, opts *options.Options) (db *DB, err error) {
 		db,
 		opts.CheckpointCfg.CatalogUnCkpLimit,
 		time.Duration(opts.CheckpointCfg.CatalogCkpInterval)*time.Millisecond)
-	gcCollector := newGarbageCollector(
-		db,
+	gcCollector := gc.NewCollector(
+		db.Scheduler,
+		db.Opts.Clock,
 		time.Duration(opts.CheckpointCfg.FlushInterval*2)*time.Millisecond)
 	scanner.RegisterOp(calibrationOp)
 	scanner.RegisterOp(gcCollector)

@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package db
+package gc
 
 import (
-	"context"
 	"sync"
 	"time"
 
@@ -94,88 +93,6 @@ import (
 //    A cron job periodically scan the object table and find all objects that are shared by
 //    limited blocks. Schedule a merge block or merge metadata task to optimize the IO
 
-type GCEventT int8
-
-const (
-	GCEvent_Noop GCEventT = iota
-	GCEvent_Checkpoint
-	GCEvent_Resource
-)
-
-type GCEvent struct {
-	Type    GCEventT
-	Payload any
-}
-
-type GCOption func(*gcRunner)
-
-type GCClient interface {
-	RegisterCheckpoint(context.Context, types.TS) error
-	AddResource(context.Context, string) error
-
-	GetEpoch(context.Context) (err error, ts types.TS)
-	Status(context.Context) (status string, err error)
-}
-
-func WithGCEventQueueSize(size int) GCOption {
-	return func(gc *gcRunner) {
-		gc.options.eventQueueSize = size
-	}
-}
-
-type gcClient struct {
-	runner *gcRunner
-}
-
-func newGCClient(runner *gcRunner) *gcClient {
-	return &gcClient{
-		runner: runner,
-	}
-}
-
-func (client *gcClient) withContextDo(ctx context.Context, fn func() error) (err error) {
-	done := make(chan struct{}, 1)
-	done <- struct{}{}
-	select {
-	case <-ctx.Done():
-		err = ctx.Err()
-	case <-done:
-		err = fn()
-	}
-	return err
-}
-
-func (client *gcClient) RegisterCheckpoint(ctx context.Context, ts types.TS) (err error) {
-	err = client.withContextDo(ctx, func() error {
-		_, err := client.runner.eventQueue.Enqueue(&GCEvent{Type: GCEvent_Checkpoint, Payload: ts})
-		return err
-	})
-	return
-}
-
-func (client *gcClient) AddResource(ctx context.Context, resource string) (err error) {
-	err = client.withContextDo(ctx, func() error {
-		_, err := client.runner.eventQueue.Enqueue(&GCEvent{Type: GCEvent_Checkpoint, Payload: resource})
-		return err
-	})
-	return
-}
-
-func (client *gcClient) GetEpoch(ctx context.Context) (ts types.TS, err error) {
-	// TODO
-	return
-}
-
-func (client *gcClient) Status(ctx context.Context) (status string, err error) {
-	// TODO
-	return
-}
-
-type gcResource struct {
-	epoch types.TS
-	item  string
-}
-
 type gcRunner struct {
 	mu struct {
 		sync.RWMutex
@@ -204,7 +121,7 @@ type gcRunner struct {
 	onceStop  sync.Once
 }
 
-func newGCRunner(opts ...GCOption) *gcRunner {
+func NewGCRunner(opts ...GCOption) *gcRunner {
 	runner := &gcRunner{}
 	runner.resources.storage = btree.NewBTreeG[*gcResource](func(a, b *gcResource) bool {
 		return a.epoch.Less(b.epoch)
