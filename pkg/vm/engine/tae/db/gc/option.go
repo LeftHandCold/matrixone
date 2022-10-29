@@ -29,3 +29,9 @@ func WithMaxDuration(d time.Duration) GCOption {
 		r.options.maxDuration = d
 	}
 }
+
+func WithCronTaskInterval(interval time.Duration) GCOption {
+	return func(r *gcRunner) {
+		r.options.cronTaskInterval = interval
+	}
+}

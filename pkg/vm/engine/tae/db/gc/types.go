@@ -28,6 +28,7 @@ const (
 	GCEvent_Noop GCEventT = iota
 	GCEvent_Checkpoint
 	GCEvent_Resource
+	GCEvent_Refresh
 )
 
 type GCEvent struct {

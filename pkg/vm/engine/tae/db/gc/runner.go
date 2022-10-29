@@ -23,6 +23,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/stopper"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logstore/sm"
+	w "github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks/worker"
 	"github.com/tidwall/btree"
 )
 
@@ -113,8 +114,9 @@ type gcRunner struct {
 	}
 
 	options struct {
-		eventQueueSize int
-		maxDuration    time.Duration
+		eventQueueSize   int
+		maxDuration      time.Duration
+		cronTaskInterval time.Duration
 	}
 
 	eventQueue sm.Queue
@@ -145,13 +147,16 @@ func NewGCRunner(opts ...GCOption) *gcRunner {
 func (runner *gcRunner) Start() {
 	runner.onceStart.Do(func() {
 		runner.eventQueue.Start()
+		if err := runner.stopper.RunNamedTask("gc-cron-job", runner.crontask); err != nil {
+			panic(err)
+		}
 	})
 }
 
 func (runner *gcRunner) Stop() {
 	runner.onceStop.Do(func() {
-		runner.eventQueue.Stop()
 		runner.stopper.Stop()
+		runner.eventQueue.Stop()
 	})
 }
 
@@ -159,6 +164,12 @@ func (runner *gcRunner) fillDefaults() {
 	if runner.options.eventQueueSize <= 100 || runner.options.eventQueueSize >= 100000 {
 		// TODO: default
 		runner.options.eventQueueSize = 5000
+	}
+	if runner.options.cronTaskInterval <= 0 {
+		runner.options.cronTaskInterval = time.Second * 10
+	}
+	if runner.options.maxDuration <= 0 {
+		runner.options.maxDuration = time.Minute * 5
 	}
 }
 
@@ -195,6 +206,22 @@ func (runner *gcRunner) SafeTimestamp() types.TS {
 	return runner.mu.staleEpoch
 }
 
+func (runner *gcRunner) TryScheduleGC(_ context.Context) (err error) {
+	event := new(GCEvent)
+	event.Type = GCEvent_Refresh
+	_, err = runner.eventQueue.Enqueue(event)
+	return
+}
+
+func (runner *gcRunner) crontask(ctx context.Context) {
+	hb := w.NewHeartBeaterWithFunc(runner.options.cronTaskInterval, func() {
+		_ = runner.TryScheduleGC(context.Background())
+	}, nil)
+	hb.Start()
+	<-ctx.Done()
+	hb.Stop()
+}
+
 // it resets the state to GCState_NonEpoch
 // it update the maxStaleEpoch with the current epoch
 func (runner *gcRunner) getReadyForNextEpoch() {
@@ -221,6 +248,9 @@ func (runner *gcRunner) onEvent(event *GCEvent) {
 	case GCEvent_Resource:
 		resource := event.Payload.(*gcResource)
 		runner.onReceiveResource(resource)
+		return
+	case GCEvent_Refresh:
+		runner.tryRefreshEpoch()
 		return
 	default:
 		panic(moerr.NewInternalError("unexpect gc event type: %d", event.Type))
