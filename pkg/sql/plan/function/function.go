@@ -40,6 +40,7 @@ var (
 	// AndFunctionEncodedID is the encoded overload id of And(bool, bool)
 	// used to make an AndExpr
 	AndFunctionEncodedID = EncodeOverloadID(AND, 0)
+	AndFunctionName      = "and"
 )
 
 // Functions records all overloads of the same function name
@@ -327,6 +328,8 @@ func setDefaultPrecision(typ *types.Type) {
 	} else if typ.Oid == types.T_timestamp {
 		typ.Precision = 6
 	} else if typ.Oid == types.T_datetime {
+		typ.Precision = 6
+	} else if typ.Oid == types.T_time {
 		typ.Precision = 6
 	}
 	typ.Size = int32(typ.Oid.TypeLen())
