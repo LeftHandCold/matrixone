@@ -113,3 +113,41 @@ func TestRefreshEpoch(t *testing.T) {
 	stats = runner.Stats()
 	t.Log(stats.String())
 }
+
+func TestCronTask(t *testing.T) {
+	maxDuration := time.Second * 10
+	runner := NewGCRunner(
+		WithMaxDuration(maxDuration),
+		WithCronTaskInterval(time.Millisecond))
+	runner.Start()
+	defer runner.Stop()
+
+	assert.True(t, runner.getEpoch().IsEmpty())
+	assert.True(t, runner.minCheckpoint().IsEmpty())
+
+	ckp1 := types.BuildTS(
+		time.Now().UTC().UnixNano()-10*maxDuration.Nanoseconds(), 0)
+	ckp2 := types.BuildTS(ckp1.Physical()+2*maxDuration.Nanoseconds(), 0)
+	ckp3 := types.BuildTS(ckp1.Physical()+20*maxDuration.Nanoseconds(), 0)
+
+	assert.NoError(t, runner.SendCheckpoint(context.Background(), ckp1))
+	assert.NoError(t, runner.SendCheckpoint(context.Background(), ckp2))
+	assert.NoError(t, runner.SendCheckpoint(context.Background(), ckp3))
+	time.Sleep(time.Millisecond * 5)
+
+	assert.True(t, runner.SafeTimestamp().IsEmpty())
+	assert.Equal(t, GCState_InEpoch, runner.State())
+
+	runner.getReadyForNextEpoch()
+	time.Sleep(time.Millisecond * 5)
+	assert.True(t, runner.SafeTimestamp().Equal(ckp1))
+	assert.Equal(t, GCState_InEpoch, runner.State())
+
+	runner.getReadyForNextEpoch()
+	time.Sleep(time.Millisecond * 5)
+	assert.True(t, runner.SafeTimestamp().Equal(ckp2))
+	assert.Equal(t, GCState_NonEpoch, runner.State())
+
+	stats := runner.Stats()
+	t.Log(stats.String())
+}
