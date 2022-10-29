@@ -14,10 +14,18 @@
 
 package gc
 
+import "time"
+
 type GCOption func(*gcRunner)
 
 func WithGCEventQueueSize(size int) GCOption {
-	return func(gc *gcRunner) {
-		gc.options.eventQueueSize = size
+	return func(r *gcRunner) {
+		r.options.eventQueueSize = size
+	}
+}
+
+func WithMaxDuration(d time.Duration) GCOption {
+	return func(r *gcRunner) {
+		r.options.maxDuration = d
 	}
 }

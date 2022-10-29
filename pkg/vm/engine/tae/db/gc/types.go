@@ -15,7 +15,9 @@
 package gc
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 )
@@ -33,12 +35,43 @@ type GCEvent struct {
 	Payload any
 }
 
+type GCStateT int8
+
+const (
+	GCState_NonEpoch GCStateT = iota
+	GCState_InEpoch
+)
+
+func (state GCStateT) String() string {
+	if state == GCState_NonEpoch {
+		return "NonEpoch"
+	}
+	return "InEpoch"
+}
+
 type GCClient interface {
 	RegisterCheckpoint(context.Context, types.TS) error
 	AddResource(context.Context, string) error
 
 	GetEpoch(context.Context) (err error, ts types.TS)
 	Status(context.Context) (status string, err error)
+}
+
+type Stats struct {
+	Epoch         types.TS
+	MinCheckpoint types.TS
+	MaxCheckpoint types.TS
+
+	State GCStateT
+}
+
+func (stats *Stats) String() string {
+	var buf bytes.Buffer
+	_, _ = buf.WriteString(fmt.Sprintf("State:         %s\n", stats.State.String()))
+	_, _ = buf.WriteString(fmt.Sprintf("Epoch:         %s\n", stats.Epoch.ToString()))
+	_, _ = buf.WriteString(fmt.Sprintf("MinCheckpoint: %s\n", stats.MinCheckpoint.ToString()))
+	_, _ = buf.WriteString(fmt.Sprintf("MaxCheckpoint: %s\n", stats.MaxCheckpoint.ToString()))
+	return buf.String()
 }
 
 type gcResource struct {

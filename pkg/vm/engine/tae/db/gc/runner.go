@@ -15,6 +15,7 @@
 package gc
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -96,7 +97,9 @@ import (
 type gcRunner struct {
 	mu struct {
 		sync.RWMutex
-		epoch types.TS
+		epoch      types.TS
+		staleEpoch types.TS
+		state      GCStateT
 	}
 
 	checkpoints struct {
@@ -130,6 +133,7 @@ func NewGCRunner(opts ...GCOption) *gcRunner {
 		opt(runner)
 	}
 	runner.fillDefaults()
+	runner.mu.state = GCState_NonEpoch
 	runner.eventQueue = sm.NewSafeQueue(
 		runner.options.eventQueueSize,
 		100,
@@ -138,19 +142,17 @@ func NewGCRunner(opts ...GCOption) *gcRunner {
 	return runner
 }
 
-func (runner *gcRunner) Start() (err error) {
+func (runner *gcRunner) Start() {
 	runner.onceStart.Do(func() {
 		runner.eventQueue.Start()
 	})
-	return
 }
 
-func (runner *gcRunner) Stop() (err error) {
+func (runner *gcRunner) Stop() {
 	runner.onceStop.Do(func() {
 		runner.eventQueue.Stop()
 		runner.stopper.Stop()
 	})
-	return
 }
 
 func (runner *gcRunner) fillDefaults() {
@@ -158,6 +160,39 @@ func (runner *gcRunner) fillDefaults() {
 		// TODO: default
 		runner.options.eventQueueSize = 5000
 	}
+}
+
+func (runner *gcRunner) Stats() *Stats {
+	stats := new(Stats)
+	stats.Epoch = runner.getEpoch()
+	stats.MinCheckpoint = runner.minCheckpoint()
+	stats.MaxCheckpoint = runner.maxCheckpoint()
+	stats.State = runner.State()
+	return stats
+}
+
+func (runner *gcRunner) State() GCStateT {
+	runner.mu.RLock()
+	defer runner.mu.RUnlock()
+	return runner.mu.state
+}
+
+func (runner *gcRunner) SendCheckpoint(
+	_ context.Context, ts types.TS) (err error) {
+	event := new(GCEvent)
+	event.Type = GCEvent_Checkpoint
+	event.Payload = ts
+	_, err = runner.eventQueue.Enqueue(event)
+	return
+}
+
+// it resets the state to GCState_NonEpoch
+// it update the maxStaleEpoch with the current epoch
+func (runner *gcRunner) getReadyForNextEpoch() {
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	runner.mu.state = GCState_NonEpoch
+	runner.mu.staleEpoch = runner.mu.epoch
 }
 
 func (runner *gcRunner) onEvents(events ...any) {
@@ -193,6 +228,7 @@ func (runner *gcRunner) onReceiveCheckpoint(ts types.TS) {
 		if storage[len(storage)-1].Less(ts) {
 			storage = append(storage, ts)
 		}
+		runner.checkpoints.storage = storage
 	}
 }
 
@@ -220,7 +256,7 @@ func (runner *gcRunner) maxCheckpoint() types.TS {
 	return runner.checkpoints.storage[len(runner.checkpoints.storage)-1]
 }
 
-func (runner *gcRunner) popfrontCheckpoint() types.TS {
+func (runner *gcRunner) popMinCheckpoint() types.TS {
 	runner.checkpoints.mu.RLock()
 	defer runner.checkpoints.mu.RUnlock()
 	if len(runner.checkpoints.storage) == 0 {
@@ -246,32 +282,45 @@ func (runner *gcRunner) updateEpoch(nts types.TS) {
 			runner.mu.epoch.ToString(), nts.ToString()))
 	}
 	runner.mu.epoch = nts
+	runner.mu.state = GCState_InEpoch
 }
 
-func (runner *gcRunner) tryRefreshEpoch() (updated bool) {
-	// 1. Get current epoch
+func (runner *gcRunner) tryRefreshEpoch() (candidate types.TS, updated bool) {
+	// 1. If a epoch is running, skip this refresh
+	state := runner.State()
+	if state == GCState_InEpoch {
+		return
+	}
+
+	// 2. If no checkpoint found, skip this refresh
+	checkpointTs := runner.minCheckpoint()
+	if checkpointTs.IsEmpty() {
+		return
+	}
+
+	// 3. Get current epoch
 	//    Maybe it's 0 at the beginning.
 	//    The actual epoch used
 	curr := runner.getEpoch()
 
-	// 2. Get a candidate epoch by rule
-	candidate := types.BuildTS(time.Now().UTC().UnixNano()-
+	// 4. Get a candidate epoch by rule
+	candidate = types.BuildTS(time.Now().UTC().UnixNano()-
 		runner.options.maxDuration.Nanoseconds(), 0)
 
-	// 3. If the epoch candidate is less than current epoch, do nothing
+	// 5. If the epoch candidate is less than current epoch, do nothing
 	if candidate.LessEq(curr) {
 		updated = false
 		return
 	}
 
-	// 4. If the candidate is greater equal than the min checkpoint, using the
+	// 6. If the candidate is greater equal than the min checkpoint, using the
 	//    min checkpoint as the epoch candidate
-	if candidate.GreaterEq(runner.minCheckpoint()) {
-		candidate = runner.popfrontCheckpoint()
+	if candidate.Greater(checkpointTs) {
+		candidate = runner.popMinCheckpoint()
 		runner.updateEpoch(candidate)
 		updated = true
 		return
 	}
 
-	return false
+	return
 }
