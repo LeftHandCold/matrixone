@@ -61,6 +61,7 @@ type Stats struct {
 	Epoch         types.TS
 	MinCheckpoint types.TS
 	MaxCheckpoint types.TS
+	SafeTimestamp types.TS
 
 	State GCStateT
 }
@@ -71,6 +72,7 @@ func (stats *Stats) String() string {
 	_, _ = buf.WriteString(fmt.Sprintf("Epoch:         %s\n", stats.Epoch.ToString()))
 	_, _ = buf.WriteString(fmt.Sprintf("MinCheckpoint: %s\n", stats.MinCheckpoint.ToString()))
 	_, _ = buf.WriteString(fmt.Sprintf("MaxCheckpoint: %s\n", stats.MaxCheckpoint.ToString()))
+	_, _ = buf.WriteString(fmt.Sprintf("SafeTimestamp: %s\n", stats.SafeTimestamp.ToString()))
 	return buf.String()
 }
 

@@ -168,6 +168,7 @@ func (runner *gcRunner) Stats() *Stats {
 	stats.MinCheckpoint = runner.minCheckpoint()
 	stats.MaxCheckpoint = runner.maxCheckpoint()
 	stats.State = runner.State()
+	stats.SafeTimestamp = runner.SafeTimestamp()
 	return stats
 }
 
@@ -184,6 +185,14 @@ func (runner *gcRunner) SendCheckpoint(
 	event.Payload = ts
 	_, err = runner.eventQueue.Enqueue(event)
 	return
+}
+
+// it returns a timestamp that all stale resources before this timestamp
+// can be hard deleted
+func (runner *gcRunner) SafeTimestamp() types.TS {
+	runner.mu.RLock()
+	defer runner.mu.RUnlock()
+	return runner.mu.staleEpoch
 }
 
 // it resets the state to GCState_NonEpoch

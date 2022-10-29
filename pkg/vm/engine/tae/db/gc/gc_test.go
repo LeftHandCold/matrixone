@@ -40,6 +40,7 @@ func TestRefreshEpoch(t *testing.T) {
 		time.Now().UTC().UnixNano()-10*maxDuration.Nanoseconds(), 0)
 	ckp2 := types.BuildTS(ckp1.Physical()+2*maxDuration.Nanoseconds(), 0)
 	ckp3 := types.BuildTS(ckp1.Physical()+4*maxDuration.Nanoseconds(), 0)
+	ckp4 := types.BuildTS(ckp1.Physical()+20*maxDuration.Nanoseconds(), 0)
 
 	assert.NoError(t, runner.SendCheckpoint(context.Background(), ckp1))
 	time.Sleep(time.Millisecond)
@@ -73,6 +74,41 @@ func TestRefreshEpoch(t *testing.T) {
 	}
 
 	runner.getReadyForNextEpoch()
+
+	_, updated = runner.tryRefreshEpoch()
+	assert.True(t, updated)
+
+	for i := 0; i < 10; i++ {
+		_, updated = runner.tryRefreshEpoch()
+		assert.False(t, updated)
+	}
+
+	assert.True(t, runner.minCheckpoint().Equal(ckp3))
+	assert.True(t, runner.maxCheckpoint().Equal(ckp3))
+	assert.True(t, runner.getEpoch().Equal(ckp2))
+	assert.True(t, runner.SafeTimestamp().Equal(ckp1))
+
+	// set ckp2 stale
+	runner.getReadyForNextEpoch()
+	// set epoch to ckp3
+	_, updated = runner.tryRefreshEpoch()
+	assert.True(t, updated)
+
+	for i := 0; i < 10; i++ {
+		_, updated = runner.tryRefreshEpoch()
+		assert.False(t, updated)
+	}
+	assert.True(t, runner.SafeTimestamp().Equal(ckp2))
+
+	assert.NoError(t, runner.SendCheckpoint(context.Background(), ckp4))
+	time.Sleep(time.Millisecond)
+
+	// set ckp3 stale
+	runner.getReadyForNextEpoch()
+
+	// try to refresh epoch. the ckp4 is not a candidate.
+	_, updated = runner.tryRefreshEpoch()
+	assert.False(t, updated)
 
 	stats = runner.Stats()
 	t.Log(stats.String())
