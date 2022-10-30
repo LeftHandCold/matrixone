@@ -1,7 +1,6 @@
 package debug
 
 import (
-	"github.com/fagongzi/util/format"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	pb "github.com/matrixorigin/matrixone/pkg/pb/debug"
@@ -13,14 +12,7 @@ import (
 func handleFlush() handleFunc {
 	return getDNHandlerFunc(
 		pb.CmdMethod_Flush,
-		func(parameter string) ([]uint64, error) {
-			if len(parameter) > 0 {
-				id, err := format.ParseStringUint64(parameter)
-				if err != nil {
-					return nil, err
-				}
-				return []uint64{id}, nil
-			}
+		func(_ string) ([]uint64, error) {
 			return nil, nil
 		},
 		func(dnShardID uint64, parameter string, proc *process.Process) []byte {
@@ -40,6 +32,9 @@ func handleFlush() handleFunc {
 			return payload
 		},
 		func(data []byte) (interface{}, error) {
-			return nil, nil
+			if data != nil {
+				return pb.DebugResult{Data: data}, nil
+			}
+			return pb.DebugResult{Data: "true"}, nil
 		})
 }

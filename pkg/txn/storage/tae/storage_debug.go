@@ -16,8 +16,6 @@ package taestorage
 
 import (
 	"context"
-	apipb "github.com/matrixorigin/matrixone/pkg/pb/api"
-
 	"github.com/fagongzi/util/protoc"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/pb/debug"
@@ -31,7 +29,7 @@ func (s *taeStorage) Debug(ctx context.Context,
 	switch opCode {
 	case uint32(debug.CmdMethod_Ping):
 		return s.handlePing(data), nil
-	case uint32(apipb.OpCode_OpDebugFlush):
+	case uint32(debug.CmdMethod_Flush):
 		_, err := handleRead(
 			ctx, s,
 			txnMeta, data,
