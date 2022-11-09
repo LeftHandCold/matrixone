@@ -611,7 +611,7 @@ func (r *runner) tryCompactBlock(dbID, tableID, segmentID, id uint64, force bool
 	}
 	blkData := blk.GetBlockData()
 	score := blkData.EstimateScore(r.options.maxFlushInterval, force)
-	logutil.Debugf("%s [SCORE=%d]", blk.String(), score)
+	logutil.Infof("%s [SCORE=%d]", blk.String(), score)
 	if score < 100 {
 		return
 	}
