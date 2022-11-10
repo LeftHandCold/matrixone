@@ -226,10 +226,17 @@ func (chain *DeleteChain) HasDeleteIntentsPreparedInLocked(from, to types.TS) (f
 			return false
 		}
 		if found {
-			logutil.Infof("HasDeleteIntentsPreparedInLocked %v, n: %v, from %v, rows: %v, txn: %v",
-				chain.mvcc.meta.StringLocked(),
-				n.Prepare.ToString(),
-				from.ToString(), n.mask.String(), n.Txn.String())
+			if n.Txn == nil {
+				logutil.Infof("HasDeleteIntentsPreparedInLocked %v, n: %v, from %v, rows: %v",
+					chain.mvcc.meta.StringLocked(),
+					n.Prepare.ToString(),
+					from.ToString(), n.mask.String())
+			} else {
+				logutil.Infof("HasDeleteIntentsPreparedInLocked %v, n: %v, from %v, rows: %v, txn: %v",
+					chain.mvcc.meta.StringLocked(),
+					n.Prepare.ToString(),
+					from.ToString(), n.mask.String(), n.Txn.String())
+			}
 		}
 		if n.IsActive() {
 			return true
@@ -237,10 +244,17 @@ func (chain *DeleteChain) HasDeleteIntentsPreparedInLocked(from, to types.TS) (f
 
 		found, _ = n.PreparedIn(from, to)
 		if found {
-			logutil.Infof("PreparedIn %v, n: %v, from %v, rows: %v, txn: %v",
-				chain.mvcc.meta.StringLocked(),
-				n.Prepare.ToString(), from.ToString(),
-				n.mask.String(), n.Txn.String())
+			if n.Txn == nil {
+				logutil.Infof("PreparedIn %v, n: %v, from %v, rows: %v",
+					chain.mvcc.meta.StringLocked(),
+					n.Prepare.ToString(), from.ToString(),
+					n.mask.String())
+			} else {
+				logutil.Infof("PreparedIn %v, n: %v, from %v, rows: %v, txn: %v",
+					chain.mvcc.meta.StringLocked(),
+					n.Prepare.ToString(), from.ToString(),
+					n.mask.String(), n.Txn.String())
+			}
 		}
 		if n.IsAborted() {
 			found = false
