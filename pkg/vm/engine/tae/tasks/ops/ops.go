@@ -89,7 +89,7 @@ func (op *Op) OnExec() error {
 	}
 	err = op.Impl.Execute()
 	if err != nil {
-		return err
+		return moerr.NewInternalError("OnExec err: %v", err.Error())
 	}
 	err = op.Impl.PostExecute()
 	return err
