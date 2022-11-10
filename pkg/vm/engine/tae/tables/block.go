@@ -17,6 +17,7 @@ package tables
 import (
 	"bytes"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 	"time"
 
@@ -870,6 +871,9 @@ func (blk *dataBlock) HasDeleteIntentsPreparedIn(from, to types.TS) (found bool)
 	blk.mvcc.RLock()
 	defer blk.mvcc.RUnlock()
 	found = blk.mvcc.GetDeleteChain().HasDeleteIntentsPreparedInLocked(from, to)
+	if found {
+		logutil.Infof("HasDeleteIntentsPreparedIn: ")
+	}
 	return
 }
 
