@@ -629,7 +629,7 @@ func getDataFromPipeline(obj interface{}, bat *batch.Batch) error {
 
 	procBatchTime := time.Since(procBatchBegin)
 	tTime := time.Since(begin)
-	logInfof(ses.GetConciseProfile(), "rowCount %v \n"+
+	logDebugf(ses.GetConciseProfile(), "rowCount %v \n"+
 		"time of getDataFromPipeline : %s \n"+
 		"processBatchTime %v \n"+
 		"row2colTime %v \n"+
@@ -2724,7 +2724,7 @@ func (mce *MysqlCmdExecutor) doComQuery(requestCtx context.Context, sql string) 
 
 		runner = ret.(ComputationRunner)
 		if !pu.SV.DisableRecordTimeElapsedOfSqlRequest {
-			logInfof(ses.GetConciseProfile(), "time of Exec.Build : %s", time.Since(cmpBegin).String())
+			logDebugf(ses.GetConciseProfile(), "time of Exec.Build : %s", time.Since(cmpBegin).String())
 		}
 
 		mrs = ses.GetMysqlResultSet()
@@ -2814,7 +2814,7 @@ func (mce *MysqlCmdExecutor) doComQuery(requestCtx context.Context, sql string) 
 			}
 
 			if !pu.SV.DisableRecordTimeElapsedOfSqlRequest {
-				logInfof(ses.GetConciseProfile(), "time of Exec.Run : %s", time.Since(runBegin).String())
+				logDebugf(ses.GetConciseProfile(), "time of Exec.Run : %s", time.Since(runBegin).String())
 			}
 			/*
 				Step 3: Say goodbye
@@ -2863,7 +2863,7 @@ func (mce *MysqlCmdExecutor) doComQuery(requestCtx context.Context, sql string) 
 			}
 
 			if !pu.SV.DisableRecordTimeElapsedOfSqlRequest {
-				logInfof(ses.GetConciseProfile(), "time of Exec.Run : %s", time.Since(runBegin).String())
+				logDebugf(ses.GetConciseProfile(), "time of Exec.Run : %s", time.Since(runBegin).String())
 			}
 
 			rspLen = cw.GetAffectedRows()
@@ -2926,7 +2926,7 @@ func (mce *MysqlCmdExecutor) doComQuery(requestCtx context.Context, sql string) 
 			}
 
 			if !pu.SV.DisableRecordTimeElapsedOfSqlRequest {
-				logInfof(ses.GetConciseProfile(), "time of Exec.Run : %s", time.Since(runBegin).String())
+				logDebugf(ses.GetConciseProfile(), "time of Exec.Run : %s", time.Since(runBegin).String())
 			}
 
 			if cwft, ok := cw.(*TxnComputationWrapper); ok {
@@ -3090,7 +3090,7 @@ func (mce *MysqlCmdExecutor) ExecRequest(requestCtx context.Context, req *Reques
 	case COM_QUERY:
 		var query = string(req.GetData().([]byte))
 		mce.addSqlCount(1)
-		logInfo(ses.GetConciseProfile(), "query trace", logutil.ConnectionIdField(ses.GetConnectionID()), logutil.QueryField(SubStringFromBegin(query, int(ses.GetParameterUnit().SV.LengthOfQueryPrinted))))
+		logDebugf(ses.GetConciseProfile(), "query trace", logutil.ConnectionIdField(ses.GetConnectionID()), logutil.QueryField(SubStringFromBegin(query, int(ses.GetParameterUnit().SV.LengthOfQueryPrinted))))
 		seps := strings.Split(query, " ")
 		if len(seps) <= 0 {
 			resp = NewGeneralErrorResponse(COM_QUERY, moerr.NewInternalError("invalid query"))
@@ -3161,7 +3161,7 @@ func (mce *MysqlCmdExecutor) ExecRequest(requestCtx context.Context, req *Reques
 		newLastStmtID := ses.GenNewStmtId()
 		newStmtName := getPrepareStmtName(newLastStmtID)
 		sql = fmt.Sprintf("prepare %s from %s", newStmtName, sql)
-		logInfo(ses.GetConciseProfile(), "query trace", logutil.ConnectionIdField(ses.GetConnectionID()), logutil.QueryField(sql))
+		logDebugf(ses.GetConciseProfile(), "query trace", logutil.ConnectionIdField(ses.GetConnectionID()), logutil.QueryField(sql))
 
 		err := mce.doComQuery(requestCtx, sql)
 		if err != nil {
@@ -3189,7 +3189,7 @@ func (mce *MysqlCmdExecutor) ExecRequest(requestCtx context.Context, req *Reques
 		stmtID := binary.LittleEndian.Uint32(data[0:4])
 		stmtName := getPrepareStmtName(stmtID)
 		sql := fmt.Sprintf("deallocate prepare %s", stmtName)
-		logInfo(ses.GetConciseProfile(), "query trace", logutil.ConnectionIdField(ses.GetConnectionID()), logutil.QueryField(sql))
+		logDebugf(ses.GetConciseProfile(), "query trace", logutil.ConnectionIdField(ses.GetConnectionID()), logutil.QueryField(sql))
 
 		err := mce.doComQuery(requestCtx, sql)
 		if err != nil {
@@ -3235,7 +3235,7 @@ func (mce *MysqlCmdExecutor) parseStmtExecute(data []byte) (string, error) {
 			}
 		}
 	}
-	logInfo(ses.GetConciseProfile(), "query trace", logutil.ConnectionIdField(ses.GetConnectionID()), logutil.QueryField(sql), logutil.VarsField(strings.Join(varStrings, " , ")))
+	logDebugf(ses.GetConciseProfile(), "query trace", logutil.ConnectionIdField(ses.GetConnectionID()), logutil.QueryField(sql), logutil.VarsField(strings.Join(varStrings, " , ")))
 	return sql, nil
 }
 
