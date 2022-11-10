@@ -15,6 +15,7 @@
 package txnentries
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 
 	"github.com/RoaringBitmap/roaring"
@@ -55,6 +56,7 @@ func NewCompactBlockEntry(txn txnif.AsyncTxn, from, to handle.Block, scheduler t
 
 func (entry *compactBlockEntry) PrepareRollback() (err error) {
 	// TODO: remove block file? (should be scheduled and executed async)
+	logutil.Infof("PrepareRollback start: %v", entry.from.GetMeta().(*catalog.BlockEntry).String())
 	return
 }
 func (entry *compactBlockEntry) ApplyRollback(index *wal.Index) (err error) {
@@ -79,7 +81,9 @@ func (entry *compactBlockEntry) Is1PC() bool { return false }
 func (entry *compactBlockEntry) PrepareCommit() (err error) {
 	dataBlock := entry.from.GetMeta().(*catalog.BlockEntry).GetBlockData()
 	if dataBlock.HasDeleteIntentsPreparedIn(entry.txn.GetStartTS(), types.MaxTs()) {
+		logutil.Infof("NewTxnWWConflict start: %v", entry.from.GetMeta().(*catalog.BlockEntry).String())
 		err = moerr.NewTxnWWConflict()
 	}
+	logutil.Infof("PrepareCommit end: %v", entry.from.GetMeta().(*catalog.BlockEntry).String())
 	return
 }

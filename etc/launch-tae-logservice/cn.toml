@@ -3,8 +3,8 @@ service-type = "CN"
 data-dir = "./mo-data"
 
 [log]
-level = "debug"
-format = "json"
+level = "info"
+format = "console"
 max-size = 512
 
 
@@ -32,7 +32,6 @@ role = "TP"
 
 [cn.Engine]
 type = "tae"
-logstore = "logservice"
 flush-interval = "60s"
 min-count = 100
 scan-interval = "5s"

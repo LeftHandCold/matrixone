@@ -52,6 +52,10 @@ var (
 	version    = flag.Bool("version", false, "print version information")
 )
 
+func init() {
+	go http.ListenAndServe("0.0.0.0:6060", nil)
+}
+
 func main() {
 	flag.Parse()
 	maybePrintVersion()
