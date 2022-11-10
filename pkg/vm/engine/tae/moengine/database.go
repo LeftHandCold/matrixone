@@ -114,7 +114,7 @@ func (db *txnDatabase) Create(_ context.Context, name string, defs []engine.Tabl
 		return err
 	}
 	schema.BlockMaxRows = 40000
-	schema.SegmentMaxBlocks = 20
+	schema.SegmentMaxBlocks = 10
 	_, err = db.handle.CreateRelation(schema)
 	return err
 }

@@ -54,17 +54,18 @@ var MergeBlocksIntoSegmentTaskFctory = func(mergedBlks []*catalog.BlockEntry, to
 
 type mergeBlocksTask struct {
 	*tasks.BaseTask
-	txn         txnif.AsyncTxn
-	toSegEntry  *catalog.SegmentEntry
-	createdSegs []*catalog.SegmentEntry
-	mergedSegs  []*catalog.SegmentEntry
-	mergedBlks  []*catalog.BlockEntry
-	createdBlks []*catalog.BlockEntry
-	compacted   []handle.Block
-	rel         handle.Relation
-	scheduler   tasks.TaskScheduler
-	scopes      []common.ID
-	deletes     []*roaring.Bitmap
+	txn          txnif.AsyncTxn
+	toSegEntry   *catalog.SegmentEntry
+	createdSegs  []*catalog.SegmentEntry
+	mergedSegs   []*catalog.SegmentEntry
+	mergedBlks   []*catalog.BlockEntry
+	createdBlks  []*catalog.BlockEntry
+	compacted    []handle.Block
+	rel          handle.Relation
+	scheduler    tasks.TaskScheduler
+	scopes       []common.ID
+	deletes      []*roaring.Bitmap
+	deletesBatch []*containers.Batch
 }
 
 func NewMergeBlocksTask(ctx *tasks.Context, txn txnif.AsyncTxn, mergedBlks []*catalog.BlockEntry, mergedSegs []*catalog.SegmentEntry, toSegEntry *catalog.SegmentEntry, scheduler tasks.TaskScheduler) (task *mergeBlocksTask, err error) {
@@ -173,6 +174,7 @@ func (task *mergeBlocksTask) Execute() (err error) {
 	fromAddr := make([]uint32, 0, len(task.compacted))
 	ids := make([]*common.ID, 0, len(task.compacted))
 	task.deletes = make([]*roaring.Bitmap, len(task.compacted))
+	task.deletesBatch = make([]*containers.Batch, len(task.compacted))
 
 	// Prepare sort key resources
 	// If there's no sort key, use physical address key
