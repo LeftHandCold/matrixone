@@ -65,9 +65,9 @@ func (chain *DeleteChain) StringLocked() string {
 	line := 1
 	chain.LoopChain(func(vn txnif.MVCCNode) bool {
 		n := vn.(*DeleteNode)
-		n.chain.mvcc.RLock()
+		//n.chain.mvcc.RLock()
 		msg = fmt.Sprintf("%s\n%d. %s", msg, line, n.StringLocked())
-		n.chain.mvcc.RUnlock()
+		//n.chain.mvcc.RUnlock()
 		line++
 		return true
 	})
@@ -227,15 +227,15 @@ func (chain *DeleteChain) HasDeleteIntentsPreparedInLocked(from, to types.TS) (f
 		}
 		if found {
 			if n.Txn == nil {
-				logutil.Infof("HasDeleteIntentsPreparedInLocked %v, n: %v, from %v, rows: %v",
-					chain.mvcc.meta.StringLocked(),
+				logutil.Infof("HasDeleteIntentsPreparedInLocked %v, n: %v, from %v",
+					chain.StringLocked(),
 					n.Prepare.ToString(),
-					from.ToString(), n.mask.String())
+					from.ToString())
 			} else {
-				logutil.Infof("HasDeleteIntentsPreparedInLocked %v, n: %v, from %v, rows: %v, txn: %v",
-					chain.mvcc.meta.StringLocked(),
+				logutil.Infof("HasDeleteIntentsPreparedInLocked %v, n: %v, from %v, txn: %v",
+					chain.StringLocked(),
 					n.Prepare.ToString(),
-					from.ToString(), n.mask.String(), n.Txn.String())
+					from.ToString(), n.Txn.String())
 			}
 		}
 		if n.IsActive() {
@@ -245,15 +245,13 @@ func (chain *DeleteChain) HasDeleteIntentsPreparedInLocked(from, to types.TS) (f
 		found, _ = n.PreparedIn(from, to)
 		if found {
 			if n.Txn == nil {
-				logutil.Infof("PreparedIn %v, n: %v, from %v, rows: %v",
-					chain.mvcc.meta.StringLocked(),
-					n.Prepare.ToString(), from.ToString(),
-					n.mask.String())
+				logutil.Infof("PreparedIn %v, n: %v, from %v,",
+					chain.StringLocked(),
+					n.Prepare.ToString(), from.ToString())
 			} else {
-				logutil.Infof("PreparedIn %v, n: %v, from %v, rows: %v, txn: %v",
-					chain.mvcc.meta.StringLocked(),
-					n.Prepare.ToString(), from.ToString(),
-					n.mask.String(), n.Txn.String())
+				logutil.Infof("PreparedIn %v, n: %v, from %v, txn: %v",
+					chain.StringLocked(),
+					n.Prepare.ToString(), from.ToString(), n.Txn.String())
 			}
 		}
 		if n.IsAborted() {
