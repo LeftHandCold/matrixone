@@ -17,6 +17,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/dataio/blockio"
@@ -54,17 +55,18 @@ var MergeBlocksIntoSegmentTaskFctory = func(mergedBlks []*catalog.BlockEntry, to
 
 type mergeBlocksTask struct {
 	*tasks.BaseTask
-	txn         txnif.AsyncTxn
-	toSegEntry  *catalog.SegmentEntry
-	createdSegs []*catalog.SegmentEntry
-	mergedSegs  []*catalog.SegmentEntry
-	mergedBlks  []*catalog.BlockEntry
-	createdBlks []*catalog.BlockEntry
-	compacted   []handle.Block
-	rel         handle.Relation
-	scheduler   tasks.TaskScheduler
-	scopes      []common.ID
-	deletes     []*roaring.Bitmap
+	txn          txnif.AsyncTxn
+	toSegEntry   *catalog.SegmentEntry
+	createdSegs  []*catalog.SegmentEntry
+	mergedSegs   []*catalog.SegmentEntry
+	mergedBlks   []*catalog.BlockEntry
+	createdBlks  []*catalog.BlockEntry
+	compacted    []handle.Block
+	rel          handle.Relation
+	scheduler    tasks.TaskScheduler
+	scopes       []common.ID
+	deletes      []*roaring.Bitmap
+	deletesBatch []*containers.Batch
 }
 
 func NewMergeBlocksTask(ctx *tasks.Context, txn txnif.AsyncTxn, mergedBlks []*catalog.BlockEntry, mergedSegs []*catalog.SegmentEntry, toSegEntry *catalog.SegmentEntry, scheduler tasks.TaskScheduler) (task *mergeBlocksTask, err error) {
@@ -173,6 +175,7 @@ func (task *mergeBlocksTask) Execute() (err error) {
 	fromAddr := make([]uint32, 0, len(task.compacted))
 	ids := make([]*common.ID, 0, len(task.compacted))
 	task.deletes = make([]*roaring.Bitmap, len(task.compacted))
+	task.deletesBatch = make([]*containers.Batch, len(task.compacted))
 
 	// Prepare sort key resources
 	// If there's no sort key, use physical address key
@@ -189,6 +192,12 @@ func (task *mergeBlocksTask) Execute() (err error) {
 		}
 		defer view.Close()
 		task.deletes[i] = view.DeleteMask
+		meta := block.GetMeta().(*catalog.BlockEntry)
+		task.deletesBatch[i], err = meta.GetBlockData().CollectDeleteInRange(
+			types.TS{}, task.txn.GetStartTS(), true)
+		if err != nil {
+			return err
+		}
 		view.ApplyDeletes()
 		vec := view.Orphan()
 		defer vec.Close()
@@ -304,17 +313,38 @@ func (task *mergeBlocksTask) Execute() (err error) {
 			}
 		}
 	}
+
+	for i := range task.compacted {
+		_, err := writer.WriteBlock(task.deletesBatch[i])
+		if err != nil {
+			return err
+		}
+	}
 	blocks, err := writer.Sync()
 	if err != nil {
 		return err
 	}
 	var metaLoc string
+	var deltaLoc string
 	for i, block := range blocks {
+		if i >= len(batchs) {
+			deltaLoc, err = blockio.EncodeMetaLocWithObject(
+				block.GetExtent(),
+				0,
+				blocks)
+			if err != nil {
+				return
+			}
+			err = task.compacted[i].UpdateDeltaLoc(deltaLoc)
+		}
 		metaLoc, err = blockio.EncodeMetaLocWithObject(block.GetExtent(), uint32(batchs[i].Length()), blocks)
 		if err != nil {
 			return
 		}
 		err = blockHandles[i].UpdateMetaLoc(metaLoc)
+	}
+	if err != nil {
+		return
 	}
 	for _, blk := range task.createdBlks {
 		if err = blk.GetBlockData().ReplayIndex(); err != nil {
