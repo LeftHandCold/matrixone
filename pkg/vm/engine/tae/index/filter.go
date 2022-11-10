@@ -16,6 +16,7 @@ package index
 
 import (
 	"bytes"
+	"github.com/samber/lo"
 	"strconv"
 
 	"github.com/FastFilter/xorfilter"
@@ -23,6 +24,8 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 )
+
+const FuseFilterError = "too many iterations, you probably have duplicate keys"
 
 type StaticFilter interface {
 	MayContainsKey(key any) (bool, error)
@@ -54,7 +57,12 @@ func NewBinaryFuseFilter(data containers.Vector) (StaticFilter, error) {
 		return nil, err
 	}
 	if sf.inner, err = xorfilter.PopulateBinaryFuse8(hashes); err != nil {
-		return nil, err
+		if err.Error() == FuseFilterError {
+			hashes = lo.Uniq[uint64](hashes)
+			if sf.inner, err = xorfilter.PopulateBinaryFuse8(hashes); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return sf, nil
 }
