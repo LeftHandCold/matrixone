@@ -2869,7 +2869,7 @@ func (mce *MysqlCmdExecutor) doComQuery(requestCtx context.Context, sql string) 
 			rspLen = cw.GetAffectedRows()
 			echoTime := time.Now()
 			if !pu.SV.DisableRecordTimeElapsedOfSqlRequest {
-				logInfof(ses.GetConciseProfile(), "time of SendResponse %s", time.Since(echoTime).String())
+				logDebugf(ses.GetConciseProfile(), "time of SendResponse %s", time.Since(echoTime).String())
 			}
 
 			/*
