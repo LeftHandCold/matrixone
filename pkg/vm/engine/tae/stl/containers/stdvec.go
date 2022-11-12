@@ -16,6 +16,7 @@ package containers
 
 import (
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"io"
 	"reflect"
 	"unsafe"
@@ -73,6 +74,7 @@ func (vec *StdVector[T]) tryExpand(capacity int) {
 	}
 	newn, err := vec.alloc.Alloc(capacity * stl.Sizeof[T]())
 	if err != nil {
+		logutil.Infof("tryExpand panic %d:%d:%d", capacity, stl.Sizeof[T](), capacity*stl.Sizeof[T]())
 		panic(err)
 	}
 	buf := newn[:0:len(newn)]
