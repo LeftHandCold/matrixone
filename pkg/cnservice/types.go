@@ -37,7 +37,7 @@ import (
 )
 
 var (
-	defaultListenAddress = "127.0.0.1:6002"
+	defaultListenAddress = "127.0.0.1:6003"
 )
 
 type Service interface {
