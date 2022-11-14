@@ -72,6 +72,8 @@ func BlockRead(
 	bat := batch.NewWithSize(len(columns))
 	bat.Attrs = columns
 	for i, vec := range columnBatch.Vecs {
+		// If the vector uses mpool to allocate memory internally,
+		// it needs to be free here
 		if vec.Allocated() > 0 {
 			bat.Vecs[i] = containers.CopyToMoVec(vec)
 		} else {
