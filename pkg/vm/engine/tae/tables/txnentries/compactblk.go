@@ -15,6 +15,7 @@
 package txnentries
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 	"time"
 
@@ -80,6 +81,7 @@ func NewCompactBlockEntry(
 func (entry *compactBlockEntry) IsAborted() bool { return false }
 func (entry *compactBlockEntry) PrepareRollback() (err error) {
 	// TODO: remove block file? (should be scheduled and executed async)
+	logutil.Infof("PrepareRollback :%v", entry.from.String())
 	_ = entry.scheduler.DeleteTransferPage(entry.from.Fingerprint())
 	return
 }
