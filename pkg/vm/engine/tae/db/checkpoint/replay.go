@@ -17,13 +17,19 @@ package checkpoint
 import (
 	"context"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/dataio/blockio"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
 )
 
 type metaFile struct {
@@ -32,12 +38,17 @@ type metaFile struct {
 	end   types.TS
 }
 
-func (r *runner) Replay() {
+func (r *runner) Replay(dataFactory catalog.DataFactory) (maxTs types.TS, err error) {
+	ctx := context.Background()
 	dirs, err := r.fs.ListDir(CheckpointDir)
 	if err != nil {
-		panic(err)
+		return
+	}
+	if len(dirs) == 0 {
+		return
 	}
 	metaFiles := make([]*metaFile, 0)
+	var readDuration, applyDuration time.Duration
 	for i, dir := range dirs {
 		start, end := blockio.DecodeCheckpointMetadataFileName(dir.Name)
 		metaFiles = append(metaFiles, &metaFile{
@@ -53,31 +64,35 @@ func (r *runner) Replay() {
 	dir := dirs[targetIdx]
 	reader, err := objectio.NewObjectReader(CheckpointDir+dir.Name, r.fs.Service)
 	if err != nil {
-		panic(err)
+		return
 	}
-	bs, err := reader.ReadAllMeta(context.Background(), dir.Size, common.DefaultAllocator)
+	bs, err := reader.ReadAllMeta(ctx, dir.Size, common.DefaultAllocator)
 	if err != nil {
-		panic(err)
+		return
 	}
 	bat := containers.NewBatch()
+	defer bat.Close()
 	colNames := CheckpointSchema.Attrs()
 	colTypes := CheckpointSchema.Types()
 	nullables := CheckpointSchema.Nullables()
+	t0 := time.Now()
 	for i := range colNames {
 		if bs[0].GetExtent().End() == 0 {
 			continue
 		}
-		col, err := bs[0].GetColumn(uint16(i))
-		if err != nil {
-			panic(err)
+		col, err2 := bs[0].GetColumn(uint16(i))
+		if err2 != nil {
+			return types.TS{}, err2
 		}
-		data, err := col.GetData(context.Background(), nil)
-		if err != nil {
-			panic(err)
+		data, err2 := col.GetData(ctx, nil)
+		if err2 != nil {
+			return types.TS{}, err2
 		}
 		pkgVec := vector.New(colTypes[i])
-		if err = pkgVec.Read(data.Entries[0].Data); err != nil {
-			panic(err)
+		v := make([]byte, len(data.Entries[0].Object.([]byte)))
+		copy(v, data.Entries[0].Object.([]byte))
+		if err = pkgVec.Read(v); err != nil {
+			return
 		}
 		var vec containers.Vector
 		if pkgVec.Length() == 0 {
@@ -87,7 +102,23 @@ func (r *runner) Replay() {
 		}
 		bat.AddVector(colNames[i], vec)
 	}
-	for i := 0; i < bat.Length(); i++ {
+	readDuration += time.Since(t0)
+	datas := make([]*logtail.CheckpointData, bat.Length())
+	defer func() {
+		for _, data := range datas {
+			if data != nil {
+				data.Close()
+			}
+		}
+	}()
+
+	jobScheduler := tasks.NewParallelJobScheduler(200)
+	defer jobScheduler.Stop()
+	entries := make([]*CheckpointEntry, bat.Length())
+	var errMu sync.RWMutex
+	var wg sync.WaitGroup
+	readfn := func(i int) {
+		defer wg.Done()
 		start := bat.GetVectorByName(CheckpointAttr_StartTS).Get(i).(types.TS)
 		end := bat.GetVectorByName(CheckpointAttr_EndTS).Get(i).(types.TS)
 		metaloc := string(bat.GetVectorByName(CheckpointAttr_MetaLocation).Get(i).([]byte))
@@ -97,7 +128,41 @@ func (r *runner) Replay() {
 			location: metaloc,
 			state:    ST_Finished,
 		}
-		r.storage.entries.Set(checkpointEntry)
-		checkpointEntry.Replay(r.catalog, r.fs)
+		var err2 error
+		if datas[i], err2 = checkpointEntry.Read(ctx, jobScheduler, r.fs); err2 != nil {
+			errMu.Lock()
+			err = err2
+			errMu.Unlock()
+		}
+		entries[i] = checkpointEntry
 	}
+	wg.Add(bat.Length())
+	t0 = time.Now()
+	for i := 0; i < bat.Length(); i++ {
+		go readfn(i)
+	}
+	wg.Wait()
+	readDuration += time.Since(t0)
+	if err != nil {
+		return
+	}
+	t0 = time.Now()
+	for i := 0; i < bat.Length(); i++ {
+		checkpointEntry := entries[i]
+		r.tryAddNewCheckpointEntry(checkpointEntry)
+		err = datas[i].ApplyReplayTo(r.catalog, dataFactory)
+		if err != nil {
+			return
+		}
+		if maxTs.Less(checkpointEntry.end) {
+			maxTs = checkpointEntry.end
+		}
+	}
+	applyDuration = time.Since(t0)
+	logutil.Info("open-tae", common.OperationField("replay"),
+		common.OperandField("checkpoint"),
+		common.AnyField("apply cost", applyDuration),
+		common.AnyField("read cost", readDuration))
+	r.source.Init(maxTs)
+	return
 }

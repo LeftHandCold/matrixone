@@ -12,6 +12,7 @@ import (
 	mpool "github.com/matrixorigin/matrixone/pkg/common/mpool"
 	batch "github.com/matrixorigin/matrixone/pkg/container/batch"
 	plan "github.com/matrixorigin/matrixone/pkg/pb/plan"
+	timestamp "github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	client "github.com/matrixorigin/matrixone/pkg/txn/client"
 	engine "github.com/matrixorigin/matrixone/pkg/vm/engine"
 )
@@ -37,6 +38,21 @@ func NewMockStatistics(ctrl *gomock.Controller) *MockStatistics {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockStatistics) EXPECT() *MockStatisticsMockRecorder {
 	return m.recorder
+}
+
+// FilteredRows mocks base method.
+func (m *MockStatistics) FilteredRows(ctx context.Context, expr *plan.Expr) (float64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FilteredRows", ctx, expr)
+	ret0, _ := ret[0].(float64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FilteredRows indicates an expected call of FilteredRows.
+func (mr *MockStatisticsMockRecorder) FilteredRows(ctx, expr interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FilteredRows", reflect.TypeOf((*MockStatistics)(nil).FilteredRows), ctx, expr)
 }
 
 // Rows mocks base method.
@@ -167,6 +183,21 @@ func (m *MockRelation) Delete(arg0 context.Context, arg1 *batch.Batch, arg2 stri
 func (mr *MockRelationMockRecorder) Delete(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Delete", reflect.TypeOf((*MockRelation)(nil).Delete), arg0, arg1, arg2)
+}
+
+// FilteredRows mocks base method.
+func (m *MockRelation) FilteredRows(ctx context.Context, expr *plan.Expr) (float64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FilteredRows", ctx, expr)
+	ret0, _ := ret[0].(float64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FilteredRows indicates an expected call of FilteredRows.
+func (mr *MockRelationMockRecorder) FilteredRows(ctx, expr interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FilteredRows", reflect.TypeOf((*MockRelation)(nil).FilteredRows), ctx, expr)
 }
 
 // GetHideKeys mocks base method.
@@ -369,18 +400,18 @@ func (mr *MockReaderMockRecorder) Close() *gomock.Call {
 }
 
 // Read mocks base method.
-func (m *MockReader) Read(arg0 []string, arg1 *plan.Expr, arg2 *mpool.MPool) (*batch.Batch, error) {
+func (m *MockReader) Read(ctx context.Context, arg0 []string, arg1 *plan.Expr, arg2 *mpool.MPool) (*batch.Batch, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Read", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "Read", ctx, arg0, arg1, arg2)
 	ret0, _ := ret[0].(*batch.Batch)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Read indicates an expected call of Read.
-func (mr *MockReaderMockRecorder) Read(arg0, arg1, arg2 interface{}) *gomock.Call {
+func (mr *MockReaderMockRecorder) Read(ctx, arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Read", reflect.TypeOf((*MockReader)(nil).Read), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Read", reflect.TypeOf((*MockReader)(nil).Read), ctx, arg0, arg1, arg2)
 }
 
 // MockDatabase is a mock of Database interface.
@@ -432,6 +463,20 @@ func (m *MockDatabase) Delete(arg0 context.Context, arg1 string) error {
 func (mr *MockDatabaseMockRecorder) Delete(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Delete", reflect.TypeOf((*MockDatabase)(nil).Delete), arg0, arg1)
+}
+
+// GetDatabaseId mocks base method.
+func (m *MockDatabase) GetDatabaseId(arg0 context.Context) string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetDatabaseId", arg0)
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// GetDatabaseId indicates an expected call of GetDatabaseId.
+func (mr *MockDatabaseMockRecorder) GetDatabaseId(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetDatabaseId", reflect.TypeOf((*MockDatabase)(nil).GetDatabaseId), arg0)
 }
 
 // Relation mocks base method.
@@ -599,6 +644,21 @@ func (m *MockEngine) New(ctx context.Context, op client.TxnOperator) error {
 func (mr *MockEngineMockRecorder) New(ctx, op interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "New", reflect.TypeOf((*MockEngine)(nil).New), ctx, op)
+}
+
+// NewBlockReader mocks base method.
+func (m *MockEngine) NewBlockReader(ctx context.Context, num int, ts timestamp.Timestamp, expr *plan.Expr, ranges [][]byte, tblDef *plan.TableDef) ([]engine.Reader, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "NewBlockReader", ctx, num, ts, expr, ranges, tblDef)
+	ret0, _ := ret[0].([]engine.Reader)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// NewBlockReader indicates an expected call of NewBlockReader.
+func (mr *MockEngineMockRecorder) NewBlockReader(ctx, num, ts, expr, ranges, tblDef interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NewBlockReader", reflect.TypeOf((*MockEngine)(nil).NewBlockReader), ctx, num, ts, expr, ranges, tblDef)
 }
 
 // Nodes mocks base method.

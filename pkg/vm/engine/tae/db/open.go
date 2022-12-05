@@ -19,9 +19,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/buffer"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
@@ -42,6 +45,11 @@ const (
 
 func Open(dirname string, opts *options.Options) (db *DB, err error) {
 	dbLocker, err := createDBLock(dirname)
+
+	logutil.Info("open-tae", common.OperationField("Start"),
+		common.OperandField("open"))
+	totalTime := time.Now()
+
 	if err != nil {
 		return nil, err
 	}
@@ -49,11 +57,14 @@ func Open(dirname string, opts *options.Options) (db *DB, err error) {
 		if dbLocker != nil {
 			dbLocker.Close()
 		}
+		logutil.Info("open-tae", common.OperationField("End"),
+			common.OperandField("open"),
+			common.AnyField("cost", time.Since(totalTime)),
+			common.AnyField("err", err))
 	}()
 
 	opts = opts.FillDefaults(dirname)
 
-	indexBufMgr := buffer.NewNodeManager(opts.CacheCfg.IndexCapacity, nil)
 	mutBufMgr := buffer.NewNodeManager(opts.CacheCfg.InsertCapacity, nil)
 	txnBufMgr := buffer.NewNodeManager(opts.CacheCfg.TxnCapacity, nil)
 
@@ -65,13 +76,12 @@ func Open(dirname string, opts *options.Options) (db *DB, err error) {
 	fs := objectio.NewObjectFS(opts.Fs, serviceDir)
 
 	db = &DB{
-		Dir:         dirname,
-		Opts:        opts,
-		IndexBufMgr: indexBufMgr,
-		MTBufMgr:    mutBufMgr,
-		TxnBufMgr:   txnBufMgr,
-		Fs:          fs,
-		Closed:      new(atomic.Value),
+		Dir:       dirname,
+		Opts:      opts,
+		MTBufMgr:  mutBufMgr,
+		TxnBufMgr: txnBufMgr,
+		Fs:        fs,
+		Closed:    new(atomic.Value),
 	}
 
 	switch opts.LogStoreT {
@@ -83,55 +93,78 @@ func Open(dirname string, opts *options.Options) (db *DB, err error) {
 	db.Scheduler = newTaskScheduler(db, db.Opts.SchedulerCfg.AsyncWorkers, db.Opts.SchedulerCfg.IOWorkers)
 	dataFactory := tables.NewDataFactory(
 		db.Fs, mutBufMgr, db.Scheduler, db.Dir)
-	if db.Opts.Catalog, err = catalog.OpenCatalog(dirname, CATALOGDir, nil, db.Scheduler, dataFactory); err != nil {
+	if db.Opts.Catalog, err = catalog.OpenCatalog(db.Scheduler, dataFactory); err != nil {
 		return
 	}
 	db.Catalog = db.Opts.Catalog
 
 	// Init and start txn manager
-	txnStoreFactory := txnimpl.TxnStoreFactory(db.Opts.Catalog, db.Wal, txnBufMgr, dataFactory)
+	db.TransferTable = model.NewTransferTable[*model.TransferHashPage](db.Opts.TransferTableTTL)
+	txnStoreFactory := txnimpl.TxnStoreFactory(
+		db.Opts.Catalog,
+		db.Wal,
+		db.TransferTable,
+		txnBufMgr,
+		dataFactory)
 	txnFactory := txnimpl.TxnFactory(db.Opts.Catalog)
 	db.TxnMgr = txnbase.NewTxnManager(txnStoreFactory, txnFactory, db.Opts.Clock)
-	db.LogtailMgr = logtail.NewLogtailMgr(db.Opts.LogtailCfg.PageSize, db.Opts.Clock)
+	db.LogtailMgr = logtail.NewManager(
+		int(db.Opts.LogtailCfg.PageSize),
+		db.Opts.Clock,
+	)
 	db.TxnMgr.CommitListener.AddTxnCommitListener(db.LogtailMgr)
 	db.TxnMgr.Start()
+	db.BGCheckpointRunner = checkpoint.NewRunner(
+		db.Fs,
+		db.Catalog,
+		db.Scheduler,
+		logtail.NewDirtyCollector(db.LogtailMgr, db.Opts.Clock, db.Catalog, new(catalog.LoopProcessor)),
+		db.Wal,
+		checkpoint.WithFlushInterval(opts.CheckpointCfg.FlushInterval),
+		checkpoint.WithCollectInterval(opts.CheckpointCfg.ScanInterval),
+		checkpoint.WithMinCount(int(opts.CheckpointCfg.MinCount)),
+		checkpoint.WithMinIncrementalInterval(opts.CheckpointCfg.IncrementalInterval),
+		checkpoint.WithMinGlobalInterval(opts.CheckpointCfg.GlobalInterval))
 
-	db.Replay(dataFactory)
+	now := time.Now()
+	checkpointed, err := db.BGCheckpointRunner.Replay(dataFactory)
+	if err != nil {
+		panic(err)
+	}
+	logutil.Info("open-tae", common.OperationField("replay"),
+		common.OperandField("checkpoints"),
+		common.AnyField("cost", time.Since(now)),
+		common.AnyField("checkpointed", checkpointed.ToString()))
+
+	now = time.Now()
+	db.Replay(dataFactory, checkpointed)
 	db.Catalog.ReplayTableRows()
+	logutil.Info("open-tae", common.OperationField("replay"),
+		common.OperandField("wal"),
+		common.AnyField("cost", time.Since(now)))
 
 	db.DBLocker, dbLocker = dbLocker, nil
 
 	// Init timed scanner
 	scanner := NewDBScanner(db, nil)
 	calibrationOp := newCalibrationOp(db)
-	catalogCheckpointer := newCatalogCheckpointer(
-		db,
-		opts.CheckpointCfg.CatalogUnCkpLimit,
-		time.Duration(opts.CheckpointCfg.CatalogCkpInterval)*time.Millisecond)
 	gcCollector := gc.NewCollector(
 		db.Scheduler,
 		db.Opts.Clock,
-		time.Duration(opts.CheckpointCfg.FlushInterval*2)*time.Millisecond)
+		gc.WithCollectorInterval(opts.CheckpointCfg.FlushInterval*2),
+		gc.WithCollectorTTLFunc(db.TransferTable.RunTTL),
+	)
 	scanner.RegisterOp(calibrationOp)
 	scanner.RegisterOp(gcCollector)
-	scanner.RegisterOp(catalogCheckpointer)
-
-	db.BGCheckpointRunner = checkpoint.NewRunner(
-		db.Fs,
-		db.Catalog,
-		db.Scheduler,
-		logtail.NewDirtyCollector(db.LogtailMgr, db.Opts.Clock, db.Catalog, new(catalog.LoopProcessor)),
-		checkpoint.WithFlushInterval(time.Duration(opts.CheckpointCfg.FlushInterval)*time.Millisecond),
-		checkpoint.WithCollectInterval(time.Duration(opts.CheckpointCfg.ScannerInterval)*time.Millisecond),
-		checkpoint.WithMinCount(int(opts.CheckpointCfg.CatalogUnCkpLimit)),
-		checkpoint.WithMinIncrementalInterval(time.Duration(opts.CheckpointCfg.CatalogCkpInterval)*time.Millisecond),
-		checkpoint.WithMinGlobalInterval(time.Duration(opts.CheckpointCfg.CatalogCkpInterval*1000)*time.Millisecond))
+	db.Wal.Start()
 	db.BGCheckpointRunner.Start()
 
 	db.BGScanner = w.NewHeartBeater(
-		time.Duration(opts.CheckpointCfg.ScannerInterval)*time.Millisecond,
+		opts.CheckpointCfg.ScanInterval,
 		scanner)
 	db.BGScanner.Start()
 
+	// For debug or test
+	// logutil.Info(db.Catalog.SimplePPString(common.PPL2))
 	return
 }

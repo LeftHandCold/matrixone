@@ -118,6 +118,20 @@ func (candidates *gcCandidates) String() string {
 	return w.String()
 }
 
+type CollectorOption func(*collector)
+
+func WithCollectorTTLFunc(fn TTLFunc) CollectorOption {
+	return func(c *collector) {
+		c.ttls = append(c.ttls, fn)
+	}
+}
+
+func WithCollectorInterval(interval time.Duration) CollectorOption {
+	return func(c *collector) {
+		c.minInterval = interval
+	}
+}
+
 type collector struct {
 	*catalog.LoopProcessor
 	scheduler       tasks.TaskScheduler
@@ -129,18 +143,23 @@ type collector struct {
 	candidates      *gcCandidates
 	minInterval     time.Duration
 	lastRunTime     time.Time
+
+	ttls []TTLFunc
 }
 
 func NewCollector(
 	scheduler tasks.TaskScheduler,
 	clock clock.Clock,
-	minInterval time.Duration) *collector {
+	opts ...CollectorOption) *collector {
 	c := &collector{
 		LoopProcessor: new(catalog.LoopProcessor),
-		minInterval:   minInterval,
 		scheduler:     scheduler,
 		clock:         types.NewTsAlloctor(clock),
 		candidates:    newGCCandidates(),
+		ttls:          make([]TTLFunc, 0),
+	}
+	for _, opt := range opts {
+		opt(c)
 	}
 	c.BlockFn = c.onBlock
 	c.SegmentFn = c.onSegment
@@ -149,6 +168,12 @@ func NewCollector(
 	c.refreshEpoch()
 	c.ResetState()
 	return c
+}
+
+func (c *collector) fillDefaults() {
+	if c.minInterval <= 0 {
+		c.minInterval = time.Second * 10
+	}
 }
 
 func (c *collector) ResetState() {
@@ -196,7 +221,15 @@ func (c *collector) refreshRunTime() {
 	c.lastRunTime = time.Now()
 }
 
+func (c *collector) runTTLs() {
+	for _, fn := range c.ttls {
+		fn(time.Now())
+	}
+}
+
 func (c *collector) PostExecute() (err error) {
+	c.runTTLs()
+
 	if !c.canRun() {
 		return
 	}

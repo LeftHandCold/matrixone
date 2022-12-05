@@ -133,6 +133,7 @@ func GenBlockInfo(rows [][]any) []BlockInfo {
 		infos[i].MetaLoc = string(row[BLOCKMETA_METALOC_IDX].([]byte))
 		infos[i].DeltaLoc = string(row[BLOCKMETA_DELTALOC_IDX].([]byte))
 		infos[i].CommitTs = row[BLOCKMETA_COMMITTS_IDX].(types.TS)
+		infos[i].SegmentID = row[BLOCKMETA_SEGID_IDX].(uint64)
 	}
 	return infos
 }
@@ -251,6 +252,7 @@ func genTableDefs(row []any) (engine.TableDef, error) {
 	attr.IsHidden = row[MO_COLUMNS_ATT_IS_HIDDEN_IDX].(int8) == 1
 	attr.AutoIncrement = row[MO_COLUMNS_ATT_IS_AUTO_INCREMENT_IDX].(int8) == 1
 	attr.Primary = string(row[MO_COLUMNS_ATT_CONSTRAINT_TYPE_IDX].([]byte)) == "p"
+	attr.ClusterBy = row[MO_COLUMNS_ATT_IS_CLUSTERBY].(int8) == 1
 	return &engine.AttributeDef{Attr: attr}, nil
 }
 

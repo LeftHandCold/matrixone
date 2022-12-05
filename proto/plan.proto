@@ -24,8 +24,8 @@ option (gogoproto.sizer_all) = false;
 option (gogoproto.protosizer_all) = true;
 
 message Type {
-	int32 id           = 1;
-	bool nullable		= 2;
+	int32 id            = 1;
+	bool notNullable	= 2;
 	bool auto_incr      = 3;
 	int32 width			= 4;
 	int32 precision		= 5;
@@ -39,23 +39,29 @@ message Type {
 message Const {
 	bool isnull			= 1;
 	oneof value {
-		int64 ival		= 2;
-		double dval 	= 3;
-		string sval		= 4;
-		bool bval 		= 5;
-		uint64 uval 	= 6;
-		float fval		= 7;
-		int32 dateval 		= 8;
-		int64 timeval = 9;
-		int64 datetimeval		= 10;
-		decimal64 decimal64val = 11;
-		decimal128 decimal128val = 12;
-		int64 timestampval = 13;
-		string jsonval = 14;
-		bool defaultval = 15;
-		bool updateVal = 16;
+		int32 i8val		= 2;  // pb have no int8
+		int32 i16val	= 3;  // pb have no int16
+		int32 i32val	= 4;
+		int64 i64val	= 5;
+		uint32 u8val 	= 6;  // pb have no uint8
+		uint32 u16val 	= 7;  // pb have no uint16
+		uint32 u32val 	= 8;
+		uint64 u64val 	= 9;
+		double dval 	= 10;
+		string sval		= 11;
+		bool bval 		= 12;
+		float fval		= 13;
+		int32 dateval 	= 14;
+		int64 timeval 	= 15;
+		int64 datetimeval			= 16;
+		decimal64 decimal64val 		= 17;
+		decimal128 decimal128val 	= 18;
+		int64 timestampval 			= 19;
+		string jsonval 				= 20;
+		bool defaultval 			= 21;
+		bool updateVal 				= 22;
 	}
-	bool isBin = 17;
+	bool isBin = 23;
 }
 
 // Bounded param for prepared statement.  User fill on execution.
@@ -153,8 +159,8 @@ message Function {
 		AGG        = 128;
 		WIN        = 256;
 
-		// Monotonical function can filter by zonemap
-		MONOTONICAL = 512;
+		// Monotonic function can filter by zonemap
+		MONOTONIC = 512;
 	}
 
 	ObjectRef func		= 1;
@@ -197,10 +203,11 @@ message ColDef {
 	Type typ			= 3;
 	Default default 	= 4;
 	bool primary        = 5;
-	int32 pkidx 		= 7;
-	string comment		= 8;
-	bool is_cPkey = 9;
-	OnUpdate on_update = 10;
+	int32 pkidx 		= 6;
+	string comment		= 7;
+	OnUpdate on_update  = 8;
+	bool low_cardinality = 9;
+	bool clusterBy		=10;
 }
 
 message Default {
@@ -216,6 +223,10 @@ message OnUpdate {
 
 message PrimaryKeyDef {
 	repeated string names = 1;
+}
+
+message ClusterByDef {
+	string name = 1;
 }
 
 message Property {
@@ -242,55 +253,58 @@ enum PartitionType {
 message PartitionInfo {
 	PartitionType type = 1;
 	Expr Expr = 2;
-	Expr partitionExpression = 3;
+	Expr partition_expression = 3;
 	repeated Expr Columns = 4;
-	repeated string partitionColumns = 5;
+	repeated string partition_columns = 5;
 	uint64 partitionNum = 6;
 	repeated PartitionItem partitions = 7;
 	int64 algorithm = 8;
-	bool isSubPartition = 9;
+	bool is_sub_partition = 9;
 	string partition_msg = 10;
 }
 
 message PartitionItem {
-	string partitionName = 1;
-	uint32 ordinalPosition = 2;
+	string partition_name = 1;
+	uint32 ordinal_position = 2;
 	string description = 3;
 	string comment = 4;
-	repeated Expr lessThan = 5;
-	repeated Expr inValues = 6;
+	repeated Expr less_than = 5;
+	repeated Expr in_values = 6;
 }
 
 message ViewDef {
 	string view  = 1;
 }
 
-message IndexDef {
+message UniqueIndexDef {
 	repeated string index_names = 1;
 	repeated string table_names = 2;
-	repeated bool uniques = 3;
-	repeated Field fields = 4;
+	repeated Field fields = 3;
+	repeated bool table_exists = 4;
+}
+
+message SecondaryIndexDef {
+	repeated string index_names = 1;
+	repeated string table_names = 2;
+	repeated Field fields = 3;
+	repeated bool table_exists = 4;
 }
 
 message Field {
-	repeated string col_names = 1;
-}
-
-message IndexInfo {
-	string table_name = 1;
-	repeated string col_names = 2;
-	repeated ColDef cols = 3;
-	Field field = 4;
+	repeated string parts = 1;
+	repeated ColDef cols = 2;
 }
 
 message TableDef {
 	message DefType {
 		oneof def {
 			PrimaryKeyDef pk			= 1;
-			IndexDef idx				= 2;
-			PropertiesDef properties	= 3;
-			ViewDef view				= 4;
-			PartitionInfo partition				= 5;
+			PropertiesDef properties	= 2;
+			ViewDef view				= 3;
+			PartitionInfo partition				= 4;
+			UniqueIndexDef uIdx				= 5;
+			SecondaryIndexDef sIdx				= 6;
+			ClusterByDef cb				=7;
 		}
 	}
 	string name				= 1;
@@ -301,7 +315,6 @@ message TableDef {
 	map<string, int32> name2col_index = 6;
 	ColDef composite_pkey = 7;
 	TableFunction tbl_func = 8;
-	repeated IndexInfo index_infos = 9;
 }
 
 message TableFunction{
@@ -432,9 +445,6 @@ message Node {
 		INTERSECT_ALL = 55;
 		MINUS = 56;
 		MINUS_ALL = 57;
-
-		//
-		TABLE_FUNCTION = 58;
 	}
 
 	enum JoinFlag {
@@ -485,21 +495,28 @@ message Node {
 	ObjectRef obj_ref = 19;
 	RowsetData rowset_data = 20;
 	string extra_options = 21;
-	repeated DeleteTableCtx deleteTablesCtx = 22;
+	repeated DeleteTableCtx delete_tables_ctx = 22;
 
 	repeated int32 binding_tags = 23;
 
     AnalyzeInfo analyze_info = 24;
+
+	repeated Expr tbl_func_expr_list = 25;
+
+    // The pipeline will determine the parallelism by traversing the plan 
+    // when it is received. Then the build is built based on this information.
+    int32   parallelism = 26;
 }
 
 message DeleteTableCtx {
-	string dbName = 1;
-	string tblName = 2;
-	string useDeleteKey = 3;
-	bool canTruncate = 4;
-	int32 colIndex = 5;
-	repeated IndexInfo index_infos = 6;
-	repeated string index_attrs = 7;
+	string db_name = 1;
+	string tbl_name = 2;
+	string use_delete_key = 3;
+	bool can_truncate = 4;
+	int32 col_index = 5;
+	UniqueIndexDef unique_index_def = 6;
+	SecondaryIndexDef secondary_index_def = 7;
+	repeated string index_attrs = 8;
 }
 
 message Query {
@@ -592,7 +609,8 @@ message InsertValues {
 	repeated string order_attrs = 5;
 	repeated column columns = 6;
 	ColDef composite_pkey = 7;
-	repeated IndexInfo index_infos = 8;
+	UniqueIndexDef unique_index_def = 8;
+	SecondaryIndexDef secondary_index_def = 9;
 }
 
 message column{
@@ -724,6 +742,7 @@ message DropIndex {
 message TruncateTable {
 	string database = 1;
 	string table = 2;
+	repeated string index_table_names = 3;
 }
 
 message ShowVariables {

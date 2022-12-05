@@ -79,11 +79,23 @@ var (
 	}
 
 	CoalesceVarchar = func(vs []*vector.Vector, proc *process.Process) (*vector.Vector, error) {
-		return coalesceString(vs, proc, types.Type{Oid: types.T_varchar})
+		return coalesceString(vs, proc, types.Type{Oid: types.T_varchar, Width: types.MaxVarcharLen})
 	}
 
 	CoalesceChar = func(vs []*vector.Vector, proc *process.Process) (*vector.Vector, error) {
 		return coalesceString(vs, proc, types.Type{Oid: types.T_char})
+	}
+
+	CoalesceJson = func(vs []*vector.Vector, proc *process.Process) (*vector.Vector, error) {
+		return coalesceString(vs, proc, types.Type{Oid: types.T_json.ToType().Oid})
+	}
+
+	CoalesceBlob = func(vs []*vector.Vector, proc *process.Process) (*vector.Vector, error) {
+		return coalesceString(vs, proc, types.Type{Oid: types.T_blob.ToType().Oid})
+	}
+
+	CoalesceText = func(vs []*vector.Vector, proc *process.Process) (*vector.Vector, error) {
+		return coalesceString(vs, proc, types.Type{Oid: types.T_text.ToType().Oid})
 	}
 
 	CoalesceDecimal64 = func(vs []*vector.Vector, proc *process.Process) (*vector.Vector, error) {

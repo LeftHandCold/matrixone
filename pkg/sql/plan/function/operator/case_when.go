@@ -91,7 +91,7 @@ var (
 	}
 
 	CaseWhenVarchar = func(vs []*vector.Vector, proc *process.Process) (*vector.Vector, error) {
-		return cwString(vs, proc, types.Type{Oid: types.T_varchar})
+		return cwString(vs, proc, types.Type{Oid: types.T_varchar, Width: types.MaxVarcharLen})
 	}
 
 	CaseWhenChar = func(vs []*vector.Vector, proc *process.Process) (*vector.Vector, error) {
@@ -120,6 +120,10 @@ var (
 
 	CaseWhenText = func(vs []*vector.Vector, proc *process.Process) (*vector.Vector, error) {
 		return cwString(vs, proc, types.Type{Oid: types.T_text})
+	}
+
+	CaseWhenJson = func(vs []*vector.Vector, proc *process.Process) (*vector.Vector, error) {
+		return cwString(vs, proc, types.Type{Oid: types.T_json})
 	}
 )
 

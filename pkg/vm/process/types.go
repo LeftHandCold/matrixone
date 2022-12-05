@@ -64,17 +64,24 @@ type Limitation struct {
 	PartitionRows int64
 	// ReaderSize, memory threshold for storage's reader
 	ReaderSize int64
+	// MaxMessageSize max size for read messages from dn
+	MaxMsgSize uint64
 }
 
 // SessionInfo session information
 type SessionInfo struct {
-	User         string
-	Host         string
-	Role         string
-	ConnectionID uint64
-	Database     string
-	Version      string
-	TimeZone     *time.Location
+	User          string
+	Host          string
+	Role          string
+	ConnectionID  uint64
+	AccountId     uint32
+	RoleId        uint32
+	UserId        uint32
+	LastInsertID  uint64
+	Database      string
+	Version       string
+	TimeZone      *time.Location
+	StorageEngine engine.Engine
 }
 
 // AnalyzeInfo  analyze information for query
@@ -126,6 +133,21 @@ type Process struct {
 	GetClusterDetails engine.GetClusterDetailsFunc
 
 	LoadTag bool
+
+	LastInsertID *uint64
+}
+
+func (proc *Process) SetLastInsertID(num uint64) {
+	if proc.LastInsertID != nil {
+		*proc.LastInsertID = num
+	}
+}
+
+func (proc *Process) GetLastInsertID() uint64 {
+	if proc.LastInsertID != nil {
+		return *proc.LastInsertID
+	}
+	return 0
 }
 
 type analyze struct {

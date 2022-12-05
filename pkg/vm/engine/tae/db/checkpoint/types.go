@@ -18,6 +18,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 )
 
 type State int8
@@ -32,9 +33,22 @@ type Runner interface {
 	Start()
 	Stop()
 	EnqueueWait(any) error
+	Replay(catalog.DataFactory) (types.TS, error)
+	MaxLSN() uint64
+
+	MockCheckpoint(end types.TS)
+	FlushTable(dbID, tableID uint64, ts types.TS) error
 
 	// for test, delete in next phase
 	TestCheckpoint(entry *CheckpointEntry)
+	DebugUpdateOptions(opts ...Option)
+	GetAllCheckpoints() []*CheckpointEntry
+	CollectCheckpointsInRange(start, end types.TS) (ckpLoc string, lastEnd types.TS)
+}
+
+type DirtyCtx struct {
+	force bool
+	tree  *logtail.DirtyTreeEntry
 }
 
 type Observer interface {
@@ -81,7 +95,7 @@ var (
 	CheckpointSchemaTypes = []types.Type{
 		types.New(types.T_TS, 0, 0, 0),
 		types.New(types.T_TS, 0, 0, 0),
-		types.New(types.T_varchar, 0, 0, 0),
+		types.New(types.T_varchar, types.MaxVarcharLen, 0, 0),
 	}
 )
 

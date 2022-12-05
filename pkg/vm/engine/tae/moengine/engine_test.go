@@ -47,6 +47,7 @@ func initDB(t *testing.T, opts *options.Options) *db.DB {
 }
 
 func TestEngine(t *testing.T) {
+	defer testutils.AfterTest(t)()
 	ctx := context.TODO()
 	testutils.EnsureNoLeak(t)
 	tae := initDB(t, nil)
@@ -144,7 +145,7 @@ func TestEngine(t *testing.T) {
 	readers, _ := rel.NewReader(ctx, 10, nil, nil)
 	m := mpool.MustNewZero()
 	for _, reader := range readers {
-		bat, err := reader.Read([]string{schema.ColDefs[1].Name}, nil, m)
+		bat, err := reader.Read(ctx, []string{schema.ColDefs[1].Name}, nil, m)
 		assert.Nil(t, err)
 		if bat != nil {
 			assert.Equal(t, 80, vector.Length(bat.Vecs[0]))
@@ -154,6 +155,7 @@ func TestEngine(t *testing.T) {
 }
 
 func TestEngineAllType(t *testing.T) {
+	defer testutils.AfterTest(t)()
 	ctx := context.TODO()
 	testutils.EnsureNoLeak(t)
 	tae := initDB(t, nil)
@@ -252,7 +254,7 @@ func TestEngineAllType(t *testing.T) {
 	readers, _ := rel.NewReader(ctx, 10, nil, nil)
 	m := mpool.MustNewZero()
 	for _, reader := range readers {
-		bat, err := reader.Read(schema.Attrs(), nil, m)
+		bat, err := reader.Read(ctx, schema.Attrs(), nil, m)
 		assert.Nil(t, err)
 		if bat != nil {
 			assert.Equal(t, 80, vector.Length(bat.Vecs[0]))
@@ -280,6 +282,7 @@ func TestEngineAllType(t *testing.T) {
 }
 
 func TestTxnRelation_GetHideKey(t *testing.T) {
+	defer testutils.AfterTest(t)()
 	ctx := context.TODO()
 	testutils.EnsureNoLeak(t)
 	tae := initDB(t, nil)
@@ -325,7 +328,7 @@ func TestTxnRelation_GetHideKey(t *testing.T) {
 	delete := mobat.New(true, bat.Attrs)
 	m := mpool.MustNewZero()
 	for _, reader := range readers {
-		bat, err := reader.Read([]string{schema.ColDefs[13].Name}, nil, m)
+		bat, err := reader.Read(ctx, []string{schema.ColDefs[13].Name}, nil, m)
 		assert.Nil(t, err)
 		if bat != nil {
 			assert.Equal(t, 100, vector.Length(bat.Vecs[0]))
@@ -357,7 +360,7 @@ func TestTxnRelation_GetHideKey(t *testing.T) {
 	readers, _ = rel.NewReader(ctx, 1, nil, nil)
 	m = mpool.MustNewZero()
 	for _, reader := range readers {
-		bat, err := reader.Read([]string{schema.ColDefs[13].Name}, nil, m)
+		bat, err := reader.Read(ctx, []string{schema.ColDefs[13].Name}, nil, m)
 		assert.Nil(t, err)
 		if bat != nil {
 			assert.Equal(t, 0, vector.Length(bat.Vecs[0]))
@@ -368,6 +371,7 @@ func TestTxnRelation_GetHideKey(t *testing.T) {
 }
 
 func TestCopy1(t *testing.T) {
+	defer testutils.AfterTest(t)()
 	testutils.EnsureNoLeak(t)
 	t1 := types.T_varchar.ToType()
 	v1 := containers.MockVector(t1, 10, false, true, nil)
@@ -458,6 +462,7 @@ func checkSysTable(t *testing.T, name string, dbase engine.Database, txn Txn, re
 }
 
 func TestSysRelation(t *testing.T) {
+	defer testutils.AfterTest(t)()
 	ctx := context.TODO()
 	testutils.EnsureNoLeak(t)
 	tae := initDB(t, nil)

@@ -204,14 +204,12 @@ DEALLOCATE PREPARE s2;
 
 prepare s3 from 'select * from t2 where time3=?';
 
--- @bvt:issue#4527
 execute s3 using @max_date;
 execute s3 using @min_date;
 execute s3 using @max_datetime;
 execute s3 using @min_datetime;
 execute s3 using @max_timestamp;
 execute s3 using @min_timestamp;
--- @bvt:issue
 
 DEALLOCATE PREPARE s3;
 
@@ -272,9 +270,7 @@ prepare s6 from 'select * from t3 where dec1!=?';
 prepare s7 from 'select * from t3 where dec1 between ? and ?';
 prepare s8 from 'select * from t3 where dec1 not between ? and ?';
 
--- @bvt:issue#4604
 execute s1 using @hit_dec1;
--- @bvt:issue
 execute s1 using @dec1_max;
 execute s1 using @dec1_min;
 
@@ -285,19 +281,19 @@ execute s2 using @dec1_min;
 execute s3 using @hit_dec1;
 execute s3 using @dec1_max;
 execute s3 using @dec1_min;
--- @bvt:issue#4604
+
 execute s4 using @hit_dec1;
--- @bvt:issue
+
 execute s4 using @dec1_max;
 execute s4 using @dec1_min;
--- @bvt:issue#4604
+
 execute s5 using @hit_dec1;
--- @bvt:issue
+
 execute s5 using @dec1_max;
 execute s5 using @dec1_min;
--- @bvt:issue#4604
+
 execute s6 using @hit_dec1;
--- @bvt:issue
+
 execute s6 using @dec1_max;
 execute s6 using @dec1_min;
 

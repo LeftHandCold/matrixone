@@ -30,6 +30,27 @@ import (
 
 var _ engine.Relation = new(table)
 
+func (tbl *table) FilteredRows(ctx context.Context, expr *plan.Expr) (float64, error) {
+	switch tbl.tableId {
+	case catalog.MO_DATABASE_ID, catalog.MO_TABLES_ID, catalog.MO_COLUMNS_ID:
+		return float64(100), nil
+	}
+
+	if expr == nil {
+		r, err := tbl.Rows(ctx)
+		return float64(r), err
+	}
+	var card float64
+	for _, blockmetas := range tbl.meta.blocks {
+		for _, blk := range blockmetas {
+			if needRead(ctx, expr, blk, tbl.getTableDef(), tbl.proc) {
+				card += float64(blockRows(blk))
+			}
+		}
+	}
+	return card, nil
+}
+
 func (tbl *table) Rows(ctx context.Context) (int64, error) {
 	var rows int64
 
@@ -92,7 +113,7 @@ func (tbl *table) Ranges(ctx context.Context, expr *plan.Expr) ([][]byte, error)
 		dnStores = append(dnStores, tbl.db.txn.dnStores[i])
 	}
 	_, ok := tbl.db.txn.createTableMap[tbl.tableId]
-	if !ok {
+	if !ok && !tbl.updated {
 		if err := tbl.db.txn.db.Update(ctx, dnStores, tbl, tbl.db.txn.op, tbl.primaryIdx,
 			tbl.db.databaseId, tbl.tableId, tbl.db.txn.meta.SnapshotTS); err != nil {
 			return nil, err
@@ -105,6 +126,7 @@ func (tbl *table) Ranges(ctx context.Context, expr *plan.Expr) ([][]byte, error)
 			return nil, err
 		}
 		tbl.meta = meta
+		tbl.updated = true
 	}
 	ranges := make([][]byte, 0, 1)
 	ranges = append(ranges, []byte{})
@@ -147,10 +169,11 @@ func (tbl *table) getTableDef() *plan.TableDef {
 						Scale:     attr.Attr.Type.Scale,
 						AutoIncr:  attr.Attr.AutoIncrement,
 					},
-					Primary:  attr.Attr.Primary,
-					Default:  attr.Attr.Default,
-					OnUpdate: attr.Attr.OnUpdate,
-					Comment:  attr.Attr.Comment,
+					Primary:   attr.Attr.Primary,
+					Default:   attr.Attr.Default,
+					OnUpdate:  attr.Attr.OnUpdate,
+					Comment:   attr.Attr.Comment,
+					ClusterBy: attr.Attr.ClusterBy,
 				})
 				i++
 			}
@@ -250,12 +273,12 @@ func (tbl *table) Write(ctx context.Context, bat *batch.Batch) error {
 		for j := range bat.Vecs {
 			ibat.SetVector(int32(j), vector.New(bat.GetVector(int32(j)).GetType()))
 		}
-		if _, err := ibat.Append(tbl.db.txn.proc.Mp(), bat); err != nil {
+		if _, err := ibat.Append(ctx, tbl.db.txn.proc.Mp(), bat); err != nil {
 			return err
 		}
 		i := rand.Int() % len(tbl.db.txn.dnStores)
 		return tbl.db.txn.WriteBatch(INSERT, tbl.db.databaseId, tbl.tableId,
-			tbl.db.databaseName, tbl.tableName, ibat, tbl.db.txn.dnStores[i])
+			tbl.db.databaseName, tbl.tableName, ibat, tbl.db.txn.dnStores[i], tbl.primaryIdx)
 	}
 	bats, err := partitionBatch(bat, tbl.insertExpr, tbl.db.txn.proc, len(tbl.parts))
 	if err != nil {
@@ -266,7 +289,7 @@ func (tbl *table) Write(ctx context.Context, bat *batch.Batch) error {
 			continue
 		}
 		if err := tbl.db.txn.WriteBatch(INSERT, tbl.db.databaseId, tbl.tableId,
-			tbl.db.databaseName, tbl.tableName, bats[i], tbl.db.txn.dnStores[i]); err != nil {
+			tbl.db.databaseName, tbl.tableName, bats[i], tbl.db.txn.dnStores[i], tbl.primaryIdx); err != nil {
 			return err
 		}
 	}
@@ -293,7 +316,7 @@ func (tbl *table) Delete(ctx context.Context, bat *batch.Batch, name string) err
 			continue
 		}
 		if err := tbl.db.txn.WriteBatch(DELETE, tbl.db.databaseId, tbl.tableId,
-			tbl.db.databaseName, tbl.tableName, bats[i], tbl.db.txn.dnStores[i]); err != nil {
+			tbl.db.databaseName, tbl.tableName, bats[i], tbl.db.txn.dnStores[i], tbl.primaryIdx); err != nil {
 			return err
 		}
 	}
@@ -330,11 +353,13 @@ func (tbl *table) NewReader(ctx context.Context, num int, expr *plan.Expr, range
 	if len(ranges) < num {
 		for i := range ranges {
 			rds[i] = &blockReader{
-				fs:       tbl.db.fs,
-				tableDef: tableDef,
-				ts:       ts,
-				ctx:      ctx,
-				blks:     []BlockMeta{blks[i]},
+				fs:         tbl.db.fs,
+				tableDef:   tableDef,
+				primaryIdx: tbl.primaryIdx,
+				expr:       expr,
+				ts:         ts,
+				ctx:        ctx,
+				blks:       []BlockMeta{blks[i]},
 			}
 		}
 		for j := len(ranges); j < num; j++ {
@@ -342,26 +367,30 @@ func (tbl *table) NewReader(ctx context.Context, num int, expr *plan.Expr, range
 		}
 		return rds, nil
 	}
-	step := len(ranges) / num
+	step := (len(ranges)) / num
 	if step < 1 {
 		step = 1
 	}
 	for i := 0; i < num; i++ {
 		if i == num-1 {
 			rds[i] = &blockReader{
-				fs:       tbl.db.fs,
-				tableDef: tableDef,
-				ts:       ts,
-				ctx:      ctx,
-				blks:     blks[i*step:],
+				fs:         tbl.db.fs,
+				tableDef:   tableDef,
+				primaryIdx: tbl.primaryIdx,
+				expr:       expr,
+				ts:         ts,
+				ctx:        ctx,
+				blks:       blks[i*step:],
 			}
 		} else {
 			rds[i] = &blockReader{
-				fs:       tbl.db.fs,
-				tableDef: tableDef,
-				ts:       ts,
-				ctx:      ctx,
-				blks:     blks[i*step : (i+1)*step],
+				fs:         tbl.db.fs,
+				tableDef:   tableDef,
+				primaryIdx: tbl.primaryIdx,
+				expr:       expr,
+				ts:         ts,
+				ctx:        ctx,
+				blks:       blks[i*step : (i+1)*step],
 			}
 		}
 	}
@@ -378,8 +407,8 @@ func (tbl *table) newMergeReader(ctx context.Context, num int,
 		}
 	*/
 	if tbl.primaryIdx >= 0 && expr != nil {
-		ok, v := getNonIntPkValueByExpr(expr, int32(tbl.primaryIdx),
-			types.T(tbl.tableDef.Cols[tbl.primaryIdx].Typ.Id))
+		pkColumn := tbl.tableDef.Cols[tbl.primaryIdx]
+		ok, v := getPkValueByExpr(expr, pkColumn.Name, types.T(pkColumn.Typ.Id))
 		if ok {
 			index = memtable.Tuple{
 				index_PrimaryKey,
@@ -388,6 +417,7 @@ func (tbl *table) newMergeReader(ctx context.Context, num int,
 		}
 	}
 	writes := make([]Entry, 0, len(tbl.db.txn.writes))
+	tbl.db.txn.Lock()
 	for i := range tbl.db.txn.writes {
 		for _, entry := range tbl.db.txn.writes[i] {
 			if entry.databaseId == tbl.db.databaseId &&
@@ -396,6 +426,7 @@ func (tbl *table) newMergeReader(ctx context.Context, num int,
 			}
 		}
 	}
+	tbl.db.txn.Unlock()
 	rds := make([]engine.Reader, num)
 	mrds := make([]mergeReader, num)
 	for _, i := range tbl.dnList {

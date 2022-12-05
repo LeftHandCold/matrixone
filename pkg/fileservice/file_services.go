@@ -34,7 +34,7 @@ func NewFileServices(defaultName string, fss ...FileService) (*FileServices, err
 	for _, fs := range fss {
 		name := strings.ToLower(fs.Name())
 		if _, ok := f.mappings[name]; ok {
-			return nil, moerr.NewDupServiceName(name)
+			return nil, moerr.NewDupServiceNameNoCtx(name)
 		}
 		f.mappings[name] = fs
 	}
@@ -64,7 +64,7 @@ func (f *FileServices) deleteSingle(ctx context.Context, filePath string) error 
 	if err != nil {
 		return err
 	}
-	return fs.Delete(ctx, path.Full)
+	return fs.Delete(ctx, filePath)
 }
 
 func (f *FileServices) List(ctx context.Context, dirPath string) ([]DirEntry, error) {
@@ -79,7 +79,7 @@ func (f *FileServices) List(ctx context.Context, dirPath string) ([]DirEntry, er
 	if err != nil {
 		return nil, err
 	}
-	return fs.List(ctx, path.Full)
+	return fs.List(ctx, dirPath)
 }
 
 func (f *FileServices) Name() string {

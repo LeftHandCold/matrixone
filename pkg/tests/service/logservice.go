@@ -59,9 +59,10 @@ type LogService interface {
 	// StartHAKeeperReplica starts hakeeper replicas.
 	StartHAKeeperReplica(replicaID uint64, initialReplicas map[uint64]dragonboat.Target, join bool) error
 
-	// GetTaskService returns the taskservice
+	// GetTaskService returns the taskService
 	GetTaskService() (taskservice.TaskService, bool)
 
+	// CreateInitTasks create init task
 	CreateInitTasks() error
 }
 
@@ -165,14 +166,15 @@ func buildLogConfig(
 	index int, opt Options, address serviceAddresses,
 ) logservice.Config {
 	cfg := logservice.Config{
-		UUID:                uuid.New().String(),
-		FS:                  vfs.NewStrictMem(),
-		DeploymentID:        defaultDeploymentID,
-		RTTMillisecond:      defaultRTTMillisecond,
-		ServiceAddress:      address.getLogListenAddress(index), // hakeeper client use this address
-		RaftAddress:         address.getLogRaftAddress(index),
-		GossipAddress:       address.getLogGossipAddress(index),
-		GossipSeedAddresses: address.getLogGossipSeedAddresses(),
+		UUID:                  uuid.New().String(),
+		FS:                    vfs.NewStrictMem(),
+		DeploymentID:          defaultDeploymentID,
+		RTTMillisecond:        defaultRTTMillisecond,
+		ServiceAddress:        address.getLogListenAddress(index), // hakeeper client use this address
+		RaftAddress:           address.getLogRaftAddress(index),
+		GossipAddress:         address.getLogGossipAddress(index),
+		GossipSeedAddresses:   address.getLogGossipSeedAddresses(),
+		GossipAllowSelfAsSeed: opt.initial.logReplicaNum == 1,
 	}
 	cfg.DataDir = filepath.Join(opt.rootDataDir, cfg.UUID)
 	cfg.HeartbeatInterval.Duration = opt.heartbeat.log

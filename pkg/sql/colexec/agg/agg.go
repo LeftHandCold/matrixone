@@ -224,6 +224,7 @@ func (a *UnaryAgg[T1, T2]) BatchMerge(b Agg[any], start int64, os []uint8, vps [
 
 func (a *UnaryAgg[T1, T2]) Eval(m *mpool.MPool) (*vector.Vector, error) {
 	defer func() {
+		a.Free(m)
 		a.da = nil
 		a.vs = nil
 		a.es = nil
@@ -250,6 +251,17 @@ func (a *UnaryAgg[T1, T2]) Eval(m *mpool.MPool) (*vector.Vector, error) {
 		return vec, nil
 	}
 	return vector.NewWithFixed(a.otyp, a.eval(a.vs), nsp, m), nil
+}
+
+func (a *UnaryAgg[T1, T2]) WildAggReAlloc(m *mpool.MPool) error {
+	d, err := m.Alloc(len(a.da))
+	if err != nil {
+		return err
+	}
+	copy(d, a.da)
+	a.da = d
+	setAggValues[T1, T2](a, a.otyp)
+	return nil
 }
 
 func (a *UnaryAgg[T1, T2]) IsDistinct() bool {
@@ -297,7 +309,7 @@ func getUnaryAggStrVs(strUnaryAgg any) []string {
 	return result
 }
 
-func (a *UnaryAgg[T1, T2]) UnmarshalBinary(data []byte) error {
+func (a *UnaryAgg[T1, T2]) UnmarshalBinary(data []byte, mp *mpool.MPool) error {
 	decoded := new(EncodeAgg)
 	if err := types.Decode(data, decoded); err != nil {
 		return err
@@ -308,7 +320,14 @@ func (a *UnaryAgg[T1, T2]) UnmarshalBinary(data []byte) error {
 	a.otyp = types.DecodeType(decoded.OutputType)
 	a.isCount = decoded.IsCount
 	a.es = decoded.Es
-	a.da = decoded.Da
+	//	a.da = decoded.Da
+	data, err := mp.Alloc(len(decoded.Da))
+	if err != nil {
+		return err
+	}
+	copy(data, decoded.Da)
+	a.da = data
+
 	setAggValues[T1, T2](a, a.otyp)
 
 	return a.priv.UnmarshalBinary(decoded.Private)

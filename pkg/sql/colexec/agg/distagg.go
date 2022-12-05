@@ -312,6 +312,7 @@ func (a *UnaryDistAgg[T1, T2]) BatchMerge(b Agg[any], start int64, os []uint8, v
 
 func (a *UnaryDistAgg[T1, T2]) Eval(m *mpool.MPool) (*vector.Vector, error) {
 	defer func() {
+		a.Free(m)
 		a.da = nil
 		a.vs = nil
 		a.es = nil
@@ -342,6 +343,17 @@ func (a *UnaryDistAgg[T1, T2]) Eval(m *mpool.MPool) (*vector.Vector, error) {
 		return vec, nil
 	}
 	return vector.NewWithFixed(a.otyp, a.eval(a.vs), nsp, m), nil
+}
+
+func (a *UnaryDistAgg[T1, T2]) WildAggReAlloc(m *mpool.MPool) error {
+	d, err := m.Alloc(len(a.da))
+	if err != nil {
+		return err
+	}
+	copy(d, a.da)
+	a.da = d
+	setDistAggValues[T1, T2](a, a.otyp)
+	return nil
 }
 
 func (a *UnaryDistAgg[T1, T2]) IsDistinct() bool {
@@ -389,7 +401,7 @@ func getDistAggStrVs(strUnaryDistAgg any) []string {
 	return result
 }
 
-func (a *UnaryDistAgg[T1, T2]) UnmarshalBinary(data []byte) error {
+func (a *UnaryDistAgg[T1, T2]) UnmarshalBinary(data []byte, m *mpool.MPool) error {
 	decode := new(EncodeAggDistinct[T1])
 	if err := types.Decode(data, decode); err != nil {
 		return err
@@ -400,10 +412,29 @@ func (a *UnaryDistAgg[T1, T2]) UnmarshalBinary(data []byte) error {
 	a.ityps = decode.InputType
 	a.otyp = decode.OutputType
 	a.es = decode.Es
-	a.da = decode.Da
+	data, err := m.Alloc(len(decode.Da))
+	if err != nil {
+		return err
+	}
+	copy(data, decode.Da)
+	a.da = data
 	setDistAggValues[T1, T2](a, a.otyp)
 	a.srcs = decode.Srcs
-
+	a.maps = make([]*hashmap.StrHashMap, len(a.srcs))
+	for i, src := range a.srcs {
+		mp, err := hashmap.NewStrMap(true, 0, 0, m)
+		if err != nil {
+			m.Free(data)
+			for j := 0; j < i; j++ {
+				a.maps[j].Free()
+			}
+			return err
+		}
+		a.maps[i] = mp
+		for _, v := range src {
+			mp.InsertValue(v)
+		}
+	}
 	return a.priv.UnmarshalBinary(decode.Private)
 }
 

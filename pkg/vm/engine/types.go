@@ -24,6 +24,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	logservicepb "github.com/matrixorigin/matrixone/pkg/pb/logservice"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 )
 
@@ -54,6 +55,8 @@ type Attribute struct {
 	OnUpdate *plan.OnUpdate
 	// Primary is primary key or not
 	Primary bool
+	// Clusterby means sort by this column
+	ClusterBy bool
 	// Comment of attribute
 	Comment string
 	// AutoIncrement is auto incr or not
@@ -73,7 +76,12 @@ type Property struct {
 	Value string
 }
 
+type ClusterByDef struct {
+	Name string
+}
+
 type Statistics interface {
+	FilteredRows(ctx context.Context, expr *plan.Expr) (float64, error)
 	Rows(ctx context.Context) (int64, error)
 	Size(ctx context.Context, columnName string) (int64, error)
 }
@@ -119,25 +127,28 @@ type ViewDef struct {
 	View string
 }
 
-type ComputeIndexDef struct {
-	IndexNames []string
-	TableNames []string
-	Uniques    []bool
-	Fields     [][]string
+type UniqueIndexDef struct {
+	UniqueIndex string
+}
+
+type SecondaryIndexDef struct {
+	SecondaryIndex string
 }
 
 type TableDef interface {
 	tableDef()
 }
 
-func (*CommentDef) tableDef()      {}
-func (*PartitionDef) tableDef()    {}
-func (*ViewDef) tableDef()         {}
-func (*AttributeDef) tableDef()    {}
-func (*IndexTableDef) tableDef()   {}
-func (*PropertiesDef) tableDef()   {}
-func (*PrimaryIndexDef) tableDef() {}
-func (*ComputeIndexDef) tableDef() {}
+func (*CommentDef) tableDef()        {}
+func (*PartitionDef) tableDef()      {}
+func (*ViewDef) tableDef()           {}
+func (*AttributeDef) tableDef()      {}
+func (*IndexTableDef) tableDef()     {}
+func (*PropertiesDef) tableDef()     {}
+func (*PrimaryIndexDef) tableDef()   {}
+func (*UniqueIndexDef) tableDef()    {}
+func (*SecondaryIndexDef) tableDef() {}
+func (*ClusterByDef) tableDef()      {}
 
 type Relation interface {
 	Statistics
@@ -170,7 +181,7 @@ type Relation interface {
 
 type Reader interface {
 	Close() error
-	Read([]string, *plan.Expr, *mpool.MPool) (*batch.Batch, error)
+	Read(context.Context, []string, *plan.Expr, *mpool.MPool) (*batch.Batch, error)
 }
 
 type Database interface {
@@ -180,6 +191,7 @@ type Database interface {
 	Delete(context.Context, string) error
 	Create(context.Context, string, []TableDef) error // Create Table - (name, table define)
 	Truncate(context.Context, string) error
+	GetDatabaseId(context.Context) string
 }
 
 type Engine interface {
@@ -207,6 +219,9 @@ type Engine interface {
 	// return value should not be cached
 	// since implementations may update hints after engine had initialized
 	Hints() Hints
+
+	NewBlockReader(ctx context.Context, num int, ts timestamp.Timestamp,
+		expr *plan.Expr, ranges [][]byte, tblDef *plan.TableDef) ([]Reader, error)
 }
 
 type Hints struct {

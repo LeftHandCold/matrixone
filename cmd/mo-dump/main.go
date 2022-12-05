@@ -16,10 +16,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"strconv"
 	"strings"
@@ -45,8 +47,8 @@ type Column struct {
 }
 
 type Table struct {
-	Name   string
-	IsView bool
+	Name string
+	Kind string
 }
 
 type Tables []Table
@@ -56,7 +58,7 @@ func (t *Tables) String() string {
 }
 
 func (t *Tables) Set(value string) error {
-	*t = append(*t, Table{value, false})
+	*t = append(*t, Table{value, ""})
 	return nil
 }
 
@@ -77,6 +79,7 @@ func main() {
 			conn.Close()
 		}
 	}()
+	ctx := context.Background()
 	flag.StringVar(&username, "u", _username, "username")
 	flag.StringVar(&password, "p", _password, "password")
 	flag.StringVar(&host, "h", _host, "hostname")
@@ -85,7 +88,7 @@ func main() {
 	flag.Var(&tables, "tbl", "tableNameList, default all")
 	flag.Parse()
 	if len(database) == 0 {
-		err = moerr.NewInvalidInput("database must be specified")
+		err = moerr.NewInvalidInput(ctx, "database must be specified")
 		return
 	}
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", username, password, host, port, database)
@@ -105,7 +108,7 @@ func main() {
 	select {
 	case <-ch:
 	case <-time.After(timeout):
-		err = moerr.NewInternalError("connect to %s timeout", dsn)
+		err = moerr.NewInternalError(ctx, "connect to %s timeout", dsn)
 	}
 	if err != nil {
 		return
@@ -118,10 +121,10 @@ func main() {
 		fmt.Printf("DROP DATABASE IF EXISTS `%s`;\n", database)
 		fmt.Println(createDb, ";")
 		fmt.Printf("USE `%s`;\n\n\n", database)
-		tables, err = getTables(database)
-		if err != nil {
-			return
-		}
+	}
+	tables, err = getTables(database, tables)
+	if err != nil {
+		return
 	}
 	createTable = make([]string, len(tables))
 	for i, tbl := range tables {
@@ -133,7 +136,7 @@ func main() {
 
 	for i, create := range createTable {
 		tbl := tables[i]
-		if tbl.IsView {
+		if tbl.Kind == catalog.SystemViewRel || tbl.Kind == catalog.SystemExternalRel {
 			continue
 		}
 		fmt.Printf("DROP TABLE IF EXISTS `%s`;\n", tbl.Name)
@@ -147,8 +150,19 @@ func main() {
 			return
 		}
 	}
+
 	for i, tbl := range tables {
-		if !tbl.IsView {
+		if tbl.Kind != catalog.SystemExternalRel {
+			continue
+		}
+		fmt.Printf("/*!EXTERNAL TABLE `%s`*/\n", tbl.Name)
+		fmt.Printf("DROP TABLE IF EXISTS `%s`;\n", tbl.Name)
+		fmt.Printf("%s;\n\n\n", createTable[i])
+
+	}
+
+	for i, tbl := range tables {
+		if tbl.Kind != catalog.SystemViewRel {
 			continue
 		}
 		fmt.Printf("DROP VIEW IF EXISTS `%s`;\n", tbl.Name)
@@ -157,28 +171,39 @@ func main() {
 	}
 }
 
-func getTables(db string) (Tables, error) {
-	r, err := conn.Query("select relname,viewdef from mo_catalog.mo_tables where reldatabase = '" + db + "'") //TODO: after unified sys table prefix, add condition in where clause
+func getTables(db string, tables Tables) (Tables, error) {
+	sql := "select relname,relkind from mo_catalog.mo_tables where reldatabase = '" + db + "'"
+	if len(tables) > 0 {
+		sql += " and relname in ("
+		for i, tbl := range tables {
+			if i != 0 {
+				sql += ","
+			}
+			sql += "'" + tbl.Name + "'"
+		}
+		sql += ")"
+	}
+	r, err := conn.Query(sql) //TODO: after unified sys table prefix, add condition in where clause
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
-	var tables Tables
+
+	if tables == nil {
+		tables = Tables{}
+	}
+	tables = tables[:0]
 	for r.Next() {
 		var table string
-		var viewdef string
-		err = r.Scan(&table, &viewdef)
+		var kind string
+		err = r.Scan(&table, &kind)
 		if err != nil {
 			return nil, err
 		}
 		if strings.HasPrefix(table, "__mo_") || strings.HasPrefix(table, "%!%") { //TODO: after adding condition in where clause, remove this
 			continue
 		}
-		if len(viewdef) > 0 {
-			tables = append(tables, Table{table, true})
-		} else {
-			tables = append(tables, Table{table, false})
-		}
+		tables = append(tables, Table{table, kind})
 	}
 	return tables, nil
 }
@@ -277,6 +302,9 @@ func showInsert(db string, tbl string) error {
 func convertValue(v interface{}, typ string) string {
 	typ = strings.ToLower(typ)
 	ret := *(v.(*interface{}))
+	if ret == nil {
+		return "NULL"
+	}
 	switch typ {
 	case "int", "tinyint", "smallint", "bigint":
 		tmp, _ := strconv.ParseInt(string(ret.([]byte)), 10, 64)
@@ -288,6 +316,6 @@ func convertValue(v interface{}, typ string) string {
 		tmp, _ := strconv.ParseFloat(string(ret.([]byte)), 64)
 		return fmt.Sprintf("%v", tmp)
 	default:
-		return fmt.Sprintf("'%v'", string(ret.([]byte)))
+		return "'" + strings.Replace(string(ret.([]byte)), "'", "\\'", -1) + "'"
 	}
 }

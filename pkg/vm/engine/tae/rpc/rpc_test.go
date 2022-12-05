@@ -28,11 +28,13 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/moengine"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils/config"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestHandle_HandlePreCommit1PC(t *testing.T) {
+	defer testutils.AfterTest(t)()
 	opts := config.WithLongScanAndCKPOpts(nil)
 	handle := mockTAEHandle(t, opts)
 	defer handle.HandleClose(context.TODO())
@@ -130,6 +132,19 @@ func TestHandle_HandlePreCommit1PC(t *testing.T) {
 		defs,
 	)
 	assert.Nil(t, err)
+
+	createTbEntries1, err := makeCreateTableEntries(
+		"",
+		ac,
+		"tbtest1",
+		IDAlloc.NextTable(),
+		dbTestId,
+		dbName,
+		handle.m,
+		defs,
+	)
+	assert.Nil(t, err)
+	createTbEntries = append(createTbEntries, createTbEntries1...)
 	err = handle.HandlePreCommit(
 		context.TODO(),
 		createTbTxn,
@@ -151,7 +166,7 @@ func TestHandle_HandlePreCommit1PC(t *testing.T) {
 	dbId := dbHandle.GetDatabaseID(ctx)
 	assert.True(t, dbTestId == dbId)
 	names, _ = dbHandle.RelationNames(ctx)
-	assert.Equal(t, 1, len(names))
+	assert.Equal(t, 2, len(names))
 	tbHandle, err := dbHandle.GetRelation(ctx, schema.Name)
 	assert.NoError(t, err)
 	tbTestId := tbHandle.GetRelationID(ctx)
@@ -200,7 +215,7 @@ func TestHandle_HandlePreCommit1PC(t *testing.T) {
 	assert.NoError(t, err)
 	tbReaders, _ := tbHandle.NewReader(ctx, 1, nil, nil)
 	for _, reader := range tbReaders {
-		bat, err := reader.Read([]string{schema.ColDefs[1].Name}, nil, handle.m)
+		bat, err := reader.Read(ctx, []string{schema.ColDefs[1].Name}, nil, handle.m)
 		assert.Nil(t, err)
 		if bat != nil {
 			len := vector.Length(bat.Vecs[0])
@@ -211,7 +226,7 @@ func TestHandle_HandlePreCommit1PC(t *testing.T) {
 	hideCol, err := tbHandle.GetHideKeys(ctx)
 	assert.NoError(t, err)
 	reader, _ := tbHandle.NewReader(ctx, 1, nil, nil)
-	hideBat, err := reader[0].Read([]string{hideCol[0].Name}, nil, handle.m)
+	hideBat, err := reader[0].Read(ctx, []string{hideCol[0].Name}, nil, handle.m)
 	assert.Nil(t, err)
 	err = txn.Commit()
 	assert.Nil(t, err)
@@ -250,7 +265,7 @@ func TestHandle_HandlePreCommit1PC(t *testing.T) {
 	assert.NoError(t, err)
 	tbReaders, _ = tbHandle.NewReader(ctx, 2, nil, nil)
 	for _, reader := range tbReaders {
-		bat, err := reader.Read([]string{schema.ColDefs[1].Name}, nil, handle.m)
+		bat, err := reader.Read(ctx, []string{schema.ColDefs[1].Name}, nil, handle.m)
 		assert.Nil(t, err)
 		if bat != nil {
 			len := vector.Length(bat.Vecs[0])
@@ -262,6 +277,7 @@ func TestHandle_HandlePreCommit1PC(t *testing.T) {
 }
 
 func TestHandle_HandlePreCommit2PCForCoordinator(t *testing.T) {
+	defer testutils.AfterTest(t)()
 	opts := config.WithLongScanAndCKPOpts(nil)
 	handle := mockTAEHandle(t, opts)
 	defer handle.HandleClose(context.TODO())
@@ -453,7 +469,7 @@ func TestHandle_HandlePreCommit2PCForCoordinator(t *testing.T) {
 	assert.NoError(t, err)
 	tbReaders, _ := tbHandle.NewReader(ctx, 1, nil, nil)
 	for _, reader := range tbReaders {
-		bat, err := reader.Read([]string{schema.ColDefs[1].Name}, nil, handle.m)
+		bat, err := reader.Read(ctx, []string{schema.ColDefs[1].Name}, nil, handle.m)
 		assert.Nil(t, err)
 		if bat != nil {
 			len := vector.Length(bat.Vecs[0])
@@ -464,7 +480,7 @@ func TestHandle_HandlePreCommit2PCForCoordinator(t *testing.T) {
 	hideCol, err := tbHandle.GetHideKeys(ctx)
 	assert.NoError(t, err)
 	reader, _ := tbHandle.NewReader(ctx, 1, nil, nil)
-	hideBat, err := reader[0].Read([]string{hideCol[0].Name}, nil, handle.m)
+	hideBat, err := reader[0].Read(ctx, []string{hideCol[0].Name}, nil, handle.m)
 	assert.Nil(t, err)
 	err = txn.Commit()
 	assert.Nil(t, err)
@@ -534,7 +550,7 @@ func TestHandle_HandlePreCommit2PCForCoordinator(t *testing.T) {
 	assert.NoError(t, err)
 	tbReaders, _ = tbHandle.NewReader(ctx, 2, nil, nil)
 	for _, reader := range tbReaders {
-		bat, err := reader.Read([]string{schema.ColDefs[1].Name}, nil, handle.m)
+		bat, err := reader.Read(ctx, []string{schema.ColDefs[1].Name}, nil, handle.m)
 		assert.Nil(t, err)
 		if bat != nil {
 			len := vector.Length(bat.Vecs[0])
@@ -546,6 +562,7 @@ func TestHandle_HandlePreCommit2PCForCoordinator(t *testing.T) {
 }
 
 func TestHandle_HandlePreCommit2PCForParticipant(t *testing.T) {
+	defer testutils.AfterTest(t)()
 	opts := config.WithLongScanAndCKPOpts(nil)
 	handle := mockTAEHandle(t, opts)
 	defer handle.HandleClose(context.TODO())
@@ -757,7 +774,7 @@ func TestHandle_HandlePreCommit2PCForParticipant(t *testing.T) {
 	assert.NoError(t, err)
 	tbReaders, _ := tbHandle.NewReader(ctx, 1, nil, nil)
 	for _, reader := range tbReaders {
-		bat, err := reader.Read([]string{schema.ColDefs[1].Name}, nil, handle.m)
+		bat, err := reader.Read(ctx, []string{schema.ColDefs[1].Name}, nil, handle.m)
 		assert.Nil(t, err)
 		if bat != nil {
 			len := vector.Length(bat.Vecs[0])
@@ -768,7 +785,7 @@ func TestHandle_HandlePreCommit2PCForParticipant(t *testing.T) {
 	hideCol, err := tbHandle.GetHideKeys(ctx)
 	assert.NoError(t, err)
 	reader, _ := tbHandle.NewReader(ctx, 1, nil, nil)
-	hideBat, err := reader[0].Read([]string{hideCol[0].Name}, nil, handle.m)
+	hideBat, err := reader[0].Read(ctx, []string{hideCol[0].Name}, nil, handle.m)
 	assert.Nil(t, err)
 	err = txn.Commit()
 	assert.Nil(t, err)
@@ -839,7 +856,7 @@ func TestHandle_HandlePreCommit2PCForParticipant(t *testing.T) {
 	assert.NoError(t, err)
 	tbReaders, _ = tbHandle.NewReader(ctx, 2, nil, nil)
 	for _, reader := range tbReaders {
-		bat, err := reader.Read([]string{schema.ColDefs[1].Name}, nil, handle.m)
+		bat, err := reader.Read(ctx, []string{schema.ColDefs[1].Name}, nil, handle.m)
 		assert.Nil(t, err)
 		if bat != nil {
 			len := vector.Length(bat.Vecs[0])
@@ -851,6 +868,7 @@ func TestHandle_HandlePreCommit2PCForParticipant(t *testing.T) {
 }
 
 func TestHandle_MVCCVisibility(t *testing.T) {
+	defer testutils.AfterTest(t)()
 	opts := config.WithLongScanAndCKPOpts(nil)
 	handle := mockTAEHandle(t, opts)
 	defer handle.HandleClose(context.TODO())
@@ -1066,10 +1084,7 @@ func TestHandle_MVCCVisibility(t *testing.T) {
 		assert.NoError(t, err)
 		tbReaders, _ := tbHandle.NewReader(ctx, 1, nil, nil)
 		for _, reader := range tbReaders {
-			bat, err := reader.Read(
-				[]string{schema.ColDefs[1].Name},
-				nil,
-				handle.m)
+			bat, err := reader.Read(ctx, []string{schema.ColDefs[1].Name}, nil, handle.m)
 			assert.Nil(t, err)
 			if bat != nil {
 				len := vector.Length(bat.Vecs[0])
@@ -1103,7 +1118,7 @@ func TestHandle_MVCCVisibility(t *testing.T) {
 		hideCol, err := tbHandle.GetHideKeys(ctx)
 		assert.NoError(t, err)
 		reader, _ := tbHandle.NewReader(ctx, 1, nil, nil)
-		hideBat, err = reader[0].Read([]string{hideCol[0].Name}, nil, handle.m)
+		hideBat, err = reader[0].Read(ctx, []string{hideCol[0].Name}, nil, handle.m)
 		assert.Nil(t, err)
 		err = txn.Commit()
 		assert.Nil(t, err)
@@ -1149,7 +1164,7 @@ func TestHandle_MVCCVisibility(t *testing.T) {
 		assert.NoError(t, err)
 		tbReaders, _ := tbHandle.NewReader(ctx, 2, nil, nil)
 		for _, reader := range tbReaders {
-			bat, err := reader.Read([]string{schema.ColDefs[1].Name}, nil, handle.m)
+			bat, err := reader.Read(ctx, []string{schema.ColDefs[1].Name}, nil, handle.m)
 			assert.Nil(t, err)
 			if bat != nil {
 				len := vector.Length(bat.Vecs[0])

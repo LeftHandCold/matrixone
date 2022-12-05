@@ -73,7 +73,7 @@ func (h *mockHandle) HandleCommit(ctx context.Context, meta *txn.TxnMeta) error 
 func (h *mockHandle) HandleCommitting(ctx context.Context, meta *txn.TxnMeta) error {
 	//meta.CommitTS = h.eng.GetTAE(context.TODO()).TxnMgr.TsAlloc.Alloc().ToTimestamp()
 	if meta.PreparedTS.IsEmpty() {
-		return moerr.NewInternalError("PreparedTS is empty")
+		return moerr.NewInternalError(ctx, "PreparedTS is empty")
 	}
 	meta.CommitTS = meta.PreparedTS.Next()
 	return h.Handle.HandleCommitting(ctx, *meta)
@@ -98,7 +98,7 @@ func (h *mockHandle) HandlePreCommit(
 	req api.PrecommitWriteCmd,
 	resp *api.SyncLogTailResp) error {
 
-	return h.Handle.HandlePreCommit(ctx, *meta, req, resp)
+	return h.Handle.HandlePreCommitWrite(ctx, *meta, req, resp)
 }
 
 func (h *mockHandle) handleCmds(
@@ -110,9 +110,9 @@ func (h *mockHandle) handleCmds(
 		case CmdPreCommitWrite:
 			cmd, ok := e.cmd.(api.PrecommitWriteCmd)
 			if !ok {
-				return moerr.NewInfo("cmd is not PreCommitWriteCmd")
+				return moerr.NewInfo(ctx, "cmd is not PreCommitWriteCmd")
 			}
-			if err = h.Handle.HandlePreCommit(ctx, *txn,
+			if err = h.Handle.HandlePreCommitWrite(ctx, *txn,
 				cmd, new(api.SyncLogTailResp)); err != nil {
 				return
 			}
@@ -133,7 +133,7 @@ func (h *mockHandle) handleCmds(
 				return
 			}
 		default:
-			panic(moerr.NewInfo("Invalid CmdType"))
+			panic(moerr.NewInfo(ctx, "Invalid CmdType"))
 		}
 	}
 	return
@@ -154,6 +154,7 @@ func mockTAEHandle(t *testing.T, opts *options.Options) *mockHandle {
 	mh.Handle = &Handle{
 		eng: moengine.NewEngine(tae),
 	}
+	mh.Handle.mu.txnCtxs = make(map[string]*txnContext)
 	return mh
 }
 
@@ -230,6 +231,7 @@ type column struct {
 	isAutoIncrement int8
 	hasUpdate       int8
 	updateExpr      []byte
+	clusterBy       int8
 }
 
 func genColumns(accountId uint32, tableName, databaseName string,
@@ -510,6 +512,12 @@ func genCreateColumnTuple(
 		idx = catalog.MO_COLUMNS_ATT_UPDATE_IDX
 		bat.Vecs[idx] = vector.New(catalog.MoColumnsTypes[idx]) // att_update
 		if err := bat.Vecs[idx].Append(col.updateExpr, false, m); err != nil {
+			return nil, err
+		}
+
+		idx = catalog.MO_COLUMNS_ATT_IS_CLUSTERBY
+		bat.Vecs[idx] = vector.New(catalog.MoColumnsTypes[idx]) // att_is_clusterby
+		if err := bat.Vecs[idx].Append(col.clusterBy, false, m); err != nil {
 			return nil, err
 		}
 

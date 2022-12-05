@@ -18,6 +18,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logstore/entry"
 
 	"github.com/RoaringBitmap/roaring"
@@ -26,6 +27,10 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/handle"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/wal"
+)
+
+var (
+	ErrTxnWWConflict = moerr.NewTxnWWConflictNoCtx()
 )
 
 type Txn2PC interface {
@@ -67,8 +72,8 @@ type TxnHandle interface {
 	BindAccessInfo(tenantID, userID, roleID uint32)
 	GetTenantID() uint32
 	GetUserAndRoleID() (uint32, uint32)
-	CreateDatabase(name string) (handle.Database, error)
-	CreateDatabaseWithID(name string, id uint64) (handle.Database, error)
+	CreateDatabase(name, createSql string) (handle.Database, error)
+	CreateDatabaseWithID(name, createSql string, id uint64) (handle.Database, error)
 	DropDatabase(name string) (handle.Database, error)
 	DropDatabaseByID(id uint64) (handle.Database, error)
 	GetDatabase(name string) (handle.Database, error)
@@ -176,6 +181,7 @@ type MVCCNode interface {
 	ApplyCommit(index *wal.Index) (err error)
 	ApplyRollback(index *wal.Index) (err error)
 	PrepareCommit() (err error)
+	PrepareRollback() (err error)
 
 	WriteTo(w io.Writer) (n int64, err error)
 	ReadFrom(r io.Reader) (n int64, err error)
@@ -194,6 +200,7 @@ type DeleteNode interface {
 	TxnEntry
 	StringLocked() string
 	GetChain() DeleteChain
+	DeletedRows() []uint32
 	RangeDeleteLocked(start, end uint32)
 	GetCardinalityLocked() uint32
 	IsDeletedLocked(row uint32) bool
@@ -226,8 +233,8 @@ type TxnStore interface {
 	GetRelationByName(dbId uint64, name string) (handle.Relation, error)
 	GetRelationByID(dbId uint64, tid uint64) (handle.Relation, error)
 
-	CreateDatabase(name string) (handle.Database, error)
-	CreateDatabaseWithID(name string, id uint64) (handle.Database, error)
+	CreateDatabase(name, createSql string) (handle.Database, error)
+	CreateDatabaseWithID(name, createSql string, id uint64) (handle.Database, error)
 	GetDatabase(name string) (handle.Database, error)
 	GetDatabaseByID(id uint64) (handle.Database, error)
 	DropDatabase(name string) (handle.Database, error)

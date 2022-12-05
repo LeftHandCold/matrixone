@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 )
@@ -81,3 +82,5 @@ type gcResource struct {
 	epoch types.TS
 	item  string
 }
+
+type TTLFunc = func(time.Time)

@@ -16,9 +16,13 @@ package moengine
 
 import (
 	"context"
+	"time"
+
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
-	"time"
+	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
@@ -47,6 +51,11 @@ func (e *txnEngine) Commit(_ context.Context, _ client.TxnOperator) error {
 
 func (e *txnEngine) Rollback(_ context.Context, _ client.TxnOperator) error {
 	return nil
+}
+
+func (e *txnEngine) NewBlockReader(_ context.Context, _ int, _ timestamp.Timestamp,
+	_ *plan.Expr, _ [][]byte, _ *plan.TableDef) ([]engine.Reader, error) {
+	return nil, nil
 }
 
 func (e *txnEngine) Delete(ctx context.Context, name string, txnOp client.TxnOperator) (err error) {
@@ -84,7 +93,11 @@ func (e *txnEngine) Create(ctx context.Context, name string, txnOp client.TxnOpe
 		panic(err)
 	}
 	txnBindAccessInfoFromCtx(txn, ctx)
-	_, err = txn.CreateDatabase(name)
+	createSql := "todosql"
+	if ctx != nil {
+		createSql, _ = ctx.Value(defines.SqlKey{}).(string)
+	}
+	_, err = txn.CreateDatabase(name, createSql)
 	return
 }
 
@@ -94,18 +107,18 @@ func (e *txnEngine) CreateDatabase(ctx context.Context, name string, txnHandle T
 		panic(err)
 	}
 	txnBindAccessInfoFromCtx(txn, ctx)
-	_, err = txn.CreateDatabase(name)
+	_, err = txn.CreateDatabase(name, "todosql")
 	return
 }
 
 func (e *txnEngine) CreateDatabaseWithID(ctx context.Context,
-	name string, id uint64, txnHandle Txn) (err error) {
+	name, createSql string, id uint64, txnHandle Txn) (err error) {
 	var txn txnif.AsyncTxn
 	if txn, err = e.impl.GetTxn(txnHandle.GetID()); err != nil {
 		panic(err)
 	}
 	txnBindAccessInfoFromCtx(txn, ctx)
-	_, err = txn.CreateDatabaseWithID(name, id)
+	_, err = txn.CreateDatabaseWithID(name, createSql, id)
 	return
 }
 
@@ -181,6 +194,9 @@ func (e *txnEngine) GetDatabaseByID(_ context.Context, id uint64, txnHandle Txn)
 func (e *txnEngine) GetTAE(_ context.Context) *db.DB {
 	return e.impl
 }
+func (e *txnEngine) FlushTable(ctx context.Context, tenantID uint32, databaseId, tableId uint64, ts types.TS) error {
+	return e.impl.FlushTable(tenantID, databaseId, tableId, ts)
+}
 
 func (e *txnEngine) Nodes() (engine.Nodes, error) {
 	return nil, nil
@@ -208,5 +224,5 @@ func (e *txnEngine) Close() (err error) {
 }
 
 func (e *txnEngine) Destroy() (err error) {
-	panic(moerr.NewNYI("Pls implement me!"))
+	panic(moerr.NewNYINoCtx("Pls implement me!"))
 }

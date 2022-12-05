@@ -17,6 +17,7 @@ package logservice
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"go.uber.org/zap"
@@ -138,15 +139,6 @@ func (l *store) hakeeperCheck() {
 	case pb.HAKeeperBootstrapFailed:
 		l.handleBootstrapFailure()
 	case pb.HAKeeperRunning:
-		if state.TaskState == pb.TaskInitNotStart {
-			if err := l.setTaskTableUser(pb.TaskTableUser{
-				Username: uuid.NewString(),
-				Password: uuid.NewString(),
-			}); err != nil {
-				l.logger.Error("failed to set task table user", zap.Error(err))
-				return
-			}
-		}
 		l.healthCheck(term, state)
 		l.taskSchedule(state)
 	default:
@@ -199,8 +191,28 @@ func (l *store) taskSchedule(state *pb.CheckerState) {
 	l.assertHAKeeperState(pb.HAKeeperRunning)
 	defer l.assertHAKeeperState(pb.HAKeeperRunning)
 
-	l.taskScheduler.StartScheduleCronTask()
-	l.taskScheduler.Schedule(state.GetCNState(), state.Tick)
+	switch state.TaskSchedulerState {
+	case pb.TaskSchedulerCreated:
+		l.registerTaskUser()
+	case pb.TaskSchedulerRunning:
+		l.taskScheduler.StartScheduleCronTask()
+		l.taskScheduler.Schedule(state.CNState, state.Tick)
+	case pb.TaskSchedulerStopped:
+	default:
+		panic("unknown TaskScheduler state")
+	}
+}
+
+func (l *store) registerTaskUser() {
+	user, ok := getTaskTableUserFromEnv()
+	if !ok {
+		user = randomUser()
+	}
+
+	// TODO: rename TaskTableUser to moadmin
+	if err := l.setTaskTableUser(user); err != nil {
+		l.logger.Error("failed to set task table user", zap.Error(err))
+	}
 }
 
 func (l *store) bootstrap(term uint64, state *pb.CheckerState) {
@@ -221,7 +233,7 @@ func (l *store) bootstrap(term uint64, state *pb.CheckerState) {
 			return
 		}
 		l.bootstrapCheckCycles = checkBootstrapCycles
-		l.bootstrapMgr = bootstrap.NewBootstrapManager(state.ClusterInfo, nil)
+		l.bootstrapMgr = bootstrap.NewBootstrapManager(state.ClusterInfo)
 		l.assertHAKeeperState(pb.HAKeeperBootstrapCommandsReceived)
 	}
 }
@@ -235,7 +247,7 @@ func (l *store) checkBootstrap(state *pb.CheckerState) {
 	}
 
 	if l.bootstrapMgr == nil {
-		l.bootstrapMgr = bootstrap.NewBootstrapManager(state.ClusterInfo, nil)
+		l.bootstrapMgr = bootstrap.NewBootstrapManager(state.ClusterInfo)
 	}
 	if !l.bootstrapMgr.CheckBootstrap(state.LogState) {
 		l.bootstrapCheckCycles--
@@ -281,7 +293,7 @@ func (l *store) getScheduleCommand(check bool,
 	if check {
 		return l.checker.Check(l.alloc, *state), nil
 	}
-	m := bootstrap.NewBootstrapManager(state.ClusterInfo, nil)
+	m := bootstrap.NewBootstrapManager(state.ClusterInfo)
 	return m.Bootstrap(l.alloc, state.DNState, state.LogState)
 }
 
@@ -295,11 +307,38 @@ func (l *store) setTaskTableUser(user pb.TaskTableUser) error {
 		l.logger.Error("failed to propose task user info", zap.Error(err))
 		return err
 	}
-	if result.Value == uint64(pb.TaskInitFailed) {
+	if result.Value == uint64(pb.TaskSchedulerStopped) {
 		panic("failed to set task user")
 	}
-	if result.Value != uint64(pb.TaskInitNotStart) {
+	if result.Value != uint64(pb.TaskSchedulerCreated) {
 		l.logger.Error("task user info already set")
 	}
 	return nil
+}
+
+const (
+	moAdminUser     = "mo_admin_user"
+	moAdminPassword = "mo_admin_password"
+)
+
+func getTaskTableUserFromEnv() (pb.TaskTableUser, bool) {
+	username, ok := os.LookupEnv(moAdminUser)
+	if !ok {
+		return pb.TaskTableUser{}, false
+	}
+	password, ok := os.LookupEnv(moAdminPassword)
+	if !ok {
+		return pb.TaskTableUser{}, false
+	}
+	if username == "" || password == "" {
+		return pb.TaskTableUser{}, false
+	}
+	return pb.TaskTableUser{Username: username, Password: password}, true
+}
+
+func randomUser() pb.TaskTableUser {
+	return pb.TaskTableUser{
+		Username: uuid.NewString(),
+		Password: uuid.NewString(),
+	}
 }

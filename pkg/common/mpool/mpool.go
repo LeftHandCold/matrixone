@@ -94,7 +94,7 @@ func (s *MPoolStats) RecordFree(tag string, sz int64) int64 {
 	curr := s.NumCurrBytes.Add(-sz)
 	if curr < 0 {
 		logutil.Errorf("Mpool %s free bug, stats: %s", tag, s.Report("    "))
-		panic(moerr.NewInternalError("mpool freed more bytes than alloc"))
+		panic(moerr.NewInternalErrorNoCtx("mpool freed more bytes than alloc"))
 	}
 	return curr
 }
@@ -105,7 +105,7 @@ func (s *MPoolStats) RecordManyFrees(tag string, nfree, sz int64) int64 {
 	curr := s.NumCurrBytes.Add(-sz)
 	if curr < 0 {
 		logutil.Errorf("Mpool %s free many bug, stats: %s", tag, s.Report("    "))
-		panic(moerr.NewInternalError("mpool freemany freed more bytes than alloc"))
+		panic(moerr.NewInternalErrorNoCtx("mpool freemany freed more bytes than alloc"))
 	}
 	return curr
 }
@@ -134,11 +134,22 @@ var PoolElemSize = []int{64, 128, 256, 512, 1024, 2048, 4096}
 // Zeros, enough for largest pool element
 var ZeroSlice = make([]byte, 4096)
 
-// Memory header, kMemHdrSz = 8
+// Memory header, kMemHdrSz bytes.
 type memHdr struct {
 	poolId       int64
-	fixedPoolIdx int8
 	allocSz      int32
+	fixedPoolIdx int8
+	guard        [3]uint8
+}
+
+func (pHdr *memHdr) SetGuard() {
+	pHdr.guard[0] = 0xDE
+	pHdr.guard[1] = 0xAD
+	pHdr.guard[2] = 0xBF
+}
+
+func (pHdr *memHdr) CheckGuard() bool {
+	return pHdr.guard[0] == 0xDE && pHdr.guard[1] == 0xAD && pHdr.guard[2] == 0xBF
 }
 
 // pool for fixed elements.  Note that we preconfigure the pool size.
@@ -163,7 +174,7 @@ func (fp *fixedPool) initPool(tag string, poolid int64, idx int, eleCnt int, cap
 	}
 
 	if int64(nb) >= cap {
-		return 0, moerr.NewInternalError("initPool failed, not enough space %d < %d", nb, cap)
+		return 0, moerr.NewInternalErrorNoCtx("initPool failed, not enough space %d < %d", nb, cap)
 	}
 
 	// The poll, is considered allocated, so do accouting with global stats.
@@ -171,7 +182,7 @@ func (fp *fixedPool) initPool(tag string, poolid int64, idx int, eleCnt int, cap
 	if curr > GlobalCap() {
 		// OOM, return nb back to globalStats
 		globalStats.RecordFree(tag, int64(nb))
-		return 0, moerr.NewOOM()
+		return 0, moerr.NewOOMNoCtx()
 	}
 
 	fp.flist = make_freelist(int32(eleCnt))
@@ -187,7 +198,9 @@ func (fp *fixedPool) initPool(tag string, poolid int64, idx int, eleCnt int, cap
 		pHdr := (*memHdr)(hdr)
 		pHdr.poolId = poolid
 		pHdr.fixedPoolIdx = int8(idx)
-		pHdr.allocSz = 0
+		pHdr.allocSz = -1
+		pHdr.SetGuard()
+
 		fp.flist.put(hdr)
 	}
 	return int64(nb), nil
@@ -299,7 +312,7 @@ func (mp *MPool) Cap() int64 {
 
 func (mp *MPool) FixedPoolStats(i int) *MPoolStats {
 	if i < 0 || i > NumFixedPool {
-		panic(moerr.NewInternalError("accessing stats of %d-th fixed pool", i))
+		panic(moerr.NewInternalErrorNoCtx("accessing stats of %d-th fixed pool", i))
 	}
 	return &mp.pools[i].stats
 }
@@ -350,16 +363,16 @@ func MustNewZeroWithTag(tag string) *MPool {
 // New a MPool.   Tag is user supplied, used for debugging/diagnostics.
 func NewMPool(tag string, cap int64, sz []int) (*MPool, error) {
 	if len(sz) != NumFixedPool {
-		return nil, moerr.NewInternalError("invalid mpool size config")
+		return nil, moerr.NewInternalErrorNoCtx("invalid mpool size config")
 	}
 
 	if cap > 0 {
 		// simple sanity check
 		if cap < 1024*1024 {
-			return nil, moerr.NewInternalError("mpool cap %d too small", cap)
+			return nil, moerr.NewInternalErrorNoCtx("mpool cap %d too small", cap)
 		}
 		if cap > GlobalCap() {
-			return nil, moerr.NewInternalError("mpool cap %d too big, global cap %d", cap, globalCap)
+			return nil, moerr.NewInternalErrorNoCtx("mpool cap %d too big, global cap %d", cap, globalCap)
 		}
 	}
 
@@ -488,8 +501,8 @@ func (fp *fixedPool) alloc(sz int) []byte {
 }
 
 func (mp *MPool) Alloc(sz int) ([]byte, error) {
-	if sz > GB {
-		return nil, moerr.NewInternalError("Alloc size %d too large", sz)
+	if sz < 0 || sz > GB {
+		return nil, moerr.NewInternalErrorNoCtx("Invalid alloc size %d", sz)
 	}
 
 	if sz == 0 {
@@ -510,14 +523,14 @@ func (mp *MPool) Alloc(sz int) ([]byte, error) {
 	gcurr := globalStats.RecordAlloc("global", int64(sz))
 	if gcurr > GlobalCap() {
 		globalStats.RecordFree("global", int64(sz))
-		return nil, moerr.NewOOM()
+		return nil, moerr.NewOOMNoCtx()
 	}
 
 	// check if it is under my cap
 	mycurr := mp.stats.RecordAlloc(mp.tag, int64(sz))
 	if mycurr > mp.Cap() {
 		mp.stats.RecordFree(mp.tag, int64(sz))
-		return nil, moerr.NewInternalError("mpool out of space, alloc %d bytes, cap %d", sz, mp.cap)
+		return nil, moerr.NewInternalErrorNoCtx("mpool out of space, alloc %d bytes, cap %d", sz, mp.cap)
 	}
 
 	if mp.details != nil {
@@ -531,42 +544,59 @@ func (mp *MPool) Alloc(sz int) ([]byte, error) {
 	pHdr.poolId = mp.id
 	pHdr.fixedPoolIdx = NumFixedPool
 	pHdr.allocSz = int32(sz)
+	pHdr.SetGuard()
+
 	return unsafe.Slice((*byte)(unsafe.Add(hdr, kMemHdrSz)), sz), nil
 }
 
 func (fp *fixedPool) free(hdr unsafe.Pointer) {
 	pHdr := (*memHdr)(hdr)
-	pHdr.allocSz = 0
 	fp.stats.RecordFree("", int64(pHdr.allocSz))
+
+	if pHdr.allocSz == -1 {
+		// double free.
+		panic(moerr.NewInternalErrorNoCtx("free size -1, possible double free"))
+	}
+	pHdr.allocSz = -1
 	fp.flist.put(hdr)
 }
 
 func (mp *MPool) Free(bs []byte) {
-	if bs == nil {
+	if bs == nil || cap(bs) == 0 {
 		// free nil is OK.
 		return
 	}
 
+	bs = bs[:1]
 	pb := (unsafe.Pointer)(&bs[0])
 	offset := -kMemHdrSz
 	hdr := unsafe.Add(pb, offset)
 	pHdr := (*memHdr)(hdr)
 
+	if !pHdr.CheckGuard() {
+		panic(moerr.NewInternalErrorNoCtx("mp header corruption"))
+	}
+
 	if pHdr.poolId == mp.id {
 		if pHdr.fixedPoolIdx < NumFixedPool {
 			mp.pools[pHdr.fixedPoolIdx].free(hdr)
 		} else {
+			if pHdr.allocSz == -1 {
+				// double free.
+				panic(moerr.NewInternalErrorNoCtx("free size -1, possible double free"))
+			}
 			if mp.details != nil {
 				mp.details.recordFree(int64(pHdr.allocSz))
 			}
 			mp.stats.RecordFree(mp.tag, int64(pHdr.allocSz))
 			globalStats.RecordFree(mp.tag, int64(pHdr.allocSz))
+			pHdr.allocSz = -1
 		}
 	} else {
 		// cross pool free.
 		otherPool, ok := globalPools.Load(pHdr.poolId)
 		if !ok {
-			panic(moerr.NewInternalError("invalid mpool id %d", pHdr.poolId))
+			panic(moerr.NewInternalErrorNoCtx("invalid mpool id %d", pHdr.poolId))
 		}
 		(otherPool.(*MPool)).Free(bs)
 	}
@@ -616,7 +646,7 @@ func roundupsize(size int) int {
 // the slice.
 func (mp *MPool) Grow(old []byte, sz int) ([]byte, error) {
 	if sz < len(old) {
-		return nil, moerr.NewInternalError("mpool grow actually shrinks, %d, %d", len(old), sz)
+		return nil, moerr.NewInternalErrorNoCtx("mpool grow actually shrinks, %d, %d", len(old), sz)
 	}
 	if sz <= cap(old) {
 		return old[:sz], nil
@@ -653,7 +683,7 @@ func (mp *MPool) Grow2(old []byte, old2 []byte, sz int) ([]byte, error) {
 	len1 := len(old)
 	len2 := len(old2)
 	if sz < len1+len2 {
-		return nil, moerr.NewInternalError("mpool grow2 actually shrinks, %d+%d, %d", len1, len2, sz)
+		return nil, moerr.NewInternalErrorNoCtx("mpool grow2 actually shrinks, %d+%d, %d", len1, len2, sz)
 	}
 	ret, err := mp.Grow(old, sz)
 	if err != nil {
@@ -676,14 +706,14 @@ func (mp *MPool) Increase(nb int64) error {
 	gcurr := globalStats.RecordAlloc("global", nb)
 	if gcurr > GlobalCap() {
 		globalStats.RecordFree(mp.tag, nb)
-		return moerr.NewOOM()
+		return moerr.NewOOMNoCtx()
 	}
 
 	// check if it is under my cap
 	mycurr := mp.stats.RecordAlloc(mp.tag, nb)
 	if mycurr > mp.Cap() {
 		mp.stats.RecordFree(mp.tag, nb)
-		return moerr.NewInternalError("mpool out of space, alloc %d bytes, cap %d", nb, mp.cap)
+		return moerr.NewInternalErrorNoCtx("mpool out of space, alloc %d bytes, cap %d", nb, mp.cap)
 	}
 	return nil
 }

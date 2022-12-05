@@ -139,8 +139,8 @@ type Function struct {
 	layout FuncExplainLayout
 }
 
-func (f *Function) GetFlag() plan.Function_FuncFlag {
-	return f.flag
+func (f *Function) TestFlag(funcFlag plan.Function_FuncFlag) bool {
+	return f.flag&funcFlag != 0
 }
 
 func (f *Function) GetLayout() FuncExplainLayout {
@@ -155,13 +155,13 @@ func (f Function) ReturnType() (typ types.T, nullable bool) {
 
 func (f Function) VecFn(vs []*vector.Vector, proc *process.Process) (*vector.Vector, error) {
 	if f.Fn == nil {
-		return nil, moerr.NewInternalError("no function")
+		return nil, moerr.NewInternalErrorNoCtx("no function")
 	}
 	return f.Fn(vs, proc)
 }
 
 func (f Function) IsAggregate() bool {
-	return f.GetFlag() == plan.Function_AGG
+	return f.TestFlag(plan.Function_AGG)
 }
 
 func (f Function) isFunction() bool {
@@ -179,7 +179,7 @@ func fromNameToFunctionId(name string) (int32, error) {
 	if fid, ok := functionIdRegister[name]; ok {
 		return fid, nil
 	}
-	return -1, moerr.NewNotSupported("function or operator '%s'", name)
+	return -1, moerr.NewNotSupportedNoCtx("function or operator '%s'", name)
 }
 
 // EncodeOverloadID convert function-id and overload-index to be an overloadID
@@ -206,6 +206,28 @@ func GetFunctionByID(overloadID int64) (Function, error) {
 	return fs[overloadIndex], nil
 }
 
+// deduce notNullable for function
+// for example, create table t1(c1 int not null, c2 int, c3 int not null ,c4 int);
+// sql select c1+1, abs(c2), cast(c3 as varchar(10)) from t1 where c1=c3;
+// we can deduce that c1+1, cast c3 and c1=c3 is notNullable, abs(c2) is nullable
+// this message helps optimization sometimes
+func DeduceNotNullable(overloadID int64, args []*plan.Expr) bool {
+	function, _ := GetFunctionByID(overloadID)
+	if function.TestFlag(plan.Function_PRODUCE_NULL) {
+		return false
+	}
+	if function.TestFlag(plan.Function_PRODUCE_NO_NULL) {
+		return true
+	}
+
+	for _, arg := range args {
+		if !arg.Typ.NotNullable {
+			return false
+		}
+	}
+	return true
+}
+
 func GetFunctionIsAggregateByName(name string) bool {
 	fid, err := fromNameToFunctionId(name)
 	if err != nil {
@@ -224,17 +246,17 @@ func GetFunctionAppendHideArgByID(overloadID int64) bool {
 	return function.AppendHideArg
 }
 
-func GetFunctionIsMonotonicalById(overloadID int64) (bool, error) {
+func GetFunctionIsMonotonicById(overloadID int64) (bool, error) {
 	function, err := GetFunctionByID(overloadID)
 	if err != nil {
 		return false, err
 	}
-	// if function cann't be fold, we think that will be not monotonical
+	// if function cann't be fold, we think that will be not monotonic
 	if function.Volatile {
 		return false, nil
 	}
-	isMonotonical := (function.GetFlag() & plan.Function_MONOTONICAL) != 0
-	return isMonotonical, nil
+	isMonotonic := function.TestFlag(plan.Function_MONOTONIC)
+	return isMonotonic, nil
 }
 
 // GetFunctionByName check a function exist or not according to input function name and arg types,
@@ -267,14 +289,14 @@ func GetFunctionByName(name string, args []types.Type) (int64, types.Type, []typ
 	case wrongFunctionParameters:
 		ArgsToPrint := getOidSlice(finalTypes) // arg information to print for error message
 		if len(fs.Overloads) > 0 && fs.Overloads[0].isFunction() {
-			return -1, emptyType, nil, moerr.NewInvalidArg("function "+name, ArgsToPrint)
+			return -1, emptyType, nil, moerr.NewInvalidArgNoCtx("function "+name, ArgsToPrint)
 		}
-		return -1, emptyType, nil, moerr.NewInvalidArg("operator "+name, ArgsToPrint)
+		return -1, emptyType, nil, moerr.NewInvalidArgNoCtx("operator "+name, ArgsToPrint)
 	case tooManyFunctionsMatched:
-		return -1, emptyType, nil, moerr.NewInvalidArg("too many overloads matched "+name, args)
+		return -1, emptyType, nil, moerr.NewInvalidArgNoCtx("too many overloads matched "+name, args)
 	case wrongFuncParamForAgg:
 		ArgsToPrint := getOidSlice(finalTypes)
-		return -1, emptyType, nil, moerr.NewInvalidArg("aggregate function "+name, ArgsToPrint)
+		return -1, emptyType, nil, moerr.NewInvalidArgNoCtx("aggregate function "+name, ArgsToPrint)
 	}
 
 	// make the real return type of function overload.
@@ -298,10 +320,28 @@ func ensureBinaryOperatorWithSamePrecision(targets []types.Type, hasSet []bool) 
 func rewriteTypesIfNecessary(targets []types.Type, sources []types.Type) {
 	if len(targets) != 0 {
 		hasSet := make([]bool, len(sources))
+
+		//ensure that we will not lost the origin scale
+		maxScale := int32(0)
+		for i := range sources {
+			if sources[i].Oid == types.T_decimal64 || sources[i].Oid == types.T_decimal128 {
+				if sources[i].Scale > maxScale {
+					maxScale = sources[i].Scale
+				}
+			}
+		}
+		for i := range sources {
+			if targets[i].Oid == types.T_decimal64 || targets[i].Oid == types.T_decimal128 {
+				if sources[i].Scale < maxScale {
+					sources[i].Scale = maxScale
+				}
+			}
+		}
+
 		for i := range targets {
 			oid1, oid2 := sources[i].Oid, targets[i].Oid
 			// ensure that we will not lose the original precision.
-			if oid2 == types.T_decimal64 || oid2 == types.T_decimal128 || oid2 == types.T_timestamp {
+			if oid2 == types.T_decimal64 || oid2 == types.T_decimal128 || oid2 == types.T_timestamp || oid2 == types.T_time {
 				if oid1 == oid2 {
 					copyType(&targets[i], &sources[i])
 					hasSet[i] = true

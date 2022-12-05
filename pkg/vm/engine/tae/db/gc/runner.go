@@ -253,7 +253,7 @@ func (runner *gcRunner) onEvent(event *GCEvent) {
 		runner.tryRefreshEpoch()
 		return
 	default:
-		panic(moerr.NewInternalError("unexpect gc event type: %d", event.Type))
+		panic(moerr.NewInternalError(context.Background(), "unexpect gc event type: %d", event.Type))
 	}
 }
 
@@ -273,7 +273,10 @@ func (runner *gcRunner) onReceiveCheckpoint(ts types.TS) {
 
 func (runner *gcRunner) onReceiveResource(resource *gcResource) {
 	if _, replaced := runner.resources.storage.Set(resource); replaced {
-		panic(moerr.NewInternalError("duplicate resource epoch found: %s", resource.epoch.ToString()))
+		panic(moerr.NewInternalError(
+			context.Background(),
+			"duplicate resource epoch found: %s", resource.epoch.ToString()),
+		)
 	}
 }
 
@@ -317,7 +320,9 @@ func (runner *gcRunner) updateEpoch(nts types.TS) {
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
 	if runner.mu.epoch.GreaterEq(nts) {
-		panic(moerr.NewInternalError("update epoch %s with stale epoch %s",
+		panic(moerr.NewInternalError(
+			context.Background(),
+			"update epoch %s with stale epoch %s",
 			runner.mu.epoch.ToString(), nts.ToString()))
 	}
 	runner.mu.epoch = nts

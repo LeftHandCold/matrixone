@@ -16,6 +16,7 @@ package memoryengine
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -118,7 +119,7 @@ func (d *Database) Delete(ctx context.Context, relName string) error {
 func (d *Database) Relation(ctx context.Context, relName string) (engine.Relation, error) {
 
 	if relName == "" {
-		return nil, moerr.NewInvalidInput("no table name")
+		return nil, moerr.NewInvalidInput(ctx, "no table name")
 	}
 
 	resps, err := DoTxnRequest[OpenRelationResp](
@@ -152,7 +153,7 @@ func (d *Database) Relation(ctx context.Context, relName string) (engine.Relatio
 		return table, nil
 
 	default:
-		panic(moerr.NewInternalError("unknown type: %+v", resp.Type))
+		panic(moerr.NewInternalError(ctx, "unknown type: %+v", resp.Type))
 	}
 
 }
@@ -174,4 +175,8 @@ func (d *Database) Relations(ctx context.Context) ([]string, error) {
 	}
 
 	return resps[0].Names, nil
+}
+
+func (d *Database) GetDatabaseId(ctx context.Context) string {
+	return fmt.Sprintf("%d", d.id)
 }

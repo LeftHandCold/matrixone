@@ -39,6 +39,15 @@ const (
 	UuidSize       int = 16
 )
 
+func EncodeSliceWithCap[T any](v []T) []byte {
+	var t T
+	sz := int(unsafe.Sizeof(t))
+	if cap(v) > 0 {
+		return unsafe.Slice((*byte)(unsafe.Pointer(&v[0])), cap(v)*sz)[:len(v)*sz]
+	}
+	return nil
+}
+
 func EncodeSlice[T any](v []T) []byte {
 	var t T
 	sz := int(unsafe.Sizeof(t))
@@ -53,7 +62,7 @@ func DecodeSlice[T any](v []byte) []T {
 	sz := int(unsafe.Sizeof(t))
 
 	if len(v)%sz != 0 {
-		panic(moerr.NewInternalError("decode slice that is not a multiple of element size"))
+		panic(moerr.NewInternalErrorNoCtx("decode slice that is not a multiple of element size"))
 	}
 
 	if len(v) > 0 {
@@ -500,7 +509,7 @@ func WriteValues(w io.Writer, vals ...any) (n int64, err error) {
 			}
 			n += int64(nr)
 		default:
-			panic(moerr.NewInternalError("%T:%v not supported", v, v))
+			panic(moerr.NewInternalErrorNoCtx("%T:%v not supported", v, v))
 		}
 	}
 	return

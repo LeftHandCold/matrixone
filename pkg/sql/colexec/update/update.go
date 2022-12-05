@@ -16,7 +16,6 @@ package update
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"sync/atomic"
 
@@ -65,8 +64,6 @@ func Call(_ int, proc *process.Process, arg any) (bool, error) {
 	}
 	defer bat.Clean(proc.Mp())
 
-	ctx := context.TODO()
-
 	// do null check
 	for i, updateCtx := range p.UpdateCtxs {
 		tmpBat := &batch.Batch{}
@@ -87,7 +84,7 @@ func Call(_ int, proc *process.Process, arg any) (bool, error) {
 			if (p.TableDefVec[i].Cols[j].Primary && !p.TableDefVec[i].Cols[j].Typ.AutoIncr) || (p.TableDefVec[i].Cols[j].Default != nil && !p.TableDefVec[i].Cols[j].Default.NullAbility) {
 				if nulls.Any(tmpBat.Vecs[j].Nsp) {
 					tmpBat.Clean(proc.Mp())
-					return false, moerr.NewConstraintViolation(fmt.Sprintf("Column '%s' cannot be null", tmpBat.Attrs[j]))
+					return false, moerr.NewConstraintViolation(proc.Ctx, fmt.Sprintf("Column '%s' cannot be null", tmpBat.Attrs[j]))
 				}
 			}
 		}
@@ -99,7 +96,7 @@ func Call(_ int, proc *process.Process, arg any) (bool, error) {
 					if tmpBat.Attrs[i] == name {
 						if nulls.Any(tmpBat.Vecs[i].Nsp) {
 							tmpBat.Clean(proc.Mp())
-							return false, moerr.NewConstraintViolation(fmt.Sprintf("Column '%s' cannot be null", updateCtx.OrderAttrs[i]))
+							return false, moerr.NewConstraintViolation(proc.Ctx, fmt.Sprintf("Column '%s' cannot be null", updateCtx.OrderAttrs[i]))
 						}
 					}
 				}
@@ -133,27 +130,33 @@ func Call(_ int, proc *process.Process, arg any) (bool, error) {
 
 		// in update, we can get a batch[b(update), b(old)]
 		// we should use old b as delete info
-		for i, info := range updateCtx.IndexInfos {
-			rel := updateCtx.IndexTables[i]
-			var attrs []string = nil
-			attrs = append(attrs, updateCtx.UpdateAttrs...)
-			attrs = append(attrs, updateCtx.OtherAttrs...)
-			attrs = append(attrs, updateCtx.IndexAttrs...)
-			oldBatch, rowNum := util.BuildUniqueKeyBatch(bat.Vecs[int(idx)+1:], attrs, info.Cols, proc)
-			if rowNum != 0 {
-				err := rel.Delete(ctx, oldBatch, info.ColNames[0])
-				if err != nil {
-					delBat.Clean(proc.Mp())
-					tmpBat.Clean(proc.Mp())
+		if updateCtx.UniqueIndexDef != nil {
+			relIdx := 0
+			for num := range updateCtx.UniqueIndexDef.IndexNames {
+				if updateCtx.UniqueIndexDef.TableExists[num] {
+					rel := updateCtx.UniqueIndexTables[relIdx]
+					var attrs []string = nil
+					attrs = append(attrs, updateCtx.UpdateAttrs...)
+					attrs = append(attrs, updateCtx.OtherAttrs...)
+					attrs = append(attrs, updateCtx.IndexAttrs...)
+					oldBatch, rowNum := util.BuildUniqueKeyBatch(bat.Vecs[int(idx)+1:], attrs, updateCtx.UniqueIndexDef.Fields[num].Cols, proc)
+					if rowNum != 0 {
+						err := rel.Delete(proc.Ctx, oldBatch, updateCtx.UniqueIndexDef.Fields[num].Cols[0].Name)
+						if err != nil {
+							delBat.Clean(proc.Mp())
+							tmpBat.Clean(proc.Mp())
+							oldBatch.Clean(proc.Mp())
+							return false, err
+						}
+					}
 					oldBatch.Clean(proc.Mp())
-					return false, err
+					relIdx++
 				}
 			}
-			oldBatch.Clean(proc.Mp())
 		}
 
 		// delete old rows
-		err := updateCtx.TableSource.Delete(ctx, delBat, updateCtx.HideKey)
+		err := updateCtx.TableSource.Delete(proc.Ctx, delBat, updateCtx.HideKey)
 		if err != nil {
 			delBat.Clean(proc.Mp())
 			tmpBat.Clean(proc.Mp())
@@ -161,23 +164,28 @@ func Call(_ int, proc *process.Process, arg any) (bool, error) {
 		}
 		delBat.Clean(proc.Mp())
 
-		if err := colexec.UpdateInsertBatch(p.Engine, ctx, proc, p.TableDefVec[i].Cols, tmpBat, p.TableID[i], p.DBName[i], p.TblName[i]); err != nil {
+		if err := colexec.UpdateInsertBatch(p.Engine, proc.Ctx, proc, p.TableDefVec[i].Cols, tmpBat, p.TableID[i], p.DBName[i], p.TblName[i]); err != nil {
 			tmpBat.Clean(proc.Mp())
 			return false, err
 		}
 
-		for i, info := range updateCtx.IndexInfos {
-			rel := updateCtx.IndexTables[i]
-			b, rowNum := util.BuildUniqueKeyBatch(tmpBat.Vecs, tmpBat.Attrs, info.Cols, proc)
-			if rowNum != 0 {
-				err = rel.Write(ctx, b)
-				if err != nil {
+		if updateCtx.UniqueIndexDef != nil {
+			relIdx := 0
+			for num := range updateCtx.UniqueIndexDef.IndexNames {
+				if updateCtx.UniqueIndexDef.TableExists[num] {
+					rel := updateCtx.UniqueIndexTables[relIdx]
+					b, rowNum := util.BuildUniqueKeyBatch(tmpBat.Vecs, tmpBat.Attrs, updateCtx.UniqueIndexDef.Fields[num].Cols, proc)
+					if rowNum != 0 {
+						err = rel.Write(proc.Ctx, b)
+						if err != nil {
+							b.Clean(proc.Mp())
+							tmpBat.Clean(proc.Mp())
+							return false, err
+						}
+					}
 					b.Clean(proc.Mp())
-					tmpBat.Clean(proc.Mp())
-					return false, err
 				}
 			}
-			b.Clean(proc.Mp())
 		}
 
 		//fill cpkey column
@@ -190,7 +198,7 @@ func Call(_ int, proc *process.Process, arg any) (bool, error) {
 		}
 		tmpBat.SetZs(tmpBat.GetVector(0).Length(), proc.Mp())
 
-		err = updateCtx.TableSource.Write(ctx, tmpBat)
+		err = updateCtx.TableSource.Write(proc.Ctx, tmpBat)
 		if err != nil {
 			tmpBat.Clean(proc.Mp())
 			return false, err

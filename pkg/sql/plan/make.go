@@ -26,13 +26,44 @@ func makePlan2DecimalExprWithType(v string, isBin ...bool) (*plan.Expr, error) {
 		return nil, err
 	}
 	typ := &plan.Type{
-		Id:        int32(types.T_decimal128),
-		Width:     34,
-		Scale:     scale,
-		Precision: 34,
-		Nullable:  false,
+		Id:          int32(types.T_decimal128),
+		Width:       34,
+		Scale:       scale,
+		Precision:   34,
+		NotNullable: true,
 	}
 	return appendCastBeforeExpr(makePlan2StringConstExprWithType(v, isBin...), typ)
+}
+
+func makePlan2DateConstNullExpr(t types.T) *plan.Expr {
+	return &plan.Expr{
+		Expr: &plan.Expr_C{
+			C: &Const{
+				Isnull: true,
+			},
+		},
+		Typ: &plan.Type{
+			Id:          int32(t),
+			NotNullable: false,
+		},
+	}
+}
+
+func makePlan2Decimal128ConstNullExpr() *plan.Expr {
+	return &plan.Expr{
+		Expr: &plan.Expr_C{
+			C: &Const{
+				Isnull: true,
+			},
+		},
+		Typ: &plan.Type{
+			Id:          int32(types.T_decimal128),
+			Width:       34,
+			Scale:       0,
+			Precision:   34,
+			NotNullable: false,
+		},
+	}
 }
 
 func makePlan2NullConstExprWithType() *plan.Expr {
@@ -43,8 +74,8 @@ func makePlan2NullConstExprWithType() *plan.Expr {
 			},
 		},
 		Typ: &plan.Type{
-			Id:       int32(types.T_any),
-			Nullable: true,
+			Id:          int32(types.T_any),
+			NotNullable: false,
 		},
 	}
 }
@@ -62,9 +93,9 @@ func makePlan2BoolConstExprWithType(v bool) *plan.Expr {
 	return &plan.Expr{
 		Expr: makePlan2BoolConstExpr(v),
 		Typ: &plan.Type{
-			Id:       int32(types.T_bool),
-			Nullable: false,
-			Size:     1,
+			Id:          int32(types.T_bool),
+			NotNullable: true,
+			Size:        1,
 		},
 	}
 }
@@ -72,8 +103,8 @@ func makePlan2BoolConstExprWithType(v bool) *plan.Expr {
 func makePlan2Int64ConstExpr(v int64) *plan.Expr_C {
 	return &plan.Expr_C{C: &plan.Const{
 		Isnull: false,
-		Value: &plan.Const_Ival{
-			Ival: v,
+		Value: &plan.Const_I64Val{
+			I64Val: v,
 		},
 	}}
 }
@@ -84,9 +115,9 @@ func makePlan2Int64ConstExprWithType(v int64) *plan.Expr {
 	return &plan.Expr{
 		Expr: makePlan2Int64ConstExpr(v),
 		Typ: &plan.Type{
-			Id:       int32(types.T_int64),
-			Nullable: false,
-			Size:     8,
+			Id:          int32(types.T_int64),
+			NotNullable: true,
+			Size:        8,
 		},
 	}
 }
@@ -94,8 +125,8 @@ func makePlan2Int64ConstExprWithType(v int64) *plan.Expr {
 func makePlan2Uint64ConstExpr(v uint64) *plan.Expr_C {
 	return &plan.Expr_C{C: &plan.Const{
 		Isnull: false,
-		Value: &plan.Const_Uval{
-			Uval: v,
+		Value: &plan.Const_U64Val{
+			U64Val: v,
 		},
 	}}
 }
@@ -104,9 +135,9 @@ func makePlan2Uint64ConstExprWithType(v uint64) *plan.Expr {
 	return &plan.Expr{
 		Expr: makePlan2Uint64ConstExpr(v),
 		Typ: &plan.Type{
-			Id:       int32(types.T_uint64),
-			Nullable: false,
-			Size:     8,
+			Id:          int32(types.T_uint64),
+			NotNullable: true,
+			Size:        8,
 		},
 	}
 }
@@ -126,9 +157,9 @@ func makePlan2Float64ConstExprWithType(v float64) *plan.Expr {
 	return &plan.Expr{
 		Expr: makePlan2Float64ConstExpr(v),
 		Typ: &plan.Type{
-			Id:       int32(types.T_float64),
-			Nullable: false,
-			Size:     8,
+			Id:          int32(types.T_float64),
+			NotNullable: true,
+			Size:        8,
 		},
 	}
 }
@@ -152,10 +183,29 @@ func makePlan2StringConstExprWithType(v string, isBin ...bool) *plan.Expr {
 	return &plan.Expr{
 		Expr: makePlan2StringConstExpr(v, isBin...),
 		Typ: &plan.Type{
-			Id:       int32(types.T_varchar),
-			Nullable: false,
-			Size:     4,
-			Width:    int32(len(v)),
+			Id:          int32(types.T_varchar),
+			NotNullable: true,
+			Size:        4,
+			Width:       int32(len(v)),
+		},
+	}
+}
+
+func makePlan2NullTextConstExpr(v string) *plan.Expr_C {
+	c := &plan.Expr_C{C: &plan.Const{
+		Isnull: true,
+	}}
+	return c
+}
+
+func MakePlan2NullTextConstExprWithType(v string) *plan.Expr {
+	return &plan.Expr{
+		Expr: makePlan2NullTextConstExpr(v),
+		Typ: &plan.Type{
+			Id:          int32(types.T_text),
+			NotNullable: false,
+			Size:        4,
+			Width:       int32(len(v)),
 		},
 	}
 }
@@ -164,6 +214,7 @@ func makePlan2CastExpr(expr *Expr, targetType *Type) (*Expr, error) {
 	if isSameColumnType(expr.Typ, targetType) {
 		return expr, nil
 	}
+	targetType.NotNullable = expr.Typ.NotNullable
 	t1, t2 := makeTypeByPlan2Expr(expr), makeTypeByPlan2Type(targetType)
 	if types.T(expr.Typ.Id) == types.T_any {
 		expr.Typ = targetType
@@ -173,13 +224,18 @@ func makePlan2CastExpr(expr *Expr, targetType *Type) (*Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &plan.Expr{Expr: &plan.Expr_T{T: &plan.TargetType{
+	t := &plan.Expr{
 		Typ: targetType,
-	}}}
+		Expr: &plan.Expr_T{
+			T: &plan.TargetType{
+				Typ: targetType,
+			},
+		},
+	}
 	return &plan.Expr{
 		Expr: &plan.Expr_F{
 			F: &plan.Function{
-				Func: &ObjectRef{Obj: id},
+				Func: &ObjectRef{Obj: id, ObjName: "cast"},
 				Args: []*Expr{expr, t},
 			},
 		},

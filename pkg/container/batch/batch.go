@@ -16,6 +16,7 @@ package batch
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"sync/atomic"
 
@@ -23,6 +24,7 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/container/index"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/util/fault"
@@ -128,7 +130,7 @@ func (bat *Batch) UnmarshalBinary(data []byte) error {
 		return err
 	}
 	bat.Cnt = 1
-	bat.Zs = rbat.Zs
+	bat.Zs = rbat.Zs // if you drop rbat.Zs is ok, if you need return rbat,  you must deepcopy Zs.
 	bat.Vecs = rbat.Vecs
 	bat.Attrs = rbat.Attrs
 	bat.Aggs = make([]agg.Agg[any], len(rbat.AggInfos))
@@ -174,13 +176,9 @@ func (bat *Batch) Shuffle(sels []int64, m *mpool.MPool) error {
 				return err
 			}
 		}
-		ws := m.GetSels()
-		if cap(ws) < len(bat.Zs) {
-			ws = make([]int64, len(bat.Zs))
-		}
-		ws = ws[:len(bat.Zs)]
-		bat.Zs = shuffle.Int64Shuffle(bat.Zs, ws, sels)
-		m.PutSels(ws)
+
+		ws := make([]int64, len(sels))
+		bat.Zs = shuffle.FixedLengthShuffle(bat.Zs, ws, sels)
 	}
 	return nil
 }
@@ -229,7 +227,7 @@ func (bat *Batch) GetSubBatch(cols []string) *Batch {
 	for i, col := range cols {
 		rbat.Vecs[i] = bat.Vecs[mp[col]]
 	}
-	rbat.Zs = bat.Zs
+	rbat.Zs = append([]int64{}, bat.Zs...)
 	return rbat
 }
 
@@ -240,6 +238,9 @@ func (bat *Batch) Clean(m *mpool.MPool) {
 	for _, vec := range bat.Vecs {
 		if vec != nil {
 			vec.Free(m)
+			if vec.IsLowCardinality() {
+				vec.Index().(*index.LowCardinalityIndex).Free()
+			}
 		}
 	}
 	for _, agg := range bat.Aggs {
@@ -266,12 +267,12 @@ func (bat *Batch) String() string {
 	return buf.String()
 }
 
-func (bat *Batch) Append(mh *mpool.MPool, b *Batch) (*Batch, error) {
+func (bat *Batch) Append(ctx context.Context, mh *mpool.MPool, b *Batch) (*Batch, error) {
 	if bat == nil {
 		return b, nil
 	}
 	if len(bat.Vecs) != len(b.Vecs) {
-		return nil, moerr.NewInternalError("unexpected error happens in batch append")
+		return nil, moerr.NewInternalError(ctx, "unexpected error happens in batch append")
 	}
 	if len(bat.Vecs) == 0 {
 		return bat, nil
@@ -288,6 +289,18 @@ func (bat *Batch) Append(mh *mpool.MPool, b *Batch) (*Batch, error) {
 	for i := range bat.Vecs {
 		if err := vector.UnionBatch(bat.Vecs[i], b.Vecs[i], 0, vector.Length(b.Vecs[i]), flags[:vector.Length(b.Vecs[i])], mh); err != nil {
 			return bat, err
+		}
+		if b.Vecs[i].IsLowCardinality() {
+			idx := b.Vecs[i].Index().(*index.LowCardinalityIndex)
+			if bat.Vecs[i].Index() == nil {
+				bat.Vecs[i].SetIndex(idx.Dup())
+			} else {
+				appendIdx := bat.Vecs[i].Index().(*index.LowCardinalityIndex)
+				dst, src := appendIdx.GetPoses(), idx.GetPoses()
+				if err := vector.UnionBatch(dst, src, 0, vector.Length(src), flags[:vector.Length(src)], mh); err != nil {
+					return bat, err
+				}
+			}
 		}
 	}
 	bat.Zs = append(bat.Zs, b.Zs...)

@@ -31,6 +31,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/options"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
@@ -40,7 +41,7 @@ import (
 )
 
 var (
-	ErrClosed = moerr.NewInternalError("tae: closed")
+	ErrClosed = moerr.NewInternalErrorNoCtx("tae: closed")
 )
 
 type DB struct {
@@ -49,12 +50,13 @@ type DB struct {
 
 	Catalog *catalog.Catalog
 
-	IndexBufMgr base.INodeManager
-	MTBufMgr    base.INodeManager
-	TxnBufMgr   base.INodeManager
+	MTBufMgr  base.INodeManager
+	TxnBufMgr base.INodeManager
 
-	TxnMgr     *txnbase.TxnManager
-	LogtailMgr *logtail.LogtailMgr
+	TxnMgr        *txnbase.TxnManager
+	TransferTable *model.HashPageTable
+
+	LogtailMgr *logtail.Manager
 	Wal        wal.Driver
 
 	Scheduler tasks.TaskScheduler
@@ -69,6 +71,14 @@ type DB struct {
 	Closed *atomic.Value
 }
 
+func (db *DB) FlushTable(
+	tenantID uint32,
+	dbId, tableId uint64,
+	ts types.TS) (err error) {
+	err = db.BGCheckpointRunner.FlushTable(dbId, tableId, ts)
+	return
+}
+
 func (db *DB) StartTxn(info []byte) (txnif.AsyncTxn, error) {
 	return db.TxnMgr.StartTxn(info)
 }
@@ -81,7 +91,7 @@ func (db *DB) GetTxnByCtx(txnOperator client.TxnOperator) (txn txnif.AsyncTxn, e
 	txnID := txnOperator.Txn().ID
 	txn = db.TxnMgr.GetTxnByCtx(txnID)
 	if txn == nil {
-		err = moerr.NewNotFound()
+		err = moerr.NewNotFoundNoCtx()
 	}
 	return
 }
@@ -96,7 +106,7 @@ func (db *DB) GetOrCreateTxnWithMeta(
 func (db *DB) GetTxn(id string) (txn txnif.AsyncTxn, err error) {
 	txn = db.TxnMgr.GetTxn(id)
 	if txn == nil {
-		err = moerr.NewTxnNotFound()
+		err = moerr.NewTxnNotFoundNoCtx()
 	}
 	return
 }
@@ -105,9 +115,9 @@ func (db *DB) RollbackTxn(txn txnif.AsyncTxn) error {
 	return txn.Rollback()
 }
 
-func (db *DB) Replay(dataFactory *tables.DataFactory) {
-	maxTs := db.Catalog.GetCheckpointed().MaxTS
-	replayer := newReplayer(dataFactory, db)
+func (db *DB) Replay(dataFactory *tables.DataFactory, maxTs types.TS) {
+	// maxTs := db.Catalog.GetCheckpointed().MaxTS
+	replayer := newReplayer(dataFactory, db, maxTs)
 	replayer.OnTimeStamp(maxTs)
 	replayer.Replay()
 
@@ -141,5 +151,6 @@ func (db *DB) Close() error {
 	db.TxnMgr.Stop()
 	db.Wal.Close()
 	db.Opts.Catalog.Close()
+	db.TransferTable.Close()
 	return db.DBLocker.Close()
 }
