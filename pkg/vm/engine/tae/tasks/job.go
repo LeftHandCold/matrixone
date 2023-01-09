@@ -16,6 +16,7 @@ package tasks
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -126,7 +127,7 @@ func (job *Job) Run() {
 	job.startTs = time.Now()
 	defer func() {
 		job.endTs = time.Now()
-		logutil.Info("run-job", common.AnyField("id", job.id),
+		logutil.Info("run-job", common.AnyField("name", job.String()),
 			common.ErrorField(job.result.Err),
 			common.DurationField(job.endTs.Sub(job.startTs)))
 	}()
@@ -136,6 +137,10 @@ func (job *Job) Run() {
 
 func (job *Job) ID() string {
 	return job.id
+}
+
+func (job *Job) String() string {
+	return fmt.Sprintf("Job[%s]-[%s]", JobName(job.typ), job.id)
 }
 
 func (job *Job) Type() JobType {

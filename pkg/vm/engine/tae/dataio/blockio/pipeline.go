@@ -34,6 +34,8 @@ var (
 	errCancelJobOnStop = moerr.NewInternalErrorNoCtx("cancel job on stop")
 )
 
+type IOJobFactory func(context.Context, *objectio.ObjectFS, string) *tasks.Job
+
 // type Pipeline interface {
 // 	Start()
 // 	Stop()
@@ -46,7 +48,7 @@ func makeName(location string) string {
 	return fmt.Sprintf("%s-%d", location, time.Now().UTC().Nanosecond())
 }
 
-func makeJob(
+func jobFactory(
 	ctx context.Context,
 	fs *objectio.ObjectFS,
 	location string,
@@ -77,10 +79,11 @@ type ioPipeline struct {
 		scheduler tasks.JobScheduler
 	}
 
-	fs     *objectio.ObjectFS
-	waitQ  sm.Queue
-	active atomic.Bool
+	fs         *objectio.ObjectFS
+	waitQ      sm.Queue
+	jobFactory IOJobFactory
 
+	active    atomic.Bool
 	onceStart sync.Once
 	onceStop  sync.Once
 }
@@ -121,6 +124,9 @@ func (p *ioPipeline) fillDefaults() {
 	}
 	if p.options.prefetchParallism <= 0 {
 		p.options.prefetchParallism = runtime.NumCPU() * 4
+	}
+	if p.jobFactory == nil {
+		p.jobFactory = jobFactory
 	}
 }
 
@@ -164,7 +170,7 @@ func (p *ioPipeline) AsyncFetch(
 	ctx context.Context,
 	location string,
 ) (job *tasks.Job, err error) {
-	job = makeJob(
+	job = p.jobFactory(
 		ctx,
 		p.fs,
 		location,
@@ -178,7 +184,7 @@ func (p *ioPipeline) AsyncFetch(
 func (p *ioPipeline) Prefetch(location string) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
-	job := makeJob(
+	job := p.jobFactory(
 		ctx,
 		p.fs,
 		location,

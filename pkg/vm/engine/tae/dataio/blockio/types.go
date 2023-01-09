@@ -31,6 +31,11 @@ const (
 	JTFlush
 )
 
+func init() {
+	tasks.RegisterJobType(JTLoad, "LoadJob")
+	tasks.RegisterJobType(JTFlush, "FlushJob")
+}
+
 const (
 	CheckpointExt = "ckp"
 	GCFullExt     = "fgc"

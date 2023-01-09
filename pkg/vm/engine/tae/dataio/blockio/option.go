@@ -27,3 +27,9 @@ func WithPrefetchParallism(num int) Option {
 		p.options.prefetchParallism = num
 	}
 }
+
+func WithJobFactory(factory IOJobFactory) Option {
+	return func(p *ioPipeline) {
+		p.jobFactory = factory
+	}
+}
