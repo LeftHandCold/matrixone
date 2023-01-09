@@ -14,16 +14,16 @@
 
 package blockio
 
-type Option func(*readPipeline)
+type Option func(*ioPipeline)
 
 func WithFetchParallism(num int) Option {
-	return func(p *readPipeline) {
+	return func(p *ioPipeline) {
 		p.options.fetchParallism = num
 	}
 }
 
 func WithPrefetchParallism(num int) Option {
-	return func(p *readPipeline) {
+	return func(p *ioPipeline) {
 		p.options.prefetchParallism = num
 	}
 }

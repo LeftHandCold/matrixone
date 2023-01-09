@@ -43,7 +43,7 @@ var (
 // }
 
 func makeName(location string) string {
-	return fmt.Sprintf("%s-%d", time.Now().UTC().Nanosecond())
+	return fmt.Sprintf("%s-%d", location, time.Now().UTC().Nanosecond())
 }
 
 func makeJob(
