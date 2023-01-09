@@ -104,6 +104,10 @@ func (job *Job) Run() {
 	job.result = result
 }
 
+func (job *Job) ID() string {
+	return job.id
+}
+
 func (job *Job) WaitDone() *JobResult {
 	job.wg.Wait()
 	return job.result
@@ -112,6 +116,13 @@ func (job *Job) WaitDone() *JobResult {
 func (job *Job) GetResult() *JobResult {
 	job.wg.Wait()
 	return job.result
+}
+
+func (job *Job) DoneWithErr(err error) {
+	defer job.wg.Done()
+	job.result = &JobResult{
+		Err: err,
+	}
 }
 
 func (job *Job) Close() {
