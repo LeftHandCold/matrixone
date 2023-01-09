@@ -19,10 +19,38 @@ import (
 	"sync"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/panjf2000/ants/v2"
 )
+
+type JobType = uint16
+
+const (
+	JTAny             JobType = iota
+	JTCustomizedStart         = 100
+)
+
+var jobTypeNames = map[JobType]string{
+	JTAny: "AnyJob",
+}
+
+func RegisterJobType(jt JobType, jn string) {
+	_, ok := jobTypeNames[jt]
+	if ok {
+		panic(moerr.NewInternalErrorNoCtx("duplicate job type: %d", jt))
+	}
+	jobTypeNames[jt] = jn
+}
+
+func JobName(jt JobType) string {
+	n, ok := jobTypeNames[jt]
+	if !ok {
+		panic(moerr.NewInternalErrorNoCtx("specified job type: %d not found", jt))
+	}
+	return n
+}
 
 type JobScheduler interface {
 	Schedule(job *Job) error
@@ -72,6 +100,7 @@ func (s *parallelJobScheduler) Schedule(job *Job) (err error) {
 
 type Job struct {
 	id      string
+	typ     JobType
 	wg      *sync.WaitGroup
 	ctx     context.Context
 	exec    JobExecutor
@@ -80,9 +109,10 @@ type Job struct {
 	endTs   time.Time
 }
 
-func NewJob(id string, ctx context.Context, exec JobExecutor) *Job {
+func NewJob(id string, typ JobType, ctx context.Context, exec JobExecutor) *Job {
 	e := &Job{
 		id:   id,
+		typ:  typ,
 		ctx:  ctx,
 		exec: exec,
 		wg:   new(sync.WaitGroup),
@@ -106,6 +136,10 @@ func (job *Job) Run() {
 
 func (job *Job) ID() string {
 	return job.id
+}
+
+func (job *Job) Type() JobType {
+	return job.typ
 }
 
 func (job *Job) WaitDone() *JobResult {

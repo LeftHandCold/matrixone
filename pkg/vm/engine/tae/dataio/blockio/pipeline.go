@@ -53,6 +53,7 @@ func makeJob(
 ) *tasks.Job {
 	return tasks.NewJob(
 		makeName(location),
+		JTLoad,
 		ctx,
 		func(_ context.Context) (res *tasks.JobResult) {
 			// TODO
@@ -191,7 +192,6 @@ func (p *ioPipeline) Prefetch(location string) (err error) {
 func (p *ioPipeline) onFetch(jobs ...any) {
 	for _, j := range jobs {
 		job := j.(*tasks.Job)
-		logutil.Infof("11111 %s", job.ID())
 		if err := p.fetch.scheduler.Schedule(job); err != nil {
 			job.DoneWithErr(err)
 		}

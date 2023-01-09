@@ -17,6 +17,9 @@ package gc
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
+
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -29,8 +32,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logstore/sm"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
-	"sync"
-	"sync/atomic"
 )
 
 const (
@@ -192,6 +193,7 @@ func (cleaner *DiskCleaner) replay() error {
 		}
 		job = tasks.NewJob(
 			fmt.Sprintf("load-%s", dir.Name),
+			blockio.JTLoad,
 			context.Background(),
 			exec)
 		return

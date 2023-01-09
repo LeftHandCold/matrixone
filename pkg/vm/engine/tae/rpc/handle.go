@@ -392,6 +392,7 @@ func (h *Handle) loadPksFromFS(
 	for i := range req.MetaLocs {
 		req.Jobs[i] = tasks.NewJob(
 			fmt.Sprintf("load-primaykey-%s", req.MetaLocs[i]),
+			blockio.JTLoad,
 			ctx,
 			func(ctx context.Context) (jobR *tasks.JobResult) {
 				jobR = &tasks.JobResult{}

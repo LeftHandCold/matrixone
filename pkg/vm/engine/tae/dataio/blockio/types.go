@@ -16,12 +16,19 @@ package blockio
 
 import (
 	"fmt"
-	"github.com/google/uuid"
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
+)
+
+const (
+	JTLoad tasks.JobType = 200 + iota
+	JTFlush
 )
 
 const (

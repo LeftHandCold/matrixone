@@ -90,7 +90,7 @@ func (r *Reader) BlkColumnByMetaLoadJob(
 			Res: bat,
 		}
 	}
-	return tasks.NewJob(uuid.NewString(), r.readCxt, exec)
+	return tasks.NewJob(uuid.NewString(), JTLoad, r.readCxt, exec)
 }
 
 func (r *Reader) BlkColumnsByMetaAndIdxLoadJob(
@@ -112,7 +112,7 @@ func (r *Reader) BlkColumnsByMetaAndIdxLoadJob(
 			Res: bat,
 		}
 	}
-	return tasks.NewJob(uuid.NewString(), r.readCxt, exec)
+	return tasks.NewJob(uuid.NewString(), JTLoad, r.readCxt, exec)
 }
 
 func (r *Reader) LoadBlkColumnsByMeta(
