@@ -26,6 +26,7 @@ import (
 
 type JobScheduler interface {
 	Schedule(job *Job) error
+	Submit(op func()) error
 	Stop()
 }
 
@@ -63,6 +64,11 @@ func NewParallelJobScheduler(parallism int) *parallelJobScheduler {
 func (s *parallelJobScheduler) Stop() {
 	s.pool.Release()
 	s.pool = nil
+}
+
+func (s *parallelJobScheduler) Submit(op func()) (err error) {
+	err = s.pool.Submit(op)
+	return
 }
 
 func (s *parallelJobScheduler) Schedule(job *Job) (err error) {

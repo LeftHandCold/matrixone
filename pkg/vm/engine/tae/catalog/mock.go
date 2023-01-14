@@ -23,6 +23,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/handle"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnbase"
 )
 
@@ -36,7 +37,7 @@ func MockTxnFactory(catalog *Catalog) txnbase.TxnFactory {
 }
 
 func MockTxnStoreFactory(catalog *Catalog) txnbase.TxnStoreFactory {
-	return func() txnif.TxnStore {
+	return func(_ tasks.JobScheduler) txnif.TxnStore {
 		store := new(mockTxnStore)
 		store.catalog = catalog
 		store.entries = make(map[txnif.TxnEntry]bool)

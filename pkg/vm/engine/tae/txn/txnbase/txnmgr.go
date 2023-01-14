@@ -27,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logstore/sm"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
 )
 
 type TxnCommitListener interface {
@@ -65,7 +66,7 @@ func (bl *batchTxnCommitListener) OnEndPrePrepare(txn txnif.AsyncTxn) {
 	}
 }
 
-type TxnStoreFactory = func() txnif.TxnStore
+type TxnStoreFactory = func(tasks.JobScheduler) txnif.TxnStore
 type TxnFactory = func(*TxnManager, txnif.TxnStore, []byte, types.TS, []byte) txnif.AsyncTxn
 
 type TxnManager struct {
@@ -135,7 +136,7 @@ func (mgr *TxnManager) StartTxn(info []byte) (txn txnif.AsyncTxn, err error) {
 	txnId := mgr.IdAlloc.Alloc()
 	startTs := mgr.TsAlloc.Alloc()
 
-	store := mgr.TxnStoreFactory()
+	store := mgr.TxnStoreFactory(nil)
 	txn = mgr.TxnFactory(mgr, store, txnId, startTs, info)
 	store.BindTxn(txn)
 	mgr.IDMap[string(txnId)] = txn
@@ -156,7 +157,7 @@ func (mgr *TxnManager) GetOrCreateTxnWithMeta(
 	defer mgr.Unlock()
 	txn, ok := mgr.IDMap[string(id)]
 	if !ok {
-		store := mgr.TxnStoreFactory()
+		store := mgr.TxnStoreFactory(nil)
 		txn = mgr.TxnFactory(mgr, store, id, ts, info)
 		store.BindTxn(txn)
 		mgr.IDMap[string(id)] = txn

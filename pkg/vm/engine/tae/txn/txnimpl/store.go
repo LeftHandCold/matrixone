@@ -30,6 +30,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logstore/entry"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnbase"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/wal"
 )
@@ -56,7 +57,7 @@ var TxnStoreFactory = func(
 	transferTable *model.HashPageTable,
 	txnBufMgr base.INodeManager,
 	dataFactory *tables.DataFactory) txnbase.TxnStoreFactory {
-	return func() txnif.TxnStore {
+	return func(_ tasks.JobScheduler) txnif.TxnStore {
 		return newStore(catalog, driver, transferTable, txnBufMgr, dataFactory)
 	}
 }
