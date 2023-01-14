@@ -49,6 +49,7 @@ type txnStore struct {
 	warChecker    *warChecker
 	dataFactory   *tables.DataFactory
 	writeOps      atomic.Uint32
+	scheduler     tasks.JobScheduler
 }
 
 var TxnStoreFactory = func(
@@ -57,8 +58,14 @@ var TxnStoreFactory = func(
 	transferTable *model.HashPageTable,
 	txnBufMgr base.INodeManager,
 	dataFactory *tables.DataFactory) txnbase.TxnStoreFactory {
-	return func(_ tasks.JobScheduler) txnif.TxnStore {
-		return newStore(catalog, driver, transferTable, txnBufMgr, dataFactory)
+	return func(scheduler tasks.JobScheduler) txnif.TxnStore {
+		return newStore(
+			catalog,
+			driver,
+			transferTable,
+			txnBufMgr,
+			dataFactory,
+			scheduler)
 	}
 }
 
@@ -67,7 +74,9 @@ func newStore(
 	driver wal.Driver,
 	transferTable *model.HashPageTable,
 	txnBufMgr base.INodeManager,
-	dataFactory *tables.DataFactory) *txnStore {
+	dataFactory *tables.DataFactory,
+	scheduler tasks.JobScheduler,
+) *txnStore {
 	return &txnStore{
 		transferTable: transferTable,
 		dbs:           make(map[uint64]*txnDB),
@@ -77,6 +86,7 @@ func newStore(
 		logs:          make([]entry.Entry, 0),
 		dataFactory:   dataFactory,
 		nodesMgr:      txnBufMgr,
+		scheduler:     scheduler,
 	}
 }
 
