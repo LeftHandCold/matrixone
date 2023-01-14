@@ -16,6 +16,8 @@ package txnimpl
 
 import (
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RoaringBitmap/roaring"
@@ -831,7 +833,7 @@ func (tbl *txnTable) PrePrepareDedup() (err error) {
 	}
 	pks := tbl.localSegment.GetPKColumn()
 	defer pks.Close()
-	err = tbl.DoPrecommitDedup(pks)
+	err = tbl.DoParallelPrecommitDedup(pks)
 	return
 }
 
@@ -865,12 +867,84 @@ func (tbl *txnTable) Dedup(keys containers.Vector) (err error) {
 	return
 }
 
+func (tbl *txnTable) DoParallelPrecommitDedup(pks containers.Vector) (err error) {
+	// now := time.Now()
+	// defer func() {
+	// 	logutil.Infof("DoParallelPrecommitDedup takes: %s", time.Since(now))
+	// }()
+	var wg sync.WaitGroup
+	var pval atomic.Value
+
+	segIt := tbl.entry.MakeSegmentIt(false)
+
+	for segIt.Valid() {
+		seg := segIt.Get().GetPayload()
+		{
+			seg.RLock()
+			shouldSkip := seg.HasDropCommittedLocked() || seg.IsCreatingOrAborted()
+			seg.RUnlock()
+			if shouldSkip {
+				segIt.Next()
+				continue
+			}
+		}
+
+		op := func() {
+			defer wg.Done()
+			blkIt := seg.MakeBlockIt(false)
+			for blkIt.Valid() {
+				blk := blkIt.Get().GetPayload()
+				{
+					blk.RLock()
+					shouldSkip := blk.HasDropCommittedLocked() || blk.IsCreatingOrAborted()
+					blk.RUnlock()
+					if shouldSkip {
+						blkIt.Next()
+						continue
+					}
+				}
+				blkData := blk.GetBlockData()
+				var rowmask *roaring.Bitmap
+				if len(tbl.deleteNodes) > 0 {
+					if tbl.store.warChecker.HasConflict(blk.ID) {
+						continue
+					}
+					fp := blk.AsCommonID()
+					deleteNode := tbl.deleteNodes[*fp]
+					if deleteNode != nil {
+						rowmask = deleteNode.GetRowMaskRefLocked()
+					}
+				}
+				if err := blkData.BatchDedup(tbl.store.txn, pks, rowmask, true); err != nil {
+					pval.CompareAndSwap(nil, err)
+					return
+				}
+				blkIt.Next()
+			}
+		}
+		wg.Add(1)
+		if err = tbl.store.scheduler.Submit(op); err != nil {
+			pval.CompareAndSwap(nil, err)
+		}
+		segIt.Next()
+	}
+	wg.Wait()
+	if perr := pval.Load(); perr != nil {
+		err = perr.(error)
+	}
+	return
+}
+
 // DoPrecommitDedup 1. it do deduplication by traversing all the segments/blocks, and
 // skipping over some blocks/segments which being active or drop-committed or aborted;
 //  2. it is called when txn dequeues from preparing queue.
 //  3. we should make this function run quickly as soon as possible.
 //     TODO::it would be used to do deduplication with the logtail.
 func (tbl *txnTable) DoPrecommitDedup(pks containers.Vector) (err error) {
+	// now := time.Now()
+	// defer func() {
+	// 	logutil.Infof("DoPrecommitDedup takes: %s", time.Since(now))
+	// }()
 	segIt := tbl.entry.MakeSegmentIt(false)
 	for segIt.Valid() {
 		seg := segIt.Get().GetPayload()

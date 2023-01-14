@@ -139,7 +139,7 @@ func (mgr *TxnManager) StartTxn(info []byte) (txn txnif.AsyncTxn, err error) {
 	txnId := mgr.IdAlloc.Alloc()
 	startTs := mgr.TsAlloc.Alloc()
 
-	store := mgr.TxnStoreFactory(nil)
+	store := mgr.TxnStoreFactory(mgr.JobScheduler)
 	txn = mgr.TxnFactory(mgr, store, txnId, startTs, info)
 	store.BindTxn(txn)
 	mgr.IDMap[string(txnId)] = txn
@@ -160,7 +160,7 @@ func (mgr *TxnManager) GetOrCreateTxnWithMeta(
 	defer mgr.Unlock()
 	txn, ok := mgr.IDMap[string(id)]
 	if !ok {
-		store := mgr.TxnStoreFactory(nil)
+		store := mgr.TxnStoreFactory(mgr.JobScheduler)
 		txn = mgr.TxnFactory(mgr, store, id, ts, info)
 		store.BindTxn(txn)
 		mgr.IDMap[string(id)] = txn
