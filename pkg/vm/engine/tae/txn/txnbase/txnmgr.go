@@ -15,6 +15,7 @@
 package txnbase
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -80,6 +81,7 @@ type TxnManager struct {
 	TxnFactory      TxnFactory
 	Exception       *atomic.Value
 	CommitListener  *batchTxnCommitListener
+	JobScheduler    tasks.JobScheduler
 }
 
 func NewTxnManager(txnStoreFactory TxnStoreFactory, txnFactory TxnFactory, clock clock.Clock) *TxnManager {
@@ -98,6 +100,7 @@ func NewTxnManager(txnStoreFactory TxnStoreFactory, txnFactory TxnFactory, clock
 	pqueue := sm.NewSafeQueue(20000, 1000, mgr.dequeuePreparing)
 	fqueue := sm.NewSafeQueue(20000, 1000, mgr.dequeuePrepared)
 	mgr.PreparingSM = sm.NewStateMachine(new(sync.WaitGroup), mgr, pqueue, fqueue)
+	mgr.JobScheduler = tasks.NewParallelJobScheduler(runtime.NumCPU())
 
 	return mgr
 }
@@ -438,6 +441,7 @@ func (mgr *TxnManager) Start() {
 
 func (mgr *TxnManager) Stop() {
 	mgr.PreparingSM.Stop()
+	mgr.JobScheduler.Stop()
 	mgr.OnException(common.ErrClose)
 	logutil.Info("[Stop]", TxnMgrField(mgr))
 }
