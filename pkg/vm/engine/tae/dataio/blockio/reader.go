@@ -17,6 +17,8 @@ package blockio
 import (
 	"context"
 	"errors"
+	"github.com/matrixorigin/matrixone/pkg/catalog"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 	"io"
 
 	"github.com/google/uuid"
@@ -186,6 +188,50 @@ func (r *Reader) LoadBlkColumnsByMetaAndIdx(
 	}
 	bat.AddVector(colNames[0], vec)
 	return bat, nil
+}
+
+func (r *Reader) LoadZoneMapAndRowsByMetaLoc(
+	ctx context.Context,
+	idxs []uint16,
+	blockInfo catalog.BlockInfo,
+	m *mpool.MPool) ([][2]any, uint32, error) {
+	_, extent, rows := DecodeMetaLoc(blockInfo.MetaLoc)
+	zonemapList := make([][2]any, len(idxs))
+
+	obs, err := r.reader.ReadMeta(ctx, []objectio.Extent{extent}, m)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	for i, idx := range idxs {
+		column, err := obs[0].GetColumn(idx)
+		if err != nil {
+			return nil, 0, err
+		}
+		data, err := column.GetIndex(ctx, objectio.ZoneMapType, m)
+		if err != nil {
+			return nil, 0, err
+		}
+		bytes := data.(*objectio.ZoneMap).GetData()
+		meta := column.GetMeta()
+		t := types.Type{
+			Oid: types.T(meta.GetType()),
+		}
+		zm := index.NewZoneMap(t)
+		err = zm.Unmarshal(bytes[:])
+		if err != nil {
+			return nil, rows, err
+		}
+
+		min := zm.GetMin()
+		max := zm.GetMax()
+		if min == nil || max == nil {
+			return nil, rows, nil
+		}
+		zonemapList[i] = [2]any{min, max}
+	}
+
+	return zonemapList, rows, nil
 }
 
 func (r *Reader) ReadMeta(m *mpool.MPool) (objectio.BlockObject, error) {

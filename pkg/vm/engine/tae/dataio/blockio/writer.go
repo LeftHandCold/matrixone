@@ -18,8 +18,10 @@ import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables/indexwrapper"
 )
 
 type Writer struct {
@@ -73,6 +75,47 @@ func (w *Writer) WriteBlockAndZoneMap(batch *batch.Batch, idxs []uint16) (object
 			return nil, err
 		}
 		w.writer.WriteIndex(block, zoneMap)
+	}
+	return block, nil
+}
+
+func (w *Writer) WriteBatch(batch *batch.Batch,
+	NullAbility []bool,
+	pk []bool) (objectio.BlockObject, error) {
+	block, err := w.writer.Write(batch)
+	if err != nil {
+		return nil, err
+	}
+	for i, vec := range batch.Vecs {
+		columnData := containers.NewVectorWithSharedMemory(vec, NullAbility[i])
+		zmPos := 0
+		zoneMapWriter := indexwrapper.NewZMWriter()
+		if err = zoneMapWriter.Init(w.writer, block, common.Plain, uint16(i), uint16(zmPos)); err != nil {
+			return nil, err
+		}
+		err = zoneMapWriter.AddValues(columnData)
+		if err != nil {
+			return nil, err
+		}
+		_, err = zoneMapWriter.Finalize()
+		if err != nil {
+			return nil, err
+		}
+		if !pk[i] {
+			continue
+		}
+		bfPos := 1
+		bfWriter := indexwrapper.NewBFWriter()
+		if err = bfWriter.Init(w.writer, block, common.Plain, uint16(i), uint16(bfPos)); err != nil {
+			return nil, err
+		}
+		if err = bfWriter.AddValues(columnData); err != nil {
+			return nil, err
+		}
+		_, err = bfWriter.Finalize()
+		if err != nil {
+			return nil, err
+		}
 	}
 	return block, nil
 }
