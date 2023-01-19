@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"github.com/matrixorigin/matrixone/pkg/catalog"
+	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 	"io"
 
@@ -34,12 +35,19 @@ import (
 
 type Reader struct {
 	reader  objectio.Reader
-	fs      *objectio.ObjectFS
 	key     string
 	meta    *Meta
 	name    string
 	locs    []objectio.Extent
 	readCxt context.Context
+}
+
+type ReadAttr struct {
+	colTypes  []types.Type
+	colNames  []string
+	nullables []bool
+	idxs      []uint16
+	block     objectio.BlockObject
 }
 
 func NewReader(cxt context.Context, fs *objectio.ObjectFS, key string) (*Reader, error) {
@@ -52,7 +60,23 @@ func NewReader(cxt context.Context, fs *objectio.ObjectFS, key string) (*Reader,
 		return nil, err
 	}
 	return &Reader{
-		fs:      fs,
+		reader:  reader,
+		key:     key,
+		meta:    meta,
+		readCxt: cxt,
+	}, nil
+}
+
+func NewBlockReader(cxt context.Context, service fileservice.FileService, key string) (*Reader, error) {
+	meta, err := DecodeMetaLocToMeta(key)
+	if err != nil {
+		return nil, err
+	}
+	reader, err := objectio.NewObjectReader(meta.GetKey(), service)
+	if err != nil {
+		return nil, err
+	}
+	return &Reader{
 		reader:  reader,
 		key:     key,
 		meta:    meta,
@@ -70,7 +94,6 @@ func NewCheckpointReader(cxt context.Context, fs fileservice.FileService, key st
 		return nil, err
 	}
 	return &Reader{
-		fs:      objectio.NewObjectFS(fs, ""),
 		reader:  reader,
 		key:     key,
 		name:    name,
@@ -232,6 +255,54 @@ func (r *Reader) LoadZoneMapAndRowsByMetaLoc(
 	}
 
 	return zonemapList, rows, nil
+}
+
+func (r *Reader) LoadBlkColumns(
+	ctx context.Context,
+	attr ReadAttr,
+	m *mpool.MPool,
+) (*batch.Batch, error) {
+	if attr.block == nil {
+		block, err := r.ReadMeta(m)
+		if err != nil {
+			return nil, err
+		}
+		attr.block = block
+	}
+	bat := batch.NewWithSize(len(attr.idxs))
+	iov, err := r.reader.Read(ctx, attr.block.GetExtent(), attr.idxs, m)
+	if err != nil {
+		return nil, err
+	}
+	for i, entry := range iov.Entries {
+		bat.Vecs[i] = vector.New(catalog.MetaColTypes[attr.idxs[i]])
+		if err = bat.Vecs[i].Read(entry.Object.([]byte)); err != nil {
+			return nil, err
+		}
+	}
+	return bat, nil
+}
+
+func (r *Reader) LoadAllBlkColumns(
+	ctx context.Context,
+	attr ReadAttr,
+	size int64,
+	m *mpool.MPool,
+) ([]*batch.Batch, error) {
+	blocks, err := r.reader.ReadAllMeta(r.readCxt, size, m)
+	if err != nil {
+		return nil, err
+	}
+	bats := make([]*batch.Batch, 0)
+	for _, block := range blocks {
+		attr.block = block
+		batch, err := r.LoadBlkColumns(ctx, attr, m)
+		if err != nil {
+			return nil, err
+		}
+		bats = append(bats, batch)
+	}
+	return bats, nil
 }
 
 func (r *Reader) ReadMeta(m *mpool.MPool) (objectio.BlockObject, error) {
