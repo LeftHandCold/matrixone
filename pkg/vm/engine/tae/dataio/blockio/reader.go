@@ -59,19 +59,13 @@ func NewReader(cxt context.Context, fs *objectio.ObjectFS, key string) (*Reader,
 	}, nil
 }
 
-func NewBlockReader(cxt context.Context, service fileservice.FileService, key string) (*Reader, error) {
-	meta, err := DecodeMetaLocToMeta(key)
-	if err != nil {
-		return nil, err
-	}
-	reader, err := objectio.NewObjectReader(meta.GetKey(), service)
+func NewBlocksReader(cxt context.Context, service fileservice.FileService, name string) (*Reader, error) {
+	reader, err := objectio.NewObjectReader(name, service)
 	if err != nil {
 		return nil, err
 	}
 	return &Reader{
 		reader:  reader,
-		key:     key,
-		meta:    meta,
 		readCxt: cxt,
 	}, nil
 }
@@ -209,23 +203,53 @@ func (r *Reader) LoadZoneMapAndRowsByMetaLoc(
 	ctx context.Context,
 	idxs []uint16,
 	blockInfo catalog.BlockInfo,
-	zonemapList [][2]any,
-	m *mpool.MPool) ([][2]any, uint32, error) {
+	m *mpool.MPool) ([]*index.ZoneMap, uint32, error) {
 	_, extent, rows := DecodeMetaLoc(blockInfo.MetaLoc)
 
 	obs, err := r.reader.ReadMeta(ctx, []objectio.Extent{extent}, m)
 	if err != nil {
 		return nil, 0, err
 	}
+	zonemapList, err := r.LoadZoneMap(ctx, idxs, obs[0], m)
+	if err != nil {
+		return nil, 0, err
+	}
+	return zonemapList, rows, nil
+}
 
-	for i, idx := range idxs {
-		column, err := obs[0].GetColumn(idx)
+func (r *Reader) LoadAllZoneMap(
+	ctx context.Context,
+	size int64,
+	idxs []uint16,
+	m *mpool.MPool) ([][]*index.ZoneMap, error) {
+	blocks, err := r.reader.ReadAllMeta(r.readCxt, size, m)
+	if err != nil {
+		return nil, err
+	}
+	blocksZoneMap := make([][]*index.ZoneMap, len(blocks))
+	for i, block := range blocks {
+		blocksZoneMap[i], err = r.LoadZoneMap(ctx, idxs, block, m)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
+		}
+	}
+	return blocksZoneMap, nil
+}
+
+func (r *Reader) LoadZoneMap(
+	ctx context.Context,
+	idxs []uint16,
+	block objectio.BlockObject,
+	m *mpool.MPool) ([]*index.ZoneMap, error) {
+	zonemapList := make([]*index.ZoneMap, len(idxs))
+	for i, idx := range idxs {
+		column, err := block.GetColumn(idx)
+		if err != nil {
+			return nil, err
 		}
 		data, err := column.GetIndex(ctx, objectio.ZoneMapType, m)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		bytes := data.(*objectio.ZoneMap).GetData()
 		meta := column.GetMeta()
@@ -235,18 +259,13 @@ func (r *Reader) LoadZoneMapAndRowsByMetaLoc(
 		zm := index.NewZoneMap(t)
 		err = zm.Unmarshal(bytes[:])
 		if err != nil {
-			return nil, rows, err
+			return nil, err
 		}
 
-		min := zm.GetMin()
-		max := zm.GetMax()
-		if min == nil || max == nil {
-			return nil, rows, nil
-		}
-		zonemapList[i] = [2]any{min, max}
+		zonemapList[i] = zm
 	}
 
-	return zonemapList, rows, nil
+	return zonemapList, nil
 }
 
 func (r *Reader) LoadBlkColumns(
@@ -290,6 +309,14 @@ func (r *Reader) LoadAllBlkColumns(
 		bats = append(bats, batch)
 	}
 	return bats, nil
+}
+
+func (r *Reader) ReaAllMetas(ctx context.Context, size int64, m *mpool.MPool) ([]objectio.BlockObject, error) {
+	blocks, err := r.reader.ReadAllMeta(ctx, size, m)
+	if err != nil {
+		return nil, err
+	}
+	return blocks, err
 }
 
 func (r *Reader) ReadMeta(m *mpool.MPool) (objectio.BlockObject, error) {
