@@ -42,14 +42,6 @@ type Reader struct {
 	readCxt context.Context
 }
 
-type ReadAttr struct {
-	colTypes  []types.Type
-	colNames  []string
-	nullables []bool
-	idxs      []uint16
-	block     objectio.BlockObject
-}
-
 func NewReader(cxt context.Context, fs *objectio.ObjectFS, key string) (*Reader, error) {
 	meta, err := DecodeMetaLocToMeta(key)
 	if err != nil {
@@ -217,9 +209,9 @@ func (r *Reader) LoadZoneMapAndRowsByMetaLoc(
 	ctx context.Context,
 	idxs []uint16,
 	blockInfo catalog.BlockInfo,
+	zonemapList [][2]any,
 	m *mpool.MPool) ([][2]any, uint32, error) {
 	_, extent, rows := DecodeMetaLoc(blockInfo.MetaLoc)
-	zonemapList := make([][2]any, len(idxs))
 
 	obs, err := r.reader.ReadMeta(ctx, []objectio.Extent{extent}, m)
 	if err != nil {
@@ -259,23 +251,18 @@ func (r *Reader) LoadZoneMapAndRowsByMetaLoc(
 
 func (r *Reader) LoadBlkColumns(
 	ctx context.Context,
-	attr ReadAttr,
+	colTypes []types.Type,
+	idxs []uint16,
+	extent objectio.Extent,
 	m *mpool.MPool,
 ) (*batch.Batch, error) {
-	if attr.block == nil {
-		block, err := r.ReadMeta(m)
-		if err != nil {
-			return nil, err
-		}
-		attr.block = block
-	}
-	bat := batch.NewWithSize(len(attr.idxs))
-	iov, err := r.reader.Read(ctx, attr.block.GetExtent(), attr.idxs, m)
+	bat := batch.NewWithSize(len(idxs))
+	iov, err := r.reader.Read(ctx, extent, idxs, m)
 	if err != nil {
 		return nil, err
 	}
 	for i, entry := range iov.Entries {
-		bat.Vecs[i] = vector.New(catalog.MetaColTypes[attr.idxs[i]])
+		bat.Vecs[i] = vector.New(colTypes[i])
 		if err = bat.Vecs[i].Read(entry.Object.([]byte)); err != nil {
 			return nil, err
 		}
@@ -285,8 +272,9 @@ func (r *Reader) LoadBlkColumns(
 
 func (r *Reader) LoadAllBlkColumns(
 	ctx context.Context,
-	attr ReadAttr,
 	size int64,
+	colTypes []types.Type,
+	idxs []uint16,
 	m *mpool.MPool,
 ) ([]*batch.Batch, error) {
 	blocks, err := r.reader.ReadAllMeta(r.readCxt, size, m)
@@ -295,8 +283,7 @@ func (r *Reader) LoadAllBlkColumns(
 	}
 	bats := make([]*batch.Batch, 0)
 	for _, block := range blocks {
-		attr.block = block
-		batch, err := r.LoadBlkColumns(ctx, attr, m)
+		batch, err := r.LoadBlkColumns(ctx, colTypes, idxs, block.GetExtent(), m)
 		if err != nil {
 			return nil, err
 		}
