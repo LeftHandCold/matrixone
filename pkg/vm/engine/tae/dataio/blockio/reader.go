@@ -59,13 +59,14 @@ func NewReader(cxt context.Context, fs *objectio.ObjectFS, key string) (*Reader,
 	}, nil
 }
 
-func NewBlocksReader(cxt context.Context, service fileservice.FileService, name string) (*Reader, error) {
+func NewFileReader(cxt context.Context, service fileservice.FileService, name string) (*Reader, error) {
 	reader, err := objectio.NewObjectReader(name, service)
 	if err != nil {
 		return nil, err
 	}
 	return &Reader{
 		reader:  reader,
+		name:    name,
 		readCxt: cxt,
 	}, nil
 }
@@ -75,17 +76,13 @@ func NewCheckpointReader(cxt context.Context, fs fileservice.FileService, key st
 	if err != nil {
 		return nil, err
 	}
-	reader, err := objectio.NewObjectReader(name, fs)
+	reader, err := NewFileReader(cxt, fs, name)
 	if err != nil {
 		return nil, err
 	}
-	return &Reader{
-		reader:  reader,
-		key:     key,
-		name:    name,
-		locs:    locs,
-		readCxt: cxt,
-	}, nil
+	reader.key = key
+	reader.locs = locs
+	return reader, nil
 }
 
 func (r *Reader) BlkColumnByMetaLoadJob(
