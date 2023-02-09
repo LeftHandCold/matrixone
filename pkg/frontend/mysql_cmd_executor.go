@@ -28,10 +28,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fagongzi/goetty/v2"
-	"github.com/matrixorigin/matrixone/pkg/sql/colexec/external"
 	"github.com/matrixorigin/matrixone/pkg/sql/util"
 	"golang.org/x/sync/errgroup"
 
@@ -445,7 +445,15 @@ func handleShowColumns(ses *Session, stmt *tree.ShowColumns) error {
 	if len(dbName) == 0 {
 		dbName = ses.GetDatabaseName()
 	}
+
 	tableName := string(stmt.Table.ToTableName().ObjectName)
+	ctx := ses.GetTxnCompileCtx()
+	_, tableDef := ctx.Resolve(dbName, tableName)
+	if tableDef == nil {
+		return moerr.NewNoSuchTable(ctx.GetContext(), dbName, tableName)
+	}
+
+	colNameToColContent := make(map[string][]interface{})
 	for _, d := range data {
 		colName := string(d[0].([]byte))
 		if colName == catalog.Row_ID {
@@ -468,11 +476,7 @@ func handleShowColumns(ses *Session, stmt *tree.ShowColumns) error {
 				return err
 			}
 			row[1] = typ.DescString()
-			if d[2].(int8) == 0 {
-				row[2] = "NO"
-			} else {
-				row[2] = "YES"
-			}
+			row[2] = d[2]
 			row[3] = d[3]
 			if value, ok := row[3].([]uint8); ok {
 				if len(value) != 0 {
@@ -504,7 +508,7 @@ func handleShowColumns(ses *Session, stmt *tree.ShowColumns) error {
 
 			row[5] = ""
 			row[6] = d[6]
-			mrs.AddRow(row)
+			colNameToColContent[colName] = row
 		} else {
 			row := make([]interface{}, 9)
 			row[0] = colName
@@ -515,11 +519,7 @@ func handleShowColumns(ses *Session, stmt *tree.ShowColumns) error {
 			}
 			row[1] = typ.DescString()
 			row[2] = "NULL"
-			if d[3].(int8) == 0 {
-				row[3] = "NO"
-			} else {
-				row[3] = "YES"
-			}
+			row[3] = d[3]
 			row[4] = d[4]
 			if value, ok := row[4].([]uint8); ok {
 				if len(value) != 0 {
@@ -552,8 +552,14 @@ func handleShowColumns(ses *Session, stmt *tree.ShowColumns) error {
 			row[6] = ""
 			row[7] = d[7]
 			row[8] = d[8]
+			colNameToColContent[colName] = row
+		}
+	}
+	for _, col := range tableDef.Cols {
+		if row, ok := colNameToColContent[col.Name]; ok {
 			mrs.AddRow(row)
 		}
+
 	}
 	if err := ses.GetMysqlProtocol().SendResultSetTextBatchRowSpeedup(mrs, mrs.GetRowCount()); err != nil {
 		logErrorf(ses.GetConciseProfile(), "handleShowColumns error %v", err)
@@ -1694,8 +1700,12 @@ func doShowVariables(ses *Session, proc *process.Process, sv *tree.ShowVariables
 
 	var hasLike = false
 	var likePattern = ""
+	var isIlike = false
 	if sv.Like != nil {
 		hasLike = true
+		if sv.Like.Op == tree.ILIKE {
+			isIlike = true
+		}
 		likePattern = strings.ToLower(sv.Like.Right.String())
 	}
 
@@ -1711,8 +1721,14 @@ func doShowVariables(ses *Session, proc *process.Process, sv *tree.ShowVariables
 
 	rows := make([][]interface{}, 0, len(sysVars))
 	for name, value := range sysVars {
-		if hasLike && !WildcardMatch(likePattern, name) {
-			continue
+		if hasLike {
+			s := name
+			if isIlike {
+				s = strings.ToLower(s)
+			}
+			if !WildcardMatch(likePattern, s) {
+				continue
+			}
 		}
 		row := make([]interface{}, 2)
 		row[0] = name
@@ -2474,7 +2490,6 @@ func (cwft *TxnComputationWrapper) Compile(requestCtx context.Context, u interfa
 
 		cwft.ses.InitTempEngine = true
 	}
-	RecordStatementTxnID(requestCtx, cwft.ses)
 	return cwft.compile, err
 }
 
@@ -2569,7 +2584,7 @@ func buildPlan(requestCtx context.Context, ses *Session, ctx plan2.CompilerConte
 	switch stmt := stmt.(type) {
 	case *tree.Select, *tree.ParenSelect, *tree.ValuesStatement,
 		*tree.Update, *tree.Delete, *tree.Insert,
-		*tree.ShowDatabases, *tree.ShowTables, *tree.ShowColumns,
+		*tree.ShowDatabases, *tree.ShowTables, *tree.ShowColumns, *tree.ShowColumnNumber, *tree.ShowTableNumber,
 		*tree.ShowCreateDatabase, *tree.ShowCreateTable,
 		*tree.ExplainStmt, *tree.ExplainAnalyze:
 		opt := plan2.NewBaseOptimizer(ctx)
@@ -2603,7 +2618,7 @@ var GetComputationWrapper = func(db, sql, user string, eng engine.Engine, proc *
 	var cw []ComputationWrapper = nil
 	if cached := ses.getCachedPlan(sql); cached != nil {
 		for i, stmt := range cached.stmts {
-			tcw := InitTxnComputationWrapper(ses, *stmt, proc)
+			tcw := InitTxnComputationWrapper(ses, stmt, proc)
 			tcw.plan = cached.plans[i]
 			cw = append(cw, tcw)
 		}
@@ -3262,25 +3277,25 @@ func (ses *Session) getSqlType(sql string) {
 		return
 	}
 	source := strings.TrimSpace(sql[p1+2 : p2-p1])
-	if source == "cloud_user" {
+	if source == cloudUserTag {
 		ses.sqlSourceType = cloudUserSql
-	} else if source == "cloud_nouser" {
+	} else if source == cloudNoUserTag {
 		ses.sqlSourceType = cloudNoUserSql
 	} else {
 		ses.sqlSourceType = externSql
 	}
 }
 
-func (mce *MysqlCmdExecutor) processLoadLocal(ctx context.Context, param *tree.ExternParam, writer *io.PipeWriter) (err error) {
+func (mce *MysqlCmdExecutor) processLoadLocal(ctx context.Context, param *tree.ExternParam, writer *io.PipeWriter, earlyStop *atomic.Bool) (err error) {
+	ses := mce.GetSession()
+	proto := ses.GetMysqlProtocol()
 	defer func() {
 		err2 := writer.Close()
 		if err == nil {
 			err = err2
 		}
 	}()
-	ses := mce.GetSession()
-	proto := ses.GetMysqlProtocol()
-	err = external.InitInfileParam(param)
+	err = plan2.InitInfileParam(param)
 	if err != nil {
 		return
 	}
@@ -3316,12 +3331,10 @@ func (mce *MysqlCmdExecutor) processLoadLocal(ctx context.Context, param *tree.E
 	if err != nil {
 		return
 	}
-	nowStart := time.Now()
+	epoch, printEvery, minReadTime, maxReadTime, minWriteTime, maxWriteTime := 0, 100, math.MaxFloat64, float64(0), math.MaxFloat64, float64(0)
 	for {
-		logutil.Infof("last time cost %f seconds", time.Since(nowStart).Seconds())
-		nowStart = time.Now()
+		readStart := time.Now()
 		msg, err = proto.GetTcpConnection().Read(goetty.ReadOptions{})
-		logutil.Infof("read tcp cost %f seconds", time.Since(nowStart).Seconds())
 		if err != nil {
 			if moerr.IsMoErrCode(err, moerr.ErrInvalidInput) {
 				seq += 1
@@ -3329,6 +3342,13 @@ func (mce *MysqlCmdExecutor) processLoadLocal(ctx context.Context, param *tree.E
 				err = nil
 			}
 			break
+		}
+		readTime := time.Since(readStart).Seconds()
+		if readTime > maxReadTime {
+			maxReadTime = readTime
+		}
+		if readTime < minReadTime {
+			minReadTime = readTime
 		}
 		packet, ok = msg.(*Packet)
 		if !ok {
@@ -3341,13 +3361,26 @@ func (mce *MysqlCmdExecutor) processLoadLocal(ctx context.Context, param *tree.E
 		proto.SetSequenceID(seq)
 
 		writeStart := time.Now()
-		_, err = writer.Write(packet.Payload)
-		logutil.Infof("write pipe cost %f seconds", time.Since(writeStart).Seconds())
-		if err != nil {
-			return
+		if !earlyStop.Load() {
+			_, err = writer.Write(packet.Payload)
+			if err != nil {
+				return
+			}
+			writeTime := time.Since(writeStart).Seconds()
+			if writeTime > maxWriteTime {
+				maxWriteTime = writeTime
+			}
+			if writeTime < minWriteTime {
+				minWriteTime = writeTime
+			}
 		}
+		if epoch%printEvery == 0 {
+			logutil.Infof("load local '%s', epoch: %d, minReadTime: %f seconds, maxReadTime: %f seconds, minWriteTime: %f seconds, maxWriteTime:%f seconds, quick write:%v", param.Filepath, epoch, minReadTime, maxReadTime, minWriteTime, maxWriteTime, earlyStop.Load())
+			minReadTime, maxReadTime, minWriteTime, maxWriteTime = math.MaxFloat64, float64(0), math.MaxFloat64, float64(0)
+		}
+		epoch += 1
 	}
-	logutil.Infof("processLocalInfile cost:%f seconds", time.Since(start).Seconds())
+	logutil.Infof("load local '%s', read&write all data from client cost: %f seconds", param.Filepath, time.Since(start).Seconds())
 	return
 }
 
@@ -3383,6 +3416,7 @@ func (mce *MysqlCmdExecutor) doComQuery(requestCtx context.Context, sql string) 
 		TimeZone:      ses.GetTimeZone(),
 		StorageEngine: pu.StorageEngine,
 		LastInsertID:  ses.GetLastInsertID(),
+		Session:       ses,
 	}
 	if ses.GetTenantInfo() != nil {
 		proc.SessionInfo.Account = ses.GetTenantInfo().GetTenant()
@@ -3431,6 +3465,7 @@ func (mce *MysqlCmdExecutor) doComQuery(requestCtx context.Context, sql string) 
 	canCache := true
 	var loadLocalErrGroup *errgroup.Group
 	var loadLocalWriter *io.PipeWriter
+	var loadLocalEarlyStop *atomic.Bool
 
 	singleStatement := len(cws) == 1
 	for i, cw := range cws {
@@ -3915,18 +3950,30 @@ func (mce *MysqlCmdExecutor) doComQuery(requestCtx context.Context, sql string) 
 			if st, ok := cw.GetAst().(*tree.Load); ok {
 				if st.Local {
 					loadLocalErrGroup = new(errgroup.Group)
+					loadLocalEarlyStop = new(atomic.Bool)
 					loadLocalErrGroup.Go(func() error {
-						return mce.processLoadLocal(proc.Ctx, st.Param, loadLocalWriter)
+						return mce.processLoadLocal(proc.Ctx, st.Param, loadLocalWriter, loadLocalEarlyStop)
 					})
 				}
 			}
 
 			if err = runner.Run(0); err != nil {
+				if loadLocalEarlyStop != nil { // release resources
+					loadLocalEarlyStop.Store(true)
+					err2 := proc.LoadLocalReader.Close()
+					if err2 != nil {
+						logErrorf(ses.GetConciseProfile(), "processLoadLocal reader close failed: %s", err2.Error())
+					}
+					err2 = loadLocalErrGroup.Wait() // executor failed, but processLoadLocal is still running, wait for it
+					if err2 != nil {
+						logErrorf(ses.GetConciseProfile(), "processLoadLocal goroutine failed: %s", err2.Error())
+					}
+				}
 				goto handleFailed
 			}
 
 			if loadLocalErrGroup != nil {
-				if err = loadLocalErrGroup.Wait(); err != nil {
+				if err = loadLocalErrGroup.Wait(); err != nil { //executor success, but processLoadLocal goroutine failed
 					goto handleFailed
 				}
 			}
@@ -4153,11 +4200,11 @@ func (mce *MysqlCmdExecutor) doComQuery(requestCtx context.Context, sql string) 
 
 	if canCache && !ses.isCached(sql) {
 		plans := make([]*plan.Plan, len(cws))
-		stmts := make([]*tree.Statement, len(cws))
+		stmts := make([]tree.Statement, len(cws))
 		for i, cw := range cws {
 			if cwft, ok := cw.(*TxnComputationWrapper); ok && checkNodeCanCache(cwft.plan) {
 				plans[i] = cwft.plan
-				stmts[i] = &cwft.stmt
+				stmts[i] = cwft.stmt
 			} else {
 				return nil
 			}
@@ -4174,7 +4221,7 @@ func checkNodeCanCache(p *plan2.Plan) bool {
 	}
 	if q, ok := p.Plan.(*plan2.Plan_Query); ok {
 		for _, node := range q.Query.Nodes {
-			if node.NodeType == plan.Node_EXTERNAL_SCAN && node.TableDef.TableType == "query_result" {
+			if node.NotCacheable {
 				return false
 			}
 		}
@@ -4213,6 +4260,7 @@ func (mce *MysqlCmdExecutor) doComQueryInProgress(requestCtx context.Context, sq
 		Version:       pu.SV.ServerVersionPrefix + serverVersion.Load().(string),
 		TimeZone:      ses.GetTimeZone(),
 		StorageEngine: pu.StorageEngine,
+		Session:       ses,
 	}
 
 	if ses.GetTenantInfo() != nil {
@@ -4444,9 +4492,29 @@ func StatementCanBeExecutedInUncommittedTransaction(ses *Session, stmt tree.Stat
 	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction:
 		return true, nil
 		//show
-	case *tree.ShowTables, *tree.ShowCreateTable, *tree.ShowCreateDatabase, *tree.ShowDatabases,
-		*tree.ShowVariables, *tree.ShowColumns, *tree.ShowErrors, *tree.ShowIndex, *tree.ShowProcessList,
-		*tree.ShowStatus, *tree.ShowTarget, *tree.ShowWarnings, *tree.ShowAccounts:
+	case *tree.ShowCreateTable,
+		*tree.ShowCreateView,
+		*tree.ShowCreateDatabase,
+		*tree.ShowColumns,
+		*tree.ShowDatabases,
+		*tree.ShowTarget,
+		*tree.ShowTableStatus,
+		*tree.ShowGrants,
+		*tree.ShowTables,
+		*tree.ShowProcessList,
+		*tree.ShowErrors,
+		*tree.ShowWarnings,
+		*tree.ShowCollation,
+		*tree.ShowVariables,
+		*tree.ShowStatus,
+		*tree.ShowIndex,
+		*tree.ShowFunctionStatus,
+		*tree.ShowNodeList,
+		*tree.ShowLocks,
+		*tree.ShowTableNumber,
+		*tree.ShowColumnNumber,
+		*tree.ShowTableValues,
+		*tree.ShowAccounts:
 		return true, nil
 		//others
 	case *tree.ExplainStmt, *tree.ExplainAnalyze, *tree.ExplainFor, *InternalCmdFieldList:

@@ -16,9 +16,10 @@ package process
 
 import (
 	"context"
-	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"io"
 	"time"
+
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -94,6 +95,7 @@ type SessionInfo struct {
 	StorageEngine  engine.Engine
 	QueryId        []string
 	ResultColTypes []types.Type
+	Session        any
 }
 
 // AnalyzeInfo  analyze information for query
@@ -162,7 +164,7 @@ type Process struct {
 
 	LastInsertID *uint64
 
-	LoadLocalReader io.Reader
+	LoadLocalReader *io.PipeReader
 }
 
 func (proc *Process) SetLastInsertID(num uint64) {
