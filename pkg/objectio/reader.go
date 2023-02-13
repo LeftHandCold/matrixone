@@ -43,6 +43,11 @@ func NewObjectReader(name string, fs fileservice.FileService) (Reader, error) {
 }
 
 func (r *ObjectReader) ReadMeta(ctx context.Context, extents []Extent, m *mpool.MPool) ([]BlockObject, error) {
+	return r.ReadMetaWithFunc(ctx, extents, m, nil)
+}
+
+func (r *ObjectReader) ReadMetaWithFunc(ctx context.Context,
+	extents []Extent, m *mpool.MPool, ZMUnmarshalFunc ZoneMapUnmarshalFunc) ([]BlockObject, error) {
 	l := len(extents)
 	if l == 0 {
 		return nil, nil
@@ -85,7 +90,7 @@ func (r *ObjectReader) ReadMeta(ctx context.Context, extents []Extent, m *mpool.
 					name:   r.name,
 				}
 				cache := data[size:dataLen]
-				unSize, err := block.UnMarshalMeta(cache)
+				unSize, err := block.UnMarshalMeta(cache, ZMUnmarshalFunc)
 				if err != nil {
 					logutil.Infof("UnMarshalMeta failed: %v, extent %v", err.Error(), extents[0])
 					return nil, 0, err

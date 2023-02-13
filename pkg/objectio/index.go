@@ -15,7 +15,6 @@
 package objectio
 
 import (
-	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/compress"
 	"github.com/pierrec/lz4"
 )
@@ -35,18 +34,21 @@ type IndexData interface {
 	GetIdx() uint16
 }
 
+type ZoneMapUnmarshalFunc = func(buf []byte) (any, error)
+
 type ZoneMap struct {
-	idx uint16
-	buf []byte
+	idx           uint16
+	data          any
+	unmarshalFunc ZoneMapUnmarshalFunc
 }
 
-func NewZoneMap(idx uint16, buf []byte) (IndexData, error) {
-	if len(buf) != ZoneMapMinSize+ZoneMapMaxSize {
+func NewZoneMap(idx uint16, data any) (IndexData, error) {
+	/*if len(data) != ZoneMapMinSize+ZoneMapMaxSize {
 		return nil, moerr.NewInternalErrorNoCtx("object io: New ZoneMap failed")
-	}
+	}*/
 	zoneMap := &ZoneMap{
-		idx: idx,
-		buf: buf,
+		idx:  idx,
+		data: data,
 	}
 	return zoneMap, nil
 }
@@ -61,8 +63,17 @@ func (z *ZoneMap) Write(_ *ObjectWriter, block *Block) error {
 	return err
 }
 
-func (z *ZoneMap) GetData() []byte {
-	return z.buf
+func (z *ZoneMap) GetData() any {
+	return z.data
+}
+
+func (z *ZoneMap) Unmarshal(buf []byte) (err error) {
+	if z.unmarshalFunc == nil {
+		z.data = buf
+		return err
+	}
+	z.data, err = z.unmarshalFunc(buf)
+	return err
 }
 
 type BloomFilter struct {
