@@ -113,6 +113,12 @@ func (r *ObjectReader) ReadMeta(ctx context.Context, extents []Extent, m *mpool.
 }
 
 func (r *ObjectReader) Read(ctx context.Context, extent Extent, idxs []uint16, m *mpool.MPool) (*fileservice.IOVector, error) {
+	data, err := r.ReadWithFunc(ctx, extent, idxs, m, newDecompressToObject)
+	return data.(*fileservice.IOVector), err
+}
+
+func (r *ObjectReader) ReadWithFunc(ctx context.Context,
+	extent Extent, idxs []uint16, m *mpool.MPool, readFunc ReadObjectFunc) (any, error) {
 	blocks, err := r.ReadMeta(ctx, []Extent{extent}, m)
 	if err != nil {
 		return nil, err
@@ -129,7 +135,7 @@ func (r *ObjectReader) Read(ctx context.Context, extent Extent, idxs []uint16, m
 			Offset: int64(col.GetMeta().location.Offset()),
 			Size:   int64(col.GetMeta().location.Length()),
 
-			ToObject: newDecompressToObject(int64(col.GetMeta().location.OriginSize())),
+			ToObject: readFunc(int64(col.GetMeta().location.OriginSize())),
 		})
 	}
 
@@ -226,6 +232,7 @@ func (r *ObjectReader) readFooterAndUnMarshal(ctx context.Context, fileSize, siz
 }
 
 type ToObjectFunc = func(r io.Reader, buf []byte) (any, int64, error)
+type ReadObjectFunc = func(size int64) ToObjectFunc
 
 // newDecompressToObject the decompression function passed to fileservice
 func newDecompressToObject(size int64) ToObjectFunc {
