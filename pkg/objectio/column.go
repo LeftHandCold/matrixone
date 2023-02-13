@@ -118,8 +118,9 @@ func (cb *ColumnBlock) MarshalMeta() ([]byte, error) {
 	var buf []byte
 	if cb.meta.zoneMap.data == nil {
 		buf = make([]byte, ZoneMapMinSize+ZoneMapMaxSize)
+		cb.meta.zoneMap.data = buf
 	}
-	if err = binary.Write(&buffer, endian, buf); err != nil {
+	if err = binary.Write(&buffer, endian, cb.meta.zoneMap.data.([]byte)); err != nil {
 		return nil, err
 	}
 	if err = binary.Write(&buffer, endian, cb.meta.bloomFilter.Offset()); err != nil {
