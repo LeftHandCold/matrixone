@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package indexwrapper
+package blockio
 
 import (
+	"context"
 	"github.com/RoaringBitmap/roaring"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -27,9 +28,10 @@ import (
 )
 
 type BfReader struct {
-	bfKey     string
-	mgr       base.INodeManager
-	bfFacotry evictable.EvictableNodeFactory
+	bfKey  string
+	idx    uint16
+	reader *Reader
+	typ    types.Type
 }
 
 func newBfReader(
@@ -39,24 +41,23 @@ func newBfReader(
 	mgr base.INodeManager,
 	fs *objectio.ObjectFS,
 ) *BfReader {
-	metaKey := evictable.EncodeColMetaKey(id.Idx, metaloc)
-	bfKey := evictable.EncodeColBfKey(id.Idx, metaloc)
+	reader, _ := NewReader(context.Background(), fs, metaloc)
 
 	return &BfReader{
-		mgr:   mgr,
-		bfKey: bfKey,
-		bfFacotry: func() (base.INode, error) {
-			return evictable.NewBfNode(
-				id.Idx,
-				typ,
-				metaloc,
-				bfKey,
-				metaKey,
-				mgr,
-				fs,
-			)
-		},
+		bfKey:  metaloc,
+		reader: reader,
+		typ:    typ,
 	}
+}
+
+func (r *ZmReader) getBF() (*index.StaticFilter, error) {
+	_, extent, _ := DecodeMetaLoc(r.metaKey)
+	zmList, err := r.reader.LoadZoneMapByExtent(context.Background(), []uint16{r.idx}, extent, nil)
+	if err != nil {
+		// TODOa: Error Handling?
+		return nil, err
+	}
+	return zmList[0], err
 }
 
 func (r *BfReader) MayContainsKey(key any) (b bool, err error) {

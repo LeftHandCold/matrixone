@@ -225,6 +225,23 @@ func (r *Reader) LoadZoneMapByExtent(
 	return zonemapList, nil
 }
 
+func (r *Reader) LoadBloomFilterByExtent(
+	ctx context.Context,
+	idxs []uint16,
+	extent objectio.Extent,
+	m *mpool.MPool) ([]*index.ZoneMap, error) {
+
+	obs, err := r.reader.ReadMetaWithFunc(ctx, []objectio.Extent{extent}, m, LoadZoneMapFunc)
+	if err != nil {
+		return nil, err
+	}
+	zonemapList, err := r.LoadZoneMap(ctx, idxs, obs[0], m)
+	if err != nil {
+		return nil, err
+	}
+	return zonemapList, nil
+}
+
 func (r *Reader) LoadAllZoneMap(
 	ctx context.Context,
 	size int64,

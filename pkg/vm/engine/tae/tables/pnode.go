@@ -16,6 +16,7 @@ package tables
 
 import (
 	"bytes"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/dataio/blockio"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -30,8 +31,8 @@ var _ NodeT = (*persistedNode)(nil)
 type persistedNode struct {
 	common.RefHelper
 	block   *baseBlock
-	pkIndex indexwrapper.Index
-	indexes map[int]indexwrapper.Index
+	pkIndex blockio.Index
+	indexes map[int]blockio.Index
 }
 
 func newPersistedNode(block *baseBlock) *persistedNode {
@@ -54,14 +55,14 @@ func (node *persistedNode) close() {
 }
 
 func (node *persistedNode) init() {
-	node.indexes = make(map[int]indexwrapper.Index)
+	node.indexes = make(map[int]blockio.Index)
 	schema := node.block.meta.GetSchema()
 	pkIdx := -1
 	if schema.HasPK() {
 		pkIdx = schema.GetSingleSortKeyIdx()
 	}
 	for i := range schema.ColDefs {
-		index := indexwrapper.NewImmutableIndex()
+		index := blockio.NewImmutableIndex()
 		if err := index.ReadFrom(
 			node.block.bufMgr,
 			node.block.fs,

@@ -12,13 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package indexwrapper
+package blockio
 
 import (
 	"context"
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/dataio/blockio"
-
 	"github.com/RoaringBitmap/roaring"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -31,23 +29,21 @@ import (
 
 type ZmReader struct {
 	metaKey string
-	mgr     base.INodeManager
 	idx     uint16
-	reader  *blockio.Reader
+	reader  *Reader
 }
 
 func newZmReader(mgr base.INodeManager, typ types.Type, id common.ID, fs *objectio.ObjectFS, idx uint16, metaloc string) *ZmReader {
-	reader, _ := blockio.NewReader(context.Background(), fs, metaloc)
+	reader, _ := NewReader(context.Background(), fs, metaloc)
 	return &ZmReader{
 		metaKey: metaloc,
-		mgr:     mgr,
 		idx:     idx,
 		reader:  reader,
 	}
 }
 
 func (r *ZmReader) getZoneMap() (*index.ZoneMap, error) {
-	_, extent, _ := blockio.DecodeMetaLoc(r.metaKey)
+	_, extent, _ := DecodeMetaLoc(r.metaKey)
 	zmList, err := r.reader.LoadZoneMapByExtent(context.Background(), []uint16{r.idx}, extent, nil)
 	if err != nil {
 		// TODOa: Error Handling?
@@ -113,7 +109,7 @@ func (writer *ZMWriter) Init(wr objectio.Writer, block objectio.BlockObject, cTy
 
 func (writer *ZMWriter) Finalize() (*IndexMeta, error) {
 	if writer.zonemap == nil {
-		panic("unexpected error")
+		panic(any("unexpected error"))
 	}
 	appender := writer.writer
 	meta := NewEmptyIndexMeta()

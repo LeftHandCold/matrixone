@@ -25,6 +25,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/dataio/blockio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables"
@@ -244,9 +245,9 @@ type persistedNode struct {
 	rows    uint32
 	deletes *roaring.Bitmap
 	//ZM and BF index for primary key
-	pkIndex indexwrapper.Index
+	pkIndex blockio.Index
 	//ZM and BF index for all columns
-	indexes map[int]indexwrapper.Index
+	indexes map[int]blockio.Index
 }
 
 func newPersistedNode(bnode *baseNode) *persistedNode {
@@ -269,14 +270,14 @@ func (n *persistedNode) close() {
 }
 
 func (n *persistedNode) init() {
-	n.indexes = make(map[int]indexwrapper.Index)
+	n.indexes = make(map[int]blockio.Index)
 	schema := n.bnode.meta.GetSchema()
 	pkIdx := -1
 	if schema.HasPK() {
 		pkIdx = schema.GetSingleSortKeyIdx()
 	}
 	for i := range schema.ColDefs {
-		index := indexwrapper.NewImmutableIndex()
+		index := blockio.NewImmutableIndex()
 		if err := index.ReadFrom(
 			n.bnode.bufMgr,
 			n.bnode.fs,

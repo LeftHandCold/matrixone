@@ -15,13 +15,13 @@
 package tables
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/dataio/blockio"
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/handle"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables/indexwrapper"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables/updates"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
 	"github.com/stretchr/testify/assert"
@@ -64,7 +64,7 @@ func TestGetActiveRow(t *testing.T) {
 	vec := containers.MakeVector(types.T_int8.ToType(), false)
 	vec.Append(int8(1))
 	vec.Append(int8(1))
-	idx := indexwrapper.NewPkMutableIndex(types.T_int8.ToType())
+	idx := blockio.NewPkMutableIndex(types.T_int8.ToType())
 	keysCtx := &index.KeysCtx{
 		Keys: vec,
 	}
