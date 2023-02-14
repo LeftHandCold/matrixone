@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/binary"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 )
 
@@ -169,7 +170,10 @@ func (cb *ColumnBlock) UnMarshalMate(cache *bytes.Buffer) error {
 	if err = binary.Read(cache, endian, &buf); err != nil {
 		return err
 	}
-	if err = cb.meta.zoneMap.Unmarshal(buf); err != nil {
+	t := types.Type{
+		Oid: types.T(cb.meta.typ),
+	}
+	if err = cb.meta.zoneMap.Unmarshal(buf, t); err != nil {
 		return err
 	}
 	cb.meta.bloomFilter = Extent{}

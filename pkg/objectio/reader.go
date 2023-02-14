@@ -16,6 +16,7 @@ package objectio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"io"
 
@@ -118,12 +119,12 @@ func (r *ObjectReader) ReadMetaWithFunc(ctx context.Context,
 }
 
 func (r *ObjectReader) Read(ctx context.Context, extent Extent, idxs []uint16, m *mpool.MPool) (*fileservice.IOVector, error) {
-	data, err := r.ReadWithFunc(ctx, extent, idxs, m, newDecompressToObject)
-	return data.(*fileservice.IOVector), err
+	data, err := r.ReadWithFunc(ctx, extent, idxs, m, newDecompressToObject, nil)
+	return data, err
 }
 
 func (r *ObjectReader) ReadWithFunc(ctx context.Context,
-	extent Extent, idxs []uint16, m *mpool.MPool, readFunc ReadObjectFunc) (any, error) {
+	extent Extent, idxs []uint16, m *mpool.MPool, readFunc ReadObjectFunc, vectors []*vector.Vector) (*fileservice.IOVector, error) {
 	blocks, err := r.ReadMeta(ctx, []Extent{extent}, m)
 	if err != nil {
 		return nil, err
@@ -134,13 +135,13 @@ func (r *ObjectReader) ReadWithFunc(ctx context.Context,
 		FilePath: r.name,
 		Entries:  make([]fileservice.IOEntry, 0, len(idxs)),
 	}
-	for _, idx := range idxs {
+	for i, idx := range idxs {
 		col := block.(*Block).columns[idx]
 		data.Entries = append(data.Entries, fileservice.IOEntry{
 			Offset: int64(col.GetMeta().location.Offset()),
 			Size:   int64(col.GetMeta().location.Length()),
 
-			ToObject: readFunc(int64(col.GetMeta().location.OriginSize())),
+			ToObject: readFunc(int64(col.GetMeta().location.OriginSize()), vectors[i]),
 		})
 	}
 
@@ -170,11 +171,15 @@ func (r *ObjectReader) ReadIndex(ctx context.Context, extent Extent, idxs []uint
 }
 
 func (r *ObjectReader) ReadAllMeta(ctx context.Context, fileSize int64, m *mpool.MPool) ([]BlockObject, error) {
+	return r.ReadAllMetaWithFunc(ctx, fileSize, m, nil)
+}
+func (r *ObjectReader) ReadAllMetaWithFunc(ctx context.Context,
+	fileSize int64, m *mpool.MPool, ZMUnmarshalFunc ZoneMapUnmarshalFunc) ([]BlockObject, error) {
 	footer, err := r.readFooter(ctx, fileSize, m)
 	if err != nil {
 		return nil, err
 	}
-	return r.ReadMeta(ctx, footer.extents, m)
+	return r.ReadMetaWithFunc(ctx, footer.extents, m, ZMUnmarshalFunc)
 }
 
 func (r *ObjectReader) readFooter(ctx context.Context, fileSize int64, m *mpool.MPool) (*Footer, error) {
@@ -237,10 +242,10 @@ func (r *ObjectReader) readFooterAndUnMarshal(ctx context.Context, fileSize, siz
 }
 
 type ToObjectFunc = func(r io.Reader, buf []byte) (any, int64, error)
-type ReadObjectFunc = func(size int64) ToObjectFunc
+type ReadObjectFunc = func(size int64, vec *vector.Vector) ToObjectFunc
 
 // newDecompressToObject the decompression function passed to fileservice
-func newDecompressToObject(size int64) ToObjectFunc {
+func newDecompressToObject(size int64, vec *vector.Vector) ToObjectFunc {
 	return func(reader io.Reader, data []byte) (any, int64, error) {
 		// decompress
 		var err error

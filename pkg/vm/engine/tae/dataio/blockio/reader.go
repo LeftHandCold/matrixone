@@ -16,8 +16,8 @@ package blockio
 
 import (
 	"context"
-	"errors"
 	"github.com/matrixorigin/matrixone/pkg/catalog"
+	"github.com/matrixorigin/matrixone/pkg/compress"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 	"io"
@@ -132,22 +132,26 @@ func (r *Reader) LoadBlkColumnsByMeta(
 	if block.GetExtent().End() == 0 {
 		return bat, nil
 	}
+	mobat := batch.NewWithSize(len(colNames))
 	idxs := make([]uint16, len(colNames))
 	for i := range colNames {
 		idxs[i] = uint16(i)
+		mobat.Vecs[i] = vector.New(colTypes[i])
 	}
-	ioResult, err := r.reader.Read(r.readCxt, block.GetExtent(), idxs, nil)
+
+	ioResult, err := r.reader.ReadWithFunc(r.readCxt, block.GetExtent(), idxs, nil, LoadColumnFunc, mobat.Vecs)
 	if err != nil {
 		return nil, err
 	}
 
 	for i := range colNames {
-		pkgVec := vector.New(colTypes[i])
+		/*pkgVec := vector.New(colTypes[i])
 		data := make([]byte, len(ioResult.Entries[i].Object.([]byte)))
 		copy(data, ioResult.Entries[i].Object.([]byte))
 		if err = pkgVec.Read(data); err != nil && !errors.Is(err, io.EOF) {
 			return bat, err
-		}
+		}*/
+		pkgVec := ioResult.Entries[i].Object.(*vector.Vector)
 		var vec containers.Vector
 		if pkgVec.Length() == 0 {
 			vec = containers.MakeVector(colTypes[i], nullables[i])
@@ -167,25 +171,19 @@ func (r *Reader) LoadBlkColumnsByMetaAndIdx(
 	nullables []bool,
 	block objectio.BlockObject,
 	idx int) (*containers.Batch, error) {
-	bat := containers.NewBatch()
 
 	if block.GetExtent().End() == 0 {
 		return nil, nil
 	}
-	col, err := block.GetColumn(uint16(idx))
+	var idxs = []uint16{uint16(idx)}
+	mobat := batch.NewWithSize(1)
+	mobat.Vecs[0] = vector.New(colTypes[0])
+	iov, err := r.reader.ReadWithFunc(r.readCxt, block.GetExtent(), idxs, nil, LoadColumnFunc, mobat.Vecs)
 	if err != nil {
-		return bat, err
+		return nil, err
 	}
-	data, err := col.GetData(r.readCxt, nil)
-	if err != nil {
-		return bat, err
-	}
-	pkgVec := vector.New(colTypes[0])
-	v := make([]byte, len(data.Entries[0].Object.([]byte)))
-	copy(v, data.Entries[0].Object.([]byte))
-	if err = pkgVec.Read(v); err != nil && !errors.Is(err, io.EOF) {
-		return bat, err
-	}
+	bat := containers.NewBatch()
+	pkgVec := iov.Entries[0].Object.(*vector.Vector)
 	var vec containers.Vector
 	if pkgVec.Length() == 0 {
 		vec = containers.MakeVector(colTypes[0], nullables[0])
@@ -203,15 +201,28 @@ func (r *Reader) LoadZoneMapAndRowsByMetaLoc(
 	m *mpool.MPool) ([]*index.ZoneMap, uint32, error) {
 	_, extent, rows := DecodeMetaLoc(blockInfo.MetaLoc)
 
-	obs, err := r.reader.ReadMeta(ctx, []objectio.Extent{extent}, m)
-	if err != nil {
-		return nil, 0, err
-	}
-	zonemapList, err := r.LoadZoneMap(ctx, idxs, obs[0], m)
+	zonemapList, err := r.LoadZoneMapByExtent(ctx, idxs, extent, m)
 	if err != nil {
 		return nil, 0, err
 	}
 	return zonemapList, rows, nil
+}
+
+func (r *Reader) LoadZoneMapByExtent(
+	ctx context.Context,
+	idxs []uint16,
+	extent objectio.Extent,
+	m *mpool.MPool) ([]*index.ZoneMap, error) {
+
+	obs, err := r.reader.ReadMetaWithFunc(ctx, []objectio.Extent{extent}, m, LoadZoneMapFunc)
+	if err != nil {
+		return nil, err
+	}
+	zonemapList, err := r.LoadZoneMap(ctx, idxs, obs[0], m)
+	if err != nil {
+		return nil, err
+	}
+	return zonemapList, nil
 }
 
 func (r *Reader) LoadAllZoneMap(
@@ -219,7 +230,7 @@ func (r *Reader) LoadAllZoneMap(
 	size int64,
 	idxs []uint16,
 	m *mpool.MPool) ([][]*index.ZoneMap, error) {
-	blocks, err := r.reader.ReadAllMeta(r.readCxt, size, m)
+	blocks, err := r.reader.ReadAllMetaWithFunc(r.readCxt, size, m, LoadZoneMapFunc)
 	if err != nil {
 		return nil, err
 	}
@@ -238,31 +249,53 @@ func (r *Reader) LoadZoneMap(
 	idxs []uint16,
 	block objectio.BlockObject,
 	m *mpool.MPool) ([]*index.ZoneMap, error) {
-	zonemapList := make([]*index.ZoneMap, len(idxs))
+	zoneMapList := make([]*index.ZoneMap, len(idxs))
 	for i, idx := range idxs {
 		column, err := block.GetColumn(idx)
 		if err != nil {
 			return nil, err
 		}
-		data, err := column.GetIndex(ctx, objectio.ZoneMapType, m)
+		zm, err := column.GetIndex(ctx, objectio.ZoneMapType, m)
 		if err != nil {
 			return nil, err
 		}
-		bytes := data.(*objectio.ZoneMap).GetData()
-		meta := column.GetMeta()
-		t := types.Type{
-			Oid: types.T(meta.GetType()),
-		}
-		zm := index.NewZoneMap(t)
-		err = zm.Unmarshal(bytes[:])
-		if err != nil {
-			return nil, err
-		}
+		data := zm.(*objectio.ZoneMap).GetData()
 
-		zonemapList[i] = zm
+		zoneMapList[i] = data.(*index.ZoneMap)
 	}
 
-	return zonemapList, nil
+	return zoneMapList, nil
+}
+
+func LoadZoneMapFunc(buf []byte, typ types.Type) (any, error) {
+	zm := index.NewZoneMap(typ)
+	err := zm.Unmarshal(buf[:])
+	if err != nil {
+		return nil, err
+	}
+	return zm, err
+}
+
+func LoadColumnFunc(size int64, vec *vector.Vector) objectio.ToObjectFunc {
+	return func(reader io.Reader, data []byte) (any, int64, error) {
+		// decompress
+		var err error
+		if len(data) == 0 {
+			data, err = io.ReadAll(reader)
+			if err != nil {
+				return nil, 0, err
+			}
+		}
+		decompressed := make([]byte, size)
+		decompressed, err = compress.Decompress(data, decompressed, compress.Lz4)
+		if err != nil {
+			return nil, 0, err
+		}
+		if err = vec.Read(decompressed); err != nil {
+			return nil, 0, err
+		}
+		return vec, int64(len(decompressed)), nil
+	}
 }
 
 func (r *Reader) LoadBlkColumns(
@@ -273,15 +306,15 @@ func (r *Reader) LoadBlkColumns(
 	m *mpool.MPool,
 ) (*batch.Batch, error) {
 	bat := batch.NewWithSize(len(idxs))
-	iov, err := r.reader.Read(ctx, extent, idxs, m)
+	for i := range bat.Vecs {
+		bat.Vecs[i] = vector.New(colTypes[i])
+	}
+	iov, err := r.reader.ReadWithFunc(ctx, extent, idxs, m, LoadColumnFunc, bat.Vecs)
 	if err != nil {
 		return nil, err
 	}
 	for i, entry := range iov.Entries {
-		bat.Vecs[i] = vector.New(colTypes[i])
-		if err = bat.Vecs[i].Read(entry.Object.([]byte)); err != nil {
-			return nil, err
-		}
+		bat.Vecs[i] = entry.Object.(*vector.Vector)
 	}
 	return bat, nil
 }

@@ -16,6 +16,7 @@ package objectio
 
 import (
 	"github.com/matrixorigin/matrixone/pkg/compress"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/pierrec/lz4"
 )
 
@@ -34,7 +35,7 @@ type IndexData interface {
 	GetIdx() uint16
 }
 
-type ZoneMapUnmarshalFunc = func(buf []byte) (any, error)
+type ZoneMapUnmarshalFunc = func(buf []byte, t types.Type) (any, error)
 
 type ZoneMap struct {
 	idx           uint16
@@ -67,12 +68,12 @@ func (z *ZoneMap) GetData() any {
 	return z.data
 }
 
-func (z *ZoneMap) Unmarshal(buf []byte) (err error) {
+func (z *ZoneMap) Unmarshal(buf []byte, t types.Type) (err error) {
 	if z.unmarshalFunc == nil {
 		z.data = buf
 		return err
 	}
-	z.data, err = z.unmarshalFunc(buf)
+	z.data, err = z.unmarshalFunc(buf, t)
 	return err
 }
 
