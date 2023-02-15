@@ -24,7 +24,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables/evictable"
 )
 
 type BfReader struct {
@@ -50,36 +49,30 @@ func newBfReader(
 	}
 }
 
-func (r *ZmReader) getBF() (*index.StaticFilter, error) {
-	_, extent, _ := DecodeMetaLoc(r.metaKey)
-	zmList, err := r.reader.LoadZoneMapByExtent(context.Background(), []uint16{r.idx}, extent, nil)
+func (r *BfReader) getBloomFilter() (index.StaticFilter, error) {
+	_, extent, _ := DecodeMetaLoc(r.bfKey)
+	bf, err := r.reader.LoadBloomFilterByExtent(context.Background(), r.idx, extent, nil)
 	if err != nil {
 		// TODOa: Error Handling?
 		return nil, err
 	}
-	return zmList[0], err
+	return bf, err
 }
 
 func (r *BfReader) MayContainsKey(key any) (b bool, err error) {
-	h, err := evictable.PinEvictableNode(r.mgr, r.bfKey, r.bfFacotry)
+	bf, err := r.getBloomFilter()
 	if err != nil {
-		// TODOa: Error Handling?
 		return
 	}
-	defer h.Close()
-	bfNode := h.GetNode().(*evictable.BfNode)
-	return bfNode.Bf.MayContainsKey(key)
+	return bf.MayContainsKey(key)
 }
 
 func (r *BfReader) MayContainsAnyKeys(keys containers.Vector, visibility *roaring.Bitmap) (b bool, m *roaring.Bitmap, err error) {
-	h, err := evictable.PinEvictableNode(r.mgr, r.bfKey, r.bfFacotry)
+	bf, err := r.getBloomFilter()
 	if err != nil {
-		// TODOa: Error Handling?
 		return
 	}
-	defer h.Close()
-	bfNode := h.GetNode().(*evictable.BfNode)
-	return bfNode.Bf.MayContainsAnyKeys(keys, visibility)
+	return bf.MayContainsAnyKeys(keys, visibility)
 }
 
 func (r *BfReader) Destroy() error { return nil }

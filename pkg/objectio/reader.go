@@ -152,7 +152,13 @@ func (r *ObjectReader) ReadWithFunc(ctx context.Context,
 	return data, nil
 }
 
-func (r *ObjectReader) ReadIndex(ctx context.Context, extent Extent, idxs []uint16, typ IndexDataType, m *mpool.MPool) ([]IndexData, error) {
+func (r *ObjectReader) ReadIndex(ctx context.Context, extent Extent,
+	idxs []uint16, typ IndexDataType, m *mpool.MPool) ([]IndexData, error) {
+	return r.ReadIndexWithFunc(ctx, extent, idxs, typ, newDecompressToObject, m)
+}
+
+func (r *ObjectReader) ReadIndexWithFunc(ctx context.Context, extent Extent,
+	idxs []uint16, typ IndexDataType, readFunc ReadObjectFunc, m *mpool.MPool) ([]IndexData, error) {
 	blocks, err := r.ReadMeta(ctx, []Extent{extent}, m)
 	if err != nil {
 		return nil, err
@@ -161,7 +167,7 @@ func (r *ObjectReader) ReadIndex(ctx context.Context, extent Extent, idxs []uint
 	indexes := make([]IndexData, 0)
 	for _, idx := range idxs {
 		col := block.(*Block).columns[idx]
-		index, err := col.GetIndex(ctx, typ, m)
+		index, err := col.GetIndexWithFunc(ctx, typ, readFunc, m)
 		if err != nil {
 			return nil, err
 		}
@@ -242,10 +248,10 @@ func (r *ObjectReader) readFooterAndUnMarshal(ctx context.Context, fileSize, siz
 }
 
 type ToObjectFunc = func(r io.Reader, buf []byte) (any, int64, error)
-type ReadObjectFunc = func(size int64, vec *vector.Vector) ToObjectFunc
+type ReadObjectFunc = func(size int64, vec any) ToObjectFunc
 
 // newDecompressToObject the decompression function passed to fileservice
-func newDecompressToObject(size int64, vec *vector.Vector) ToObjectFunc {
+func newDecompressToObject(size int64, vec any) ToObjectFunc {
 	return func(reader io.Reader, data []byte) (any, int64, error) {
 		// decompress
 		var err error

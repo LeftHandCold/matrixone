@@ -67,6 +67,10 @@ func (cb *ColumnBlock) GetData(ctx context.Context, m *mpool.MPool) (*fileservic
 }
 
 func (cb *ColumnBlock) GetIndex(ctx context.Context, dataType IndexDataType, m *mpool.MPool) (IndexData, error) {
+	return cb.GetIndexWithFunc(ctx, dataType, newDecompressToObject, m)
+}
+
+func (cb *ColumnBlock) GetIndexWithFunc(ctx context.Context, dataType IndexDataType, readFunc ReadObjectFunc, m *mpool.MPool) (IndexData, error) {
 	if dataType == ZoneMapType {
 		return &cb.meta.zoneMap, nil
 	} else if dataType == BloomFilterType {
@@ -79,7 +83,7 @@ func (cb *ColumnBlock) GetIndex(ctx context.Context, dataType IndexDataType, m *
 			Size:   int64(cb.meta.bloomFilter.Length()),
 		}
 		var err error
-		data.Entries[0].ToObject = newDecompressToObject(int64(cb.meta.bloomFilter.OriginSize()), nil)
+		data.Entries[0].ToObject = readFunc(int64(cb.meta.bloomFilter.OriginSize()), nil)
 		err = cb.object.fs.Read(ctx, data)
 		if err != nil {
 			return nil, err

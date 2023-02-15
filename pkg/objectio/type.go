@@ -106,6 +106,8 @@ type ColumnObject interface {
 	// GetIndex gets the index of ColumnObject
 	GetIndex(ctx context.Context, dataType IndexDataType, m *mpool.MPool) (IndexData, error)
 
+	GetIndexWithFunc(ctx context.Context, dataType IndexDataType, readFunc ReadObjectFunc, m *mpool.MPool) (IndexData, error)
+
 	// GetMeta gets the metadata of ColumnObject
 	GetMeta() *ColumnMeta
 }

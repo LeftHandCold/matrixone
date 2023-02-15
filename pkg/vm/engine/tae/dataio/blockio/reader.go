@@ -227,19 +227,24 @@ func (r *Reader) LoadZoneMapByExtent(
 
 func (r *Reader) LoadBloomFilterByExtent(
 	ctx context.Context,
-	idxs []uint16,
+	idx uint16,
 	extent objectio.Extent,
-	m *mpool.MPool) ([]*index.ZoneMap, error) {
+	m *mpool.MPool) (index.StaticFilter, error) {
 
 	obs, err := r.reader.ReadMetaWithFunc(ctx, []objectio.Extent{extent}, m, LoadZoneMapFunc)
 	if err != nil {
 		return nil, err
 	}
-	zonemapList, err := r.LoadZoneMap(ctx, idxs, obs[0], m)
+	column, err := obs[0].GetColumn(idx)
 	if err != nil {
 		return nil, err
 	}
-	return zonemapList, nil
+	bf, err := column.GetIndex(ctx, objectio.BloomFilterType, m)
+	if err != nil {
+		return nil, err
+	}
+	data := bf.(*objectio.BloomFilter).GetData()
+	return data.(index.StaticFilter), nil
 }
 
 func (r *Reader) LoadAllZoneMap(
@@ -293,7 +298,7 @@ func LoadZoneMapFunc(buf []byte, typ types.Type) (any, error) {
 	return zm, err
 }
 
-func LoadColumnFunc(size int64, vec *vector.Vector) objectio.ToObjectFunc {
+func LoadBloomFilterFunc(size int64, vec any) objectio.ToObjectFunc {
 	return func(reader io.Reader, data []byte) (any, int64, error) {
 		// decompress
 		var err error
@@ -308,7 +313,30 @@ func LoadColumnFunc(size int64, vec *vector.Vector) objectio.ToObjectFunc {
 		if err != nil {
 			return nil, 0, err
 		}
-		if err = vec.Read(decompressed); err != nil {
+		bf, err := index.NewBinaryFuseFilterFromSource(decompressed)
+		if err != nil {
+			return nil, 0, err
+		}
+		return bf, int64(len(decompressed)), nil
+	}
+}
+
+func LoadColumnFunc(size int64, vec any) objectio.ToObjectFunc {
+	return func(reader io.Reader, data []byte) (any, int64, error) {
+		// decompress
+		var err error
+		if len(data) == 0 {
+			data, err = io.ReadAll(reader)
+			if err != nil {
+				return nil, 0, err
+			}
+		}
+		decompressed := make([]byte, size)
+		decompressed, err = compress.Decompress(data, decompressed, compress.Lz4)
+		if err != nil {
+			return nil, 0, err
+		}
+		if err = vec.(*vector.Vector).Read(decompressed); err != nil {
 			return nil, 0, err
 		}
 		return vec, int64(len(decompressed)), nil
