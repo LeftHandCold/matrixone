@@ -160,8 +160,12 @@ func fetchZonemapAndRowsFromBlockInfo(
 		if err != nil {
 			return nil, 0, err
 		}
-		bytes := data.(*objectio.ZoneMap).GetData()
-		copy(zonemapList[i][:], bytes[:])
+		bytes := data.(*objectio.ZoneMap).GetData().(*index.ZoneMap)
+		buf, err := bytes.Marshal()
+		if err != nil {
+			return nil, 0, err
+		}
+		copy(zonemapList[i][:], buf[:])
 	}
 
 	return zonemapList, rows, nil

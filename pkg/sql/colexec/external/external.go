@@ -716,10 +716,8 @@ func needRead(param *ExternalParam, proc *process.Process, objectReader objectio
 	for i := 0; i < dataLength; i++ {
 		idx := param.Filter.defColumns[i]
 		dataTypes[i] = uint8(param.Cols[idx].Typ.Id)
-		typ := types.T(dataTypes[i]).ToType()
 
-		zm := index.NewZoneMap(typ)
-		err = zm.Unmarshal(indexes[i].(*objectio.ZoneMap).GetData())
+		zm := indexes[i].(*objectio.ZoneMap).GetData().(*index.ZoneMap)
 		if err != nil {
 			return true
 		}
