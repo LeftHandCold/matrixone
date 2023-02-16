@@ -33,6 +33,7 @@ type ObjectReader struct {
 const ExtentTypeSize = 4 * 3
 const ExtentsLength = 20
 const FooterSize = 8 + 4
+const ObjectHeaderSize = 32
 
 func NewObjectReader(name string, fs fileservice.FileService) (Reader, error) {
 	reader := &ObjectReader{
@@ -164,6 +165,58 @@ func (r *ObjectReader) ReadAllMeta(ctx context.Context, fileSize int64, m *mpool
 		return nil, err
 	}
 	return r.ReadMeta(ctx, footer.extents, m)
+}
+
+func (r *ObjectReader) ReadAllMetaWithoutSize(ctx context.Context, m *mpool.MPool) ([]BlockObject, error) {
+	header, err := r.readHeader(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+	return r.ReadAllMeta(ctx, int64(header.size), m)
+}
+
+func (r *ObjectReader) readHeader(ctx context.Context, m *mpool.MPool) (*Header, error) {
+	var err error
+	var header *Header
+	header, err = r.readHeaderAndUnMarshal(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+	return header, err
+}
+
+func (r *ObjectReader) readHeaderAndUnMarshal(ctx context.Context, m *mpool.MPool) (*Header, error) {
+	data := &fileservice.IOVector{
+		FilePath: r.name,
+		Entries: []fileservice.IOEntry{
+			{
+				Offset: 0,
+				Size:   HeaderSize,
+
+				ToObject: func(reader io.Reader, data []byte) (any, int64, error) {
+					// unmarshal
+					if len(data) == 0 {
+						var err error
+						data, err = io.ReadAll(reader)
+						if err != nil {
+							return nil, 0, err
+						}
+					}
+					header := &Header{}
+					if err := header.UnMarshalHeader(data); err != nil {
+						return nil, 0, err
+					}
+					return header, int64(len(data)), nil
+				},
+			},
+		},
+	}
+	err := r.object.fs.Read(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+
+	return data.Entries[0].Object.(*Header), nil
 }
 
 func (r *ObjectReader) readFooter(ctx context.Context, fileSize int64, m *mpool.MPool) (*Footer, error) {

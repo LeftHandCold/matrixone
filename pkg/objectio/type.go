@@ -68,6 +68,8 @@ type Reader interface {
 
 	// ReadAllMeta is read the meta of all blocks in an object
 	ReadAllMeta(ctx context.Context, fileSize int64, m *mpool.MPool) ([]BlockObject, error)
+
+	ReadAllMetaWithoutSize(ctx context.Context, m *mpool.MPool) ([]BlockObject, error)
 }
 
 // BlockObject is a batch written to fileservice

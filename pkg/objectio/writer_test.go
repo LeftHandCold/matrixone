@@ -162,6 +162,23 @@ func TestNewObjectWriter(t *testing.T) {
 	assert.Equal(t, int32(3), vector2.Col.([]int32)[3])
 	vector3 = newVector(types.Type{Oid: types.T_int64}, vec.Entries[2].Object.([]byte))
 	assert.Equal(t, int64(3), vector3.Col.([]int64)[3])
+	bs, err = objectReader.ReadAllMetaWithoutSize(context.Background(), pool)
+	assert.Nil(t, err)
+	assert.Equal(t, 2, len(bs))
+	assert.Nil(t, err)
+	assert.Equal(t, 2, len(bs))
+	idxs = make([]uint16, 3)
+	idxs[0] = 0
+	idxs[1] = 2
+	idxs[2] = 3
+	vec, err = objectReader.Read(context.Background(), bs[0].GetExtent(), idxs, pool)
+	assert.Nil(t, err)
+	vector1 = newVector(types.Type{Oid: types.T_int8}, vec.Entries[0].Object.([]byte))
+	assert.Equal(t, int8(3), vector1.Col.([]int8)[3])
+	vector2 = newVector(types.Type{Oid: types.T_int32}, vec.Entries[1].Object.([]byte))
+	assert.Equal(t, int32(3), vector2.Col.([]int32)[3])
+	vector3 = newVector(types.Type{Oid: types.T_int64}, vec.Entries[2].Object.([]byte))
+	assert.Equal(t, int64(3), vector3.Col.([]int64)[3])
 	indexes, err = objectReader.ReadIndex(context.Background(), bs[0].GetExtent(), idxs, ZoneMapType, pool)
 	assert.Nil(t, err)
 	assert.Equal(t, 3, len(indexes))

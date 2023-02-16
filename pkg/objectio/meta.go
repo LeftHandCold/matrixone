@@ -137,7 +137,26 @@ func (cm *ColumnMeta) GetBloomFilter() Extent {
 type Header struct {
 	magic   uint64
 	version uint16
-	dummy   [22]byte
+	size    uint64
+	dummy   [14]byte
+}
+
+func (h *Header) UnMarshalHeader(data []byte) error {
+	var err error
+	HeaderCache := bytes.NewBuffer(data)
+	if err = binary.Read(HeaderCache, endian, &h.magic); err != nil {
+		return err
+	}
+	if h.magic != uint64(Magic) {
+		return moerr.NewInternalErrorNoCtx("object io: invalid header")
+	}
+	if err = binary.Read(HeaderCache, endian, &h.version); err != nil {
+		return err
+	}
+	if err = binary.Read(HeaderCache, endian, &h.size); err != nil {
+		return err
+	}
+	return err
 }
 
 type Footer struct {

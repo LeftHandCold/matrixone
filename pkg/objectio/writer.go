@@ -45,8 +45,8 @@ func NewObjectWriter(name string, fs fileservice.FileService) (Writer, error) {
 		blocks: make([]BlockObject, 0),
 		lastId: 0,
 	}
-	err := writer.WriteHeader()
-	return writer, err
+	//err := writer.WriteHeader()
+	return writer, nil
 }
 
 func (w *ObjectWriter) WriteHeader() error {
@@ -146,6 +146,10 @@ func (w *ObjectWriter) WriteEnd(ctx context.Context, items ...WriteOptions) ([]B
 		return nil, err
 	}
 	_, _, err = w.buffer.Write(buf.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	err = w.buffer.WriteHeader()
 	if err != nil {
 		return nil, err
 	}

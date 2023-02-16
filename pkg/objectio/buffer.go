@@ -16,6 +16,7 @@ package objectio
 
 import (
 	"bytes"
+	"encoding/binary"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -38,6 +39,11 @@ func NewObjectBuffer(name string) *ObjectBuffer {
 		},
 	}
 	buffer.vector.Entries = make([]fileservice.IOEntry, 0)
+	entry := fileservice.IOEntry{
+		Offset: 0,
+		Size:   ObjectHeaderSize,
+	}
+	buffer.vector.Entries = append(buffer.vector.Entries, entry)
 	return buffer
 }
 
@@ -55,6 +61,32 @@ func (b *ObjectBuffer) Write(buf []byte, items ...WriteOptions) (int, int, error
 	}
 	b.vector.Entries = append(b.vector.Entries, entry)
 	return int(offset), len(buf), nil
+}
+
+func (b *ObjectBuffer) WriteHeader() error {
+	var (
+		err    error
+		header bytes.Buffer
+	)
+	size := int64(0)
+	le := len(b.vector.Entries)
+	size = b.vector.Entries[le-1].Offset +
+		b.vector.Entries[le-1].Size
+	h := Header{magic: Magic, version: Version, size: uint64(size)}
+	if err = binary.Write(&header, endian, h.magic); err != nil {
+		return err
+	}
+	if err = binary.Write(&header, endian, h.version); err != nil {
+		return err
+	}
+	if err = binary.Write(&header, endian, h.size); err != nil {
+		return err
+	}
+	if err = binary.Write(&header, endian, h.dummy); err != nil {
+		return err
+	}
+	b.vector.Entries[0].Data = header.Bytes()
+	return err
 }
 
 func (b *ObjectBuffer) Length() int {
