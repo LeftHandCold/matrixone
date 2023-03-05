@@ -25,7 +25,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/buffer/base"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/compute"
@@ -46,10 +45,9 @@ type ablock struct {
 func newABlock(
 	meta *catalog.BlockEntry,
 	fs *objectio.ObjectFS,
-	bufMgr base.INodeManager,
 	scheduler tasks.TaskScheduler) *ablock {
 	blk := &ablock{}
-	blk.baseBlock = newBaseBlock(blk, meta, bufMgr, fs, scheduler)
+	blk.baseBlock = newBaseBlock(blk, meta, fs, scheduler)
 	blk.mvcc.SetAppendListener(blk.OnApplyAppend)
 	blk.mvcc.SetDeletesListener(blk.OnApplyDelete)
 	if blk.meta.HasDropCommitted() {
@@ -176,7 +174,6 @@ func (blk *ablock) resolveColumnDatas(
 			skipDeletes)
 	} else {
 		return blk.ResolvePersistedColumnDatas(
-			node.MustPNode(),
 			ts,
 			colIdxes,
 			buffers,
@@ -202,7 +199,6 @@ func (blk *ablock) resolveColumnData(
 			skipDeletes)
 	} else {
 		return blk.ResolvePersistedColumnData(
-			node.MustPNode(),
 			ts,
 			colIdx,
 			buffer,

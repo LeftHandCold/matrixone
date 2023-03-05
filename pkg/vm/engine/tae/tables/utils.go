@@ -21,7 +21,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
 
 	"github.com/matrixorigin/matrixone/pkg/objectio"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/buffer/base"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
@@ -39,7 +38,6 @@ func constructRowId(id *common.ID, rows uint32) (col containers.Vector, err erro
 }
 
 func LoadPersistedColumnData(
-	mgr base.INodeManager,
 	fs *objectio.ObjectFS,
 	id *common.ID,
 	def *catalog.ColDef,
@@ -72,7 +70,6 @@ func ReadPersistedBlockRow(location string) int {
 }
 
 func LoadPersistedDeletes(
-	mgr base.INodeManager,
 	fs *objectio.ObjectFS,
 	location string) (bat *containers.Batch, err error) {
 	_, _, meta, _, err := blockio.DecodeLocation(location)

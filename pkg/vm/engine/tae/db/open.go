@@ -31,7 +31,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
 
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/buffer"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/options"
@@ -69,9 +68,6 @@ func Open(dirname string, opts *options.Options) (db *DB, err error) {
 
 	opts = opts.FillDefaults(dirname)
 
-	mutBufMgr := buffer.NewNodeManager(opts.CacheCfg.InsertCapacity, nil)
-	txnBufMgr := buffer.NewNodeManager(opts.CacheCfg.TxnCapacity, nil)
-
 	serviceDir := path.Join(dirname, "data")
 	if opts.Fs == nil {
 		// TODO:fileservice needs to be passed in as a parameter
@@ -80,12 +76,10 @@ func Open(dirname string, opts *options.Options) (db *DB, err error) {
 	fs := objectio.NewObjectFS(opts.Fs, serviceDir)
 
 	db = &DB{
-		Dir:       dirname,
-		Opts:      opts,
-		MTBufMgr:  mutBufMgr,
-		TxnBufMgr: txnBufMgr,
-		Fs:        fs,
-		Closed:    new(atomic.Value),
+		Dir:    dirname,
+		Opts:   opts,
+		Fs:     fs,
+		Closed: new(atomic.Value),
 	}
 
 	switch opts.LogStoreT {
@@ -96,7 +90,7 @@ func Open(dirname string, opts *options.Options) (db *DB, err error) {
 	}
 	db.Scheduler = newTaskScheduler(db, db.Opts.SchedulerCfg.AsyncWorkers, db.Opts.SchedulerCfg.IOWorkers)
 	dataFactory := tables.NewDataFactory(
-		db.Fs, mutBufMgr, db.Scheduler, db.Dir)
+		db.Fs, db.Scheduler, db.Dir)
 	if db.Opts.Catalog, err = catalog.OpenCatalog(db.Scheduler, dataFactory); err != nil {
 		return
 	}
@@ -108,7 +102,6 @@ func Open(dirname string, opts *options.Options) (db *DB, err error) {
 		db.Opts.Catalog,
 		db.Wal,
 		db.TransferTable,
-		txnBufMgr,
 		dataFactory)
 	txnFactory := txnimpl.TxnFactory(db.Opts.Catalog)
 	db.TxnMgr = txnbase.NewTxnManager(txnStoreFactory, txnFactory, db.Opts.Clock)

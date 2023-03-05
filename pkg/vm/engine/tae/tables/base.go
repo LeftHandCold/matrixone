@@ -26,7 +26,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/buffer/base"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
@@ -50,7 +49,6 @@ type BlockT[T common.IRef] interface {
 type baseBlock struct {
 	common.RefHelper
 	*sync.RWMutex
-	bufMgr    base.INodeManager
 	fs        *objectio.ObjectFS
 	scheduler tasks.TaskScheduler
 	meta      *catalog.BlockEntry
@@ -64,12 +62,10 @@ type baseBlock struct {
 func newBaseBlock(
 	impl data.Block,
 	meta *catalog.BlockEntry,
-	bufMgr base.INodeManager,
 	fs *objectio.ObjectFS,
 	scheduler tasks.TaskScheduler) *baseBlock {
 	blk := &baseBlock{
 		impl:      impl,
-		bufMgr:    bufMgr,
 		fs:        fs,
 		scheduler: scheduler,
 		meta:      meta,
@@ -138,10 +134,9 @@ func (blk *baseBlock) TryUpgrade() (err error) {
 	return
 }
 
-func (blk *baseBlock) GetMeta() any                 { return blk.meta }
-func (blk *baseBlock) GetBufMgr() base.INodeManager { return blk.bufMgr }
-func (blk *baseBlock) GetFs() *objectio.ObjectFS    { return blk.fs }
-func (blk *baseBlock) GetID() *common.ID            { return blk.meta.AsCommonID() }
+func (blk *baseBlock) GetMeta() any              { return blk.meta }
+func (blk *baseBlock) GetFs() *objectio.ObjectFS { return blk.fs }
+func (blk *baseBlock) GetID() *common.ID         { return blk.meta.AsCommonID() }
 
 func (blk *baseBlock) FillInMemoryDeletesLocked(
 	view *model.BaseView,
@@ -218,7 +213,6 @@ func (blk *baseBlock) LoadPersistedColumnData(
 	def := blk.meta.GetSchema().ColDefs[colIdx]
 	location := blk.meta.GetMetaLoc()
 	return LoadPersistedColumnData(
-		blk.bufMgr,
 		blk.fs,
 		blk.meta.AsCommonID(),
 		def,
@@ -232,7 +226,6 @@ func (blk *baseBlock) LoadPersistedDeletes() (bat *containers.Batch, err error) 
 		return
 	}
 	return LoadPersistedDeletes(
-		blk.bufMgr,
 		blk.fs,
 		location)
 }
@@ -263,7 +256,6 @@ func (blk *baseBlock) FillPersistedDeletes(
 }
 
 func (blk *baseBlock) ResolvePersistedColumnDatas(
-	pnode *persistedNode,
 	ts types.TS,
 	colIdxs []int,
 	buffers []*bytes.Buffer,
@@ -298,7 +290,6 @@ func (blk *baseBlock) ResolvePersistedColumnDatas(
 }
 
 func (blk *baseBlock) ResolvePersistedColumnData(
-	pnode *persistedNode,
 	ts types.TS,
 	colIdx int,
 	buffer *bytes.Buffer,
@@ -350,7 +341,6 @@ func (blk *baseBlock) PersistedBatchDedup(
 	}
 	def := blk.meta.GetSchema().GetSingleSortKey()
 	view, err := blk.ResolvePersistedColumnData(
-		pnode,
 		ts,
 		def.Idx,
 		nil,
@@ -392,7 +382,7 @@ func (blk *baseBlock) getPersistedValue(
 		err = moerr.NewNotFoundNoCtx()
 		return
 	}
-	view2, err := blk.ResolvePersistedColumnData(pnode, ts, col, nil, true)
+	view2, err := blk.ResolvePersistedColumnData(ts, col, nil, true)
 	if err != nil {
 		return
 	}

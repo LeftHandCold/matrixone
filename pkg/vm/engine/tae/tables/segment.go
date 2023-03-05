@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/buffer/base"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
@@ -30,16 +29,13 @@ import (
 type dataSegment struct {
 	common.ClosedState
 	meta      *catalog.SegmentEntry
-	bufMgr    base.INodeManager
 	scheduler tasks.TaskScheduler
 }
 
 func newSegment(meta *catalog.SegmentEntry,
-	bufMgr base.INodeManager,
 	dir string) *dataSegment {
 	seg := &dataSegment{
 		meta:      meta,
-		bufMgr:    bufMgr,
 		scheduler: meta.GetScheduler(),
 	}
 	return seg

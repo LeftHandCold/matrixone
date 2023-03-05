@@ -54,10 +54,9 @@ var TxnStoreFactory = func(
 	catalog *catalog.Catalog,
 	driver wal.Driver,
 	transferTable *model.HashPageTable,
-	txnBufMgr base.INodeManager,
 	dataFactory *tables.DataFactory) txnbase.TxnStoreFactory {
 	return func() txnif.TxnStore {
-		return newStore(catalog, driver, transferTable, txnBufMgr, dataFactory)
+		return newStore(catalog, driver, transferTable, dataFactory)
 	}
 }
 
@@ -65,7 +64,6 @@ func newStore(
 	catalog *catalog.Catalog,
 	driver wal.Driver,
 	transferTable *model.HashPageTable,
-	txnBufMgr base.INodeManager,
 	dataFactory *tables.DataFactory) *txnStore {
 	return &txnStore{
 		transferTable: transferTable,
@@ -75,7 +73,6 @@ func newStore(
 		driver:        driver,
 		logs:          make([]entry.Entry, 0),
 		dataFactory:   dataFactory,
-		nodesMgr:      txnBufMgr,
 	}
 }
 

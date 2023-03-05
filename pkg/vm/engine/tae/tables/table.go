@@ -15,21 +15,18 @@
 package tables
 
 import (
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/buffer/base"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/data"
 )
 
 type dataTable struct {
-	meta   *catalog.TableEntry
-	bufMgr base.INodeManager
-	aBlk   *ablock
+	meta *catalog.TableEntry
+	aBlk *ablock
 }
 
-func newTable(meta *catalog.TableEntry, bufMgr base.INodeManager) *dataTable {
+func newTable(meta *catalog.TableEntry) *dataTable {
 	return &dataTable{
-		meta:   meta,
-		bufMgr: bufMgr,
+		meta: meta,
 	}
 }
 
