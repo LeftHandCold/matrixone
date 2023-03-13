@@ -80,11 +80,15 @@ func (w *ObjectWriter) Write(batch *batch.Batch) (BlockObject, error) {
 		originSize := len(buf)
 		// TODO:Now by default, lz4 compression must be used for Write,
 		// and parameters need to be passed in later to determine the compression type
-		data := make([]byte, lz4.CompressBlockBound(originSize))
+		//data := make([]byte, lz4.CompressBlockBound(originSize))
+		data := w.buffer.GetCompressBuf(lz4.CompressBlockBound(originSize))
 		if buf, err = compress.Compress(buf, data, compress.Lz4); err != nil {
 			return nil, err
 		}
-		offset, length, err := w.buffer.Write(buf)
+		sz := len(buf)
+		writeBuf := make([]byte, sz)
+		copy(writeBuf[:], buf[:sz])
+		offset, length, err := w.buffer.Write(writeBuf)
 		if err != nil {
 			return nil, err
 		}

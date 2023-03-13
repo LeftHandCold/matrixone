@@ -26,8 +26,9 @@ import (
 // to be filled in it, and then written to the object
 // file at one time
 type ObjectBuffer struct {
-	buf    *bytes.Buffer
-	vector fileservice.IOVector
+	buf         *bytes.Buffer
+	compressBuf []byte
+	vector      fileservice.IOVector
 }
 
 func NewObjectBuffer(name string) *ObjectBuffer {
@@ -78,4 +79,11 @@ func (b *ObjectBuffer) SetDataOptions(items ...WriteOptions) {
 			continue
 		}
 	}
+}
+
+func (b *ObjectBuffer) GetCompressBuf(size int) []byte {
+	if b.compressBuf == nil || len(b.compressBuf) < size {
+		b.compressBuf = make([]byte, size)
+	}
+	return b.compressBuf
 }
