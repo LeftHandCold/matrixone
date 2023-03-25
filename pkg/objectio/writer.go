@@ -37,7 +37,16 @@ type ObjectWriter struct {
 	buffer *ObjectBuffer
 	name   string
 	lastId uint32
-	bats   []*batch.Batch
+	bats   []*vecesBuf
+}
+
+type vecesBuf struct {
+	veces []*vecBuf
+}
+
+type vecBuf struct {
+	typ   types.T
+	vBufs []byte
 }
 
 func NewObjectWriter(name string, fs fileservice.FileService) (Writer, error) {
@@ -48,7 +57,7 @@ func NewObjectWriter(name string, fs fileservice.FileService) (Writer, error) {
 		buffer: NewObjectBuffer(name),
 		blocks: make([]BlockObject, 0),
 		lastId: 0,
-		bats:   make([]*batch.Batch, 0),
+		bats:   make([]*vecesBuf, 0),
 	}
 	err := writer.WriteHeader()
 	return writer, err
@@ -74,9 +83,9 @@ func (w *ObjectWriter) Write(batch *batch.Batch) (BlockObject, error) {
 }
 
 func (w *ObjectWriter) check() bool {
-	le := len(w.bats[0].Vecs)
+	le := len(w.bats[0].veces)
 	for _, bat := range w.bats {
-		if le != len(bat.Vecs) {
+		if le != len(bat.veces) {
 			return false
 		}
 	}
@@ -85,12 +94,10 @@ func (w *ObjectWriter) check() bool {
 }
 
 func (w *ObjectWriter) parBuf2() error {
+	var err error
 	for i, bat := range w.bats {
-		for idx := range bat.Vecs {
-			buf, err := bat.Vecs[idx].MarshalBinary()
-			if err != nil {
-				return err
-			}
+		for idx := range bat.veces {
+			buf := bat.veces[idx].vBufs
 			originSize := len(buf)
 			// TODO:Now by default, lz4 compression must be used for Write,
 			// and parameters need to be passed in later to determine the compression type
@@ -109,19 +116,17 @@ func (w *ObjectWriter) parBuf2() error {
 				originSize: uint32(originSize),
 			}
 			w.blocks[i].(*Block).columns[idx].meta.alg = compress.Lz4
-			w.blocks[i].(*Block).columns[idx].meta.typ = uint8(bat.Vecs[idx].GetType().Oid)
+			w.blocks[i].(*Block).columns[idx].meta.typ = uint8(bat.veces[idx].typ)
 		}
 	}
 	return nil
 }
 
 func (w *ObjectWriter) parBuf() error {
-	for idx := range w.bats[0].Vecs {
+	var err error
+	for idx := range w.bats[0].veces {
 		for i, bat := range w.bats {
-			buf, err := bat.Vecs[idx].MarshalBinary()
-			if err != nil {
-				return err
-			}
+			buf := bat.veces[idx].vBufs
 			originSize := len(buf)
 			// TODO:Now by default, lz4 compression must be used for Write,
 			// and parameters need to be passed in later to determine the compression type
@@ -140,7 +145,7 @@ func (w *ObjectWriter) parBuf() error {
 				originSize: uint32(originSize),
 			}
 			w.blocks[i].(*Block).columns[idx].meta.alg = compress.Lz4
-			w.blocks[i].(*Block).columns[idx].meta.typ = uint8(bat.Vecs[idx].GetType().Oid)
+			w.blocks[i].(*Block).columns[idx].meta.typ = uint8(bat.veces[idx].typ)
 		}
 	}
 	return nil
@@ -237,7 +242,15 @@ func (w *ObjectWriter) AddBlock(block *Block, bat *batch.Batch) {
 	defer w.Unlock()
 	block.id = w.lastId
 	w.blocks = append(w.blocks, block)
-	w.bats = append(w.bats, bat)
+	bufs := make([]*vecBuf, 0)
+	for _, vec := range bat.Vecs {
+		buf, err := vec.MarshalBinary()
+		if err != nil {
+			panic("sfsdfsdf")
+		}
+		bufs = append(bufs, &vecBuf{vBufs: buf, typ: vec.GetType().Oid})
+	}
+	w.bats = append(w.bats, &vecesBuf{veces: bufs})
 	//w.blocks[block.id] = block
 	w.lastId++
 }
