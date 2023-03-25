@@ -37,6 +37,7 @@ type ObjectWriter struct {
 	buffer *ObjectBuffer
 	name   string
 	lastId uint32
+	bats   []*batch.Batch
 }
 
 func NewObjectWriter(name string, fs fileservice.FileService) (Writer, error) {
@@ -47,6 +48,7 @@ func NewObjectWriter(name string, fs fileservice.FileService) (Writer, error) {
 		buffer: NewObjectBuffer(name),
 		blocks: make([]BlockObject, 0),
 		lastId: 0,
+		bats:   make([]*batch.Batch, 0),
 	}
 	err := writer.WriteHeader()
 	return writer, err
@@ -67,33 +69,83 @@ func (w *ObjectWriter) WriteHeader() error {
 
 func (w *ObjectWriter) Write(batch *batch.Batch) (BlockObject, error) {
 	block := NewBlock(uint16(len(batch.Vecs)), w.object, w.name)
-	w.AddBlock(block.(*Block))
-	for i, vec := range batch.Vecs {
-		buf, err := vec.MarshalBinary()
-		if err != nil {
-			return nil, err
-		}
-		originSize := len(buf)
-		// TODO:Now by default, lz4 compression must be used for Write,
-		// and parameters need to be passed in later to determine the compression type
-		data := make([]byte, lz4.CompressBlockBound(originSize))
-		if buf, err = compress.Compress(buf, data, compress.Lz4); err != nil {
-			return nil, err
-		}
-		offset, length, err := w.buffer.Write(buf)
-		if err != nil {
-			return nil, err
-		}
-		block.(*Block).columns[i].meta.location = Extent{
-			id:         uint32(block.GetMeta().header.blockId),
-			offset:     uint32(offset),
-			length:     uint32(length),
-			originSize: uint32(originSize),
-		}
-		block.(*Block).columns[i].meta.alg = compress.Lz4
-		block.(*Block).columns[i].meta.typ = uint8(vec.GetType().Oid)
-	}
+	w.AddBlock(block.(*Block), batch)
 	return block, nil
+}
+
+func (w *ObjectWriter) check() bool {
+	le := len(w.bats[0].Vecs)
+	for _, bat := range w.bats {
+		if le != len(bat.Vecs) {
+			return false
+		}
+	}
+	return true
+
+}
+
+func (w *ObjectWriter) parBuf2() error {
+	for i, bat := range w.bats {
+		for idx := range bat.Vecs {
+			block := w.blocks[i]
+			buf, err := bat.Vecs[idx].MarshalBinary()
+			if err != nil {
+				return err
+			}
+			originSize := len(buf)
+			// TODO:Now by default, lz4 compression must be used for Write,
+			// and parameters need to be passed in later to determine the compression type
+			data := make([]byte, lz4.CompressBlockBound(originSize))
+			if buf, err = compress.Compress(buf, data, compress.Lz4); err != nil {
+				return err
+			}
+			offset, length, err := w.buffer.Write(buf)
+			if err != nil {
+				return err
+			}
+			block.(*Block).columns[idx].meta.location = Extent{
+				id:         uint32(block.GetMeta().header.blockId),
+				offset:     uint32(offset),
+				length:     uint32(length),
+				originSize: uint32(originSize),
+			}
+			block.(*Block).columns[idx].meta.alg = compress.Lz4
+			block.(*Block).columns[idx].meta.typ = uint8(bat.Vecs[idx].GetType().Oid)
+		}
+	}
+	return nil
+}
+
+func (w *ObjectWriter) parBuf() error {
+	for idx := range w.bats[0].Vecs {
+		for i, bat := range w.bats {
+			block := w.blocks[i]
+			buf, err := bat.Vecs[idx].MarshalBinary()
+			if err != nil {
+				return err
+			}
+			originSize := len(buf)
+			// TODO:Now by default, lz4 compression must be used for Write,
+			// and parameters need to be passed in later to determine the compression type
+			data := make([]byte, lz4.CompressBlockBound(originSize))
+			if buf, err = compress.Compress(buf, data, compress.Lz4); err != nil {
+				return err
+			}
+			offset, length, err := w.buffer.Write(buf)
+			if err != nil {
+				return err
+			}
+			block.(*Block).columns[idx].meta.location = Extent{
+				id:         uint32(block.GetMeta().header.blockId),
+				offset:     uint32(offset),
+				length:     uint32(length),
+				originSize: uint32(originSize),
+			}
+			block.(*Block).columns[idx].meta.alg = compress.Lz4
+			block.(*Block).columns[idx].meta.typ = uint8(bat.Vecs[idx].GetType().Oid)
+		}
+	}
+	return nil
 }
 
 func (w *ObjectWriter) WriteIndex(fd BlockObject, index IndexData) error {
@@ -113,6 +165,14 @@ func (w *ObjectWriter) WriteEnd(ctx context.Context, items ...WriteOptions) ([]B
 	defer w.RUnlock()
 	if len(w.blocks) == 0 {
 		logutil.Warn("object io: no block needs to be written")
+	}
+	if w.check() {
+		err = w.parBuf()
+	} else {
+		err = w.parBuf2()
+	}
+	if err != nil {
+		return nil, err
 	}
 	var buf bytes.Buffer
 	metaLen := 0
@@ -155,6 +215,7 @@ func (w *ObjectWriter) WriteEnd(ctx context.Context, items ...WriteOptions) ([]B
 	// Because the outside may hold this writer
 	// After WriteEnd is called, no more data can be written
 	w.buffer = nil
+	w.bats = nil
 	return w.blocks, err
 }
 
@@ -173,11 +234,12 @@ func (w *ObjectWriter) Sync(ctx context.Context, items ...WriteOptions) error {
 	return err
 }
 
-func (w *ObjectWriter) AddBlock(block *Block) {
+func (w *ObjectWriter) AddBlock(block *Block, bat *batch.Batch) {
 	w.Lock()
 	defer w.Unlock()
 	block.id = w.lastId
 	w.blocks = append(w.blocks, block)
+	w.bats = append(w.bats, bat)
 	//w.blocks[block.id] = block
 	w.lastId++
 }
