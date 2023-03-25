@@ -87,7 +87,6 @@ func (w *ObjectWriter) check() bool {
 func (w *ObjectWriter) parBuf2() error {
 	for i, bat := range w.bats {
 		for idx := range bat.Vecs {
-			block := w.blocks[i]
 			buf, err := bat.Vecs[idx].MarshalBinary()
 			if err != nil {
 				return err
@@ -103,14 +102,14 @@ func (w *ObjectWriter) parBuf2() error {
 			if err != nil {
 				return err
 			}
-			block.(*Block).columns[idx].meta.location = Extent{
-				id:         uint32(block.GetMeta().header.blockId),
+			w.blocks[i].(*Block).columns[idx].meta.location = Extent{
+				id:         uint32(w.blocks[i].GetMeta().header.blockId),
 				offset:     uint32(offset),
 				length:     uint32(length),
 				originSize: uint32(originSize),
 			}
-			block.(*Block).columns[idx].meta.alg = compress.Lz4
-			block.(*Block).columns[idx].meta.typ = uint8(bat.Vecs[idx].GetType().Oid)
+			w.blocks[i].(*Block).columns[idx].meta.alg = compress.Lz4
+			w.blocks[i].(*Block).columns[idx].meta.typ = uint8(bat.Vecs[idx].GetType().Oid)
 		}
 	}
 	return nil
@@ -119,7 +118,6 @@ func (w *ObjectWriter) parBuf2() error {
 func (w *ObjectWriter) parBuf() error {
 	for idx := range w.bats[0].Vecs {
 		for i, bat := range w.bats {
-			block := w.blocks[i]
 			buf, err := bat.Vecs[idx].MarshalBinary()
 			if err != nil {
 				return err
@@ -135,14 +133,14 @@ func (w *ObjectWriter) parBuf() error {
 			if err != nil {
 				return err
 			}
-			block.(*Block).columns[idx].meta.location = Extent{
-				id:         uint32(block.GetMeta().header.blockId),
+			w.blocks[i].(*Block).columns[idx].meta.location = Extent{
+				id:         uint32(w.blocks[i].GetMeta().header.blockId),
 				offset:     uint32(offset),
 				length:     uint32(length),
 				originSize: uint32(originSize),
 			}
-			block.(*Block).columns[idx].meta.alg = compress.Lz4
-			block.(*Block).columns[idx].meta.typ = uint8(bat.Vecs[idx].GetType().Oid)
+			w.blocks[i].(*Block).columns[idx].meta.alg = compress.Lz4
+			w.blocks[i].(*Block).columns[idx].meta.typ = uint8(bat.Vecs[idx].GetType().Oid)
 		}
 	}
 	return nil
