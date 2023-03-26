@@ -57,7 +57,7 @@ func NewFileWithChecksum[T FileLike](
 	return &FileWithChecksum[T]{
 		ctx:              ctx,
 		underlying:       underlying,
-		blockSize:        blockContentSize + _ChecksumSize,
+		blockSize:        blockContentSize,
 		blockContentSize: blockContentSize,
 		perfCounterSets:  perfCounterSets,
 	}
@@ -66,12 +66,16 @@ func NewFileWithChecksum[T FileLike](
 var _ FileLike = new(FileWithChecksum[*os.File])
 
 func (f *FileWithChecksum[T]) ReadAt(buf []byte, offset int64) (n int, err error) {
-	defer func() {
+	/*defer func() {
 		perfcounter.Update(f.ctx, func(c *perfcounter.CounterSet) {
 			c.FileWithChecksum.Read.Add(int64(n))
 		}, f.perfCounterSets...)
-	}()
-
+	}()*/
+	n, err = f.underlying.ReadAt(buf, offset)
+	if err != nil && err != io.EOF {
+		return 0, err
+	}
+	return
 	for len(buf) > 0 {
 		blockOffset, offsetInBlock := f.contentOffsetToBlockOffset(offset)
 		var data []byte
@@ -106,12 +110,19 @@ func (f *FileWithChecksum[T]) Read(buf []byte) (n int, err error) {
 }
 
 func (f *FileWithChecksum[T]) WriteAt(buf []byte, offset int64) (n int, err error) {
-	defer func() {
+	/*defer func() {
 		perfcounter.Update(f.ctx, func(c *perfcounter.CounterSet) {
 			c.FileWithChecksum.Write.Add(int64(n))
 		}, f.perfCounterSets...)
-	}()
-
+	}()*/
+	if n, err = f.underlying.WriteAt(buf, offset); err != nil {
+		return n, err
+	} else {
+		perfcounter.Update(f.ctx, func(c *perfcounter.CounterSet) {
+			c.FileWithChecksum.UnderlyingWrite.Add(int64(n))
+		}, f.perfCounterSets...)
+	}
+	return
 	for len(buf) > 0 {
 
 		blockOffset, offsetInBlock := f.contentOffsetToBlockOffset(offset)
@@ -173,8 +184,8 @@ func (f *FileWithChecksum[T]) Seek(offset int64, whence int) (int64, error) {
 		return 0, err
 	}
 
-	nBlock := ceilingDiv(fileSize, int64(f.blockSize))
-	contentSize := fileSize - _ChecksumSize*nBlock
+	//nBlock := ceilingDiv(fileSize, int64(f.blockSize))
+	contentSize := fileSize
 
 	switch whence {
 	case io.SeekStart:

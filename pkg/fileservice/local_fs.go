@@ -184,7 +184,7 @@ func (l *LocalFS) write(ctx context.Context, vector IOVector) error {
 	if err != nil {
 		return err
 	}
-	fileWithChecksum := NewFileWithChecksum(ctx, f, _BlockContentSize, l.perfCounterSets)
+	fileWithChecksum := NewFileWithChecksum(ctx, f, _DefaultBlockSize, l.perfCounterSets)
 	n, err := io.Copy(fileWithChecksum, newIOEntriesReader(ctx, vector.Entries))
 	if err != nil {
 		return err
@@ -461,8 +461,8 @@ func (l *LocalFS) List(ctx context.Context, dirPath string) (ret []DirEntry, err
 			return nil, err
 		}
 		fileSize := info.Size()
-		nBlock := ceilingDiv(fileSize, _BlockSize)
-		contentSize := fileSize - _ChecksumSize*nBlock
+		//nBlock := ceilingDiv(fileSize, _BlockSize)
+		//contentSize := fileSize - _ChecksumSize*nBlock
 
 		isDir, err := entryIsDir(nativePath, name, info)
 		if err != nil {
@@ -471,7 +471,7 @@ func (l *LocalFS) List(ctx context.Context, dirPath string) (ret []DirEntry, err
 		ret = append(ret, DirEntry{
 			Name:  name,
 			IsDir: isDir,
-			Size:  contentSize,
+			Size:  fileSize,
 		})
 	}
 
