@@ -17,6 +17,7 @@ package gc
 import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"sync"
 )
@@ -63,9 +64,10 @@ func (g *GCWorker) ExecDelete(names []string) error {
 		g.Unlock()
 		return nil
 	}
+	objects := g.objects
 	g.Unlock()
-
-	err := g.fs.DelFiles(context.Background(), g.objects)
+	logutil.Infof("DelFiles: %v", objects)
+	err := g.fs.DelFiles(context.Background(), objects)
 	g.Lock()
 	defer g.Unlock()
 	if err != nil && !moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {

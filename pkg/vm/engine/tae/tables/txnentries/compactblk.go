@@ -16,6 +16,7 @@ package txnentries
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 	"time"
 
@@ -102,7 +103,7 @@ func (entry *compactBlockEntry) PrepareRollback() (err error) {
 		if toName != "" {
 			_ = fs.Delete(context.TODO(), toName)
 		}
-		// logutil.Infof("rollback unfinished compact file %q and %q", fromName, toName)
+		logutil.Infof("rollback unfinished compact file %q and %q", fromName, toName)
 		return nil
 	})
 	return
