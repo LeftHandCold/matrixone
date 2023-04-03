@@ -145,10 +145,6 @@ func (f *FileWithChecksum[T]) WriteAt(buf []byte, offset int64) (n int, err erro
 	}()*/
 	if n, err = f.underlying.WriteAt(buf, offset); err != nil {
 		return n, err
-	} else {
-		perfcounter.Update(f.ctx, func(c *perfcounter.CounterSet) {
-			c.FileWithChecksum.UnderlyingWrite.Add(int64(n))
-		}, f.perfCounterSets...)
 	}
 	return
 	for len(buf) > 0 {
