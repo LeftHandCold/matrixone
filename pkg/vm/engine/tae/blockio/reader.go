@@ -16,6 +16,7 @@ package blockio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"io"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
@@ -279,6 +280,36 @@ func LoadColumnFunc(size int64) objectio.ToObjectFunc {
 // The caller has merged the block information that needs to be prefetched
 func PrefetchWithMerged(pref prefetch) error {
 	return pipeline.Prefetch(pref)
+}
+
+func BlockPrefecth(columns []string,
+	tableDef *plan.TableDef,
+	service fileservice.FileService,
+	offs [][]objectio.Location) error {
+	idxes := make([]uint16, len(columns))
+	for i, column := range columns {
+		if column != catalog.Row_ID {
+			if colIdx, ok := tableDef.Name2ColIndex[column]; ok {
+				idxes[i] = uint16(colIdx)
+			} else {
+				idxes[i] = uint16(len(tableDef.Name2ColIndex))
+			}
+		}
+	}
+	for i := range offs {
+		pref, err := BuildPrefetch(service, offs[i][0])
+		if err != nil {
+			return err
+		}
+		for _, location := range offs[i] {
+			pref.AddBlock(idxes, []uint32{location.ID()})
+		}
+		err = pipeline.Prefetch(pref)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func Prefetch(idxes []uint16, ids []uint32, service fileservice.FileService, key objectio.Location) error {
