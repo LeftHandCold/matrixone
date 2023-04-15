@@ -65,6 +65,8 @@ func TestNewObjectWriter(t *testing.T) {
 	mp := mpool.MustNewZero()
 	bat := newBatch(mp)
 	defer bat.Clean(mp)
+	bat2 := newBatch2(mp)
+	defer bat.Clean(mp)
 	c := fileservice.Config{
 		Name:    defines.LocalFileServiceName,
 		Backend: "DISK",
@@ -85,6 +87,8 @@ func TestNewObjectWriter(t *testing.T) {
 	}
 	_, err = objectWriter.Write(bat)
 	assert.Nil(t, err)
+	fd, err = objectWriter.Write(bat2)
+	assert.Nil(t, err)
 	ts := time.Now()
 	option := WriteOptions{
 		Type: WriteTS,
@@ -92,11 +96,11 @@ func TestNewObjectWriter(t *testing.T) {
 	}
 	blocks, err := objectWriter.WriteEnd(context.Background(), option)
 	assert.Nil(t, err)
-	assert.Equal(t, 2, len(blocks))
+	assert.Equal(t, 3, len(blocks))
 	assert.Nil(t, objectWriter.buffer)
 
 	objectReader, _ := NewObjectReaderWithStr(name, service)
-	extents := make([]Extent, 2)
+	extents := make([]Extent, 3)
 	for i, blk := range blocks {
 		extents[i] = NewExtent(1, blk.GetExtent().Offset(), blk.GetExtent().Length(), blk.GetExtent().OriginSize())
 	}
@@ -105,7 +109,7 @@ func TestNewObjectWriter(t *testing.T) {
 	nb0 := pool.CurrNB()
 	meta, err := objectReader.ReadMeta(context.Background(), extents[0], pool)
 	assert.Nil(t, err)
-	assert.Equal(t, uint32(2), meta.BlockCount())
+	assert.Equal(t, uint32(3), meta.BlockCount())
 	idxs := make([]uint16, 3)
 	idxs[0] = 0
 	idxs[1] = 2
@@ -133,9 +137,9 @@ func TestNewObjectWriter(t *testing.T) {
 	assert.Nil(t, err)
 	meta, err = objectReader.ReadAllMeta(context.Background(), pool)
 	assert.Nil(t, err)
-	assert.Equal(t, uint32(2), meta.BlockCount())
+	assert.Equal(t, uint32(3), meta.BlockCount())
 	assert.Nil(t, err)
-	assert.Equal(t, uint32(2), meta.BlockCount())
+	assert.Equal(t, uint32(3), meta.BlockCount())
 	idxs = make([]uint16, 3)
 	idxs[0] = 0
 	idxs[1] = 2
@@ -278,6 +282,18 @@ func newBatch(mp *mpool.MPool) *batch.Batch {
 		types.T_uint32.ToType(),
 		types.T_uint8.ToType(),
 		types.T_uint64.ToType(),
+	}
+	return testutil.NewBatch(types, false, int(40000*2), mp)
+}
+
+func newBatch2(mp *mpool.MPool) *batch.Batch {
+	types := []types.Type{
+		types.T_int8.ToType(),
+		types.T_int16.ToType(),
+		types.T_int32.ToType(),
+		types.T_int64.ToType(),
+		types.T_uint16.ToType(),
+		types.T_uint32.ToType(),
 	}
 	return testutil.NewBatch(types, false, int(40000*2), mp)
 }
