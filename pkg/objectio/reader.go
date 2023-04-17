@@ -92,6 +92,11 @@ func (r *ObjectReader) ReadZM(
 	m *mpool.MPool,
 ) (zms []ZoneMap, err error) {
 	var meta ObjectMeta
+	v, _, ok := Cache.Get(r.name, false)
+	if ok {
+		meta = v.(ObjectMeta)
+		return
+	}
 	if meta, err = r.ReadMeta(ctx, m); err != nil {
 		return
 	}
@@ -115,6 +120,7 @@ func (r *ObjectReader) ReadMeta(
 		return
 	}
 	r.metaCache.Store(&meta)
+	Cache.Set(r.name, meta, int64(len(meta[:])), false)
 	return
 }
 
