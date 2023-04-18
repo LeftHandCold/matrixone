@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"go/constant"
 	"strconv"
 	"strings"
@@ -38,6 +39,8 @@ import (
 )
 
 func (b *baseBinder) baseBindExpr(astExpr tree.Expr, depth int32, isRoot bool) (expr *Expr, err error) {
+	_, span := trace.Start(b.GetContext(), "baseBinder::baseBindExpr")
+	defer span.End()
 	switch exprImpl := astExpr.(type) {
 	case *tree.NumVal:
 		if d, ok := b.impl.(*DefaultBinder); ok {

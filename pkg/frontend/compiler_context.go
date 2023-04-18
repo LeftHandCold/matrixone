@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"strconv"
 	"sync"
 
@@ -162,6 +163,8 @@ func (tcc *TxnCompilerContext) GetDatabaseId(dbName string) (uint64, error) {
 
 // getRelation returns the context (maybe updated) and the relation
 func (tcc *TxnCompilerContext) getRelation(dbName string, tableName string, sub *plan.SubscriptionMeta) (context.Context, engine.Relation, error) {
+	_, span := trace.Start(tcc.GetContext(), "TxnCompilerContext::getRelation")
+	defer span.End()
 	dbName, _, err := tcc.ensureDatabaseIsNotEmpty(dbName, false)
 	if err != nil {
 		return nil, nil, err
@@ -260,6 +263,8 @@ func (tcc *TxnCompilerContext) ResolveById(tableId uint64) (*plan2.ObjectRef, *p
 }
 
 func (tcc *TxnCompilerContext) Resolve(dbName string, tableName string) (*plan2.ObjectRef, *plan2.TableDef) {
+	_, span := trace.Start(tcc.GetContext(), "TxnCompilerContext::Resolve")
+	defer span.End()
 	dbName, sub, err := tcc.ensureDatabaseIsNotEmpty(dbName, true)
 	if err != nil {
 		return nil, nil
@@ -377,6 +382,8 @@ handleFailed:
 }
 
 func (tcc *TxnCompilerContext) getTableDef(ctx context.Context, table engine.Relation, dbName, tableName string, sub *plan.SubscriptionMeta) (*plan2.ObjectRef, *plan2.TableDef) {
+	_, span := trace.Start(ctx, "TxnCompilerContext::getTableDef")
+	defer span.End()
 	tableId := table.GetTableID(ctx)
 	engineDefs, err := table.TableDefs(ctx)
 	if err != nil {
@@ -528,6 +535,8 @@ func (tcc *TxnCompilerContext) getTableDef(ctx context.Context, table engine.Rel
 }
 
 func (tcc *TxnCompilerContext) ResolveVariable(varName string, isSystemVar, isGlobalVar bool) (interface{}, error) {
+	_, span := trace.Start(tcc.GetContext(), "TxnCompilerContext::ResolveVariable")
+	defer span.End()
 	if isSystemVar {
 		if isGlobalVar {
 			return tcc.GetSession().GetGlobalVar(varName)

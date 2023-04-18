@@ -16,6 +16,7 @@ package disttae
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"strconv"
 	"strings"
 
@@ -75,6 +76,8 @@ func (db *txnDatabase) getRelationById(ctx context.Context, id uint64) (string, 
 }
 
 func (db *txnDatabase) Relation(ctx context.Context, name string) (engine.Relation, error) {
+	ctx, span := trace.Start(ctx, "txnDatabase::Relation")
+	defer span.End()
 	logDebugf(db.txn.meta, "txnDatabase.Relation table %s", name)
 	if v, ok := db.txn.tableMap.Load(genTableKey(ctx, name, db.databaseId)); ok {
 		return v.(*txnTable), nil

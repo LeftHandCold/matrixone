@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"go/constant"
 	"strconv"
 	"strings"
@@ -818,6 +819,8 @@ func (builder *QueryBuilder) remapAllColRefs(nodeID int32, colRefCnt map[[2]int3
 }
 
 func (builder *QueryBuilder) createQuery() (*Query, error) {
+	_, span := trace.Start(builder.GetContext(), "QueryBuilder::createQuery")
+	defer span.End()
 	for i, rootID := range builder.qry.Steps {
 		rootID, _ = builder.pushdownFilters(rootID, nil, false)
 		colRefCnt := make(map[[2]int32]int)
@@ -1187,6 +1190,8 @@ func (builder *QueryBuilder) buildUnion(stmt *tree.UnionClause, astOrderBy tree.
 }
 
 func (builder *QueryBuilder) buildSelect(stmt *tree.Select, ctx *BindContext, isRoot bool) (int32, error) {
+	_, span := trace.Start(builder.GetContext(), "QueryBuilder::buildSelect")
+	defer span.End()
 	// preprocess CTEs
 	if stmt.With != nil {
 		ctx.cteByName = make(map[string]*CTERef)

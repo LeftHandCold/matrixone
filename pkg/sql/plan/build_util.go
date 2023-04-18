@@ -17,6 +17,7 @@ package plan
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"strings"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
@@ -355,6 +356,8 @@ func getAccountInfoOfClusterTable(ctx CompilerContext, accounts tree.IdentifierL
 	var accountIds []uint32
 	var columnIndexOfAccountId int32 = -1
 	var err error
+	_, span := trace.Start(ctx.GetContext(), "getAccountInfoOfClusterTable")
+	defer span.End()
 	if isClusterTable {
 		accountIds, err = getAccountIds(ctx, accounts)
 		if err != nil {

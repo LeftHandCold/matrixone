@@ -16,6 +16,7 @@ package moengine
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -163,6 +164,8 @@ func (e *txnEngine) AllocateIDByKey(ctx context.Context, key string) (uint64, er
 func (e *txnEngine) Database(ctx context.Context, name string, txnOp client.TxnOperator) (engine.Database, error) {
 	var err error
 	var txn txnif.AsyncTxn
+	_, span := trace.Start(ctx, "txnEngine::Database")
+	defer span.End()
 
 	if txn, err = e.impl.GetTxnByCtx(txnOp); err != nil {
 		panic(err)

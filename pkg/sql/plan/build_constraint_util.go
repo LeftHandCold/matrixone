@@ -17,6 +17,7 @@ package plan
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -197,6 +198,8 @@ func getUpdateTableInfo(ctx CompilerContext, stmt *tree.Update) (*dmlTableInfo, 
 
 func setTableExprToDmlTableInfo(ctx CompilerContext, tbl tree.TableExpr, tblInfo *dmlTableInfo, aliasMap map[string][2]string, withMap map[string]struct{}) error {
 	var tblName, dbName, alias string
+	_, span := trace.Start(ctx.GetContext(), "setTableExprToDmlTableInfo")
+	defer span.End()
 
 	if aliasTbl, ok := tbl.(*tree.AliasedTableExpr); ok {
 		alias = string(aliasTbl.As.Alias)
@@ -311,6 +314,8 @@ func setTableExprToDmlTableInfo(ctx CompilerContext, tbl tree.TableExpr, tblInfo
 }
 
 func getDmlTableInfo(ctx CompilerContext, tableExprs tree.TableExprs, with *tree.With, aliasMap map[string][2]string, typ string) (*dmlTableInfo, error) {
+	_, span := trace.Start(ctx.GetContext(), "getDmlTableInfo")
+	defer span.End()
 	tblInfo := &dmlTableInfo{
 		typ:       typ,
 		nameToIdx: make(map[string]int),
@@ -420,6 +425,8 @@ func updateToSelect(builder *QueryBuilder, bindCtx *BindContext, stmt *tree.Upda
 func initInsertStmt(builder *QueryBuilder, bindCtx *BindContext, stmt *tree.Insert, info *dmlSelectInfo) error {
 	var err error
 	var insertColumns []string
+	_, span := trace.Start(builder.GetContext(), "initInsertStmt")
+	defer span.End()
 	tableDef := info.tblInfo.tableDefs[0]
 	tableObjRef := info.tblInfo.objRef[0]
 	syntaxHasColumnNames := false

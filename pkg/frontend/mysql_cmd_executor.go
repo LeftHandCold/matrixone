@@ -1378,6 +1378,8 @@ func buildMoExplainQuery(explainColName string, buffer *explain.ExplainDataBuffe
 func buildPlan(requestCtx context.Context, ses *Session, ctx plan2.CompilerContext, stmt tree.Statement) (*plan2.Plan, error) {
 	var ret *plan2.Plan
 	var err error
+	requestCtx, span := trace.Start(requestCtx, "buildPlan")
+	defer span.End()
 	if ses != nil {
 		ses.accountId = getAccountId(requestCtx)
 	}
