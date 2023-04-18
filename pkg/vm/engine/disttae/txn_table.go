@@ -30,6 +30,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	plan2 "github.com/matrixorigin/matrixone/pkg/sql/plan"
 	"github.com/matrixorigin/matrixone/pkg/txn/storage/memorystorage/memorytable"
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/compute"
@@ -38,6 +39,8 @@ import (
 var _ engine.Relation = new(txnTable)
 
 func (tbl *txnTable) Stats(ctx context.Context, expr *plan.Expr, statsInfoMap any) (*plan.Stats, error) {
+	ctx, span := trace.Start(ctx, "txnTable::Stats")
+	defer span.End()
 	if !plan2.NeedStats(tbl.getTableDef()) {
 		return plan2.DefaultStats(), nil
 	}
@@ -60,6 +63,8 @@ func (tbl *txnTable) Stats(ctx context.Context, expr *plan.Expr, statsInfoMap an
 }
 
 func (tbl *txnTable) Rows(ctx context.Context) (rows int64, err error) {
+	ctx, span := trace.Start(ctx, "txnTable::Rows")
+	defer span.End()
 	writes := make([]Entry, 0, len(tbl.db.txn.writes))
 	tbl.db.txn.Lock()
 	for _, entry := range tbl.db.txn.writes {
@@ -117,6 +122,8 @@ func (tbl *txnTable) Rows(ctx context.Context) (rows int64, err error) {
 }
 
 func (tbl *txnTable) MaxAndMinValues(ctx context.Context) ([][2]any, []uint8, error) {
+	ctx, span := trace.Start(ctx, "txnTable::MaxAndMinValues")
+	defer span.End()
 	cols := tbl.getTableDef().GetCols()
 	dataLength := len(cols) - 1
 	//dateType of each column for table
@@ -176,6 +183,8 @@ func (tbl *txnTable) Size(ctx context.Context, name string) (int64, error) {
 
 // return all unmodified blocks
 func (tbl *txnTable) Ranges(ctx context.Context, expr *plan.Expr) ([][]byte, error) {
+	ctx, span := trace.Start(ctx, "txnTable::Ranges")
+	defer span.End()
 	// if err := tbl.db.txn.DumpBatch(false, 0); err != nil {
 	// 	return nil, err
 	// }
@@ -830,7 +839,7 @@ func (tbl *txnTable) updateLocalState(
 			}
 			iter.Close()
 			if n > 1 {
-				primaryKeyVector := bat.Vecs[tbl.primaryIdx+1 /* skip the first row id column */]
+				primaryKeyVector := bat.Vecs[tbl.primaryIdx+1 /* skip the first row id column */ ]
 				return moerr.NewDuplicateEntry(
 					ctx,
 					common.TypeStringValue(
