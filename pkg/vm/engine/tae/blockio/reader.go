@@ -16,6 +16,8 @@ package blockio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"sync"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 
@@ -25,6 +27,19 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 )
+
+type DebugReader struct {
+	sync.Mutex
+	IoCount uint64
+}
+
+var debugReader DebugReader
+
+func init() {
+	debugReader = DebugReader{
+		IoCount: 0,
+	}
+}
 
 type BlockReader struct {
 	reader *objectio.ObjectReader
@@ -83,6 +98,10 @@ func (r *BlockReader) LoadColumns(
 	m *mpool.MPool,
 ) (bat *batch.Batch, err error) {
 	metaExt := r.reader.GetMetaExtent()
+	debugReader.Lock()
+	defer debugReader.Unlock()
+	debugReader.IoCount++
+	logutil.Infof("LoadColumns :%v, iocount: %d", r.GetName(), debugReader.IoCount)
 	if metaExt == nil || metaExt.End() == 0 {
 		return
 	}
@@ -109,6 +128,10 @@ func (r *BlockReader) LoadAllColumns(
 	idxs []uint16,
 	m *mpool.MPool,
 ) ([]*batch.Batch, error) {
+	debugReader.Lock()
+	defer debugReader.Unlock()
+	debugReader.IoCount++
+	logutil.Infof("LoadAllColumns :%v, iocount: %d", r.GetName(), debugReader.IoCount)
 	meta, err := r.reader.ReadAllMeta(ctx, m)
 	if err != nil {
 		return nil, err
@@ -146,14 +169,26 @@ func (r *BlockReader) LoadZoneMaps(
 	id uint16,
 	m *mpool.MPool,
 ) ([]objectio.ZoneMap, error) {
+	debugReader.Lock()
+	defer debugReader.Unlock()
+	debugReader.IoCount++
+	logutil.Infof("LoadZoneMaps :%v, iocount: %d", r.GetName(), debugReader.IoCount)
 	return r.reader.ReadZM(ctx, id, idxs, m)
 }
 
 func (r *BlockReader) LoadObjectMeta(ctx context.Context, m *mpool.MPool) (objectio.ObjectMeta, error) {
+	debugReader.Lock()
+	defer debugReader.Unlock()
+	debugReader.IoCount++
+	logutil.Infof("LoadObjectMeta :%v, iocount: %d", r.GetName(), debugReader.IoCount)
 	return r.reader.ReadMeta(ctx, m)
 }
 
 func (r *BlockReader) LoadAllBlocks(ctx context.Context, m *mpool.MPool) ([]objectio.BlockObject, error) {
+	debugReader.Lock()
+	defer debugReader.Unlock()
+	debugReader.IoCount++
+	logutil.Infof("LoadAllBlocks :%v, iocount: %d", r.GetName(), debugReader.IoCount)
 	meta, err := r.reader.ReadAllMeta(ctx, m)
 	if err != nil {
 		return nil, err
@@ -170,6 +205,10 @@ func (r *BlockReader) LoadZoneMap(
 	idxs []uint16,
 	block objectio.BlockObject,
 	m *mpool.MPool) ([]objectio.ZoneMap, error) {
+	debugReader.Lock()
+	defer debugReader.Unlock()
+	debugReader.IoCount++
+	logutil.Infof("LoadZoneMap :%v, iocount: %d", r.GetName(), debugReader.IoCount)
 	return block.ToColumnZoneMaps(idxs), nil
 }
 
@@ -183,6 +222,10 @@ func (r *BlockReader) LoadOneBF(
 func (r *BlockReader) LoadAllBF(
 	ctx context.Context,
 ) ([]objectio.StaticFilter, uint32, error) {
+	debugReader.Lock()
+	defer debugReader.Unlock()
+	debugReader.IoCount++
+	logutil.Infof("LoadAllBF :%v, iocount: %d", r.GetName(), debugReader.IoCount)
 	return r.reader.ReadAllBF(ctx)
 }
 
