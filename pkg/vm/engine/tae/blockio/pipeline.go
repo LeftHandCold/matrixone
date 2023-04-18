@@ -163,6 +163,8 @@ func noopPrefetch(params prefetchParams) error {
 }
 
 type IoPipeline struct {
+	sync.Mutex
+	iocount uint64
 	options struct {
 		fetchParallism    int
 		prefetchParallism int
@@ -218,6 +220,7 @@ func NewIOPipeline(
 
 	p.fetchFun = readColumns
 	p.prefetchFunc = noopPrefetch
+	p.iocount = 0
 	return p
 }
 
@@ -260,6 +263,10 @@ func (p *IoPipeline) Fetch(
 	ctx context.Context,
 	params fetchParams,
 ) (res any, err error) {
+	p.Lock()
+	defer p.Unlock()
+	p.iocount++
+	logutil.Infof("Fetch :%v, iocount: %d", params.reader.GetName())
 	return p.fetchFun(ctx, params)
 }
 
