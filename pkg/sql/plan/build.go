@@ -20,6 +20,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/dialect"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
 )
 
 func runBuildSelectByBinder(stmtType plan.Query_StatementType, ctx CompilerContext, stmt *tree.Select) (*Plan, error) {
@@ -54,6 +55,8 @@ func buildExplainAnalyze(ctx CompilerContext, stmt *tree.ExplainAnalyze) (*Plan,
 }
 
 func BuildPlan(ctx CompilerContext, stmt tree.Statement) (*Plan, error) {
+	_, span := trace.Start(ctx.GetContext(), "BuildPlan")
+	defer span.End()
 	switch stmt := stmt.(type) {
 	case *tree.Select:
 		return runBuildSelectByBinder(plan.Query_SELECT, ctx, stmt)

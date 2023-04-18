@@ -2065,6 +2065,8 @@ func authenticateUserCanExecuteStatement(requestCtx context.Context, ses *Sessio
 
 // authenticateCanExecuteStatementAndPlan checks the user can execute the statement and its plan
 func authenticateCanExecuteStatementAndPlan(requestCtx context.Context, ses *Session, stmt tree.Statement, p *plan.Plan) error {
+	_, span := trace.Start(requestCtx, "authenticateCanExecuteStatementAndPlan")
+	defer span.End()
 	if ses.skipCheckPrivilege() {
 		return nil
 	}

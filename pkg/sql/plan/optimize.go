@@ -19,6 +19,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/rule"
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
 )
 
 var defaultRules = []Rule{}
@@ -53,6 +54,8 @@ func (opt *BaseOptimizer) CurrentContext() CompilerContext {
 }
 
 func (opt *BaseOptimizer) Optimize(stmt tree.Statement) (*Query, error) {
+	_, span := trace.Start(opt.ctx.GetContext(), "BaseOptimizer::Optimize")
+	defer span.End()
 	pn, err := BuildPlan(opt.ctx, stmt)
 	if err != nil {
 		return nil, err
@@ -66,6 +69,8 @@ func (opt *BaseOptimizer) Optimize(stmt tree.Statement) (*Query, error) {
 }
 
 func (opt *BaseOptimizer) optimize() (*Query, error) {
+	_, span := trace.Start(opt.ctx.GetContext(), "BaseOptimizer::optimize")
+	defer span.End()
 	if len(opt.qry.Steps) == 0 {
 		return opt.qry, nil
 	}
