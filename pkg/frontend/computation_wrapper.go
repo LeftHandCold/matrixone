@@ -205,8 +205,8 @@ func (cwft *TxnComputationWrapper) Compile(requestCtx context.Context, u interfa
 		err = authenticateCanExecuteStatementAndPlan(requestCtx, cwft.ses, cwft.stmt, cwft.plan)
 	}
 
-	checkPri := time.Now()                                     // trace #8986
-	if elapsed := checkPri.Sub(start); elapsed > time.Second { // trace #8986
+	checkPri := time.Now()                                       // trace #8986
+	if elapsed := checkPri.Sub(start); elapsed > 5*time.Second { // trace #8986
 		logInfo(cwft.ses.GetDebugString(), fmt.Sprintf("build plan long cost %v", elapsed), trace.ContextField(requestCtx))
 	}
 	if err != nil {
