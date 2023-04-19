@@ -32,6 +32,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/util/errutil"
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/cache"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
@@ -122,6 +123,8 @@ func (e *Engine) Create(ctx context.Context, name string, op client.TxnOperator)
 
 func (e *Engine) Database(ctx context.Context, name string,
 	op client.TxnOperator) (engine.Database, error) {
+	ctx, span := trace.Start(ctx, "Engine::Database")
+	defer span.End()
 	logDebugf(op.Txn(), "Engine.Database %s", name)
 	txn := e.getTransaction(op)
 	if txn == nil {

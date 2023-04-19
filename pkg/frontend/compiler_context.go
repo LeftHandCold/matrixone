@@ -730,11 +730,13 @@ func (tcc *TxnCompilerContext) SetProcess(proc *process.Process) {
 }
 
 func (tcc *TxnCompilerContext) GetSubscriptionMeta(dbName string) (*plan.SubscriptionMeta, error) {
+	ctx, span := trace.Start(tcc.GetContext(), "TxnCompilerContext::GetSubscriptionMeta")
+	defer span.End()
 	txn, err := tcc.GetTxnHandler().GetTxn()
 	if err != nil {
 		return nil, err
 	}
-	sub, err := getSubscriptionMeta(tcc.GetContext(), dbName, tcc.GetSession(), txn)
+	sub, err := getSubscriptionMeta(ctx, dbName, tcc.GetSession(), txn)
 	if err != nil {
 		return nil, err
 	}

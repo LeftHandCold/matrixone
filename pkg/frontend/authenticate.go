@@ -2591,6 +2591,8 @@ func doSwitchRole(ctx context.Context, ses *Session, sr *tree.SetRole) error {
 }
 
 func getSubscriptionMeta(ctx context.Context, dbName string, ses *Session, txn TxnOperator) (*plan.SubscriptionMeta, error) {
+	ctx, span := trace.Start(ctx, "getSubscriptionMeta")
+	defer span.End()
 	dbMeta, err := ses.GetParameterUnit().StorageEngine.Database(ctx, dbName, txn)
 	if err != nil {
 		return nil, err
@@ -2614,6 +2616,8 @@ func isSubscriptionValid(allAccount bool, accountList string, accName string) bo
 }
 
 func checkSubscriptionValidCommon(ctx context.Context, ses *Session, subName, accName, pubName string) (*plan.SubscriptionMeta, error) {
+	ctx, span := trace.Start(ctx, "checkSubscriptionValidCommon")
+	defer span.End()
 	bh := ses.GetBackgroundExec(ctx)
 	defer bh.Close()
 	var (
@@ -2735,6 +2739,8 @@ func checkSubscriptionValid(ctx context.Context, ses *Session, createSql string)
 		tenantInfo                *TenantInfo
 		ast                       []tree.Statement
 	)
+	ctx, span := trace.Start(ctx, "checkSubscriptionValid")
+	defer span.End()
 	tenantInfo = ses.GetTenantInfo()
 	lowerAny, err = ses.GetGlobalVar("lower_case_table_names")
 	if err != nil {
@@ -5294,6 +5300,8 @@ func determineUserHasPrivilegeSet(ctx context.Context, ses *Session, priv *privi
 	var ret bool
 	var ok bool
 	var grantedIds *btree.Set[int64]
+	ctx, span := trace.Start(ctx, "determineUserHasPrivilegeSet")
+	defer span.End()
 
 	tenant := ses.GetTenantInfo()
 	bh := ses.GetBackgroundExec(ctx)
@@ -5743,6 +5751,8 @@ func authenticateUserCanExecuteStatementWithObjectTypeDatabaseAndTable(ctx conte
 	ses *Session,
 	stmt tree.Statement,
 	p *plan2.Plan) (bool, error) {
+	ctx, span := trace.Start(ctx, "authenticateUserCanExecuteStatementWithObjectTypeDatabaseAndTable")
+	defer span.End()
 	priv := determinePrivilegeSetOfStatement(stmt)
 	if priv.objectType() == objectTypeTable {
 		arr := extractPrivilegeTipsFromPlan(p)
