@@ -149,6 +149,8 @@ func (th *TxnHandler) NewTxnOperator() error {
 // Then it creates the new transaction by Engin.New.
 func (th *TxnHandler) NewTxn() error {
 	var err error
+	_, span := trace.Start(th.ses.GetRequestContext(), "TxnHandler::NewTxn")
+	defer span.End()
 	if th.IsValidTxnOperator() {
 		err = th.CommitTxn()
 		if err != nil {
@@ -363,6 +365,8 @@ func (th *TxnHandler) GetStorage() engine.Engine {
 }
 
 func (th *TxnHandler) GetTxn() (TxnOperator, error) {
+	_, span := trace.Start(th.ses.GetRequestContext(), "TxnHandler::GetTxn")
+	defer span.End()
 	ses := th.GetSession()
 	err := ses.TxnCreate()
 	if err != nil {
