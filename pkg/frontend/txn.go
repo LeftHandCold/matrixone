@@ -157,7 +157,7 @@ func (th *TxnHandler) NewTxn() error {
 	defer span.End()
 	start := time.Now()
 	defer func() {
-		if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
 			logutil.Error("TxnHandler::NewTxn long cost",
 				zap.Duration("duration", elapsed),
 				trace.ContextField(th.GetSession().GetRequestContext()))
@@ -179,13 +179,13 @@ func (th *TxnHandler) NewTxn() error {
 		}
 	}
 	t1 := time.Since(now)
-	if t1 > 500*time.Millisecond {
+	if t1 > 5*time.Second {
 		logutil.Infof("IsValidTxnOperator time: %v", t1)
 	}
 	now = time.Now()
 	th.SetTxnOperatorInvalid()
 	t2 := time.Since(now)
-	if t2 > 500*time.Millisecond {
+	if t2 > 5*time.Second {
 		logutil.Infof("SetTxnOperatorInvalid time: %v", t2)
 	}
 	now = time.Now()
@@ -197,7 +197,7 @@ func (th *TxnHandler) NewTxn() error {
 		}
 	}()
 	t3 := time.Since(now)
-	if t3 > 500*time.Millisecond {
+	if t3 > 5*time.Second {
 		logutil.Infof("ResetTxnCtx time: %v", t3)
 	}
 	now = time.Now()
@@ -206,7 +206,7 @@ func (th *TxnHandler) NewTxn() error {
 		return err
 	}
 	t4 := time.Since(now)
-	if t4 > 500*time.Millisecond {
+	if t4 > 5*time.Second {
 		logutil.Infof("NewTxnOperator time: %v", t4)
 	}
 	now = time.Now()
@@ -216,7 +216,7 @@ func (th *TxnHandler) NewTxn() error {
 	}
 	storage := th.GetStorage()
 	t5 := time.Since(now)
-	if t5 > 500*time.Millisecond {
+	if t5 > 5*time.Second {
 		logutil.Infof("NewTxnOperator time: %v", t5)
 	}
 	err = storage.New(txnCtx, th.GetTxnOperator())
