@@ -157,7 +157,7 @@ func (th *TxnHandler) NewTxn() error {
 	defer span.End()
 	start := time.Now()
 	defer func() {
-		if elapsed := time.Since(start); elapsed > time.Second {
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
 			logutil.Error("TxnHandler::NewTxn long cost",
 				zap.Duration("duration", elapsed),
 				trace.ContextField(th.GetSession().GetRequestContext()))
@@ -509,7 +509,7 @@ func (ses *Session) TxnBegin() error {
 	defer span.End()
 	start := time.Now()
 	defer func() {
-		if elapsed := time.Since(start); elapsed > time.Second {
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
 			logutil.Error("Session::TxnBegin long cost",
 				zap.Duration("duration", elapsed),
 				trace.ContextField(ses.GetRequestContext()))
