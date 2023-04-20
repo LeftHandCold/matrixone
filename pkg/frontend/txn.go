@@ -157,12 +157,13 @@ func (th *TxnHandler) NewTxn() error {
 	defer span.End()
 	start := time.Now()
 	defer func() {
-		if elapsed := time.Since(start); elapsed > 3*time.Second {
+		if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 			logutil.Error("TxnHandler::NewTxn long cost",
 				zap.Duration("duration", elapsed),
 				trace.ContextField(th.GetSession().GetRequestContext()))
 		}
 	}()
+	now := time.Now()
 	if th.IsValidTxnOperator() {
 		err = th.CommitTxn()
 		if err != nil {
@@ -177,7 +178,17 @@ func (th *TxnHandler) NewTxn() error {
 			return err
 		}
 	}
+	t1 := time.Since(now)
+	if t1 > 500*time.Millisecond {
+		logutil.Infof("IsValidTxnOperator time: %v", t1)
+	}
+	now = time.Now()
 	th.SetTxnOperatorInvalid()
+	t2 := time.Since(now)
+	if t2 > 500*time.Millisecond {
+		logutil.Infof("SetTxnOperatorInvalid time: %v", t2)
+	}
+	now = time.Now()
 	th.ResetTxnCtx()
 	defer func() {
 		if err != nil {
@@ -185,15 +196,29 @@ func (th *TxnHandler) NewTxn() error {
 			incTransactionErrorsCounter(tenant, metric.SQLTypeBegin)
 		}
 	}()
+	t3 := time.Since(now)
+	if t3 > 500*time.Millisecond {
+		logutil.Infof("ResetTxnCtx time: %v", t3)
+	}
+	now = time.Now()
 	err = th.NewTxnOperator()
 	if err != nil {
 		return err
 	}
+	t4 := time.Since(now)
+	if t4 > 500*time.Millisecond {
+		logutil.Infof("NewTxnOperator time: %v", t4)
+	}
+	now = time.Now()
 	txnCtx := th.GetTxnCtx()
 	if txnCtx == nil {
 		panic("context should not be nil")
 	}
 	storage := th.GetStorage()
+	t5 := time.Since(now)
+	if t5 > 500*time.Millisecond {
+		logutil.Infof("NewTxnOperator time: %v", t5)
+	}
 	err = storage.New(txnCtx, th.GetTxnOperator())
 	return err
 }
