@@ -17,16 +17,20 @@ package frontend
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	moruntime "github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/txn/storage/memorystorage"
 	"github.com/matrixorigin/matrixone/pkg/util/metric"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
+
+	"go.uber.org/zap"
 )
 
 type TxnHandler struct {
@@ -151,6 +155,14 @@ func (th *TxnHandler) NewTxn() error {
 	var err error
 	_, span := trace.Start(th.ses.GetRequestContext(), "TxnHandler::NewTxn")
 	defer span.End()
+	start := time.Now()
+	defer func() {
+		if elapsed := time.Since(start); elapsed > time.Second {
+			logutil.Error("TxnHandler::NewTxn long cost",
+				zap.Duration("duration", elapsed),
+				trace.ContextField(th.GetSession().GetRequestContext()))
+		}
+	}()
 	if th.IsValidTxnOperator() {
 		err = th.CommitTxn()
 		if err != nil {
@@ -493,6 +505,16 @@ It commits the current transaction implicitly.
 */
 func (ses *Session) TxnBegin() error {
 	var err error
+	_, span := trace.Start(ses.GetRequestContext(), "Session::TxnBegin")
+	defer span.End()
+	start := time.Now()
+	defer func() {
+		if elapsed := time.Since(start); elapsed > time.Second {
+			logutil.Error("Session::TxnBegin long cost",
+				zap.Duration("duration", elapsed),
+				trace.ContextField(ses.GetRequestContext()))
+		}
+	}()
 	if ses.InMultiStmtTransactionMode() {
 		ses.ClearServerStatus(SERVER_STATUS_IN_TRANS)
 		err = ses.GetTxnHandler().CommitTxn()
