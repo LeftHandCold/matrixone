@@ -17,6 +17,7 @@ package objectio
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -210,6 +211,36 @@ func getObjectMeta(t *testing.B) ObjectMeta {
 	meta, err := objectReader.ReadMeta(context.Background(), nil)
 	assert.Nil(t, err)
 	return meta
+}
+
+func TestRead(t *testing.T) {
+	dir := "/tmp/ObjectIo/TestNewObjectWriter/local"
+	files, err := os.ReadDir(dir)
+	assert.Nil(t, err)
+	size := 0
+	filenum := 0
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		info, err := file.Info()
+		assert.Nil(t, err)
+		if info.Size() < 4*1024*1024 {
+			continue
+		}
+		name := path.Join(dir, file.Name())
+		fd, err := os.Open(name)
+		assert.Nil(t, err)
+		buf := make([]byte, 13043)
+		for i := 0; i < 80; i++ {
+			n, err := fd.ReadAt(buf, int64(i*45034))
+			assert.Nil(t, err)
+			size += n
+		}
+		filenum++
+	}
+
+	logutil.Infof("TestReadSize: %d, FileNum: %d", size, filenum)
 }
 
 func BenchmarkMetadata(b *testing.B) {
