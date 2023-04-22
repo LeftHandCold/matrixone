@@ -213,6 +213,29 @@ func getObjectMeta(t *testing.B) ObjectMeta {
 	return meta
 }
 
+func TestWrite(t *testing.T) {
+	dir := "/tmp/ObjectIo/TestNewObjectWriter/local"
+	pool, err := mpool.NewMPool("objectio_test", 0, mpool.NoFixed)
+	assert.NoError(t, err)
+	bat := newBatch(pool)
+	defer bat.Clean(pool)
+	buf, _ := bat.MarshalBinary()
+	length := len(buf)
+	b := make([]byte, len(buf)*4)
+	copy(b[:length], buf)
+	copy(b[length:length*2], buf)
+	copy(b[length*2:length*3], buf)
+	copy(b[length*3:length*4], buf)
+	for i := 0; i < 300; i++ {
+		name := path.Join(dir, fmt.Sprintf("%d.blk", i))
+		fd, err := os.Create(name)
+		//fd, err := os.Open(name)
+		assert.Nil(t, err)
+		_, err = fd.WriteAt(b, 0)
+		assert.Nil(t, err)
+	}
+}
+
 func TestRead(t *testing.T) {
 	dir := "/tmp/ObjectIo/TestNewObjectWriter/local"
 	files, err := os.ReadDir(dir)

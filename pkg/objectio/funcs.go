@@ -41,7 +41,7 @@ func ReadExtent(
 		Size:     int64(extent.Length()),
 		ToObject: factory(int64(extent.OriginSize()), extent.Alg(), noHeaderHint),
 	}
-	if err = fs.Read(ctx, ioVec); err != nil {
+	if err = ObjectRead(ioVec); err != nil {
 		return
 	}
 	v = ioVec.Entries[0].Object
@@ -119,7 +119,7 @@ func ReadOneBlockWithMeta(
 			ToObject: factory(int64(ext.OriginSize()), ext.Alg(), false),
 		})
 	}
-	err = fs.Read(ctx, ioVec)
+	err = ObjectRead(ioVec)
 	return
 }
 
@@ -149,7 +149,7 @@ func ReadMultiBlocksWithMeta(
 		}
 	}
 
-	err = fs.Read(ctx, ioVec)
+	err = ObjectRead(ioVec)
 	return
 }
 
@@ -181,6 +181,6 @@ func ReadAllBlocksWithMeta(
 		}
 	}
 
-	err = fs.Read(ctx, ioVec)
+	err = ObjectRead(ioVec)
 	return
 }

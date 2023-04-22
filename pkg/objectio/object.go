@@ -14,7 +14,13 @@
 
 package objectio
 
-import "github.com/matrixorigin/matrixone/pkg/fileservice"
+import (
+	"bytes"
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"go.uber.org/zap/buffer"
+	"os"
+	"path"
+)
 
 const Magic = 0xFFFFFFFF
 const Version = 1
@@ -33,4 +39,42 @@ func NewObject(name string, fs fileservice.FileService) *Object {
 		fs:   fs,
 	}
 	return object
+}
+
+func (o *Object) Write(vector fileservice.IOVector) error {
+	dir := "./mo-data/s3"
+	name := path.Join(dir, vector.FilePath)
+	file, err := os.Create(name)
+	if err != nil {
+		return err
+	}
+	var buf buffer.Buffer
+	for _, entry := range vector.Entries {
+		buf.Write(entry.Data)
+	}
+	_, err = file.WriteAt(buf.Bytes(), 0)
+	return err
+}
+
+func ObjectRead(vector *fileservice.IOVector) error {
+	dir := "./mo-data/s3"
+	name := path.Join(dir, vector.FilePath)
+	file, err := os.Open(name)
+	if err != nil {
+		return err
+	}
+	for i := range vector.Entries {
+		vector.Entries[i].Data = make([]byte, vector.Entries[i].Size)
+		_, err = file.ReadAt(vector.Entries[i].Data, vector.Entries[i].Offset)
+		if err != nil {
+			return err
+		}
+		obj, size, err := vector.Entries[i].ToObject(bytes.NewReader(vector.Entries[i].Data), vector.Entries[i].Data)
+		if err != nil {
+			return err
+		}
+		vector.Entries[i].Object = obj
+		vector.Entries[i].ObjectSize = size
+	}
+	return err
 }
