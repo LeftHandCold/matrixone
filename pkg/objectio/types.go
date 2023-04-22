@@ -16,6 +16,7 @@ package objectio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/fileservice/objcache/lruobjcache"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -93,4 +94,10 @@ type Reader interface {
 	ReadAllMeta(ctx context.Context, m *mpool.MPool) (ObjectMeta, error)
 
 	GetObject() *Object
+}
+
+var Cache *lruobjcache.LRU
+
+func init() {
+	Cache = lruobjcache.New(3000000000)
 }
