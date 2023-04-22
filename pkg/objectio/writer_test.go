@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"math/rand"
 	"os"
 	"path"
 	"path/filepath"
@@ -237,33 +238,42 @@ func TestWrite(t *testing.T) {
 }
 
 func TestRead(t *testing.T) {
-	dir := "/tmp/ObjectIo/TestNewObjectWriter/local"
+	//dir := "/tmp/ObjectIo/TestNewObjectWriter/local"
+	//dir := "/home/shenjiangwei/matrixone/mo-data/s3"
+	dir := "/data1/shenjiangwei/matrixone/mo-data/s3"
 	files, err := os.ReadDir(dir)
 	assert.Nil(t, err)
 	size := 0
 	filenum := 0
-	for _, file := range files {
+	in := rand.Intn(300)
+	for i, file := range files {
+		if i != in {
+			continue
+		}
 		if file.IsDir() {
+			in++
 			continue
 		}
 		info, err := file.Info()
 		assert.Nil(t, err)
-		if info.Size() < 4*1024*1024 {
+		if info.Size() < 5*1024*1024 {
+			in++
 			continue
 		}
 		name := path.Join(dir, file.Name())
 		fd, err := os.Open(name)
 		assert.Nil(t, err)
-		buf := make([]byte, 13043)
+		buf := make([]byte, 13042)
 		for i := 0; i < 80; i++ {
 			n, err := fd.ReadAt(buf, int64(i*45034))
 			assert.Nil(t, err)
 			size += n
 		}
 		filenum++
+		break
 	}
 
-	logutil.Infof("TestReadSize: %d, FileNum: %d", size, filenum)
+	logutil.Infof("TestReadSize: %d, FileNum: %d, readFile: %d", size, filenum, in)
 }
 
 func BenchmarkMetadata(b *testing.B) {
