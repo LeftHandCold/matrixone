@@ -46,7 +46,7 @@ func LoadPersistedColumnData(
 	if def.IsPhyAddr() {
 		return constructRowId(id, location.Rows())
 	}
-	reader, err := blockio.NewObjectReader(fs.Service, location)
+	reader, err := blockio.NewObjectReader(fs.Service, location, objectio.WithLRUMetaCacheOption(fs.MetaCache))
 	if err != nil {
 		return
 	}
@@ -64,7 +64,7 @@ func ReadPersistedBlockRow(location objectio.Location) int {
 func LoadPersistedDeletes(
 	fs *objectio.ObjectFS,
 	location objectio.Location) (bat *containers.Batch, err error) {
-	reader, err := blockio.NewObjectReader(fs.Service, location)
+	reader, err := blockio.NewObjectReader(fs.Service, location, objectio.WithLRUMetaCacheOption(fs.MetaCache))
 	if err != nil {
 		return
 	}

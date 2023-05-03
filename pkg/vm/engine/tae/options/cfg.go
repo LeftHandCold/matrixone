@@ -31,6 +31,7 @@ const (
 
 type CacheCfg struct {
 	IndexCapacity uint64 `toml:"index-cache-size"`
+	MetaCapacity  uint64 `toml:"meta-cache-size"`
 }
 
 type StorageCfg struct {

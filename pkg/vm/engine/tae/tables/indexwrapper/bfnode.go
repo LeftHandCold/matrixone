@@ -39,7 +39,7 @@ func NewBfReader(
 	indexCache model.LRUCache,
 	fs *objectio.ObjectFS,
 ) *BfReader {
-	reader, _ := blockio.NewObjectReader(fs.Service, metaLoc)
+	reader, _ := blockio.NewObjectReader(fs.Service, metaLoc, objectio.WithLRUMetaCacheOption(fs.MetaCache))
 
 	return &BfReader{
 		indexCache: indexCache,

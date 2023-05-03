@@ -27,6 +27,7 @@ import (
 
 const (
 	DefaultIndexCacheSize = 256 * common.M
+	DefaultMetaCacheSize  = 256 * common.M
 
 	DefaultBlockMaxRows     = uint32(8192)
 	DefaultBlocksPerSegment = uint16(256)

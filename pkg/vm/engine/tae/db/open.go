@@ -16,6 +16,7 @@ package db
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/fileservice/objcache/lruobjcache"
 	"path"
 	"sync/atomic"
 	"time"
@@ -68,6 +69,7 @@ func Open(dirname string, opts *options.Options) (db *DB, err error) {
 	opts = opts.FillDefaults(dirname)
 
 	indexCache := model.NewSimpleLRU(int64(opts.CacheCfg.IndexCapacity))
+	metaCache := lruobjcache.New(int64(opts.CacheCfg.MetaCapacity))
 
 	serviceDir := path.Join(dirname, "data")
 	if opts.Fs == nil {
@@ -75,7 +77,7 @@ func Open(dirname string, opts *options.Options) (db *DB, err error) {
 		opts.Fs = objectio.TmpNewFileservice(path.Join(dirname, "data"))
 	}
 	fs := objectio.NewObjectFS(opts.Fs, serviceDir)
-
+	fs.MetaCache = metaCache
 	db = &DB{
 		Dir:        dirname,
 		Opts:       opts,

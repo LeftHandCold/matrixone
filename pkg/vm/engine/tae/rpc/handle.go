@@ -819,7 +819,7 @@ func (h *Handle) HandleWrite(
 			}
 			if reader == nil {
 				reader, err = blockio.NewObjectReader(
-					h.db.Fs.Service, location)
+					h.db.Fs.Service, location, objectio.WithLRUMetaCacheOption(h.db.Fs.MetaCache))
 				if err != nil {
 					return
 				}

@@ -16,6 +16,7 @@ package objectio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/fileservice/objcache/lruobjcache"
 	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -104,6 +105,13 @@ func (r *objectReaderV1) ReadMeta(
 	ctx context.Context,
 	m *mpool.MPool,
 ) (meta objectMetaV1, err error) {
+	if r.lruMetaCache != nil {
+		v, _, ok := r.lruMetaCache.Get(r.name, false)
+		if ok {
+			meta = v.(ObjectMeta)
+			return
+		}
+	}
 	if r.withMetaCache {
 		cache := r.metaCache.Load()
 		if cache != nil {
@@ -116,6 +124,9 @@ func (r *objectReaderV1) ReadMeta(
 	}
 	if r.withMetaCache {
 		r.metaCache.Store(&meta)
+	}
+	if r.lruMetaCache != nil {
+		r.lruMetaCache.Set(r.name, meta, int64(len(meta[:])), false)
 	}
 	return
 }
@@ -247,6 +258,8 @@ type ReaderOptions struct {
 	// withMetaCache true means cache objectMetaV1 in the Reader
 	// Note: if withMetaCache is true, cleanup is needed
 	withMetaCache bool
+
+	lruMetaCache *lruobjcache.LRU
 }
 
 type ReaderOptionFunc func(opt *ReaderOptions)
@@ -260,5 +273,11 @@ func WithNoLRUCacheOption(noLRUCache bool) ReaderOptionFunc {
 func WithLocalMetaCacheOption(withMetaCache bool) ReaderOptionFunc {
 	return ReaderOptionFunc(func(opt *ReaderOptions) {
 		opt.withMetaCache = withMetaCache
+	})
+}
+
+func WithLRUMetaCacheOption(metaCache *lruobjcache.LRU) ReaderOptionFunc {
+	return ReaderOptionFunc(func(opt *ReaderOptions) {
+		opt.lruMetaCache = metaCache
 	})
 }

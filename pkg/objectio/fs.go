@@ -17,6 +17,7 @@ package objectio
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/fileservice/objcache/lruobjcache"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/defines"
@@ -24,8 +25,9 @@ import (
 )
 
 type ObjectFS struct {
-	Service fileservice.FileService
-	Dir     string
+	Service   fileservice.FileService
+	Dir       string
+	MetaCache *lruobjcache.LRU
 }
 
 func TmpNewFileservice(dir string) fileservice.FileService {
