@@ -115,3 +115,23 @@ func newBatch(ts []types.Type, rows int) *Batch {
 	}
 	return bat
 }
+
+// benchmark for AntiShrink
+func BenchmarkAntiShrink(b *testing.B) {
+	delete10 := make([]int64, 10)
+	for i := 0; i < 10; i++ {
+		delete10[i] = int64(i)
+	}
+	b.Run("AntiShrink", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			bat := newBatch([]types.Type{types.T_int8.ToType()}, 8192)
+			bat.AntiShrink(delete10)
+		}
+	})
+	b.Run("AntiShrink1", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			bat := newBatch([]types.Type{types.T_int8.ToType()}, 8192)
+			bat.AntiShrink1(delete10)
+		}
+	})
+}

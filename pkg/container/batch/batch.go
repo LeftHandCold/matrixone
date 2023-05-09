@@ -346,3 +346,12 @@ func (bat *Batch) AntiShrink(sels []int64) {
 	}
 	bat.Zs = bat.Zs[:len(newSels)]
 }
+
+func (bat *Batch) AntiShrink1(sels []int64) {
+	for _, vec := range bat.Vecs {
+		vec.Shrink(sels, true)
+	}
+	for i, sel := range sels {
+		bat.Zs = append(bat.Zs[:int(sel)-i], bat.Zs[int(sel)-i+1:]...)
+	}
+}
