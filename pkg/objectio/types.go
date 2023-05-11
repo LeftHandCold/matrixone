@@ -33,6 +33,8 @@ const (
 
 type WriteType int8
 
+const accountID = "88"
+
 const (
 	WriteTS WriteType = iota
 )

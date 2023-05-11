@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -34,8 +35,9 @@ func ReadExtent(
 	fs fileservice.FileService,
 	factory CacheConstructorFactory,
 ) (v []byte, err error) {
+	fileName := path.Join(accountID, name)
 	ioVec := &fileservice.IOVector{
-		FilePath: name,
+		FilePath: fileName,
 		Entries:  make([]fileservice.IOEntry, 1),
 		NoCache:  noLRUCache,
 	}
@@ -124,8 +126,9 @@ func ReadOneBlockWithMeta(
 	fs fileservice.FileService,
 	factory CacheConstructorFactory,
 ) (ioVec *fileservice.IOVector, err error) {
+	fileName := path.Join(accountID, name)
 	ioVec = &fileservice.IOVector{
-		FilePath: name,
+		FilePath: fileName,
 		Entries:  make([]fileservice.IOEntry, 0),
 	}
 	var filledEntries []fileservice.IOEntry
@@ -217,8 +220,9 @@ func ReadMultiBlocksWithMeta(
 	fs fileservice.FileService,
 	factory CacheConstructorFactory,
 ) (ioVec *fileservice.IOVector, err error) {
+	fileName := path.Join(accountID, name)
 	ioVec = &fileservice.IOVector{
-		FilePath: name,
+		FilePath: fileName,
 		Entries:  make([]fileservice.IOEntry, 0),
 	}
 	for _, opt := range options {
@@ -252,8 +256,9 @@ func ReadAllBlocksWithMeta(
 	fs fileservice.FileService,
 	factory CacheConstructorFactory,
 ) (ioVec *fileservice.IOVector, err error) {
+	fileName := path.Join(accountID, name)
 	ioVec = &fileservice.IOVector{
-		FilePath: name,
+		FilePath: fileName,
 		Entries:  make([]fileservice.IOEntry, 0, len(cols)*int(meta.BlockCount())),
 		NoCache:  noLRUCache,
 	}
