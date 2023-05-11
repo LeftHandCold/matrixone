@@ -16,6 +16,7 @@ package objectio
 
 import (
 	"bytes"
+	"path"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -31,10 +32,11 @@ type ObjectBuffer struct {
 }
 
 func NewObjectBuffer(name string) *ObjectBuffer {
+	fileName := path.Join(accountID, name)
 	buffer := &ObjectBuffer{
 		buf: new(bytes.Buffer),
 		vector: fileservice.IOVector{
-			FilePath: name,
+			FilePath: fileName,
 		},
 	}
 	buffer.vector.Entries = make([]fileservice.IOEntry, 0)
