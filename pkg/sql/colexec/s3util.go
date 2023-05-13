@@ -556,7 +556,7 @@ func (w *S3Writer) writeEndBlocks(proc *process.Process) error {
 // writeEndBlocks writes batches in buffer to fileservice(aka s3 in this feature) and get meta data about block on fileservice and put it into metaLocBat
 // For more information, please refer to the comment about func WriteEnd in Writer interface
 func (w *S3Writer) WriteEndBlocks(proc *process.Process) ([]string, error) {
-	blocks, _, err := w.writer.Sync(proc.Ctx)
+	blocks, _, err := w.writer.Sync(proc.Ctx, proc.SessionInfo.AccountId)
 	if err != nil {
 		return nil, err
 	}

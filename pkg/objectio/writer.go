@@ -43,6 +43,7 @@ type objectWriterV1 struct {
 	lastId      uint32
 	name        ObjectName
 	compressBuf []byte
+	accountId   int
 }
 
 type blockData struct {
@@ -78,13 +79,14 @@ func newObjectWriterSpecialV1(wt WriterType, fileName string, fs fileservice.Fil
 		name = BuildETLName()
 	}
 	writer := &objectWriterV1{
-		seqnums:  NewSeqnums(nil),
-		fileName: fileName,
-		name:     name,
-		object:   object,
-		buffer:   NewObjectBuffer(fileName),
-		blocks:   make([]blockData, 0),
-		lastId:   0,
+		seqnums:   NewSeqnums(nil),
+		fileName:  fileName,
+		name:      name,
+		object:    object,
+		buffer:    NewObjectBuffer(fileName),
+		blocks:    make([]blockData, 0),
+		lastId:    0,
+		accountId: -1,
 	}
 	return writer, nil
 }
@@ -101,6 +103,7 @@ func newObjectWriterV1(name ObjectName, fs fileservice.FileService, schemaVersio
 		buffer:    NewObjectBuffer(fileName),
 		blocks:    make([]blockData, 0),
 		lastId:    0,
+		accountId: -1,
 	}
 	return writer, nil
 }
@@ -139,6 +142,10 @@ func (w *objectWriterV1) UpdateBlockZM(blkIdx int, seqnum uint16, zm ZoneMap) {
 func (w *objectWriterV1) WriteBF(blkIdx int, seqnum uint16, buf []byte) (err error) {
 	w.blocks[blkIdx].bloomFilter = buf
 	return
+}
+
+func (w *objectWriterV1) SetAccountId(accountId uint32) {
+	w.accountId = int(accountId)
 }
 
 func (w *objectWriterV1) WriteObjectMeta(ctx context.Context, totalrow uint32, metas []ColumnMeta) {
@@ -378,6 +385,9 @@ func (w *objectWriterV1) WriteEnd(ctx context.Context, items ...WriteOptions) ([
 // Sync is for testing
 func (w *objectWriterV1) Sync(ctx context.Context, items ...WriteOptions) error {
 	w.buffer.SetDataOptions(items...)
+	if w.accountId > -1 {
+		w.buffer.SetAccountId(w.accountId)
+	}
 	// if a compact task is rollbacked, it may leave a written file in fs
 	// here we just delete it and write again
 	err := w.object.fs.Write(ctx, w.buffer.GetData())

@@ -124,10 +124,13 @@ func (w *BlockWriter) WriteBatchWithOutIndex(batch *batch.Batch) (objectio.Block
 	return w.writer.WriteWithoutSeqnum(batch)
 }
 
-func (w *BlockWriter) Sync(ctx context.Context) ([]objectio.BlockObject, objectio.Extent, error) {
+func (w *BlockWriter) Sync(ctx context.Context, accountId ...uint32) ([]objectio.BlockObject, objectio.Extent, error) {
 	if w.objMetaBuilder != nil {
 		cnt, meta := w.objMetaBuilder.Build()
 		w.writer.WriteObjectMeta(ctx, cnt, meta)
+	}
+	if accountId != nil {
+		w.writer.SetAccountId(accountId[0])
 	}
 	blocks, err := w.writer.WriteEnd(ctx)
 	if len(blocks) == 0 {
