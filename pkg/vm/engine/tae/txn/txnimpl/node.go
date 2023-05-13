@@ -140,7 +140,7 @@ func (n *node) GetColumnDataByIds([]int) (*model.BlockView, error) {
 
 func (n *node) GetColumnDataById(idx int) (view *model.ColumnView, err error) {
 	view = model.NewColumnView(idx)
-	vec, err := n.LoadPersistedColumnData(idx)
+	vec, err := n.LoadPersistedColumnData(idx, n.table.store.txn.GetTenantID())
 	if err != nil {
 		return
 	}

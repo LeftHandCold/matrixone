@@ -42,11 +42,12 @@ func LoadPersistedColumnData(
 	id *common.ID,
 	def *catalog.ColDef,
 	location objectio.Location,
+	accountId uint32,
 ) (vec containers.Vector, err error) {
 	if def.IsPhyAddr() {
 		return constructRowId(id, location.Rows())
 	}
-	bat, err := blockio.LoadColumns(context.Background(), []uint16{uint16(def.SeqNum)}, []types.Type{def.Type}, fs.Service, location, nil)
+	bat, err := blockio.LoadColumns(context.Background(), []uint16{uint16(def.SeqNum)}, []types.Type{def.Type}, fs.Service, location, nil, accountId)
 	if err != nil {
 		return
 	}
@@ -59,8 +60,9 @@ func ReadPersistedBlockRow(location objectio.Location) int {
 
 func LoadPersistedDeletes(
 	fs *objectio.ObjectFS,
-	location objectio.Location) (bat *containers.Batch, err error) {
-	movbat, err := blockio.LoadColumns(context.Background(), []uint16{0, 1, 2}, nil, fs.Service, location, nil)
+	location objectio.Location,
+	accountId uint32) (bat *containers.Batch, err error) {
+	movbat, err := blockio.LoadColumns(context.Background(), []uint16{0, 1, 2}, nil, fs.Service, location, nil, accountId)
 	if err != nil {
 		return
 	}

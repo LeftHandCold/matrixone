@@ -198,7 +198,7 @@ func (tbl *txnTable) LoadDeletesForBlock(blockID *types.Blockid, deleteBlockId m
 			if err != nil {
 				return err
 			}
-			rowIdBat, err := blockio.LoadColumns(tbl.db.txn.proc.Ctx, []uint16{0}, nil, tbl.db.txn.engine.fs, location, tbl.db.txn.proc.GetMPool())
+			rowIdBat, err := blockio.LoadColumns(tbl.db.txn.proc.Ctx, []uint16{0}, nil, tbl.db.txn.engine.fs, location, tbl.db.txn.proc.GetMPool(), tbl.db.txn.proc.GetAccountId())
 			if err != nil {
 				return err
 			}
@@ -706,7 +706,7 @@ func (tbl *txnTable) compaction() error {
 			tbl.seqnums = idxs
 			tbl.typs = typs
 		}
-		bat, e := blockio.LoadColumns(tbl.db.txn.proc.Ctx, tbl.seqnums, tbl.typs, tbl.db.txn.engine.fs, location, tbl.db.txn.proc.GetMPool())
+		bat, e := blockio.LoadColumns(tbl.db.txn.proc.Ctx, tbl.seqnums, tbl.typs, tbl.db.txn.engine.fs, location, tbl.db.txn.proc.GetMPool(), tbl.db.txn.proc.GetAccountId())
 		if e != nil {
 			err = e
 			return false

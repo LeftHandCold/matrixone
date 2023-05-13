@@ -93,7 +93,8 @@ func (blk *block) GetColumnDataByIds(
 		txn,
 		schema,
 		colIdxes,
-		false)
+		false,
+		txn.GetTenantID())
 }
 
 // GetColumnDataById Get the snapshot at txn's start timestamp of column data.
@@ -112,7 +113,8 @@ func (blk *block) GetColumnDataById(
 		txn,
 		schema,
 		col,
-		false)
+		false,
+		txn.GetTenantID())
 }
 
 func (blk *block) BatchDedup(
@@ -133,7 +135,8 @@ func (blk *block) BatchDedup(
 		precommit,
 		keys,
 		rowmask,
-		false)
+		false,
+		txn.GetTenantID())
 }
 
 func (blk *block) GetValue(
@@ -149,7 +152,8 @@ func (blk *block) GetValue(
 		schema,
 		row,
 		col,
-		false)
+		false,
+		txn.GetTenantID())
 }
 
 func (blk *block) RunCalibration() (score int) {
@@ -197,13 +201,14 @@ func (blk *block) GetByFilter(
 
 	node := blk.PinNode()
 	defer node.Unref()
-	return blk.getPersistedRowByFilter(node.MustPNode(), txn, filter)
+	return blk.getPersistedRowByFilter(node.MustPNode(), txn, filter, txn.GetTenantID())
 }
 
 func (blk *block) getPersistedRowByFilter(
 	pnode *persistedNode,
 	txn txnif.TxnReader,
-	filter *handle.Filter) (offset uint32, err error) {
+	filter *handle.Filter,
+	accountId uint32) (offset uint32, err error) {
 	ok, err := pnode.ContainsKey(filter.Val)
 	if err != nil {
 		return
@@ -215,7 +220,7 @@ func (blk *block) getPersistedRowByFilter(
 	var sortKey containers.Vector
 	schema := blk.meta.GetSchema()
 	idx := schema.GetSingleSortKeyIdx()
-	if sortKey, err = blk.LoadPersistedColumnData(schema, idx); err != nil {
+	if sortKey, err = blk.LoadPersistedColumnData(schema, idx, accountId); err != nil {
 		return
 	}
 	defer sortKey.Close()

@@ -22,6 +22,8 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"path"
+	"strconv"
 )
 
 func LoadColumns(ctx context.Context,
@@ -29,15 +31,17 @@ func LoadColumns(ctx context.Context,
 	typs []types.Type,
 	fs fileservice.FileService,
 	location objectio.Location,
-	m *mpool.MPool) (bat *batch.Batch, err error) {
+	m *mpool.MPool,
+	accountId uint32) (bat *batch.Batch, err error) {
 	name := location.Name()
+	fileName := path.Join(strconv.Itoa(int(accountId)), name.String())
 	extent := location.Extent()
 	var meta objectio.ObjectMeta
 	var ioVectors *fileservice.IOVector
-	if meta, err = objectio.ReadObjectMeta(ctx, name.String(), &extent, false, fs); err != nil {
+	if meta, err = objectio.ReadObjectMeta(ctx, fileName, &extent, false, fs); err != nil {
 		return
 	}
-	if ioVectors, err = objectio.ReadOneBlock(ctx, &meta, name.String(), location.ID(), cols, typs, m, fs); err != nil {
+	if ioVectors, err = objectio.ReadOneBlock(ctx, &meta, fileName, location.ID(), cols, typs, m, fs); err != nil {
 		return
 	}
 	bat = batch.NewWithSize(len(cols))

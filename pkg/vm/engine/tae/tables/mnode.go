@@ -128,6 +128,7 @@ func (node *memoryNode) GetColumnDataWindow(
 	from uint32,
 	to uint32,
 	col int,
+	accountId uint32,
 ) (vec containers.Vector, err error) {
 	idx, ok := node.writeSchema.SeqnumMap[readSchema.ColDefs[col].SeqNum]
 	if !ok {

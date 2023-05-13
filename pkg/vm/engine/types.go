@@ -609,6 +609,7 @@ type Engine interface {
 type VectorPool interface {
 	PutBatch(bat *batch.Batch)
 	GetVector(typ types.Type) *vector.Vector
+	GetAccountId() uint32
 }
 
 type Hints struct {

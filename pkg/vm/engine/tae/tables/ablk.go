@@ -125,7 +125,8 @@ func (blk *ablock) GetColumnDataByIds(
 		txn,
 		readSchema.(*catalog.Schema),
 		colIdxes,
-		false)
+		false,
+		txn.GetTenantID())
 }
 
 func (blk *ablock) GetColumnDataById(
@@ -137,14 +138,16 @@ func (blk *ablock) GetColumnDataById(
 		txn,
 		readSchema.(*catalog.Schema),
 		col,
-		false)
+		false,
+		txn.GetTenantID())
 }
 
 func (blk *ablock) resolveColumnDatas(
 	txn txnif.TxnReader,
 	readSchema *catalog.Schema,
 	colIdxes []int,
-	skipDeletes bool) (view *model.BlockView, err error) {
+	skipDeletes bool,
+	accountId uint32) (view *model.BlockView, err error) {
 	node := blk.PinNode()
 	defer node.Unref()
 
@@ -162,6 +165,7 @@ func (blk *ablock) resolveColumnDatas(
 			readSchema,
 			colIdxes,
 			skipDeletes,
+			accountId,
 		)
 	}
 }
@@ -170,7 +174,8 @@ func (blk *ablock) resolveColumnData(
 	txn txnif.TxnReader,
 	readSchema *catalog.Schema,
 	col int,
-	skipDeletes bool) (view *model.ColumnView, err error) {
+	skipDeletes bool,
+	accountId uint32) (view *model.ColumnView, err error) {
 	node := blk.PinNode()
 	defer node.Unref()
 
@@ -180,7 +185,8 @@ func (blk *ablock) resolveColumnData(
 			txn,
 			readSchema,
 			col,
-			skipDeletes)
+			skipDeletes,
+			accountId)
 	} else {
 		return blk.ResolvePersistedColumnData(
 			node.MustPNode(),
@@ -188,6 +194,7 @@ func (blk *ablock) resolveColumnData(
 			readSchema,
 			col,
 			skipDeletes,
+			accountId,
 		)
 	}
 }
@@ -240,7 +247,8 @@ func (blk *ablock) resolveInMemoryColumnData(
 	txn txnif.TxnReader,
 	readSchema *catalog.Schema,
 	col int,
-	skipDeletes bool) (view *model.ColumnView, err error) {
+	skipDeletes bool,
+	accountId uint32) (view *model.ColumnView, err error) {
 	blk.RLock()
 	defer blk.RUnlock()
 	maxRow, visible, deSels, err := blk.mvcc.GetVisibleRowLocked(txn)
@@ -255,7 +263,7 @@ func (blk *ablock) resolveInMemoryColumnData(
 		readSchema,
 		0,
 		maxRow,
-		col)
+		col, accountId)
 	if err != nil {
 		// blk.RUnlock()
 		return
@@ -290,7 +298,7 @@ func (blk *ablock) GetValue(
 	defer node.Unref()
 	schema := readSchema.(*catalog.Schema)
 	if !node.IsPersisted() {
-		return blk.getInMemoryValue(node.MustMNode(), txn, schema, row, col)
+		return blk.getInMemoryValue(node.MustMNode(), txn, schema, row, col, txn.GetTenantID())
 	} else {
 		return blk.getPersistedValue(
 			node.MustPNode(),
@@ -298,7 +306,8 @@ func (blk *ablock) GetValue(
 			schema,
 			row,
 			col,
-			true)
+			true,
+			txn.GetTenantID())
 	}
 }
 
@@ -307,7 +316,7 @@ func (blk *ablock) getInMemoryValue(
 	mnode *memoryNode,
 	txn txnif.TxnReader,
 	readSchema *catalog.Schema,
-	row, col int) (v any, isNull bool, err error) {
+	row, col int, accountId uint32) (v any, isNull bool, err error) {
 	blk.RLock()
 	deleted, err := blk.mvcc.IsDeletedLocked(uint32(row), txn, blk.RWMutex)
 	blk.RUnlock()
@@ -318,7 +327,7 @@ func (blk *ablock) getInMemoryValue(
 		err = moerr.NewNotFoundNoCtx()
 		return
 	}
-	view, err := blk.resolveInMemoryColumnData(mnode, txn, readSchema, col, true)
+	view, err := blk.resolveInMemoryColumnData(mnode, txn, readSchema, col, true, accountId)
 	if err != nil {
 		return
 	}
@@ -350,7 +359,7 @@ func (blk *ablock) GetByFilter(
 	if !node.IsPersisted() {
 		return blk.getInMemoryRowByFilter(node.MustMNode(), txn, filter)
 	} else {
-		return blk.getPersistedRowByFilter(node.MustPNode(), txn, filter)
+		return blk.getPersistedRowByFilter(node.MustPNode(), txn, filter, txn.GetTenantID())
 	}
 }
 
@@ -359,7 +368,8 @@ func (blk *ablock) GetByFilter(
 func (blk *ablock) getPersistedRowByFilter(
 	pnode *persistedNode,
 	txn txnif.TxnReader,
-	filter *handle.Filter) (row uint32, err error) {
+	filter *handle.Filter,
+	accountId uint32) (row uint32, err error) {
 	ok, err := pnode.ContainsKey(filter.Val)
 	if err != nil {
 		return
@@ -370,7 +380,7 @@ func (blk *ablock) getPersistedRowByFilter(
 	}
 	// Note: sort key do not change
 	schema := blk.meta.GetSchema()
-	sortKey, err := blk.LoadPersistedColumnData(schema, schema.GetSingleSortKeyIdx())
+	sortKey, err := blk.LoadPersistedColumnData(schema, schema.GetSingleSortKeyIdx(), accountId)
 	if err != nil {
 		return
 	}
@@ -393,7 +403,7 @@ func (blk *ablock) getPersistedRowByFilter(
 	}
 
 	// Load persisted commit ts
-	commitTSVec, err := blk.LoadPersistedCommitTS()
+	commitTSVec, err := blk.LoadPersistedCommitTS(accountId)
 	if err != nil {
 		return
 	}
@@ -401,7 +411,7 @@ func (blk *ablock) getPersistedRowByFilter(
 
 	// Load persisted deletes
 	view := model.NewColumnView(0)
-	if err = blk.FillPersistedDeletes(txn, view.BaseView); err != nil {
+	if err = blk.FillPersistedDeletes(txn, view.BaseView, accountId); err != nil {
 		return
 	}
 
@@ -594,7 +604,8 @@ func (blk *ablock) BatchDedup(
 			precommit,
 			keys,
 			rowmask,
-			true)
+			true,
+			txn.GetTenantID())
 	}
 }
 

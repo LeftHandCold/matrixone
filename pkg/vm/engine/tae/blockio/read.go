@@ -109,7 +109,7 @@ func BlockReadInner(
 
 	// read block data from storage
 	if loaded, rowid, deletedRows, err = readBlockData(
-		ctx, seqnums, colTypes, info, ts, fs, mp,
+		ctx, seqnums, colTypes, info, ts, fs, mp, vp.GetAccountId(),
 	); err != nil {
 		return
 	}
@@ -117,7 +117,7 @@ func BlockReadInner(
 	// read deletes from storage if needed
 	if !info.DeltaLocation().IsEmpty() {
 		var deletes *batch.Batch
-		if deletes, err = readBlockDelete(ctx, info.DeltaLocation(), fs); err != nil {
+		if deletes, err = readBlockDelete(ctx, info.DeltaLocation(), fs, vp.GetAccountId()); err != nil {
 			return
 		}
 
@@ -200,6 +200,7 @@ func readBlockData(
 	ts types.TS,
 	fs fileservice.FileService,
 	m *mpool.MPool,
+	accountId uint32,
 ) (bat *batch.Batch, rowid *vector.Vector, deletedRows []int64, err error) {
 
 	hasRowId, idxes, typs := getRowsIdIndex(colIndexes, colTypes)
@@ -230,7 +231,7 @@ func readBlockData(
 			return
 		}
 
-		if loaded, err = LoadColumns(ctx, cols, typs, fs, info.MetaLocation(), m); err != nil {
+		if loaded, err = LoadColumns(ctx, cols, typs, fs, info.MetaLocation(), m, accountId); err != nil {
 			return
 		}
 
@@ -280,8 +281,8 @@ func readBlockData(
 	return
 }
 
-func readBlockDelete(ctx context.Context, deltaloc objectio.Location, fs fileservice.FileService) (*batch.Batch, error) {
-	bat, err := LoadColumns(ctx, []uint16{0, 1, 2}, nil, fs, deltaloc, nil)
+func readBlockDelete(ctx context.Context, deltaloc objectio.Location, fs fileservice.FileService, acccountId uint32) (*batch.Batch, error) {
+	bat, err := LoadColumns(ctx, []uint16{0, 1, 2}, nil, fs, deltaloc, nil, acccountId)
 	if err != nil {
 		return nil, err
 	}

@@ -112,9 +112,10 @@ func (node *persistedNode) GetColumnDataWindow(
 	from uint32,
 	to uint32,
 	col int,
+	accountId uint32,
 ) (vec containers.Vector, err error) {
 	var data containers.Vector
-	if data, err = node.block.LoadPersistedColumnData(readSchema, col); err != nil {
+	if data, err = node.block.LoadPersistedColumnData(readSchema, col, accountId); err != nil {
 		return
 	}
 	if to-from == uint32(data.Length()) {

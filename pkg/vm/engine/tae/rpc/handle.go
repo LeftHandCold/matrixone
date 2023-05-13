@@ -787,7 +787,6 @@ func (h *Handle) HandleWrite(
 	if err != nil {
 		return
 	}
-
 	if req.Type == db.EntryInsert {
 		//Add blocks which had been bulk-loaded into S3 into table.
 		if req.FileName != "" {
@@ -849,6 +848,7 @@ func (h *Handle) HandleWrite(
 				h.db.Fs.Service,
 				location,
 				nil,
+				txn.GetTenantID(),
 			)
 			if err != nil {
 				return

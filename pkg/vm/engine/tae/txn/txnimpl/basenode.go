@@ -300,12 +300,13 @@ func (n *baseNode) TryUpgrade() (err error) {
 	return
 }
 
-func (n *baseNode) LoadPersistedColumnData(colIdx int) (vec containers.Vector, err error) {
+func (n *baseNode) LoadPersistedColumnData(colIdx int, accountId uint32) (vec containers.Vector, err error) {
 	def := n.table.GetLocalSchema().ColDefs[colIdx]
 	location := n.meta.GetMetaLoc()
 	return tables.LoadPersistedColumnData(
 		n.fs,
 		nil,
 		def,
-		location)
+		location,
+		accountId)
 }

@@ -144,7 +144,7 @@ func (blk *baseBlock) FillInMemoryDeletesLocked(
 	return
 }
 
-func (blk *baseBlock) LoadPersistedCommitTS() (vec containers.Vector, err error) {
+func (blk *baseBlock) LoadPersistedCommitTS(accountId uint32) (vec containers.Vector, err error) {
 	if !blk.meta.IsAppendable() {
 		return
 	}
@@ -159,6 +159,7 @@ func (blk *baseBlock) LoadPersistedCommitTS() (vec containers.Vector, err error)
 		blk.fs.Service,
 		location,
 		nil,
+		accountId,
 	)
 	if err != nil {
 		return
@@ -189,7 +190,7 @@ func (blk *baseBlock) LoadPersistedCommitTS() (vec containers.Vector, err error)
 // 	return
 // }
 
-func (blk *baseBlock) LoadPersistedColumnData(schema *catalog.Schema, colIdx int) (
+func (blk *baseBlock) LoadPersistedColumnData(schema *catalog.Schema, colIdx int, accountId uint32) (
 	vec containers.Vector, err error) {
 	def := schema.ColDefs[colIdx]
 	location := blk.meta.GetMetaLoc()
@@ -197,23 +198,24 @@ func (blk *baseBlock) LoadPersistedColumnData(schema *catalog.Schema, colIdx int
 		blk.fs,
 		blk.meta.AsCommonID(),
 		def,
-		location)
+		location, accountId)
 }
 
-func (blk *baseBlock) LoadPersistedDeletes() (bat *containers.Batch, err error) {
+func (blk *baseBlock) LoadPersistedDeletes(accountId uint32) (bat *containers.Batch, err error) {
 	location := blk.meta.GetDeltaLoc()
 	if location.IsEmpty() {
 		return
 	}
 	return LoadPersistedDeletes(
 		blk.fs,
-		location)
+		location, accountId)
 }
 
 func (blk *baseBlock) FillPersistedDeletes(
 	txn txnif.TxnReader,
-	view *model.BaseView) (err error) {
-	deletes, err := blk.LoadPersistedDeletes()
+	view *model.BaseView,
+	accountId uint32) (err error) {
+	deletes, err := blk.LoadPersistedDeletes(accountId)
 	if deletes == nil || err != nil {
 		return nil
 	}
@@ -252,11 +254,12 @@ func (blk *baseBlock) ResolvePersistedColumnDatas(
 	txn txnif.TxnReader,
 	readSchema *catalog.Schema,
 	colIdxs []int,
-	skipDeletes bool) (view *model.BlockView, err error) {
+	skipDeletes bool,
+	accountId uint32) (view *model.BlockView, err error) {
 
 	view = model.NewBlockView()
 	for _, colIdx := range colIdxs {
-		vec, err := blk.LoadPersistedColumnData(readSchema, colIdx)
+		vec, err := blk.LoadPersistedColumnData(readSchema, colIdx, accountId)
 		if err != nil {
 			return nil, err
 		}
@@ -273,7 +276,7 @@ func (blk *baseBlock) ResolvePersistedColumnDatas(
 		}
 	}()
 
-	if err = blk.FillPersistedDeletes(txn, view.BaseView); err != nil {
+	if err = blk.FillPersistedDeletes(txn, view.BaseView, accountId); err != nil {
 		return
 	}
 
@@ -295,9 +298,10 @@ func (blk *baseBlock) ResolvePersistedColumnData(
 	txn txnif.TxnReader,
 	readSchema *catalog.Schema,
 	colIdx int,
-	skipDeletes bool) (view *model.ColumnView, err error) {
+	skipDeletes bool,
+	accountId uint32) (view *model.ColumnView, err error) {
 	view = model.NewColumnView(colIdx)
-	vec, err := blk.LoadPersistedColumnData(readSchema, colIdx)
+	vec, err := blk.LoadPersistedColumnData(readSchema, colIdx, accountId)
 	if err != nil {
 		return
 	}
@@ -313,7 +317,7 @@ func (blk *baseBlock) ResolvePersistedColumnData(
 		}
 	}()
 
-	if err = blk.FillPersistedDeletes(txn, view.BaseView); err != nil {
+	if err = blk.FillPersistedDeletes(txn, view.BaseView, accountId); err != nil {
 		return
 	}
 
@@ -333,7 +337,8 @@ func (blk *baseBlock) PersistedBatchDedup(
 	isCommitting bool,
 	keys containers.Vector,
 	rowmask *roaring.Bitmap,
-	isAblk bool) (err error) {
+	isAblk bool,
+	accountId uint32) (err error) {
 	sels, err := pnode.BatchDedup(
 		keys,
 		nil,
@@ -348,7 +353,9 @@ func (blk *baseBlock) PersistedBatchDedup(
 		txn,
 		schema,
 		def.Idx,
-		false)
+		false,
+		accountId,
+	)
 	if err != nil {
 		return
 	}
@@ -375,9 +382,10 @@ func (blk *baseBlock) getPersistedValue(
 	txn txnif.TxnReader,
 	schema *catalog.Schema,
 	row, col int,
-	skipMemory bool) (v any, isNull bool, err error) {
+	skipMemory bool,
+	accountId uint32) (v any, isNull bool, err error) {
 	view := model.NewColumnView(col)
-	if err = blk.FillPersistedDeletes(txn, view.BaseView); err != nil {
+	if err = blk.FillPersistedDeletes(txn, view.BaseView, accountId); err != nil {
 		return
 	}
 	if !skipMemory {
@@ -392,7 +400,7 @@ func (blk *baseBlock) getPersistedValue(
 		err = moerr.NewNotFoundNoCtx()
 		return
 	}
-	view2, err := blk.ResolvePersistedColumnData(pnode, txn, schema, col, true)
+	view2, err := blk.ResolvePersistedColumnData(pnode, txn, schema, col, true, accountId)
 	if err != nil {
 		return
 	}

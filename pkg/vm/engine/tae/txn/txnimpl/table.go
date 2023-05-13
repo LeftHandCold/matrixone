@@ -606,6 +606,7 @@ func (tbl *txnTable) AddBlksWithMetaLoc(
 					tbl.store.dataFactory.Fs.Service,
 					loc,
 					nil,
+					tbl.store.txn.GetTenantID(),
 				)
 				if err != nil {
 					return err
@@ -942,6 +943,7 @@ func (tbl *txnTable) DedupSnapByMetaLocs(metaLocs []objectio.Location) (err erro
 					tbl.store.dataFactory.Fs.Service,
 					loc,
 					nil,
+					tbl.store.txn.GetTenantID(),
 				)
 				if err != nil {
 					return err

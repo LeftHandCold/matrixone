@@ -39,6 +39,7 @@ type NodeT interface {
 		from uint32,
 		to uint32,
 		col int,
+		accountId uint32,
 	) (vec containers.Vector, err error)
 
 	GetValueByRow(readSchema *catalog.Schema, row, col int) (v any, isNull bool)
