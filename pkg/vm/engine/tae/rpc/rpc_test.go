@@ -109,7 +109,7 @@ func TestHandle_HandleCommitPerformanceForS3Load(t *testing.T) {
 			//offset++
 		}
 		offset += 50
-		blocks, _, err := writer.Sync(context.Background())
+		blocks, _, err := writer.Sync(context.Background(), 0)
 		assert.Nil(t, err)
 		assert.Equal(t, 50, len(blocks))
 		for _, blk := range blocks {
@@ -277,7 +277,7 @@ func TestHandle_HandlePreCommitWriteS3(t *testing.T) {
 		_, err := writer.WriteBatch(containers.ToCNBatch(bat))
 		assert.Nil(t, err)
 	}
-	blocks, _, err := writer.Sync(context.Background())
+	blocks, _, err := writer.Sync(context.Background(), 0)
 	assert.Nil(t, err)
 	assert.Equal(t, 2, len(blocks))
 	metaLoc1 := blockio.EncodeLocation(
@@ -302,7 +302,7 @@ func TestHandle_HandlePreCommitWriteS3(t *testing.T) {
 	writer.SetPrimaryKey(1)
 	_, err = writer.WriteBatch(containers.ToCNBatch(taeBats[3]))
 	assert.Nil(t, err)
-	blocks, _, err = writer.Sync(context.Background())
+	blocks, _, err = writer.Sync(context.Background(), 0)
 	assert.Equal(t, 1, len(blocks))
 	assert.Nil(t, err)
 	metaLoc3 := blockio.EncodeLocation(
@@ -463,7 +463,7 @@ func TestHandle_HandlePreCommitWriteS3(t *testing.T) {
 		_, err := writer.WriteBatchWithOutIndex(bat)
 		assert.Nil(t, err)
 	}
-	blocks, _, err = writer.Sync(context.Background())
+	blocks, _, err = writer.Sync(context.Background(), 0)
 	assert.Nil(t, err)
 	assert.Equal(t, len(physicals), len(blocks))
 	delLoc1 := blockio.EncodeLocation(
