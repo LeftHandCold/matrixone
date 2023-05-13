@@ -113,11 +113,13 @@ func (index *immutableIndex) ReadFrom(
 	fs *objectio.ObjectFS,
 	location objectio.Location,
 	colDef *catalog.ColDef,
+	accountId uint32,
 ) (err error) {
 	index.zmReader = NewZmReader(
 		fs,
 		uint16(colDef.Idx),
-		location)
+		location,
+		accountId)
 
 	if colDef.IsRealPrimary() {
 		index.bfReader = NewBfReader(
@@ -125,6 +127,7 @@ func (index *immutableIndex) ReadFrom(
 			location,
 			indexCache,
 			fs,
+			accountId,
 		)
 	}
 	return

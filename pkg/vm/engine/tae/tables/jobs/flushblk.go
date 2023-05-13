@@ -82,6 +82,6 @@ func (task *flushBlkTask) Execute() error {
 			return err
 		}
 	}
-	task.blocks, _, err = writer.Sync(context.Background())
+	task.blocks, _, err = writer.Sync(context.Background(), task.meta.GetSegment().GetTable().GetDB().GetTenantID())
 	return err
 }

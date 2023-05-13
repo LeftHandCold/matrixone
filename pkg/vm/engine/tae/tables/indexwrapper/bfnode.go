@@ -37,9 +37,10 @@ func NewBfReader(
 	metaLoc objectio.Location,
 	indexCache model.LRUCache,
 	fs *objectio.ObjectFS,
+	accountId uint32,
 ) *BfReader {
 	reader, _ := blockio.NewObjectReader(fs.Service, metaLoc)
-
+	reader.SetAccountId(accountId)
 	return &BfReader{
 		indexCache: indexCache,
 		bfKey:      metaLoc,

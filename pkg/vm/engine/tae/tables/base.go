@@ -144,7 +144,7 @@ func (blk *baseBlock) FillInMemoryDeletesLocked(
 	return
 }
 
-func (blk *baseBlock) LoadPersistedCommitTS(accountId uint32) (vec containers.Vector, err error) {
+func (blk *baseBlock) LoadPersistedCommitTS() (vec containers.Vector, err error) {
 	if !blk.meta.IsAppendable() {
 		return
 	}
@@ -159,7 +159,7 @@ func (blk *baseBlock) LoadPersistedCommitTS(accountId uint32) (vec containers.Ve
 		blk.fs.Service,
 		location,
 		nil,
-		accountId,
+		blk.meta.GetSegment().GetTable().GetDB().GetTenantID(),
 	)
 	if err != nil {
 		return

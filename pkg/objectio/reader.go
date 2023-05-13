@@ -17,6 +17,8 @@ package objectio
 import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
+	"path"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -99,6 +101,10 @@ func (r *objectReaderV1) GetName() string {
 	return r.name
 }
 
+func (r *objectReaderV1) SetAccountId(accountId uint32) {
+	r.name = path.Join(strconv.Itoa(int(accountId)), r.name)
+}
+
 func (r *objectReaderV1) CacheMetaExtent(ext *Extent) {
 	r.metaExt = ext
 }
@@ -131,7 +137,7 @@ func (r *objectReaderV1) ReadMeta(
 	}
 	if r.oname != nil {
 		// read table data block
-		if meta, err = LoadObjectMetaByExtent(ctx, r.oname, r.metaExt, r.noLRUCache, r.fs); err != nil {
+		if meta, err = LoadObjectMetaByExtent(ctx, r.oname, r.name, r.metaExt, r.noLRUCache, r.fs); err != nil {
 			return
 		}
 	} else {

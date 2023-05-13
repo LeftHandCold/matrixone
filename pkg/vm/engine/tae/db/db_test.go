@@ -403,7 +403,7 @@ func TestNonAppendableBlock(t *testing.T) {
 		assert.Nil(t, err)
 		_, err = writer.WriteBatch(containers.ToCNBatch(bat))
 		assert.Nil(t, err)
-		blocks, _, err := writer.Sync(context.Background())
+		blocks, _, err := writer.Sync(context.Background(), txn.GetTenantID())
 		assert.Nil(t, err)
 		metaLoc := blockio.EncodeLocation(
 			writer.GetName(),
@@ -4377,7 +4377,7 @@ func TestBlockRead(t *testing.T) {
 	assert.NoError(t, err)
 	b1, err := blockio.BlockReadInner(
 		context.Background(), info, colIdxs, colTyps,
-		beforeDel, fs, pool, nil,
+		beforeDel, fs, pool, nil, tae.tenantID,
 	)
 	assert.NoError(t, err)
 	assert.Equal(t, len(columns), len(b1.Vecs))
@@ -4385,13 +4385,13 @@ func TestBlockRead(t *testing.T) {
 
 	b2, err := blockio.BlockReadInner(
 		context.Background(), info, colIdxs, colTyps,
-		afterFirstDel, fs, pool, nil,
+		afterFirstDel, fs, pool, nil, tae.tenantID,
 	)
 	assert.NoError(t, err)
 	assert.Equal(t, 19, b2.Vecs[0].Length())
 	b3, err := blockio.BlockReadInner(
 		context.Background(), info, colIdxs, colTyps,
-		afterSecondDel, fs, pool, nil,
+		afterSecondDel, fs, pool, nil, tae.tenantID,
 	)
 	assert.NoError(t, err)
 	assert.Equal(t, len(columns), len(b2.Vecs))
@@ -4402,7 +4402,7 @@ func TestBlockRead(t *testing.T) {
 		context.Background(), info,
 		[]uint16{2},
 		[]types.Type{types.T_Rowid.ToType()},
-		afterSecondDel, fs, pool, nil,
+		afterSecondDel, fs, pool, nil, tae.tenantID,
 	)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(b4.Vecs))
@@ -4414,7 +4414,7 @@ func TestBlockRead(t *testing.T) {
 		context.Background(), info,
 		[]uint16{2},
 		[]types.Type{types.T_Rowid.ToType()},
-		afterSecondDel, fs, pool, nil,
+		afterSecondDel, fs, pool, nil, tae.tenantID,
 	)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(b5.Vecs))

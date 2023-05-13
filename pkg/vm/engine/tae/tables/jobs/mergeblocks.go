@@ -346,7 +346,7 @@ func (task *mergeBlocksTask) Execute() (err error) {
 			return err
 		}
 	}
-	blocks, _, err := writer.Sync(context.Background())
+	blocks, _, err := writer.Sync(context.Background(), task.txn.GetTenantID())
 	if err != nil {
 		return err
 	}

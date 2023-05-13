@@ -403,7 +403,7 @@ func (blk *ablock) getPersistedRowByFilter(
 	}
 
 	// Load persisted commit ts
-	commitTSVec, err := blk.LoadPersistedCommitTS(accountId)
+	commitTSVec, err := blk.LoadPersistedCommitTS()
 	if err != nil {
 		return
 	}

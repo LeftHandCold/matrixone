@@ -16,14 +16,13 @@ package blockio
 
 import (
 	"context"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
-
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 )
 
 const (
@@ -82,6 +81,10 @@ func NewFileReaderNoCache(service fileservice.FileService, name string) (*BlockR
 	return &BlockReader{
 		reader: reader,
 	}, nil
+}
+
+func (r *BlockReader) SetAccountId(accountId uint32) {
+	r.reader.SetAccountId(accountId)
 }
 
 // LoadColumns needs typs to generate columns, if the target table has no schema change, nil can be passed.

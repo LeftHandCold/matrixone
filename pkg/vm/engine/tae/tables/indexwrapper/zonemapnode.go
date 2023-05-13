@@ -32,8 +32,9 @@ type ZmReader struct {
 	cache   atomic.Pointer[index.ZM]
 }
 
-func NewZmReader(fs *objectio.ObjectFS, idx uint16, metaLoc objectio.Location) *ZmReader {
+func NewZmReader(fs *objectio.ObjectFS, idx uint16, metaLoc objectio.Location, accountId uint32) *ZmReader {
 	reader, _ := blockio.NewObjectReader(fs.Service, metaLoc)
+	reader.SetAccountId(accountId)
 	return &ZmReader{
 		metaLoc: metaLoc,
 		seqnum:  idx,

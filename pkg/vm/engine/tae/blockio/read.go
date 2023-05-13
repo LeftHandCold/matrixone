@@ -49,7 +49,7 @@ func BlockRead(
 	}
 	columnBatch, err := BlockReadInner(
 		ctx, info, seqnums, colTypes,
-		types.TimestampToTS(ts), fs, mp, vp,
+		types.TimestampToTS(ts), fs, mp, vp, vp.GetAccountId(),
 	)
 	if err != nil {
 		return nil, err
@@ -100,6 +100,7 @@ func BlockReadInner(
 	fs fileservice.FileService,
 	mp *mpool.MPool,
 	vp engine.VectorPool,
+	accountId uint32,
 ) (result *batch.Batch, err error) {
 	var (
 		rowid       *vector.Vector
@@ -109,7 +110,7 @@ func BlockReadInner(
 
 	// read block data from storage
 	if loaded, rowid, deletedRows, err = readBlockData(
-		ctx, seqnums, colTypes, info, ts, fs, mp, vp.GetAccountId(),
+		ctx, seqnums, colTypes, info, ts, fs, mp, accountId,
 	); err != nil {
 		return
 	}
@@ -117,7 +118,7 @@ func BlockReadInner(
 	// read deletes from storage if needed
 	if !info.DeltaLocation().IsEmpty() {
 		var deletes *batch.Batch
-		if deletes, err = readBlockDelete(ctx, info.DeltaLocation(), fs, vp.GetAccountId()); err != nil {
+		if deletes, err = readBlockDelete(ctx, info.DeltaLocation(), fs, accountId); err != nil {
 			return
 		}
 

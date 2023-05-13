@@ -68,13 +68,15 @@ func (node *persistedNode) init() {
 	if len(metaloc) != objectio.LocationLen {
 		logutil.Infof("%s bad metaloc %q: %s", node.block.meta.ID.String(), metaloc, node.block.meta.String())
 	}
+	accountId := node.block.meta.GetSegment().GetTable().GetDB().GetTenantID()
 	for i := range schema.ColDefs {
 		index := indexwrapper.NewImmutableIndex()
 		if err := index.ReadFrom(
 			node.block.indexCache,
 			node.block.fs,
 			metaloc,
-			schema.ColDefs[i]); err != nil {
+			schema.ColDefs[i],
+			accountId); err != nil {
 			panic(err)
 		}
 		node.indexes[i] = index
