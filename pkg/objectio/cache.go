@@ -62,3 +62,18 @@ func FastLoadObjectMeta(ctx context.Context, location *Location, fs fileservice.
 	name := location.Name()
 	return LoadObjectMetaByExtent(ctx, &name, &extent, true, fs)
 }
+
+func FastLoadObjectMetas(ctx context.Context, locations []*Location, fs fileservice.FileService) ([]ObjectMeta, error) {
+	if len(locations) == 0 {
+		return nil, nil
+	}
+	metas := make([]ObjectMeta, len(locations))
+	for i, location := range locations {
+		meta, err := FastLoadObjectMeta(ctx, location, fs)
+		if err != nil {
+			return nil, err
+		}
+		metas[i] = meta
+	}
+	return metas, nil
+}
