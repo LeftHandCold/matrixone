@@ -57,15 +57,16 @@ const (
 
 var (
 	// for blk meta response
-	BlkMetaSchema *catalog.Schema
-	DelSchema     *catalog.Schema
-	SegSchema     *catalog.Schema
-	TxnNodeSchema *catalog.Schema
-	DBDNSchema    *catalog.Schema
-	TblDNSchema   *catalog.Schema
-	SegDNSchema   *catalog.Schema
-	BlkDNSchema   *catalog.Schema
-	MetaSchema    *catalog.Schema
+	BlkMetaSchema    *catalog.Schema
+	DelSchema        *catalog.Schema
+	SegSchema        *catalog.Schema
+	TxnNodeSchema    *catalog.Schema
+	DBDNSchema       *catalog.Schema
+	TblDNSchema      *catalog.Schema
+	SegDNSchema      *catalog.Schema
+	BlkDNSchema      *catalog.Schema
+	MetaSchema       *catalog.Schema
+	StatsTableSchema *catalog.Schema
 )
 
 var (
@@ -212,6 +213,17 @@ var (
 	BaseTypes = []types.Type{
 		types.T_Rowid.ToType(),
 		types.T_TS.ToType(),
+	}
+
+	StatsTableSchemaTypes = []types.Type{
+		types.New(types.T_uint64, 0, 0),
+		types.New(types.T_uint64, 0, 0),
+		types.New(types.T_uint32, 0, 0),
+		types.New(types.T_uint64, 0, 0),
+		types.New(types.T_uint64, 0, 0),
+		types.New(types.T_uint64, 0, 0),
+		types.New(types.T_uint64, 0, 0),
+		types.New(types.T_uint64, 0, 0),
 	}
 )
 

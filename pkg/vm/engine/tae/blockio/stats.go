@@ -30,6 +30,30 @@ type ObjectStats struct {
 	indexOriginLength uint64
 }
 
+func (o *ObjectStats) GetObjectCount() uint32 {
+	return o.objectCount
+}
+
+func (o *ObjectStats) GetMetaLength() uint64 {
+	return o.metaLength
+}
+
+func (o *ObjectStats) GetLength() uint64 {
+	return o.length
+}
+
+func (o *ObjectStats) GetOriginLength() uint64 {
+	return o.originLength
+}
+
+func (o *ObjectStats) GetIndexLength() uint64 {
+	return o.indexLength
+}
+
+func (o *ObjectStats) GetIndexOriginLength() uint64 {
+	return o.indexOriginLength
+}
+
 func StatTable(ctx context.Context, table *catalog.TableEntry, fs fileservice.FileService) (*ObjectStats, error) {
 	objects, err := GetTableObjects(table)
 	if err != nil {

@@ -67,13 +67,15 @@ const (
 
 	BLKCNMetaInsertIDX
 
+	StatsTable
+
 	BLKInsertIDX
 	BLKInsertTxnIDX
 	BLKDeleteIDX
 	BLKDeleteTxnIDX
 )
 
-const MaxIDX = BLKCNMetaInsertIDX + 1
+const MaxIDX = StatsTable + 1
 
 type checkpointDataItem struct {
 	schema *catalog.Schema
@@ -111,6 +113,7 @@ func init() {
 		DelSchema,
 		BlkDNSchema,
 		BlkMetaSchema, // 23
+		StatsTableSchema,
 	}
 	for idx, schema := range checkpointDataSchemas {
 		checkpointDataRefer[idx] = &checkpointDataItem{
@@ -121,10 +124,11 @@ func init() {
 	}
 }
 
-func IncrementalCheckpointDataFactory(start, end types.TS) func(c *catalog.Catalog) (*CheckpointData, error) {
+func IncrementalCheckpointDataFactory(start, end types.TS, service fileservice.FileService) func(c *catalog.Catalog) (*CheckpointData, error) {
 	return func(c *catalog.Catalog) (data *CheckpointData, err error) {
 		collector := NewIncrementalCollector(start, end)
 		defer collector.Close()
+		collector.fs = service
 		err = c.RecurLoop(collector)
 		if moerr.IsMoErrCode(err, moerr.OkStopCurrRecur) {
 			err = nil
@@ -138,10 +142,11 @@ func IncrementalCheckpointDataFactory(start, end types.TS) func(c *catalog.Catal
 	}
 }
 
-func GlobalCheckpointDataFactory(end types.TS, versionInterval time.Duration) func(c *catalog.Catalog) (*CheckpointData, error) {
+func GlobalCheckpointDataFactory(end types.TS, versionInterval time.Duration, service fileservice.FileService) func(c *catalog.Catalog) (*CheckpointData, error) {
 	return func(c *catalog.Catalog) (data *CheckpointData, err error) {
 		collector := NewGlobalCollector(end, versionInterval)
 		defer collector.Close()
+		collector.fs = service
 		err = c.RecurLoop(collector)
 		if moerr.IsMoErrCode(err, moerr.OkStopCurrRecur) {
 			err = nil
@@ -185,6 +190,7 @@ type BaseCollector struct {
 	start, end types.TS
 
 	data *CheckpointData
+	fs   fileservice.FileService
 }
 
 type IncrementalCollector struct {
@@ -679,6 +685,7 @@ func (collector *BaseCollector) VisitTable(entry *catalog.TableEntry) (err error
 	if shouldIgnoreTblInLogtail(entry.ID) {
 		return nil
 	}
+	stats, err := blockio.StatTable(context.Background(), entry, collector.fs)
 	entry.RLock()
 	mvccNodes := entry.ClonePreparedInRange(collector.start, collector.end)
 	entry.RUnlock()
