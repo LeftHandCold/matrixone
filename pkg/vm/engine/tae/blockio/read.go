@@ -135,7 +135,6 @@ func BlockReadInner(
 	result = batch.NewWithSize(len(loaded.Vecs))
 	for i, col := range loaded.Vecs {
 		typ := *col.GetType()
-		result.Vecs[i] = col
 		// shrink the vector by deleted rows
 		if len(deletedRows) > 0 {
 			if vp == nil {
@@ -147,7 +146,8 @@ func BlockReadInner(
 				break
 			}
 			result.Vecs[i].Shrink(deletedRows, true)
-			col.Free(mp)
+		} else {
+			result.Vecs[i] = col
 		}
 	}
 

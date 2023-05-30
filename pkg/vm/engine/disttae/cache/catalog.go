@@ -280,6 +280,7 @@ func (cc *CatalogCache) GetDatabase(db *DatabaseItem) bool {
 			db.CreateSql = item.CreateSql
 			db.Typ = item.Typ
 		}
+		logutil.Infof("GetDatabase is %v", item)
 		return false
 	})
 	return find

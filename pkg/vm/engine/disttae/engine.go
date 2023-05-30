@@ -156,6 +156,7 @@ func (e *Engine) Database(ctx context.Context, name string,
 		Ts:        txn.meta.SnapshotTS,
 	}
 	if ok := e.catalog.GetDatabase(key); !ok {
+		logutil.Infof("key is %v", key)
 		return nil, moerr.GetOkExpectedEOB()
 	}
 	return &txnDatabase{
