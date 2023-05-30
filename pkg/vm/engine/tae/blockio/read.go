@@ -138,6 +138,11 @@ func BlockReadInner(
 		result.Vecs[i] = col
 		// shrink the vector by deleted rows
 		if len(deletedRows) > 0 {
+			if vp == nil {
+				result.Vecs[i] = vector.NewVec(typ)
+			} else {
+				result.Vecs[i] = vp.GetVector(typ)
+			}
 			if err = vector.GetUnionAllFunction(typ, mp)(result.Vecs[i], col); err != nil {
 				break
 			}
@@ -152,7 +157,7 @@ func BlockReadInner(
 				continue
 			}
 			if col != nil {
-				//col.Free(mp)
+				col.Free(mp)
 			}
 		}
 	}
