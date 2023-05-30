@@ -134,23 +134,8 @@ func BlockReadInner(
 
 	result = batch.NewWithSize(len(loaded.Vecs))
 	for i, col := range loaded.Vecs {
-		typ := *col.GetType()
-		if typ.Oid == types.T_Rowid {
-			result.Vecs[i] = col
-			// shrink the vector by deleted rows
-			if len(deletedRows) > 0 {
-				result.Vecs[i].Shrink(deletedRows, true)
-			}
-			continue
-		}
-		if vp == nil {
-			result.Vecs[i] = vector.NewVec(typ)
-		} else {
-			result.Vecs[i] = vp.GetVector(typ)
-		}
-		if err = vector.GetUnionAllFunction(typ, mp)(result.Vecs[i], col); err != nil {
-			break
-		}
+		//typ := *col.GetType()
+		result.Vecs[i] = col
 		// shrink the vector by deleted rows
 		if len(deletedRows) > 0 {
 			result.Vecs[i].Shrink(deletedRows, true)
@@ -163,7 +148,7 @@ func BlockReadInner(
 				continue
 			}
 			if col != nil {
-				col.Free(mp)
+				//col.Free(mp)
 			}
 		}
 	}
