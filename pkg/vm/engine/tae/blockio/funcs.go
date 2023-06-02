@@ -16,12 +16,14 @@ package blockio
 
 import (
 	"context"
+
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
 	"path"
 	"strconv"
 )
@@ -34,11 +36,18 @@ func LoadColumns(ctx context.Context,
 	m *mpool.MPool,
 	accountId uint32) (bat *batch.Batch, err error) {
 	name := location.Name()
+	//<<<<<<< HEAD
 	fileName := path.Join(strconv.Itoa(int(accountId)), name.String())
 	extent := location.Extent()
 	var meta objectio.ObjectMeta
 	var ioVectors *fileservice.IOVector
 	if meta, err = objectio.ReadObjectMeta(ctx, fileName, &extent, false, fs); err != nil {
+	}
+	//=======
+	var meta objectio.ObjectMeta
+	var ioVectors *fileservice.IOVector
+	if meta, err = objectio.FastLoadObjectMeta(ctx, &location, fs); err != nil {
+		//>>>>>>> main
 		return
 	}
 	if ioVectors, err = objectio.ReadOneBlock(ctx, &meta, fileName, location.ID(), cols, typs, m, fs); err != nil {
@@ -53,5 +62,30 @@ func LoadColumns(ctx context.Context,
 		}
 		bat.Vecs[i] = obj.(*vector.Vector)
 	}
+	return
+}
+
+func LoadBF(
+	ctx context.Context,
+	loc objectio.Location,
+	cache model.LRUCache,
+	fs fileservice.FileService,
+	noLoad bool,
+) (bf objectio.BloomFilter, err error) {
+	v, ok := cache.Get(*loc.ShortName())
+	if ok {
+		bf = objectio.BloomFilter(v)
+		return
+	}
+	if noLoad {
+		return
+	}
+	r, _ := NewObjectReader(fs, loc)
+	v, size, err := r.LoadAllBF(ctx)
+	if err != nil {
+		return
+	}
+	cache.Set(*loc.ShortName(), v, int64(size))
+	bf = objectio.BloomFilter(v)
 	return
 }

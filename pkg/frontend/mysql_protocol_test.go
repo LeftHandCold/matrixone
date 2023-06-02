@@ -61,7 +61,6 @@ type TestRoutineManager struct {
 
 func (tRM *TestRoutineManager) Created(rs goetty.IOSession) {
 	pro := NewMysqlClientProtocol(nextConnectionID(), rs, 1024, tRM.pu.SV)
-	pro.SetSkipCheckUser(true)
 	exe := NewMysqlCmdExecutor()
 	routine := NewRoutine(context.TODO(), pro, exe, tRM.pu.SV, rs)
 
@@ -101,13 +100,13 @@ func TestMysqlClientProtocol_Handshake(t *testing.T) {
 	pu := config.NewParameterUnit(&config.FrontendParameters{}, nil, nil, nil)
 	_, err = toml.DecodeFile("test/system_vars_config.toml", pu.SV)
 	require.NoError(t, err)
+	pu.SV.SkipCheckUser = true
 
 	ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
 	// A mock autoincrcache manager.
 	aicm := &defines.AutoIncrCacheManager{}
 	rm, _ := NewRoutineManager(ctx, pu, aicm)
-	rm.SetSkipCheckUser(true)
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)
@@ -179,6 +178,7 @@ func TestKIll(t *testing.T) {
 	txnClient := mock_frontend.NewMockTxnClient(ctrl)
 	pu, err := getParameterUnit("test/system_vars_config.toml", eng, txnClient)
 	require.NoError(t, err)
+	pu.SV.SkipCheckUser = true
 
 	sql1 := "select connection_id();"
 	var sql2, sql3, sql4 string
@@ -248,7 +248,6 @@ func TestKIll(t *testing.T) {
 	// A mock autoincrcache manager.
 	aicm := &defines.AutoIncrCacheManager{}
 	rm, _ := NewRoutineManager(ctx, pu, aicm)
-	rm.SetSkipCheckUser(true)
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)
@@ -1268,7 +1267,7 @@ func (tRM *TestRoutineManager) resultsetHandler(rs goetty.IOSession, msg interfa
 	if err != nil {
 		return err
 	}
-
+	pu.SV.SkipCheckUser = true
 	pro := routine.getProtocol().(*MysqlProtocolImpl)
 	packet, ok := msg.(*Packet)
 	pro.SetSequenceID(uint8(packet.SequenceID + 1))
@@ -1276,7 +1275,7 @@ func (tRM *TestRoutineManager) resultsetHandler(rs goetty.IOSession, msg interfa
 		return moerr.NewInternalError(ctx, "message is not Packet")
 	}
 
-	ses := NewSession(pro, nil, pu, nil, false, nil)
+	ses := NewSession(pro, nil, pu, nil, false, nil, nil)
 	ses.SetRequestContext(ctx)
 	pro.SetSession(ses)
 
@@ -1518,6 +1517,7 @@ func TestMysqlResultSet(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
+	pu.SV.SkipCheckUser = true
 
 	trm := NewTestRoutineManager(pu)
 
@@ -1652,6 +1652,12 @@ func do_query_resp_resultset(t *testing.T, db *sql.DB, wantErr bool, skipResults
 		return
 	}
 	require.NoError(t, err)
+	defer func() {
+		err = rows.Close()
+		require.NoError(t, err)
+		err = rows.Err()
+		require.NoError(t, err)
+	}()
 
 	//column check
 	columns, err := rows.Columns()
@@ -1785,8 +1791,6 @@ func do_query_resp_resultset(t *testing.T, db *sql.DB, wantErr bool, skipResults
 
 	require.True(t, rowIdx == mrs.GetRowCount())
 
-	err = rows.Err()
-	require.NoError(t, err)
 }
 
 func Test_writePackets(t *testing.T) {
@@ -1893,7 +1897,7 @@ func Test_openpacket(t *testing.T) {
 
 		proto := NewMysqlClientProtocol(0, ioses, 1024, pu.SV)
 		// fill proto.ses
-		ses := NewSession(proto, nil, pu, nil, false, nil)
+		ses := NewSession(proto, nil, pu, nil, false, nil, nil)
 		ses.SetRequestContext(context.TODO())
 		proto.ses = ses
 
@@ -1921,7 +1925,7 @@ func Test_openpacket(t *testing.T) {
 
 		proto := NewMysqlClientProtocol(0, ioses, 1024, pu.SV)
 		// fill proto.ses
-		ses := NewSession(proto, nil, pu, nil, false, nil)
+		ses := NewSession(proto, nil, pu, nil, false, nil, nil)
 		ses.SetRequestContext(context.TODO())
 		proto.ses = ses
 
@@ -2261,7 +2265,7 @@ func Test_resultset(t *testing.T) {
 		}
 		var gSys GlobalSystemVariables
 		InitGlobalSystemVariables(&gSys)
-		ses := NewSession(proto, nil, pu, &gSys, false, nil)
+		ses := NewSession(proto, nil, pu, &gSys, false, nil, nil)
 		ses.SetRequestContext(ctx)
 		proto.ses = ses
 
@@ -2294,7 +2298,7 @@ func Test_resultset(t *testing.T) {
 		}
 		var gSys GlobalSystemVariables
 		InitGlobalSystemVariables(&gSys)
-		ses := NewSession(proto, nil, pu, &gSys, false, nil)
+		ses := NewSession(proto, nil, pu, &gSys, false, nil, nil)
 		ses.SetRequestContext(ctx)
 		proto.ses = ses
 
@@ -2327,7 +2331,7 @@ func Test_resultset(t *testing.T) {
 		}
 		var gSys GlobalSystemVariables
 		InitGlobalSystemVariables(&gSys)
-		ses := NewSession(proto, nil, pu, &gSys, false, nil)
+		ses := NewSession(proto, nil, pu, &gSys, false, nil, nil)
 		ses.SetRequestContext(ctx)
 		proto.ses = ses
 
@@ -2363,7 +2367,7 @@ func Test_resultset(t *testing.T) {
 		}
 		var gSys GlobalSystemVariables
 		InitGlobalSystemVariables(&gSys)
-		ses := NewSession(proto, nil, pu, &gSys, false, nil)
+		ses := NewSession(proto, nil, pu, &gSys, false, nil, nil)
 		ses.SetRequestContext(ctx)
 		ses.cmd = COM_STMT_EXECUTE
 		proto.ses = ses
@@ -2666,10 +2670,10 @@ func Test_handleHandshake(t *testing.T) {
 		ioses.EXPECT().Ref().AnyTimes()
 		var IO IOPackageImpl
 		var SV = &config.FrontendParameters{}
+		SV.SkipCheckUser = true
 		mp := &MysqlProtocolImpl{SV: SV}
 		mp.io = &IO
 		mp.tcpConn = ioses
-		mp.SetSkipCheckUser(true)
 		payload := []byte{'a'}
 		_, err := mp.HandleHandshake(ctx, payload)
 		convey.So(err, convey.ShouldNotBeNil)
@@ -2699,10 +2703,10 @@ func Test_handleHandshake_Recover(t *testing.T) {
 	convey.Convey("handleHandshake succ", t, func() {
 		var IO IOPackageImpl
 		var SV = &config.FrontendParameters{}
+		SV.SkipCheckUser = true
 		mp := &MysqlProtocolImpl{SV: SV}
 		mp.io = &IO
 		mp.tcpConn = ioses
-		mp.SetSkipCheckUser(true)
 		var payload []byte
 		for i := 0; i < count; i++ {
 			f.Fuzz(&payload)

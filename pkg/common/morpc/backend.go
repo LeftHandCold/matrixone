@@ -251,10 +251,16 @@ func (rb *remoteBackend) adjust() {
 }
 
 func (rb *remoteBackend) Send(ctx context.Context, request Message) (*Future, error) {
+	if ctx == nil {
+		panic("remoteBackend Send nil context")
+	}
 	return rb.send(ctx, request, false)
 }
 
 func (rb *remoteBackend) SendInternal(ctx context.Context, request Message) (*Future, error) {
+	if ctx == nil {
+		panic("remoteBackend SendInternal nil context")
+	}
 	return rb.send(ctx, request, true)
 }
 
@@ -278,7 +284,7 @@ func (rb *remoteBackend) NewStream(unlockAfterClose bool) (Stream, error) {
 	defer rb.stateMu.RUnlock()
 
 	if rb.stateMu.state == stateStopped {
-		return nil, moerr.NewBackendClosedNoCtx()
+		return nil, backendClosed
 	}
 
 	rb.mu.Lock()
@@ -300,7 +306,7 @@ func (rb *remoteBackend) doSend(f *Future) error {
 		rb.stateMu.RLock()
 		if rb.stateMu.state == stateStopped {
 			rb.stateMu.RUnlock()
-			return moerr.NewBackendClosedNoCtx()
+			return backendClosed
 		}
 
 		// The close method need acquire the write lock, so we cannot block at here.
@@ -320,7 +326,6 @@ func (rb *remoteBackend) doSend(f *Future) error {
 }
 
 func (rb *remoteBackend) Close() {
-	rb.inactive()
 	rb.cancelOnce.Do(func() {
 		rb.cancel()
 	})
@@ -335,6 +340,7 @@ func (rb *remoteBackend) Close() {
 
 	rb.stopper.Stop()
 	rb.doClose()
+	rb.inactive()
 }
 
 func (rb *remoteBackend) Busy() bool {
@@ -699,11 +705,11 @@ func (rb *remoteBackend) resetConn() error {
 	sleep := time.Millisecond * 200
 	for {
 		if !rb.running() {
-			return moerr.NewBackendClosedNoCtx()
+			return backendClosed
 		}
 		select {
 		case <-rb.ctx.Done():
-			return moerr.NewBackendClosedNoCtx()
+			return backendClosed
 		default:
 		}
 
@@ -727,7 +733,7 @@ func (rb *remoteBackend) resetConn() error {
 			}
 			select {
 			case <-rb.ctx.Done():
-				return moerr.NewBackendClosedNoCtx()
+				return backendClosed
 			default:
 			}
 			if duration >= wait {
@@ -878,8 +884,8 @@ func newStream(
 
 func (s *stream) init(id uint64, unlockAfterClose bool) {
 	s.id = id
-	s.sequence = 0
 	s.unlockAfterClose = unlockAfterClose
+	s.sequence = 0
 	s.lastReceivedSequence = 0
 	s.mu.closed = false
 	for {
@@ -985,8 +991,8 @@ func (s *stream) done(
 	ctx context.Context,
 	message RPCMessage,
 	clean bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	if s.mu.closed {
 		return

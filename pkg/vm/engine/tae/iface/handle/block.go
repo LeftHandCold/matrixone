@@ -15,6 +15,7 @@
 package handle
 
 import (
+	"context"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"io"
 
@@ -59,15 +60,14 @@ type BlockReader interface {
 	GetByFilter(filter *Filter) (uint32, error)
 	GetColumnDataByNames(attrs []string) (*model.BlockView, error)
 	GetColumnDataByIds(colIdxes []int) (*model.BlockView, error)
-	GetColumnDataByName(string) (*model.ColumnView, error)
-	GetColumnDataById(int) (*model.ColumnView, error)
+	GetColumnDataByName(context.Context, string) (*model.ColumnView, error)
+	GetColumnDataById(context.Context, int) (*model.ColumnView, error)
 	GetMeta() any
 	GetMetaLoc() objectio.Location
 	GetDeltaLoc() objectio.Location
 	Fingerprint() *common.ID
 	Rows() int
 	Prefetch(idxes []uint16) error
-
 	// Why need rowmask?
 	// We don't update the index until committing the transaction. Before that, even if we deleted a row
 	// from a block, the index would not change. If then we insert a row with the same primary key as the

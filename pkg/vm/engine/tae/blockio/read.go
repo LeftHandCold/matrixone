@@ -32,23 +32,23 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
 )
 
 // BlockRead read block data from storage and apply deletes according given timestamp. Caller make sure metaloc is not empty
 func BlockRead(
 	ctx context.Context,
 	info *pkgcatalog.BlockInfo,
+	deletes []int64,
 	seqnums []uint16,
 	colTypes []types.Type,
 	ts timestamp.Timestamp,
 	fs fileservice.FileService,
 	mp *mpool.MPool, vp engine.VectorPool) (*batch.Batch, error) {
-	if logutil.GetSkip1Logger().Core().Enabled(zap.InfoLevel) {
-		logutil.Infof("read block %s, seqnums %v, typs %v", info.BlockID.String(), seqnums, colTypes)
+	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
+		logutil.Debugf("read block %s, seqnums %v, typs %v", info.BlockID.String(), seqnums, colTypes)
 	}
 	columnBatch, err := BlockReadInner(
-		ctx, info, seqnums, colTypes,
+		ctx, info, deletes, seqnums, colTypes,
 		types.TimestampToTS(ts), fs, mp, vp, vp.GetAccountId(),
 	)
 	if err != nil {
@@ -58,6 +58,45 @@ func BlockRead(
 	columnBatch.SetZs(columnBatch.Vecs[0].Length(), mp)
 
 	return columnBatch, nil
+}
+
+func BlockCompactionRead(
+	ctx context.Context,
+	location objectio.Location,
+	deletes []int64,
+	seqnums []uint16,
+	colTypes []types.Type,
+	fs fileservice.FileService,
+	mp *mpool.MPool,
+) (*batch.Batch, error) {
+
+	loaded, err := LoadColumns(ctx, seqnums, colTypes, fs, location, mp)
+	if err != nil {
+		return nil, err
+	}
+	if len(deletes) == 0 {
+		return loaded, nil
+	}
+	result := batch.NewWithSize(len(loaded.Vecs))
+	for i, col := range loaded.Vecs {
+		typ := *col.GetType()
+		result.Vecs[i] = vector.NewVec(typ)
+		if err = vector.GetUnionAllFunction(typ, mp)(result.Vecs[i], col); err != nil {
+			break
+		}
+		result.Vecs[i].Shrink(deletes, true)
+	}
+
+	if err != nil {
+		for _, col := range result.Vecs {
+			if col != nil {
+				col.Free(mp)
+			}
+		}
+		return nil, err
+	}
+	result.SetZs(result.Vecs[0].Length(), mp)
+	return result, nil
 }
 
 func mergeDeleteRows(d1, d2 []int64) []int64 {
@@ -94,6 +133,7 @@ func mergeDeleteRows(d1, d2 []int64) []int64 {
 func BlockReadInner(
 	ctx context.Context,
 	info *pkgcatalog.BlockInfo,
+	dels []int64,
 	seqnums []uint16,
 	colTypes []types.Type,
 	ts types.TS,
@@ -103,14 +143,14 @@ func BlockReadInner(
 	accountId uint32,
 ) (result *batch.Batch, err error) {
 	var (
-		rowid       *vector.Vector
+		//rowid       *vector.Vector
 		deletedRows []int64
 		loaded      *batch.Batch
 	)
 
 	// read block data from storage
-	if loaded, rowid, deletedRows, err = readBlockData(
-		ctx, seqnums, colTypes, info, ts, fs, mp, accountId,
+	if loaded, _, deletedRows, err = readBlockData(
+		ctx, seqnums, colTypes, info, ts, fs, mp, vp, accountId,
 	); err != nil {
 		return
 	}
@@ -130,9 +170,19 @@ func BlockReadInner(
 		}
 	}
 
+	deletedRows = mergeDeleteRows(deletedRows, dels)
+
 	result = batch.NewWithSize(len(loaded.Vecs))
 	for i, col := range loaded.Vecs {
 		typ := *col.GetType()
+		if typ.Oid == types.T_Rowid {
+			result.Vecs[i] = col
+			// shrink the vector by deleted rows
+			if len(deletedRows) > 0 {
+				result.Vecs[i].Shrink(deletedRows, true)
+			}
+			continue
+		}
 		if vp == nil {
 			result.Vecs[i] = vector.NewVec(typ)
 		} else {
@@ -147,12 +197,11 @@ func BlockReadInner(
 		}
 	}
 
-	if rowid != nil {
-		rowid.Free(mp)
-	}
-
 	if err != nil {
 		for _, col := range result.Vecs {
+			if col.GetType().Oid == types.T_Rowid {
+				continue
+			}
 			if col != nil {
 				col.Free(mp)
 			}
@@ -183,16 +232,6 @@ func getRowsIdIndex(colIndexes []uint16, colTypes []types.Type) (bool, []uint16,
 	return found, idxes, typs
 }
 
-func preparePhyAddrData(typ types.Type, prefix []byte, startRow, length uint32, pool *mpool.MPool) (col *vector.Vector, err error) {
-	col = vector.NewVec(typ)
-	col.PreExtend(int(length), pool)
-	for i := uint32(0); i < length; i++ {
-		rowid := model.EncodePhyAddrKeyWithPrefix(prefix, startRow+i)
-		vector.AppendFixed(col, rowid, false, pool)
-	}
-	return
-}
-
 func readBlockData(
 	ctx context.Context,
 	colIndexes []uint16,
@@ -201,19 +240,24 @@ func readBlockData(
 	ts types.TS,
 	fs fileservice.FileService,
 	m *mpool.MPool,
+	vp engine.VectorPool,
 	accountId uint32,
 ) (bat *batch.Batch, rowid *vector.Vector, deletedRows []int64, err error) {
 
 	hasRowId, idxes, typs := getRowsIdIndex(colIndexes, colTypes)
 	if hasRowId {
 		// generate rowid
-		if rowid, err = preparePhyAddrData(
-			types.T_Rowid.ToType(),
-			info.BlockID[:],
+		if vp == nil {
+			rowid = vector.NewVec(objectio.RowidType)
+		} else {
+			rowid = vp.GetVector(objectio.RowidType)
+		}
+		if err = objectio.ConstructRowidColumnTo(
+			rowid,
+			&info.BlockID,
 			0,
 			info.MetaLocation().Rows(),
-			m,
-		); err != nil {
+			m); err != nil {
 			return
 		}
 		defer func() {
@@ -283,7 +327,7 @@ func readBlockData(
 }
 
 func readBlockDelete(ctx context.Context, deltaloc objectio.Location, fs fileservice.FileService, acccountId uint32) (*batch.Batch, error) {
-	bat, err := LoadColumns(ctx, []uint16{0, 1, 2}, nil, fs, deltaloc, nil, acccountId)
+	bat, err := LoadColumns(ctx, []uint16{0, 1, 2, 3}, nil, fs, deltaloc, nil, acccountId)
 	if err != nil {
 		return nil, err
 	}
@@ -298,13 +342,13 @@ func evalDeleteRowsByTimestamp(deletes *batch.Batch, ts types.TS) (rows []int64)
 	deletedRows := nulls.NewWithSize(0)
 	rowids := vector.MustFixedCol[types.Rowid](deletes.Vecs[0])
 	tss := vector.MustFixedCol[types.TS](deletes.Vecs[1])
-	aborts := vector.MustFixedCol[bool](deletes.Vecs[2])
+	aborts := vector.MustFixedCol[bool](deletes.Vecs[3])
 
 	for i, rowid := range rowids {
 		if aborts[i] || tss[i].Greater(ts) {
 			continue
 		}
-		_, row := model.DecodePhyAddrKey(&rowid)
+		row := rowid.GetRowOffset()
 		nulls.Add(deletedRows, uint64(row))
 	}
 
@@ -312,13 +356,12 @@ func evalDeleteRowsByTimestamp(deletes *batch.Batch, ts types.TS) (rows []int64)
 		return
 	}
 
-	rows = make([]int64, 0, nulls.Length(deletedRows))
-
-	it := deletedRows.Np.Iterator()
-	for it.HasNext() {
-		row := it.Next()
-		rows = append(rows, int64(row))
+	itr := deletedRows.GetBitmap().Iterator()
+	for itr.HasNext() {
+		r := itr.Next()
+		rows = append(rows, int64(r))
 	}
+
 	return
 }
 

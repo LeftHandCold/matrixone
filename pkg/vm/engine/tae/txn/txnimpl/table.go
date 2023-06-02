@@ -17,6 +17,7 @@ package txnimpl
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/perfcounter"
 	"runtime/trace"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/handle"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables/updates"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/wal"
@@ -102,6 +104,7 @@ type txnTable struct {
 	logs         []wal.LogEntry
 
 	dedupedSegmentHint uint64
+	dedupedBlockID     *types.Blockid
 
 	txnEntries *txnEntries
 	csnStart   uint32
@@ -161,7 +164,7 @@ func (tbl *txnTable) TransferDeleteIntent(
 		return
 	}
 	changed = true
-	nid.BlockID, nrow = model.DecodePhyAddrKey(&rowID)
+	nid.BlockID, nrow = rowID.Decode()
 	return
 }
 
@@ -206,13 +209,13 @@ func (tbl *txnTable) recurTransferDelete(
 	page *model.TransferHashPage,
 	id *common.ID,
 	row uint32,
-	depth int) (err error) {
+	depth int) error {
 
 	var page2 *common.PinnedItem[*model.TransferHashPage]
 
 	rowID, ok := page.Transfer(row)
 	if !ok {
-		err = moerr.NewTxnWWConflictNoCtx()
+		err := moerr.NewTxnWWConflictNoCtx()
 		msg := fmt.Sprintf("table-%d blk-%d delete row-%d depth-%d",
 			id.TableID,
 			id.BlockID,
@@ -221,17 +224,16 @@ func (tbl *txnTable) recurTransferDelete(
 		logutil.Warnf("[ts=%s]TransferDelete: %v",
 			tbl.store.txn.GetStartTS().ToString(),
 			msg)
-		return
+		return err
 	}
-	blockID, offset := model.DecodePhyAddrKey(&rowID)
+	blockID, offset := rowID.Decode()
 	newID := &common.ID{
 		TableID: id.TableID,
 		BlockID: blockID,
 	}
 	if page2, ok = memo[blockID]; !ok {
-		if page2, err = tbl.store.transferTable.Pin(*newID); err != nil {
-			err = nil
-		} else {
+		page2, err := tbl.store.transferTable.Pin(*newID)
+		if err == nil {
 			memo[blockID] = page2
 		}
 	}
@@ -243,30 +245,36 @@ func (tbl *txnTable) recurTransferDelete(
 			offset,
 			depth+1)
 	}
-	if err = tbl.RangeDelete(newID, offset, offset, handle.DT_Normal); err != nil {
-		return
+	if err := tbl.RangeDelete(newID, offset, offset, handle.DT_Normal); err != nil {
+		return err
 	}
-	logutil.Infof("depth-%d transfer delete from blk-%s row-%d to blk-%s row-%d",
-		depth,
-		id.BlockID.String(),
-		row,
-		blockID.String(),
-		offset)
-	return
+	common.DoIfInfoEnabled(func() {
+		logutil.Infof("depth-%d transfer delete from blk-%s row-%d to blk-%s row-%d",
+			depth,
+			id.BlockID.String(),
+			row,
+			blockID.String(),
+			offset)
+	})
+	return nil
 }
 
 func (tbl *txnTable) TransferDelete(id *common.ID, node *deleteNode) (transferred bool, err error) {
 	memo := make(map[types.Blockid]*common.PinnedItem[*model.TransferHashPage])
-	logutil.Info("[Start]",
-		common.AnyField("txn-start-ts", tbl.store.txn.GetStartTS().ToString()),
-		common.OperationField("transfer-deletes"),
-		common.OperandField(id.BlockString()))
-	defer func() {
-		logutil.Info("[End]",
+	common.DoIfInfoEnabled(func() {
+		logutil.Info("[Start]",
 			common.AnyField("txn-start-ts", tbl.store.txn.GetStartTS().ToString()),
 			common.OperationField("transfer-deletes"),
-			common.OperandField(id.BlockString()),
-			common.ErrorField(err))
+			common.OperandField(id.BlockString()))
+	})
+	defer func() {
+		common.DoIfInfoEnabled(func() {
+			logutil.Info("[End]",
+				common.AnyField("txn-start-ts", tbl.store.txn.GetStartTS().ToString()),
+				common.OperationField("transfer-deletes"),
+				common.OperandField(id.BlockString()),
+				common.ErrorField(err))
+		})
 		for _, m := range memo {
 			m.Close()
 		}
@@ -295,7 +303,7 @@ func (tbl *txnTable) TransferDelete(id *common.ID, node *deleteNode) (transferre
 	if err = node.PrepareRollback(); err != nil {
 		panic(err)
 	}
-	if err = node.ApplyRollback(nil); err != nil {
+	if err = node.ApplyRollback(); err != nil {
 		panic(err)
 	}
 
@@ -378,10 +386,16 @@ func (tbl *txnTable) SoftDeleteSegment(id *types.Segmentid) (err error) {
 }
 
 func (tbl *txnTable) CreateSegment(is1PC bool) (seg handle.Segment, err error) {
+	perfcounter.Update(tbl.store.ctx, func(counter *perfcounter.CounterSet) {
+		counter.TAE.Segment.Create.Add(1)
+	})
 	return tbl.createSegment(catalog.ES_Appendable, is1PC, nil)
 }
 
 func (tbl *txnTable) CreateNonAppendableSegment(is1PC bool, opts *objectio.CreateSegOpt) (seg handle.Segment, err error) {
+	perfcounter.Update(tbl.store.ctx, func(counter *perfcounter.CounterSet) {
+		counter.TAE.Segment.CreateNonAppendable.Add(1)
+	})
 	return tbl.createSegment(catalog.ES_NotAppendable, is1PC, opts)
 }
 
@@ -558,10 +572,10 @@ func (tbl *txnTable) AddDeleteNode(id *common.ID, node txnif.DeleteNode) error {
 	return nil
 }
 
-func (tbl *txnTable) Append(data *containers.Batch) (err error) {
+func (tbl *txnTable) Append(ctx context.Context, data *containers.Batch) (err error) {
 	if tbl.schema.HasPK() {
-		skip := tbl.store.txn.GetPKDedupSkip()
-		if skip == txnif.PKDedupSkipNone {
+		dedupType := tbl.store.txn.GetDedupType()
+		if dedupType == txnif.FullDedup {
 			//do PK deduplication check against txn's work space.
 			if err = tbl.DedupWorkSpace(
 				data.Vecs[tbl.schema.GetSingleSortKeyIdx()]); err != nil {
@@ -569,12 +583,20 @@ func (tbl *txnTable) Append(data *containers.Batch) (err error) {
 			}
 			//do PK deduplication check against txn's snapshot data.
 			if err = tbl.DedupSnapByPK(
-				data.Vecs[tbl.schema.GetSingleSortKeyIdx()]); err != nil {
+				ctx,
+				data.Vecs[tbl.schema.GetSingleSortKeyIdx()], false); err != nil {
 				return
 			}
-		} else if skip == txnif.PKDedupSkipWorkSpace {
+		} else if dedupType == txnif.FullSkipWorkSpaceDedup {
 			if err = tbl.DedupSnapByPK(
-				data.Vecs[tbl.schema.GetSingleSortKeyIdx()]); err != nil {
+				ctx,
+				data.Vecs[tbl.schema.GetSingleSortKeyIdx()], false); err != nil {
+				return
+			}
+		} else if dedupType == txnif.IncrementalDedup {
+			if err = tbl.DedupSnapByPK(
+				ctx,
+				data.Vecs[tbl.schema.GetSingleSortKeyIdx()], true); err != nil {
 				return
 			}
 		}
@@ -585,9 +607,7 @@ func (tbl *txnTable) Append(data *containers.Batch) (err error) {
 	return tbl.localSegment.Append(data)
 }
 
-func (tbl *txnTable) AddBlksWithMetaLoc(
-	zm []objectio.ZoneMap,
-	metaLocs []objectio.Location) (err error) {
+func (tbl *txnTable) AddBlksWithMetaLoc(metaLocs []objectio.Location) (err error) {
 	var pkVecs []containers.Vector
 	defer func() {
 		for _, v := range pkVecs {
@@ -595,8 +615,8 @@ func (tbl *txnTable) AddBlksWithMetaLoc(
 		}
 	}()
 	if tbl.schema.HasPK() {
-		skip := tbl.store.txn.GetPKDedupSkip()
-		if skip == txnif.PKDedupSkipNone {
+		dedupType := tbl.store.txn.GetDedupType()
+		if dedupType == txnif.FullDedup {
 			//TODO::parallel load pk.
 			for _, loc := range metaLocs {
 				bat, err := blockio.LoadColumns(
@@ -620,13 +640,18 @@ func (tbl *txnTable) AddBlksWithMetaLoc(
 					return
 				}
 				//do PK deduplication check against txn's snapshot data.
-				if err = tbl.DedupSnapByPK(v); err != nil {
+				if err = tbl.DedupSnapByPK(context.Background(), v, false); err != nil {
 					return
 				}
 			}
-		} else if skip == txnif.PKDedupSkipWorkSpace {
+		} else if dedupType == txnif.FullSkipWorkSpaceDedup {
 			//do PK deduplication check against txn's snapshot data.
-			if err = tbl.DedupSnapByMetaLocs(metaLocs); err != nil {
+			if err = tbl.DedupSnapByMetaLocs(context.Background(), metaLocs, false); err != nil {
+				return
+			}
+		} else if dedupType == txnif.IncrementalDedup {
+			//do PK deduplication check against txn's snapshot data.
+			if err = tbl.DedupSnapByMetaLocs(context.Background(), metaLocs, true); err != nil {
 				return
 			}
 		}
@@ -634,7 +659,7 @@ func (tbl *txnTable) AddBlksWithMetaLoc(
 	if tbl.localSegment == nil {
 		tbl.localSegment = newLocalSegment(tbl)
 	}
-	return tbl.localSegment.AddBlksWithMetaLoc(pkVecs, zm, metaLocs)
+	return tbl.localSegment.AddBlksWithMetaLoc(pkVecs, metaLocs)
 }
 
 func (tbl *txnTable) RangeDeleteLocalRows(start, end uint32) (err error) {
@@ -730,13 +755,12 @@ func (tbl *txnTable) GetByFilter(filter *handle.Filter) (id *common.ID, offset u
 	blockIt := h.MakeBlockIt()
 	for blockIt.Valid() {
 		h := blockIt.GetBlock()
+		defer h.Close()
 		if h.IsUncommitted() {
 			blockIt.Next()
 			continue
 		}
 		offset, err = h.GetByFilter(filter)
-		// block := h.GetMeta().(*catalog.BlockEntry).GetBlockData()
-		// offset, err = block.GetByFilter(tbl.store.txn, filter)
 		if err == nil {
 			id = h.Fingerprint()
 			break
@@ -756,7 +780,7 @@ func (tbl *txnTable) GetLocalValue(row uint32, col uint16) (v any, isNull bool, 
 	return tbl.localSegment.GetValue(row, col)
 }
 
-func (tbl *txnTable) GetValue(id *common.ID, row uint32, col uint16) (v any, isNull bool, err error) {
+func (tbl *txnTable) GetValue(ctx context.Context, id *common.ID, row uint32, col uint16) (v any, isNull bool, err error) {
 	if tbl.localSegment != nil && id.SegmentID().Eq(tbl.localSegment.entry.ID) {
 		return tbl.localSegment.GetValue(row, col)
 	}
@@ -769,7 +793,7 @@ func (tbl *txnTable) GetValue(id *common.ID, row uint32, col uint16) (v any, isN
 		panic(err)
 	}
 	block := meta.GetBlockData()
-	return block.GetValue(tbl.store.txn, tbl.GetLocalSchema(), int(row), int(col))
+	return block.GetValue(ctx, tbl.store.txn, tbl.GetLocalSchema(), int(row), int(col))
 }
 
 func (tbl *txnTable) UpdateMetaLoc(id *common.ID, metaLoc objectio.Location) (err error) {
@@ -812,17 +836,34 @@ func (tbl *txnTable) UpdateDeltaLoc(id *common.ID, deltaloc objectio.Location) (
 
 func (tbl *txnTable) AlterTable(ctx context.Context, req *apipb.AlterTableReq) error {
 	switch req.Kind {
-	case apipb.AlterKind_UpdateConstraint, apipb.AlterKind_UpdateComment, apipb.AlterKind_AddColumn, apipb.AlterKind_DropColumn:
+	case apipb.AlterKind_UpdateConstraint,
+		apipb.AlterKind_UpdateComment,
+		apipb.AlterKind_AddColumn,
+		apipb.AlterKind_DropColumn,
+		apipb.AlterKind_RenameTable:
 	default:
 		return moerr.NewNYI(ctx, "alter table %s", req.Kind.String())
 	}
 	tbl.store.IncreateWriteCnt()
 	tbl.store.txn.GetMemo().AddCatalogChange()
 	isNewNode, newSchema, err := tbl.entry.AlterTable(ctx, tbl.store.txn, req)
-	tbl.schema = newSchema // update new schema to txn local schema
 	if isNewNode {
 		tbl.txnEntries.Append(tbl.entry)
 	}
+	if err != nil {
+		return err
+	}
+	if req.Kind == apipb.AlterKind_RenameTable {
+		rename := req.GetRenameTable()
+		// udpate name index in db entry
+		tenantID := newSchema.AcInfo.TenantID
+		err = tbl.entry.GetDB().RenameTableInTxn(rename.OldName, rename.NewName, tbl.entry.ID, tenantID, tbl.store.txn, isNewNode)
+		if err != nil {
+			return err
+		}
+	}
+
+	tbl.schema = newSchema // update new schema to txn local schema
 	//TODO(aptend): handle written data in localseg, keep the batch aligned with the new schema
 	return err
 }
@@ -842,6 +883,8 @@ func (tbl *txnTable) PrePrepareDedup() (err error) {
 	if tbl.localSegment == nil || !tbl.schema.HasPK() {
 		return
 	}
+	var zm index.ZM
+	pkColPos := tbl.schema.GetSingleSortKeyIdx()
 	for _, node := range tbl.localSegment.nodes {
 		if node.IsPersisted() {
 			err = tbl.DoPrecommitDedupByNode(node)
@@ -850,17 +893,25 @@ func (tbl *txnTable) PrePrepareDedup() (err error) {
 			}
 			continue
 		}
-		bat, err := node.Window(0, node.Rows())
+		pkVec, err := node.WindowColumn(0, node.Rows(), pkColPos)
 		if err != nil {
 			return err
 		}
-		pkVec := bat.Vecs[tbl.schema.GetSingleSortKeyIdx()]
-		err = tbl.DoPrecommitDedupByPK(pkVec)
-		if err != nil {
-			bat.Close()
+		if zm.Valid() {
+			zm.ResetMinMax()
+		} else {
+			pkType := pkVec.GetType()
+			zm = index.NewZM(pkType.Oid, pkType.Scale)
+		}
+		if err = index.BatchUpdateZM(zm, pkVec); err != nil {
+			pkVec.Close()
 			return err
 		}
-		bat.Close()
+		if err = tbl.DoPrecommitDedupByPK(pkVec, zm); err != nil {
+			pkVec.Close()
+			return err
+		}
+		pkVec.Close()
 	}
 	return
 }
@@ -874,21 +925,88 @@ func (tbl *txnTable) updateDedupedSegmentHint(hint uint64) {
 	}
 }
 
+func (tbl *txnTable) updateDedupedBlockID(id *types.Blockid) {
+	if tbl.dedupedBlockID == nil {
+		tbl.dedupedBlockID = id
+		return
+	}
+	if tbl.dedupedBlockID.Compare(*id) > 0 {
+		tbl.dedupedBlockID = id
+	}
+}
+
+func (tbl *txnTable) quickSkipThisBlock(
+	ctx context.Context,
+	keysZM index.ZM,
+	meta *catalog.BlockEntry,
+) (ok bool, err error) {
+	zm, err := meta.GetPKZoneMap(ctx, tbl.store.dataFactory.Fs.Service)
+	if err != nil {
+		return
+	}
+	ok = !zm.FastIntersect(keysZM)
+	return
+}
+
+func (tbl *txnTable) tryGetCurrentObjectBF(
+	ctx context.Context,
+	currLocation objectio.Location,
+	prevBF objectio.BloomFilter,
+	prevObjName *objectio.ObjectNameShort,
+) (currBf objectio.BloomFilter, err error) {
+	if len(currLocation) == 0 {
+		return
+	}
+	if objectio.IsSameObjectLocVsShort(currLocation, prevObjName) {
+		currBf = prevBF
+		return
+	}
+	currBf, err = blockio.LoadBF(
+		ctx,
+		currLocation,
+		tbl.store.indexCache,
+		tbl.store.dataFactory.Fs.Service,
+		false,
+	)
+	return
+}
+
 // DedupSnapByPK 1. checks whether these primary keys exist in the list of block
 // which are visible and not dropped at txn's snapshot timestamp.
 // 2. It is called when appending data into this table.
-func (tbl *txnTable) DedupSnapByPK(keys containers.Vector) (err error) {
+func (tbl *txnTable) DedupSnapByPK(ctx context.Context, keys containers.Vector, dedupAfterSnapshotTS bool) (err error) {
+	r := trace.StartRegion(ctx, "DedupSnapByPK")
+	defer r.End()
 	h := newRelation(tbl)
 	it := newRelationBlockItOnSnap(h)
 	maxSegmentHint := uint64(0)
+	pkType := keys.GetType()
+	keysZM := index.NewZM(pkType.Oid, pkType.Scale)
+	if err = index.BatchUpdateZM(keysZM, keys); err != nil {
+		return
+	}
+	var (
+		name objectio.ObjectNameShort
+		bf   objectio.BloomFilter
+	)
+	maxBlockID := &types.Blockid{}
 	for it.Valid() {
-		blk := it.GetBlock().GetMeta().(*catalog.BlockEntry)
+		blkH := it.GetBlock()
+		blk := blkH.GetMeta().(*catalog.BlockEntry)
+		blkH.Close()
 		segmentHint := blk.GetSegment().SortHint
 		if segmentHint > maxSegmentHint {
 			maxSegmentHint = segmentHint
 		}
+		if blk.ID.Compare(*maxBlockID) > 0 {
+			maxBlockID = &blk.ID
+		}
 		blkData := blk.GetBlockData()
 		if blkData == nil {
+			it.Next()
+			continue
+		}
+		if dedupAfterSnapshotTS && blkData.DataCommittedBefore(tbl.store.txn.GetSnapshotTS()) {
 			it.Next()
 			continue
 		}
@@ -900,28 +1018,70 @@ func (tbl *txnTable) DedupSnapByPK(keys containers.Vector) (err error) {
 				rowmask = deleteNode.GetRowMaskRefLocked()
 			}
 		}
-		if err = blkData.BatchDedup(tbl.store.txn, keys, rowmask, false); err != nil {
+		location := blk.FastGetMetaLoc()
+		if len(location) > 0 {
+			var skip bool
+			if skip, err = tbl.quickSkipThisBlock(ctx, keysZM, blk); err != nil {
+				return
+			} else if skip {
+				it.Next()
+				continue
+			}
+		}
+		if bf, err = tbl.tryGetCurrentObjectBF(
+			ctx,
+			location,
+			bf,
+			&name,
+		); err != nil {
+			return
+		}
+		name = *objectio.ToObjectNameShort(&blk.ID)
+
+		if err = blkData.BatchDedup(
+			ctx,
+			tbl.store.txn,
+			keys,
+			keysZM,
+			rowmask,
+			false,
+			bf,
+		); err != nil {
 			// logutil.Infof("%s, %s, %v", blk.String(), rowmask, err)
 			return
 		}
 		it.Next()
 	}
 	tbl.updateDedupedSegmentHint(maxSegmentHint)
+	tbl.updateDedupedBlockID(maxBlockID)
 	return
 }
 
 // DedupSnapByMetaLocs 1. checks whether the Primary Key of all the input blocks exist in the list of block
 // which are visible and not dropped at txn's snapshot timestamp.
 // 2. It is called when appending blocks into this table.
-func (tbl *txnTable) DedupSnapByMetaLocs(metaLocs []objectio.Location) (err error) {
+func (tbl *txnTable) DedupSnapByMetaLocs(ctx context.Context, metaLocs []objectio.Location, dedupAfterSnapshotTS bool) (err error) {
 	loaded := make(map[int]containers.Vector)
+	maxSegmentHint := uint64(0)
+	maxBlockID := &types.Blockid{}
 	for i, loc := range metaLocs {
 		h := newRelation(tbl)
 		it := newRelationBlockItOnSnap(h)
 		for it.Valid() {
 			blk := it.GetBlock().GetMeta().(*catalog.BlockEntry)
+			segmentHint := blk.GetSegment().SortHint
+			if segmentHint > maxSegmentHint {
+				maxSegmentHint = segmentHint
+			}
+			if blk.ID.Compare(*maxBlockID) > 0 {
+				maxBlockID = &blk.ID
+			}
 			blkData := blk.GetBlockData()
 			if blkData == nil {
+				it.Next()
+				continue
+			}
+			if dedupAfterSnapshotTS && blkData.DataCommittedBefore(tbl.store.txn.GetSnapshotTS()) {
 				it.Next()
 				continue
 			}
@@ -937,7 +1097,7 @@ func (tbl *txnTable) DedupSnapByMetaLocs(metaLocs []objectio.Location) (err erro
 			_, ok := loaded[i]
 			if !ok {
 				bat, err := blockio.LoadColumns(
-					context.Background(),
+					ctx,
 					[]uint16{uint16(tbl.schema.GetSingleSortKeyIdx())},
 					nil,
 					tbl.store.dataFactory.Fs.Service,
@@ -951,7 +1111,15 @@ func (tbl *txnTable) DedupSnapByMetaLocs(metaLocs []objectio.Location) (err erro
 				vec := containers.ToDNVector(bat.Vecs[0])
 				loaded[i] = vec
 			}
-			if err = blkData.BatchDedup(tbl.store.txn, loaded[i], rowmask, false); err != nil {
+			if err = blkData.BatchDedup(
+				ctx,
+				tbl.store.txn,
+				loaded[i],
+				nil,
+				rowmask,
+				false,
+				objectio.BloomFilter{},
+			); err != nil {
 				// logutil.Infof("%s, %s, %v", blk.String(), rowmask, err)
 				loaded[i].Close()
 				return
@@ -961,6 +1129,8 @@ func (tbl *txnTable) DedupSnapByMetaLocs(metaLocs []objectio.Location) (err erro
 		if v, ok := loaded[i]; ok {
 			v.Close()
 		}
+		tbl.updateDedupedSegmentHint(maxSegmentHint)
+		tbl.updateDedupedBlockID(maxBlockID)
 	}
 	return
 }
@@ -970,7 +1140,7 @@ func (tbl *txnTable) DedupSnapByMetaLocs(metaLocs []objectio.Location) (err erro
 //  2. it is called when txn dequeues from preparing queue.
 //  3. we should make this function run quickly as soon as possible.
 //     TODO::it would be used to do deduplication with the logtail.
-func (tbl *txnTable) DoPrecommitDedupByPK(pks containers.Vector) (err error) {
+func (tbl *txnTable) DoPrecommitDedupByPK(pks containers.Vector, pksZM index.ZM) (err error) {
 	trace.WithRegion(context.Background(), "DoPrecommitDedupByPK", func() {
 		segIt := tbl.entry.MakeSegmentIt(false)
 		for segIt.Valid() {
@@ -1008,6 +1178,11 @@ func (tbl *txnTable) DoPrecommitDedupByPK(pks containers.Vector) (err error) {
 			blkIt := seg.MakeBlockIt(false)
 			for blkIt.Valid() {
 				blk := blkIt.Get().GetPayload()
+				if seg.SortHint == tbl.dedupedSegmentHint {
+					if blk.ID.Compare(*tbl.dedupedBlockID) < 0 {
+						break
+					}
+				}
 				{
 					blk.RLock()
 					shouldSkip = blk.HasDropCommittedLocked() || blk.IsCreatingOrAborted()
@@ -1029,7 +1204,15 @@ func (tbl *txnTable) DoPrecommitDedupByPK(pks containers.Vector) (err error) {
 						rowmask = deleteNode.GetRowMaskRefLocked()
 					}
 				}
-				if err = blkData.BatchDedup(tbl.store.txn, pks, rowmask, true); err != nil {
+				if err = blkData.BatchDedup(
+					context.Background(),
+					tbl.store.txn,
+					pks,
+					pksZM,
+					rowmask,
+					true,
+					objectio.BloomFilter{},
+				); err != nil {
 					return
 				}
 				blkIt.Next()
@@ -1108,7 +1291,15 @@ func (tbl *txnTable) DoPrecommitDedupByNode(node InsertNode) (err error) {
 					rowmask = deleteNode.GetRowMaskRefLocked()
 				}
 			}
-			if err = blkData.BatchDedup(tbl.store.txn, pks, rowmask, true); err != nil {
+			if err = blkData.BatchDedup(
+				context.Background(),
+				tbl.store.txn,
+				pks,
+				nil,
+				rowmask,
+				true,
+				objectio.BloomFilter{},
+			); err != nil {
 				return err
 			}
 			blkIt.Next()
@@ -1160,7 +1351,7 @@ func (tbl *txnTable) DoBatchDedup(key containers.Vector) (err error) {
 		}
 	}
 	//Check whether primary key is duplicated in txn's snapshot data.
-	err = tbl.DedupSnapByPK(key)
+	err = tbl.DedupSnapByPK(context.Background(), key, false)
 	return
 }
 
@@ -1223,7 +1414,7 @@ func (tbl *txnTable) ApplyCommit() (err error) {
 		if node.Is1PC() {
 			continue
 		}
-		if err = node.ApplyCommit(tbl.store.cmdMgr.MakeLogIndex(csn)); err != nil {
+		if err = node.ApplyCommit(); err != nil {
 			break
 		}
 		csn++
@@ -1239,7 +1430,7 @@ func (tbl *txnTable) Apply1PCCommit() (err error) {
 		if !node.Is1PC() {
 			continue
 		}
-		if err = node.ApplyCommit(tbl.store.cmdMgr.MakeLogIndex(tbl.csnStart)); err != nil {
+		if err = node.ApplyCommit(); err != nil {
 			break
 		}
 		tbl.csnStart++
@@ -1255,7 +1446,7 @@ func (tbl *txnTable) ApplyRollback() (err error) {
 		if node.Is1PC() {
 			continue
 		}
-		if err = node.ApplyRollback(tbl.store.cmdMgr.MakeLogIndex(csn)); err != nil {
+		if err = node.ApplyRollback(); err != nil {
 			break
 		}
 		csn++

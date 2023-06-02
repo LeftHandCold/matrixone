@@ -50,7 +50,7 @@ func TestBuildAlterView(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	store["db.v"] = arg{&plan.ObjectRef{PubAccountId: -1},
+	store["db.v"] = arg{&plan.ObjectRef{},
 		&plan.TableDef{
 			TableType: catalog.SystemViewRel,
 			ViewSql: &plan.ViewDef{
@@ -72,7 +72,7 @@ func TestBuildAlterView(t *testing.T) {
 	}
 
 	store["db.a"] = arg{
-		&plan.ObjectRef{PubAccountId: -1},
+		&plan.ObjectRef{},
 		&plan.TableDef{
 			TableType: catalog.SystemOrdinaryRel,
 			Cols: []*ColDef{
@@ -87,7 +87,7 @@ func TestBuildAlterView(t *testing.T) {
 			},
 		}}
 
-	store["db.verror"] = arg{&plan.ObjectRef{PubAccountId: -1},
+	store["db.verror"] = arg{&plan.ObjectRef{},
 		&plan.TableDef{
 			TableType: catalog.SystemViewRel},
 	}
@@ -107,7 +107,7 @@ func TestBuildAlterView(t *testing.T) {
 	ctx.EXPECT().GetAccountId().Return(catalog.System_Account).AnyTimes()
 	ctx.EXPECT().GetContext().Return(context.Background()).AnyTimes()
 	ctx.EXPECT().GetProcess().Return(nil).AnyTimes()
-	ctx.EXPECT().Stats(gomock.Any(), gomock.Any()).Return(&plan.Stats{}).AnyTimes()
+	ctx.EXPECT().Stats(gomock.Any()).Return(false).AnyTimes()
 	ctx.EXPECT().GetQueryingSubscription().Return(nil).AnyTimes()
 
 	ctx.EXPECT().GetRootSql().Return(sql1).AnyTimes()
@@ -162,7 +162,7 @@ func TestBuildLockTables(t *testing.T) {
 	sql3 := "lock tables t1 read, t1 write"
 
 	store["db.t1"] = arg{
-		&plan.ObjectRef{PubAccountId: -1},
+		&plan.ObjectRef{},
 		&plan.TableDef{
 			TableType: catalog.SystemOrdinaryRel,
 			Cols: []*ColDef{
@@ -191,7 +191,7 @@ func TestBuildLockTables(t *testing.T) {
 	ctx.EXPECT().GetAccountId().Return(catalog.System_Account).AnyTimes()
 	ctx.EXPECT().GetContext().Return(context.Background()).AnyTimes()
 	ctx.EXPECT().GetProcess().Return(nil).AnyTimes()
-	ctx.EXPECT().Stats(gomock.Any(), gomock.Any()).Return(&plan.Stats{}).AnyTimes()
+	ctx.EXPECT().Stats(gomock.Any()).Return(false).AnyTimes()
 
 	ctx.EXPECT().GetRootSql().Return(sql1).AnyTimes()
 	stmt1, err := parsers.ParseOne(context.Background(), dialect.MYSQL, sql1, 1)
@@ -206,7 +206,7 @@ func TestBuildLockTables(t *testing.T) {
 	assert.Error(t, err)
 
 	store["db.t2"] = arg{
-		&plan.ObjectRef{PubAccountId: -1},
+		&plan.ObjectRef{},
 		&plan.TableDef{
 			TableType: catalog.SystemOrdinaryRel,
 			Cols: []*ColDef{

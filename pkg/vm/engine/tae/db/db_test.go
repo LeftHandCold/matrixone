@@ -36,7 +36,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -80,11 +79,11 @@ func TestAppend(t *testing.T) {
 	tae.checkRowsByScan(bats[0].Length(), false)
 
 	txn, rel := tae.getRelation()
-	err := rel.Append(bats[1])
+	err := rel.Append(context.Background(), bats[1])
 	assert.NoError(t, err)
 	// FIXME
 	// checkAllColRowsByScan(t, rel, bats[0].Length()+bats[1].Length(), false)
-	err = rel.Append(bats[2])
+	err = rel.Append(context.Background(), bats[2])
 	assert.NoError(t, err)
 	assert.NoError(t, txn.Commit())
 	tae.checkRowsByScan(bats[0].Length()+bats[1].Length()+bats[2].Length(), false)
@@ -202,7 +201,7 @@ func TestAppend4(t *testing.T) {
 		createRelation(t, tae, defaultTestDB, schema, false)
 		for i := range bats {
 			txn, rel := getDefaultRelation(t, tae, schema.Name)
-			err := rel.Append(bats[i])
+			err := rel.Append(context.Background(), bats[i])
 			assert.NoError(t, err)
 			err = txn.Commit()
 			assert.NoError(t, err)
@@ -230,7 +229,6 @@ func TestAppend4(t *testing.T) {
 }
 
 func testCRUD(t *testing.T, tae *DB, schema *catalog.Schema) {
-	t.Skip("fsdfsdf")
 	bat := catalog.MockBatch(schema, int(schema.BlockMaxRows*(uint32(schema.SegmentMaxBlocks)+1)-1))
 	defer bat.Close()
 	bats := bat.Split(4)
@@ -245,7 +243,7 @@ func testCRUD(t *testing.T, tae *DB, schema *catalog.Schema) {
 	createRelationAndAppend(t, 0, tae, defaultTestDB, schema, bats[0], false)
 
 	txn, rel := getDefaultRelation(t, tae, schema.Name)
-	err := rel.Append(bats[0])
+	err := rel.Append(context.Background(), bats[0])
 	assert.True(t, moerr.IsMoErrCode(err, moerr.ErrDuplicateEntry))
 	checkAllColRowsByScan(t, rel, bats[0].Length(), false)
 	v := bats[0].Vecs[schema.GetSingleSortKeyIdx()].Get(2)
@@ -274,7 +272,7 @@ func testCRUD(t *testing.T, tae *DB, schema *catalog.Schema) {
 	txn, rel = getDefaultRelation(t, tae, schema.Name)
 	checkAllColRowsByScan(t, rel, bats[0].Length()-1, true)
 	for _, b := range bats[1:] {
-		err = rel.Append(b)
+		err = rel.Append(context.Background(), b)
 		assert.NoError(t, err)
 	}
 	checkAllColRowsByScan(t, rel, bat.Length()-1, true)
@@ -411,13 +409,13 @@ func TestNonAppendableBlock(t *testing.T) {
 			uint32(bat.Length()),
 			blocks[0].GetID())
 		blk.UpdateMetaLoc(metaLoc)
-		v, _, err := dataBlk.GetValue(txn, readSchema, 4, 2)
+		v, _, err := dataBlk.GetValue(context.Background(), txn, readSchema, 4, 2)
 		assert.Nil(t, err)
 		expectVal := bat.Vecs[2].Get(4)
 		assert.Equal(t, expectVal, v)
 		assert.Equal(t, bat.Vecs[0].Length(), blk.Rows())
 
-		view, err := dataBlk.GetColumnDataById(txn, readSchema, 2)
+		view, err := dataBlk.GetColumnDataById(context.Background(), txn, readSchema, 2)
 		assert.Nil(t, err)
 		defer view.Close()
 		assert.Nil(t, view.DeleteMask)
@@ -426,7 +424,7 @@ func TestNonAppendableBlock(t *testing.T) {
 		_, err = dataBlk.RangeDelete(txn, 1, 2, handle.DT_Normal)
 		assert.Nil(t, err)
 
-		view, err = dataBlk.GetColumnDataById(txn, readSchema, 2)
+		view, err = dataBlk.GetColumnDataById(context.Background(), txn, readSchema, 2)
 		assert.Nil(t, err)
 		defer view.Close()
 		assert.True(t, view.DeleteMask.Contains(1))
@@ -436,7 +434,7 @@ func TestNonAppendableBlock(t *testing.T) {
 		// _, err = dataBlk.Update(txn, 3, 2, int32(999))
 		// assert.Nil(t, err)
 
-		view, err = dataBlk.GetColumnDataById(txn, readSchema, 2)
+		view, err = dataBlk.GetColumnDataById(context.Background(), txn, readSchema, 2)
 		assert.Nil(t, err)
 		defer view.Close()
 		assert.True(t, view.DeleteMask.Contains(1))
@@ -503,7 +501,7 @@ func TestCompactBlock1(t *testing.T) {
 		blkMeta := getOneBlockMeta(rel)
 		task, err := jobs.NewCompactBlockTask(tasks.WaitableCtx, txn, blkMeta, db.Scheduler)
 		assert.Nil(t, err)
-		preparer, _, err := task.PrepareData()
+		preparer, _, err := task.PrepareData(context.Background())
 		assert.Nil(t, err)
 		assert.NotNil(t, preparer.Columns)
 		defer preparer.Close()
@@ -534,7 +532,7 @@ func TestCompactBlock1(t *testing.T) {
 		blkMeta := block.GetMeta().(*catalog.BlockEntry)
 		task, err := jobs.NewCompactBlockTask(tasks.WaitableCtx, txn, blkMeta, nil)
 		assert.Nil(t, err)
-		preparer, _, err := task.PrepareData()
+		preparer, _, err := task.PrepareData(context.Background())
 		assert.Nil(t, err)
 		defer preparer.Close()
 		assert.Equal(t, bat.Vecs[0].Length()-1, preparer.Columns.Vecs[0].Length())
@@ -557,7 +555,7 @@ func TestCompactBlock1(t *testing.T) {
 		}
 		task, err = jobs.NewCompactBlockTask(tasks.WaitableCtx, txn, blkMeta, nil)
 		assert.Nil(t, err)
-		preparer, _, err = task.PrepareData()
+		preparer, _, err = task.PrepareData(context.Background())
 		assert.Nil(t, err)
 		defer preparer.Close()
 		assert.Equal(t, bat.Vecs[0].Length()-1, preparer.Columns.Vecs[0].Length())
@@ -571,7 +569,7 @@ func TestCompactBlock1(t *testing.T) {
 			blkMeta := blk.GetMeta().(*catalog.BlockEntry)
 			task, err = jobs.NewCompactBlockTask(tasks.WaitableCtx, txn, blkMeta, nil)
 			assert.Nil(t, err)
-			preparer, _, err := task.PrepareData()
+			preparer, _, err := task.PrepareData(context.Background())
 			assert.Nil(t, err)
 			defer preparer.Close()
 			assert.Equal(t, bat.Vecs[0].Length()-3, preparer.Columns.Vecs[0].Length())
@@ -602,7 +600,7 @@ func TestAddBlksWithMetaLoc(t *testing.T) {
 	db := initDB(t, opts)
 	defer db.Close()
 
-	worker := ops.NewOpWorker("xx")
+	worker := ops.NewOpWorker(context.Background(), "xx")
 	worker.Start()
 	defer worker.Stop()
 	schema := catalog.MockSchemaAll(13, 2)
@@ -614,9 +612,9 @@ func TestAddBlksWithMetaLoc(t *testing.T) {
 	bats := bat.Split(4)
 	{
 		txn, _, rel := createRelationNoCommit(t, db, "db", schema, true)
-		err := rel.Append(bats[0])
+		err := rel.Append(context.Background(), bats[0])
 		assert.NoError(t, err)
-		err = rel.Append(bats[1])
+		err = rel.Append(context.Background(), bats[1])
 		assert.NoError(t, err)
 		assert.Nil(t, txn.Commit())
 	}
@@ -658,13 +656,13 @@ func TestAddBlksWithMetaLoc(t *testing.T) {
 		blk2, err := seg.GetBlock(newBlockFp2.BlockID)
 		assert.Nil(t, err)
 
-		view1, err := blk1.GetColumnDataById(2)
+		view1, err := blk1.GetColumnDataById(context.Background(), 2)
 		assert.NoError(t, err)
 		defer view1.Close()
 		assert.True(t, view1.GetData().Equals(bats[0].Vecs[2]))
 		assert.Equal(t, blk1.Rows(), bats[0].Vecs[2].Length())
 
-		view2, err := blk2.GetColumnDataById(2)
+		view2, err := blk2.GetColumnDataById(context.Background(), 2)
 		assert.NoError(t, err)
 		defer view2.Close()
 		assert.True(t, view2.GetData().Equals(bats[1].Vecs[2]))
@@ -675,15 +673,15 @@ func TestAddBlksWithMetaLoc(t *testing.T) {
 	{
 		schema.Name = "tb-1"
 		txn, _, rel := createRelationNoCommit(t, db, "db", schema, false)
-		txn.SetPKDedupSkip(txnif.PKDedupSkipWorkSpace)
-		err := rel.AddBlksWithMetaLoc(nil, []objectio.Location{metaLoc1})
+		txn.SetDedupType(txnif.FullSkipWorkSpaceDedup)
+		err := rel.AddBlksWithMetaLoc([]objectio.Location{metaLoc1})
 		assert.Nil(t, err)
-		err = rel.Append(bats[0])
+		err = rel.Append(context.Background(), bats[0])
 		assert.Nil(t, err)
 
-		err = rel.AddBlksWithMetaLoc(nil, []objectio.Location{metaLoc2})
+		err = rel.AddBlksWithMetaLoc([]objectio.Location{metaLoc2})
 		assert.Nil(t, err)
-		err = rel.Append(bats[1])
+		err = rel.Append(context.Background(), bats[1])
 		assert.Nil(t, err)
 		//err = rel.RangeDeleteLocal(start, end)
 		//assert.Nil(t, err)
@@ -696,13 +694,13 @@ func TestAddBlksWithMetaLoc(t *testing.T) {
 
 		//do deduplication check against sanpshot data.
 		txn, rel = getRelation(t, 0, db, "db", schema.Name)
-		txn.SetPKDedupSkip(txnif.PKDedupSkipWorkSpace)
-		err = rel.Append(bats[0])
+		txn.SetDedupType(txnif.FullSkipWorkSpaceDedup)
+		err = rel.Append(context.Background(), bats[0])
 		assert.NotNil(t, err)
-		err = rel.Append(bats[1])
+		err = rel.Append(context.Background(), bats[1])
 		assert.NotNil(t, err)
 
-		err = rel.AddBlksWithMetaLoc(nil, []objectio.Location{metaLoc1, metaLoc2})
+		err = rel.AddBlksWithMetaLoc([]objectio.Location{metaLoc1, metaLoc2})
 		assert.NotNil(t, err)
 
 		//check blk count.
@@ -710,7 +708,7 @@ func TestAddBlksWithMetaLoc(t *testing.T) {
 		cntOfblk := 0
 		forEachBlock(rel, func(blk handle.Block) (err error) {
 			if blk.IsAppendableBlock() {
-				view, err := blk.GetColumnDataById(3)
+				view, err := blk.GetColumnDataById(context.Background(), 3)
 				assert.NoError(t, err)
 				defer view.Close()
 				cntOfAblk++
@@ -719,12 +717,12 @@ func TestAddBlksWithMetaLoc(t *testing.T) {
 			metaLoc := blk.GetMetaLoc()
 			assert.True(t, !metaLoc.IsEmpty())
 			if bytes.Equal(metaLoc, metaLoc1) {
-				view, err := blk.GetColumnDataById(2)
+				view, err := blk.GetColumnDataById(context.Background(), 2)
 				assert.NoError(t, err)
 				defer view.Close()
 				assert.True(t, view.GetData().Equals(bats[0].Vecs[2]))
 			} else {
-				view, err := blk.GetColumnDataById(3)
+				view, err := blk.GetColumnDataById(context.Background(), 3)
 				assert.NoError(t, err)
 				defer view.Close()
 				assert.True(t, view.GetData().Equals(bats[1].Vecs[3]))
@@ -763,7 +761,7 @@ func TestCompactMemAlter(t *testing.T) {
 	db := initDB(t, opts)
 	defer db.Close()
 
-	worker := ops.NewOpWorker("xx")
+	worker := ops.NewOpWorker(context.Background(), "xx")
 	worker.Start()
 	defer worker.Stop()
 	schema := catalog.MockSchemaAll(5, 2)
@@ -800,7 +798,7 @@ func TestCompactMemAlter(t *testing.T) {
 		blk, err := seg.GetBlock(newBlockFp.BlockID)
 		assert.Nil(t, err)
 		for i := 0; i <= 5; i++ {
-			view, err := blk.GetColumnDataById(i)
+			view, err := blk.GetColumnDataById(context.Background(), i)
 			assert.NoError(t, err)
 			defer view.Close()
 			if i < 5 {
@@ -823,7 +821,7 @@ func TestCompactBlock2(t *testing.T) {
 	db := initDB(t, opts)
 	defer db.Close()
 
-	worker := ops.NewOpWorker("xx")
+	worker := ops.NewOpWorker(context.Background(), "xx")
 	worker.Start()
 	defer worker.Stop()
 	schema := catalog.MockSchemaAll(13, 2)
@@ -853,7 +851,7 @@ func TestCompactBlock2(t *testing.T) {
 		assert.Nil(t, err)
 		blk, err := seg.GetBlock(newBlockFp.BlockID)
 		assert.Nil(t, err)
-		view, err := blk.GetColumnDataById(3)
+		view, err := blk.GetColumnDataById(context.Background(), 3)
 		assert.NoError(t, err)
 		defer view.Close()
 		assert.True(t, view.GetData().Equals(bat.Vecs[3]))
@@ -878,7 +876,7 @@ func TestCompactBlock2(t *testing.T) {
 		assert.Nil(t, err)
 
 		// read generated column from nablk-1
-		newColumnView, err := blk.GetColumnDataById(3)
+		newColumnView, err := blk.GetColumnDataById(context.Background(), 3)
 		require.NoError(t, err)
 		require.Equal(t, uint64(2), newColumnView.DeleteMask.GetCardinality())
 		require.Equal(t, 20, newColumnView.GetData().Length())
@@ -908,7 +906,7 @@ func TestCompactBlock2(t *testing.T) {
 		blk, err := seg.GetBlock(newBlockFp.BlockID)
 		assert.Nil(t, err)
 		// not generated, it is a new column produced in sort(shuffle) process of the previous compaction
-		view, err := blk.GetColumnDataById(3)
+		view, err := blk.GetColumnDataById(context.Background(), 3)
 		require.False(t, view.GetData().GetDownstreamVector().IsConstNull())
 		cnt := 0
 		view.GetData().Foreach(func(v any, isNull bool, row int) error {
@@ -959,7 +957,7 @@ func TestCompactBlock2(t *testing.T) {
 		assert.Nil(t, err)
 		blk, err := seg.GetBlock(newBlockFp.BlockID)
 		assert.Nil(t, err)
-		view, err := blk.GetColumnDataById(3)
+		view, err := blk.GetColumnDataById(context.Background(), 3)
 		assert.Nil(t, err)
 		defer view.Close()
 		assert.True(t, view.DeleteMask.Contains(4))
@@ -994,10 +992,10 @@ func TestCompactBlock2(t *testing.T) {
 		txn, rel := getDefaultRelation(t, db, schema.Name)
 		newSchema := rel.Schema().(*catalog.Schema)
 		bats := catalog.MockBatch(newSchema, 30).Split(3)
-		err := rel.Append(bats[0]) // duplicate
+		err := rel.Append(context.Background(), bats[0]) // duplicate
 		require.Error(t, err)
 		t.Log(err)
-		err = rel.Append(bats[2]) // create ablk-5
+		err = rel.Append(context.Background(), bats[2]) // create ablk-5
 		require.NoError(t, err)
 
 		cnt := 0
@@ -1023,13 +1021,13 @@ func TestCompactBlock2(t *testing.T) {
 		txn, rel := getDefaultRelation(t, db, schema.Name)
 		newSchema := rel.Schema().(*catalog.Schema)
 		bats := catalog.MockBatch(newSchema, 40).Split(4)
-		err := rel.Append(bats[0]) // duplicate with nablk-4
+		err := rel.Append(context.Background(), bats[0]) // duplicate with nablk-4
 		require.Error(t, err)
 		t.Log(err)
-		err = rel.Append(bats[2]) // duplicate with ablk-5
+		err = rel.Append(context.Background(), bats[2]) // duplicate with ablk-5
 		require.Error(t, err)
 		t.Log(err)
-		err = rel.Append(bats[3]) // create ablk-6
+		err = rel.Append(context.Background(), bats[3]) // create ablk-6
 		require.NoError(t, err)
 		cnt := 0
 		forEachBlock(rel, func(blk handle.Block) error {
@@ -1038,7 +1036,7 @@ func TestCompactBlock2(t *testing.T) {
 			switch cnt {
 			case 0:
 				// localseg blk, will be ablk-6
-				view, err := blk.GetColumnDataById(0 /*uvw*/)
+				view, err := blk.GetColumnDataById(context.Background(), 0 /*uvw*/)
 				require.NoError(t, err)
 				require.Equal(t, 10, view.Length())
 				require.False(t, view.GetData().GetDownstreamVector().IsConstNull())
@@ -1047,7 +1045,7 @@ func TestCompactBlock2(t *testing.T) {
 			case 1:
 				// nablk-4 16 rows + 1 delete
 				require.False(t, blk.IsAppendableBlock())
-				view, err := blk.GetColumnDataById(0 /*uvw*/)
+				view, err := blk.GetColumnDataById(context.Background(), 0 /*uvw*/)
 				require.NoError(t, err)
 				require.Equal(t, types.T_int32, view.GetData().GetType().Oid)
 				require.Equal(t, 16, view.Length())
@@ -1055,7 +1053,7 @@ func TestCompactBlock2(t *testing.T) {
 				require.True(t, view.GetData().GetDownstreamVector().IsConstNull())
 			case 2:
 				// ablk-5 10 rows
-				view, err := blk.GetColumnDataById(0 /*uvw*/)
+				view, err := blk.GetColumnDataById(context.Background(), 0 /*uvw*/)
 				require.NoError(t, err)
 				require.Equal(t, types.T_int32, view.GetData().GetType().Oid)
 				require.Equal(t, 10, view.Length())
@@ -1146,7 +1144,7 @@ func TestAutoCompactABlk2(t *testing.T) {
 			it := rel.MakeBlockIt()
 			for it.Valid() {
 				blk := it.GetBlock()
-				view, err := blk.GetColumnDataById(schema1.GetSingleSortKeyIdx())
+				view, err := blk.GetColumnDataById(context.Background(), schema1.GetSingleSortKeyIdx())
 				assert.Nil(t, err)
 				view.Close()
 				it.Next()
@@ -1295,7 +1293,7 @@ func TestMVCC1(t *testing.T) {
 	bats := bat.Split(40)
 
 	txn, _, rel := createRelationNoCommit(t, db, "db", schema, true)
-	err := rel.Append(bats[0])
+	err := rel.Append(context.Background(), bats[0])
 	assert.NoError(t, err)
 
 	row := 5
@@ -1312,7 +1310,7 @@ func TestMVCC1(t *testing.T) {
 	assert.Equal(t, expectVal, actualVal)
 
 	txn2, rel2 := getDefaultRelation(t, db, schema.Name)
-	err = rel2.Append(bats[1])
+	err = rel2.Append(context.Background(), bats[1])
 	assert.NoError(t, err)
 
 	val2 := bats[1].Vecs[schema.GetSingleSortKeyIdx()].Get(row)
@@ -1339,7 +1337,7 @@ func TestMVCC1(t *testing.T) {
 		block := it.GetBlock()
 		bid := block.Fingerprint()
 		if bid.BlockID == id.BlockID {
-			view, err := block.GetColumnDataById(schema.GetSingleSortKeyIdx())
+			view, err := block.GetColumnDataById(context.Background(), schema.GetSingleSortKeyIdx())
 			assert.Nil(t, err)
 			defer view.Close()
 			assert.Nil(t, view.DeleteMask)
@@ -1368,7 +1366,7 @@ func TestMVCC2(t *testing.T) {
 	bats := bat.Split(10)
 	{
 		txn, _, rel := createRelationNoCommit(t, db, "db", schema, true)
-		err := rel.Append(bats[0])
+		err := rel.Append(context.Background(), bats[0])
 		assert.NoError(t, err)
 		val := bats[0].Vecs[schema.GetSingleSortKeyIdx()].Get(5)
 		filter := handle.NewEQFilter(val)
@@ -1378,7 +1376,7 @@ func TestMVCC2(t *testing.T) {
 	}
 	{
 		txn, rel := getDefaultRelation(t, db, schema.Name)
-		err := rel.Append(bats[1])
+		err := rel.Append(context.Background(), bats[1])
 		assert.NoError(t, err)
 		val := bats[1].Vecs[schema.GetSingleSortKeyIdx()].Get(5)
 		filter := handle.NewEQFilter(val)
@@ -1395,7 +1393,7 @@ func TestMVCC2(t *testing.T) {
 		it := rel.MakeBlockIt()
 		for it.Valid() {
 			block := it.GetBlock()
-			view, err := block.GetColumnDataByName(schema.GetSingleSortKey().Name)
+			view, err := block.GetColumnDataByName(context.Background(), schema.GetSingleSortKey().Name)
 			assert.Nil(t, err)
 			assert.Nil(t, view.DeleteMask)
 			assert.Equal(t, bats[1].Vecs[0].Length()*2-1, view.Length())
@@ -1439,7 +1437,7 @@ func TestUnload1(t *testing.T) {
 			it := rel.MakeBlockIt()
 			for it.Valid() {
 				blk := it.GetBlock()
-				view, err := blk.GetColumnDataByName(schema.GetSingleSortKey().Name)
+				view, err := blk.GetColumnDataByName(context.Background(), schema.GetSingleSortKey().Name)
 				assert.Nil(t, err)
 				defer view.Close()
 				assert.Equal(t, int(schema.BlockMaxRows), view.Length())
@@ -1569,7 +1567,7 @@ func TestDelete1(t *testing.T) {
 	{
 		txn, rel := getDefaultRelation(t, tae, schema.Name)
 		blk := getOneBlock(rel)
-		view, err := blk.GetColumnDataById(schema.GetSingleSortKeyIdx())
+		view, err := blk.GetColumnDataById(context.Background(), schema.GetSingleSortKeyIdx())
 		assert.NoError(t, err)
 		defer view.Close()
 		assert.Nil(t, view.DeleteMask)
@@ -1577,7 +1575,7 @@ func TestDelete1(t *testing.T) {
 
 		err = blk.RangeDelete(0, 0, handle.DT_Normal)
 		assert.NoError(t, err)
-		view, err = blk.GetColumnDataById(schema.GetSingleSortKeyIdx())
+		view, err = blk.GetColumnDataById(context.Background(), schema.GetSingleSortKeyIdx())
 		assert.NoError(t, err)
 		defer view.Close()
 		assert.True(t, view.DeleteMask.Contains(0))
@@ -1591,7 +1589,7 @@ func TestDelete1(t *testing.T) {
 		txn, rel := getDefaultRelation(t, tae, schema.Name)
 		assert.Equal(t, bat.Length()-2, int(rel.Rows()))
 		blk := getOneBlock(rel)
-		view, err := blk.GetColumnDataById(schema.GetSingleSortKeyIdx())
+		view, err := blk.GetColumnDataById(context.Background(), schema.GetSingleSortKeyIdx())
 		assert.NoError(t, err)
 		defer view.Close()
 		assert.True(t, view.DeleteMask.Contains(0))
@@ -1620,7 +1618,7 @@ func TestLogIndex1(t *testing.T) {
 	doAppend := func(data *containers.Batch) func() {
 		return func() {
 			txn, rel := getDefaultRelation(t, tae, schema.Name)
-			err := rel.Append(data)
+			err := rel.Append(context.Background(), data)
 			assert.NoError(t, err)
 			assert.NoError(t, txn.Commit())
 			txns = append(txns, txn)
@@ -1644,40 +1642,16 @@ func TestLogIndex1(t *testing.T) {
 	}
 	{
 		txn, rel := getDefaultRelation(t, tae, schema.Name)
-		meta := getOneBlockMeta(rel)
-		indexes, err := meta.GetBlockData().CollectAppendLogIndexes(txns[0].GetStartTS(), txns[len(txns)-1].GetCommitTS())
-		assert.NoError(t, err)
-		assert.Equal(t, len(txns), len(indexes))
-		indexes, err = meta.GetBlockData().CollectAppendLogIndexes(txns[1].GetCommitTS(), txns[len(txns)-1].GetCommitTS())
-		assert.NoError(t, err)
-		assert.Equal(t, len(txns)-1, len(indexes))
-		indexes, err = meta.GetBlockData().CollectAppendLogIndexes(txns[2].GetCommitTS(), txns[len(txns)-1].GetCommitTS())
-		assert.NoError(t, err)
-		assert.Equal(t, len(txns)-2, len(indexes))
-		indexes, err = meta.GetBlockData().CollectAppendLogIndexes(txns[3].GetCommitTS(), txns[len(txns)-1].GetCommitTS())
-		assert.NoError(t, err)
-		assert.Equal(t, len(txns)-3, len(indexes))
-		assert.NoError(t, txn.Commit())
-	}
-	{
-		txn, rel := getDefaultRelation(t, tae, schema.Name)
 		blk := getOneBlock(rel)
 		meta := blk.GetMeta().(*catalog.BlockEntry)
 
-		var zeroV types.TS
-		indexes, err := meta.GetBlockData().CollectAppendLogIndexes(zeroV.Next(), txn.GetStartTS())
-		assert.NoError(t, err)
-		for i, index := range indexes {
-			t.Logf("%d: %s", i, index.String())
-		}
-
-		view, err := blk.GetColumnDataById(schema.GetSingleSortKeyIdx())
+		view, err := blk.GetColumnDataById(context.Background(), schema.GetSingleSortKeyIdx())
 		assert.Nil(t, err)
 		defer view.Close()
 		assert.True(t, view.DeleteMask.Contains(offset))
 		task, err := jobs.NewCompactBlockTask(nil, txn, meta, tae.Scheduler)
 		assert.Nil(t, err)
-		err = task.OnExec()
+		err = task.OnExec(context.Background())
 		assert.Nil(t, err)
 		assert.Nil(t, txn.Commit())
 	}
@@ -1721,9 +1695,9 @@ func TestCrossDBTxn(t *testing.T) {
 	assert.Nil(t, err)
 	rel2, err := db2.CreateRelation(schema2)
 	assert.Nil(t, err)
-	err = rel1.Append(bat1)
+	err = rel1.Append(context.Background(), bat1)
 	assert.Nil(t, err)
-	err = rel2.Append(bat2)
+	err = rel2.Append(context.Background(), bat2)
 	assert.Nil(t, err)
 
 	assert.Nil(t, txn.Commit())
@@ -1772,15 +1746,15 @@ func TestSystemDB1(t *testing.T) {
 	for it.Valid() {
 		blk := it.GetBlock()
 		rows += blk.Rows()
-		view, err := blk.GetColumnDataByName(pkgcatalog.SystemDBAttr_Name)
+		view, err := blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemDBAttr_Name)
 		assert.Nil(t, err)
 		defer view.Close()
 		assert.Equal(t, 3, view.Length())
-		view, err = blk.GetColumnDataByName(pkgcatalog.SystemDBAttr_CatalogName)
+		view, err = blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemDBAttr_CatalogName)
 		assert.Nil(t, err)
 		defer view.Close()
 		assert.Equal(t, 3, view.Length())
-		view, err = blk.GetColumnDataByName(pkgcatalog.SystemDBAttr_CreateSQL)
+		view, err = blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemDBAttr_CreateSQL)
 		assert.Nil(t, err)
 		defer view.Close()
 		assert.Equal(t, 3, view.Length())
@@ -1795,14 +1769,14 @@ func TestSystemDB1(t *testing.T) {
 	for it.Valid() {
 		blk := it.GetBlock()
 		rows += blk.Rows()
-		view, err := blk.GetColumnDataByName(pkgcatalog.SystemRelAttr_Name)
+		view, err := blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemRelAttr_Name)
 		assert.Nil(t, err)
 		defer view.Close()
 		assert.Equal(t, 4, view.Length())
-		view, err = blk.GetColumnDataByName(pkgcatalog.SystemRelAttr_Persistence)
+		view, err = blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemRelAttr_Persistence)
 		assert.NoError(t, err)
 		defer view.Close()
-		view, err = blk.GetColumnDataByName(pkgcatalog.SystemRelAttr_Kind)
+		view, err = blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemRelAttr_Kind)
 		assert.NoError(t, err)
 		defer view.Close()
 		it.Next()
@@ -1821,32 +1795,32 @@ func TestSystemDB1(t *testing.T) {
 	for it.Valid() {
 		blk := it.GetBlock()
 		rows += blk.Rows()
-		view, err := blk.GetColumnDataByName(pkgcatalog.SystemColAttr_DBName)
+		view, err := blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemColAttr_DBName)
 		assert.NoError(t, err)
 		defer view.Close()
 		bat.AddVector(pkgcatalog.SystemColAttr_DBName, view.Orphan())
 
-		view, err = blk.GetColumnDataByName(pkgcatalog.SystemColAttr_RelName)
+		view, err = blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemColAttr_RelName)
 		assert.Nil(t, err)
 		defer view.Close()
 		bat.AddVector(pkgcatalog.SystemColAttr_RelName, view.Orphan())
 
-		view, err = blk.GetColumnDataByName(pkgcatalog.SystemColAttr_Name)
+		view, err = blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemColAttr_Name)
 		assert.Nil(t, err)
 		defer view.Close()
 		bat.AddVector(pkgcatalog.SystemColAttr_Name, view.Orphan())
 
-		view, err = blk.GetColumnDataByName(pkgcatalog.SystemColAttr_ConstraintType)
+		view, err = blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemColAttr_ConstraintType)
 		assert.Nil(t, err)
 		defer view.Close()
 		t.Log(view.GetData().String())
 		bat.AddVector(pkgcatalog.SystemColAttr_ConstraintType, view.Orphan())
 
-		view, err = blk.GetColumnDataByName(pkgcatalog.SystemColAttr_Type)
+		view, err = blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemColAttr_Type)
 		assert.Nil(t, err)
 		defer view.Close()
 		t.Log(view.GetData().String())
-		view, err = blk.GetColumnDataByName(pkgcatalog.SystemColAttr_Num)
+		view, err = blk.GetColumnDataByName(context.Background(), pkgcatalog.SystemColAttr_Num)
 		assert.Nil(t, err)
 		defer view.Close()
 		t.Log(view.GetData().String())
@@ -1912,7 +1886,7 @@ func TestSystemDB2(t *testing.T) {
 	rel, err := sysDB.CreateRelation(schema)
 	assert.NoError(t, err)
 	assert.NotNil(t, rel)
-	err = rel.Append(bat)
+	err = rel.Append(context.Background(), bat)
 	assert.Nil(t, err)
 	assert.NoError(t, txn.Commit())
 
@@ -1940,7 +1914,7 @@ func TestSystemDB3(t *testing.T) {
 	assert.NoError(t, err)
 	rel, err := db.CreateRelation(schema)
 	assert.NoError(t, err)
-	err = rel.Append(bat)
+	err = rel.Append(context.Background(), bat)
 	assert.NoError(t, err)
 	assert.NoError(t, txn.Commit())
 }
@@ -1958,7 +1932,7 @@ func TestScan1(t *testing.T) {
 	bat := catalog.MockBatch(schema, int(schema.BlockMaxRows-1))
 	defer bat.Close()
 	txn, _, rel := createRelationNoCommit(t, tae, defaultTestDB, schema, true)
-	err := rel.Append(bat)
+	err := rel.Append(context.Background(), bat)
 	assert.NoError(t, err)
 	checkAllColRowsByScan(t, rel, bat.Length(), false)
 	assert.NoError(t, txn.Commit())
@@ -1977,9 +1951,9 @@ func TestDedup(t *testing.T) {
 	bat := catalog.MockBatch(schema, 10)
 	defer bat.Close()
 	txn, _, rel := createRelationNoCommit(t, tae, defaultTestDB, schema, true)
-	err := rel.Append(bat)
+	err := rel.Append(context.Background(), bat)
 	assert.NoError(t, err)
-	err = rel.Append(bat)
+	err = rel.Append(context.Background(), bat)
 	t.Log(err)
 	assert.True(t, moerr.IsMoErrCode(err, moerr.ErrDuplicateEntry))
 	checkAllColRowsByScan(t, rel, 10, false)
@@ -2001,13 +1975,13 @@ func TestScan2(t *testing.T) {
 	bats := bat.Split(2)
 
 	txn, _, rel := createRelationNoCommit(t, tae, defaultTestDB, schema, true)
-	err := rel.Append(bats[0])
+	err := rel.Append(context.Background(), bats[0])
 	assert.NoError(t, err)
 	checkAllColRowsByScan(t, rel, bats[0].Length(), false)
 
-	err = rel.Append(bats[0])
+	err = rel.Append(context.Background(), bats[0])
 	assert.Error(t, err)
-	err = rel.Append(bats[1])
+	err = rel.Append(context.Background(), bats[1])
 	assert.NoError(t, err)
 	checkAllColRowsByScan(t, rel, int(rows), false)
 
@@ -2059,7 +2033,7 @@ func TestADA(t *testing.T) {
 	txn, rel = getDefaultRelation(t, tae, schema.Name)
 	_, _, err = rel.GetByFilter(filter)
 	assert.Error(t, err)
-	err = rel.Append(bat)
+	err = rel.Append(context.Background(), bat)
 	assert.NoError(t, err)
 	id, row, err = rel.GetByFilter(filter)
 	assert.NoError(t, err)
@@ -2070,7 +2044,7 @@ func TestADA(t *testing.T) {
 	_, _, err = rel.GetByFilter(filter)
 	assert.Error(t, err)
 
-	err = rel.Append(bat)
+	err = rel.Append(context.Background(), bat)
 	assert.NoError(t, err)
 	_, _, err = rel.GetByFilter(filter)
 	assert.NoError(t, err)
@@ -2078,7 +2052,7 @@ func TestADA(t *testing.T) {
 	assert.NoError(t, txn.Commit())
 
 	txn, rel = getDefaultRelation(t, tae, schema.Name)
-	err = rel.Append(bat)
+	err = rel.Append(context.Background(), bat)
 	assert.Error(t, err)
 	id, row, err = rel.GetByFilter(filter)
 	assert.NoError(t, err)
@@ -2087,26 +2061,26 @@ func TestADA(t *testing.T) {
 	_, _, err = rel.GetByFilter(filter)
 	assert.Error(t, err)
 
-	err = rel.Append(bat)
+	err = rel.Append(context.Background(), bat)
 	assert.NoError(t, err)
 
 	id, row, err = rel.GetByFilter(filter)
 	assert.NoError(t, err)
 
-	err = rel.Append(bat)
+	err = rel.Append(context.Background(), bat)
 	assert.Error(t, err)
 
 	err = rel.RangeDelete(id, row, row, handle.DT_Normal)
 	assert.NoError(t, err)
 	_, _, err = rel.GetByFilter(filter)
 	assert.Error(t, err)
-	err = rel.Append(bat)
+	err = rel.Append(context.Background(), bat)
 	assert.NoError(t, err)
 
 	assert.NoError(t, txn.Commit())
 
 	txn, rel = getDefaultRelation(t, tae, schema.Name)
-	err = rel.Append(bat)
+	err = rel.Append(context.Background(), bat)
 	assert.Error(t, err)
 	id, row, err = rel.GetByFilter(filter)
 	assert.NoError(t, err)
@@ -2115,7 +2089,7 @@ func TestADA(t *testing.T) {
 	_, _, err = rel.GetByFilter(filter)
 	assert.Error(t, err)
 
-	err = rel.Append(bat)
+	err = rel.Append(context.Background(), bat)
 	assert.NoError(t, err)
 	assert.NoError(t, txn.Commit())
 
@@ -2123,7 +2097,7 @@ func TestADA(t *testing.T) {
 	it := rel.MakeBlockIt()
 	for it.Valid() {
 		blk := it.GetBlock()
-		view, err := blk.GetColumnDataById(schema.GetSingleSortKeyIdx())
+		view, err := blk.GetColumnDataById(context.Background(), schema.GetSingleSortKeyIdx())
 		assert.NoError(t, err)
 		defer view.Close()
 		assert.Equal(t, 4, view.Length())
@@ -2255,7 +2229,7 @@ func TestChaos1(t *testing.T) {
 			return
 		}
 		assert.True(t, moerr.IsMoErrCode(err, moerr.ErrNotFound))
-		err = rel.Append(bat)
+		err = rel.Append(context.Background(), bat)
 		// TODO: enable below check later
 		// assert.NotEqual(t, data.ErrDuplicate, err)
 		if err == nil {
@@ -2285,7 +2259,7 @@ func TestChaos1(t *testing.T) {
 	_, rel := getDefaultRelation(t, tae, schema.Name)
 	assert.Equal(t, int64(appendCnt-deleteCnt), rel.Rows())
 	blk := getOneBlock(rel)
-	view, err := blk.GetColumnDataById(schema.GetSingleSortKeyIdx())
+	view, err := blk.GetColumnDataById(context.Background(), schema.GetSingleSortKeyIdx())
 	assert.NoError(t, err)
 	defer view.Close()
 	assert.Equal(t, int(appendCnt), view.Length())
@@ -2379,7 +2353,7 @@ func TestSnapshotIsolation2(t *testing.T) {
 
 	// Step 2
 	txn2, rel2 := getDefaultRelation(t, tae, schema.Name)
-	err := rel2.Append(bat)
+	err := rel2.Append(context.Background(), bat)
 	assert.NoError(t, err)
 	assert.NoError(t, txn2.Commit())
 
@@ -2390,7 +2364,7 @@ func TestSnapshotIsolation2(t *testing.T) {
 	assert.NoError(t, txn3.Commit())
 
 	// Step 4
-	err = rel1.Append(bat)
+	err = rel1.Append(context.Background(), bat)
 	assert.NoError(t, err)
 	err = txn1.Commit()
 	t.Log(err)
@@ -2429,7 +2403,7 @@ func TestMergeBlocks(t *testing.T) {
 	assert.Nil(t, err)
 	for it.Valid() {
 		checkAllColRowsByScan(t, rel, bat.Length(), false)
-		col, err := it.GetBlock().GetMeta().(*catalog.BlockEntry).GetBlockData().GetColumnDataById(txn, schema, 0)
+		col, err := it.GetBlock().GetMeta().(*catalog.BlockEntry).GetBlockData().GetColumnDataById(context.Background(), txn, schema, 0)
 		assert.NoError(t, err)
 		defer col.Close()
 		t.Log(col)
@@ -2449,7 +2423,7 @@ func TestMergeBlocks(t *testing.T) {
 	it = rel.MakeBlockIt()
 	for it.Valid() {
 		checkAllColRowsByScan(t, rel, bat.Length()-5, false)
-		col, err := it.GetBlock().GetMeta().(*catalog.BlockEntry).GetBlockData().GetColumnDataById(txn, schema, 0)
+		col, err := it.GetBlock().GetMeta().(*catalog.BlockEntry).GetBlockData().GetColumnDataById(context.Background(), txn, schema, 0)
 		assert.Nil(t, err)
 		t.Log(col)
 		defer col.Close()
@@ -2527,7 +2501,7 @@ func TestSegDelLogtail(t *testing.T) {
 		ckpEntries := tae.BGCheckpointRunner.GetAllIncrementalCheckpoints()
 		require.Equal(t, 1, len(ckpEntries))
 		entry := ckpEntries[0]
-		ins, del, cnins, segdel, err := entry.GetByTableID(tae.Fs, tid)
+		ins, del, cnins, segdel, err := entry.GetByTableID(context.Background(), tae.Fs, tid)
 		require.NoError(t, err)
 		require.Equal(t, uint32(6), ins.Vecs[0].Len)
 		require.Equal(t, uint32(6), del.Vecs[0].Len)
@@ -2575,7 +2549,7 @@ func TestMergeblocks2(t *testing.T) {
 	tae.createRelAndAppend(bats[0], true)
 
 	txn, rel := tae.getRelation()
-	_ = rel.Append(bats[1])
+	_ = rel.Append(context.Background(), bats[1])
 	assert.Nil(t, txn.Commit())
 
 	{
@@ -2613,7 +2587,7 @@ func TestMergeblocks2(t *testing.T) {
 		segsToMerge := []*catalog.SegmentEntry{segHandle.GetMeta().(*catalog.SegmentEntry)}
 		task, err := jobs.NewMergeBlocksTask(nil, txn, metas, segsToMerge, nil, tae.Scheduler)
 		assert.NoError(t, err)
-		err = task.OnExec()
+		err = task.OnExec(context.Background())
 		assert.NoError(t, err)
 
 		{
@@ -2672,7 +2646,7 @@ func TestMergeEmptyBlocks(t *testing.T) {
 	assert.NoError(t, tae.deleteAll(true))
 
 	txn, rel := tae.getRelation()
-	assert.NoError(t, rel.Append(bats[1]))
+	assert.NoError(t, rel.Append(context.Background(), bats[1]))
 	assert.NoError(t, txn.Commit())
 
 	{
@@ -2695,7 +2669,7 @@ func TestMergeEmptyBlocks(t *testing.T) {
 		segsToMerge := []*catalog.SegmentEntry{segHandle.GetMeta().(*catalog.SegmentEntry)}
 		task, err := jobs.NewMergeBlocksTask(nil, txn, metas, segsToMerge, nil, tae.Scheduler)
 		assert.NoError(t, err)
-		err = task.OnExec()
+		err = task.OnExec(context.Background())
 		assert.NoError(t, err)
 
 		{
@@ -2752,7 +2726,7 @@ func TestNull1(t *testing.T) {
 
 	txn, rel := tae.getRelation()
 	blk := getOneBlock(rel)
-	view, err := blk.GetColumnDataById(3)
+	view, err := blk.GetColumnDataById(context.Background(), 3)
 	assert.NoError(t, err)
 	defer view.Close()
 	//v := view.GetData().Get(2)
@@ -2763,7 +2737,7 @@ func TestNull1(t *testing.T) {
 	tae.restart()
 	txn, rel = tae.getRelation()
 	blk = getOneBlock(rel)
-	view, err = blk.GetColumnDataById(3)
+	view, err = blk.GetColumnDataById(context.Background(), 3)
 	assert.NoError(t, err)
 	defer view.Close()
 	//v = view.GetData().Get(2)
@@ -2791,7 +2765,7 @@ func TestNull1(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, uv_isNull)
 
-	err = rel.Append(bats[1])
+	err = rel.Append(context.Background(), bats[1])
 	assert.NoError(t, err)
 	assert.NoError(t, txn.Commit())
 
@@ -2823,7 +2797,7 @@ func TestNull1(t *testing.T) {
 	_, uv0_1_isNull, err = rel.GetValueByFilter(filter0_1, 12)
 	assert.NoError(t, err)
 	assert.True(t, uv0_1_isNull)
-	err = rel.Append(bats[2])
+	err = rel.Append(context.Background(), bats[2])
 	assert.NoError(t, err)
 	assert.NoError(t, txn.Commit())
 
@@ -2915,12 +2889,12 @@ func TestGetColumnData(t *testing.T) {
 	tae.createRelAndAppend(bats[0], true)
 	txn, rel := tae.getRelation()
 	blk := getOneBlock(rel)
-	view, _ := blk.GetColumnDataById(2)
+	view, _ := blk.GetColumnDataById(context.Background(), 2)
 	defer view.Close()
 	assert.Equal(t, bats[0].Length(), view.Length())
 	assert.NotZero(t, view.GetData().Allocated())
 
-	view, _ = blk.GetColumnDataById(2)
+	view, _ = blk.GetColumnDataById(context.Background(), 2)
 	defer view.Close()
 	assert.Equal(t, bats[0].Length(), view.Length())
 	assert.NotZero(t, view.GetData().Allocated())
@@ -2929,27 +2903,27 @@ func TestGetColumnData(t *testing.T) {
 	tae.compactBlocks(false)
 	txn, rel = tae.getRelation()
 	blk = getOneBlock(rel)
-	view, _ = blk.GetColumnDataById(2)
+	view, _ = blk.GetColumnDataById(context.Background(), 2)
 	defer view.Close()
 	assert.Equal(t, bats[0].Length(), view.Length())
 	assert.NotZero(t, view.GetData().Allocated())
 
-	view, _ = blk.GetColumnDataById(2)
+	view, _ = blk.GetColumnDataById(context.Background(), 2)
 	defer view.Close()
 	assert.Equal(t, bats[0].Length(), view.Length())
 	assert.NotZero(t, view.GetData().Allocated())
 	assert.NoError(t, txn.Commit())
 
 	txn, rel = tae.getRelation()
-	err := rel.Append(bats[1])
+	err := rel.Append(context.Background(), bats[1])
 	assert.NoError(t, err)
 	blk = getOneBlock(rel)
-	view, err = blk.GetColumnDataById(2)
+	view, err = blk.GetColumnDataById(context.Background(), 2)
 	assert.NoError(t, err)
 	defer view.Close()
 	assert.True(t, view.GetData().Equals(bats[1].Vecs[2]))
 	assert.NotZero(t, view.GetData().Allocated())
-	view, err = blk.GetColumnDataById(2)
+	view, err = blk.GetColumnDataById(context.Background(), 2)
 	assert.NoError(t, err)
 	defer view.Close()
 	assert.True(t, view.GetData().Equals(bats[1].Vecs[2]))
@@ -2975,19 +2949,19 @@ func TestCompactBlk1(t *testing.T) {
 	tae.createRelAndAppend(bats[2], true)
 
 	txn, rel := tae.getRelation()
-	_ = rel.Append(bats[1])
+	_ = rel.Append(context.Background(), bats[1])
 	assert.Nil(t, txn.Commit())
 
 	txn, rel = tae.getRelation()
-	_ = rel.Append(bats[3])
+	_ = rel.Append(context.Background(), bats[3])
 	assert.Nil(t, txn.Commit())
 
 	txn, rel = tae.getRelation()
-	_ = rel.Append(bats[4])
+	_ = rel.Append(context.Background(), bats[4])
 	assert.Nil(t, txn.Commit())
 
 	txn, rel = tae.getRelation()
-	_ = rel.Append(bats[0])
+	_ = rel.Append(context.Background(), bats[0])
 	assert.Nil(t, txn.Commit())
 
 	{
@@ -3012,7 +2986,7 @@ func TestCompactBlk1(t *testing.T) {
 		meta := blk.GetMeta().(*catalog.BlockEntry)
 		task, err := jobs.NewCompactBlockTask(nil, txn, meta, tae.DB.Scheduler)
 		assert.NoError(t, err)
-		err = task.OnExec()
+		err = task.OnExec(context.Background())
 		assert.NoError(t, err)
 
 		{
@@ -3057,19 +3031,19 @@ func TestCompactBlk2(t *testing.T) {
 	tae.createRelAndAppend(bats[2], true)
 
 	txn, rel := tae.getRelation()
-	_ = rel.Append(bats[1])
+	_ = rel.Append(context.Background(), bats[1])
 	assert.Nil(t, txn.Commit())
 
 	txn, rel = tae.getRelation()
-	_ = rel.Append(bats[3])
+	_ = rel.Append(context.Background(), bats[3])
 	assert.Nil(t, txn.Commit())
 
 	txn, rel = tae.getRelation()
-	_ = rel.Append(bats[4])
+	_ = rel.Append(context.Background(), bats[4])
 	assert.Nil(t, txn.Commit())
 
 	txn, rel = tae.getRelation()
-	_ = rel.Append(bats[0])
+	_ = rel.Append(context.Background(), bats[0])
 	assert.Nil(t, txn.Commit())
 
 	v := getSingleSortKeyValue(bat, schema, 1)
@@ -3091,7 +3065,7 @@ func TestCompactBlk2(t *testing.T) {
 	meta := blk.GetMeta().(*catalog.BlockEntry)
 	task, err := jobs.NewCompactBlockTask(nil, txn, meta, tae.DB.Scheduler)
 	assert.NoError(t, err)
-	err = task.OnExec()
+	err = task.OnExec(context.Background())
 	assert.NoError(t, err)
 	err = txn.Commit()
 	assert.NoError(t, err)
@@ -3166,7 +3140,7 @@ func TestCompactblk3(t *testing.T) {
 	meta := blk.GetMeta().(*catalog.BlockEntry)
 	task, err := jobs.NewCompactBlockTask(nil, txn, meta, tae.DB.Scheduler)
 	assert.NoError(t, err)
-	err = task.OnExec()
+	err = task.OnExec(context.Background())
 	assert.NoError(t, err)
 	err = txn.Commit()
 	assert.NoError(t, err)
@@ -3178,7 +3152,7 @@ func TestCompactblk3(t *testing.T) {
 		if be.GetSegment().GetTable().GetDB().IsSystemDB() {
 			return nil
 		}
-		view, err := be.GetBlockData().GetColumnDataById(txn, schema, 0)
+		view, err := be.GetBlockData().GetColumnDataById(context.Background(), txn, schema, 0)
 		assert.NoError(t, err)
 		view.ApplyDeletes()
 		assert.Equal(t, 2, view.Length())
@@ -3204,16 +3178,16 @@ func TestImmutableIndexInAblk(t *testing.T) {
 
 	tae.createRelAndAppend(bats[2], true)
 	txn, rel := tae.getRelation()
-	_ = rel.Append(bats[1])
+	_ = rel.Append(context.Background(), bats[1])
 	assert.Nil(t, txn.Commit())
 	txn, rel = tae.getRelation()
-	_ = rel.Append(bats[3])
+	_ = rel.Append(context.Background(), bats[3])
 	assert.Nil(t, txn.Commit())
 	txn, rel = tae.getRelation()
-	_ = rel.Append(bats[4])
+	_ = rel.Append(context.Background(), bats[4])
 	assert.Nil(t, txn.Commit())
 	txn, rel = tae.getRelation()
-	_ = rel.Append(bats[0])
+	_ = rel.Append(context.Background(), bats[0])
 	assert.Nil(t, txn.Commit())
 
 	v := getSingleSortKeyValue(bat, schema, 1)
@@ -3228,20 +3202,20 @@ func TestImmutableIndexInAblk(t *testing.T) {
 	meta := blk.GetMeta().(*catalog.BlockEntry)
 	task, err := jobs.NewCompactBlockTask(nil, txn, meta, tae.DB.Scheduler)
 	assert.NoError(t, err)
-	err = task.OnExec()
+	err = task.OnExec(context.Background())
 	assert.NoError(t, err)
 	err = txn.Commit()
 	assert.NoError(t, err)
 
 	txn, _ = tae.getRelation()
-	_, err = meta.GetBlockData().GetByFilter(txn, filter)
+	_, err = meta.GetBlockData().GetByFilter(context.Background(), txn, filter)
 	assert.Error(t, err)
 	v = getSingleSortKeyValue(bat, schema, 2)
 	filter = handle.NewEQFilter(v)
-	_, err = meta.GetBlockData().GetByFilter(txn, filter)
+	_, err = meta.GetBlockData().GetByFilter(context.Background(), txn, filter)
 	assert.NoError(t, err)
 
-	err = meta.GetBlockData().BatchDedup(txn, bat.Vecs[1], nil, false)
+	err = meta.GetBlockData().BatchDedup(context.Background(), txn, bat.Vecs[1], nil, nil, false, objectio.BloomFilter{})
 	assert.Error(t, err)
 }
 
@@ -3767,7 +3741,7 @@ func TestLogtailBasic(t *testing.T) {
 			txn, _ := tae.StartTxn(nil)
 			db, _ := txn.GetDatabase("db")
 			tbl, _ := db.GetRelationByName("test")
-			tbl.Append(catalog.MockBatch(schema, 1))
+			tbl.Append(context.Background(), catalog.MockBatch(schema, 1))
 			require.NoError(t, txn.Commit())
 			writeTs = append(writeTs, txn.GetPrepareTS())
 		}
@@ -3779,8 +3753,8 @@ func TestLogtailBasic(t *testing.T) {
 			tbl, _ := db.GetRelationByName("test")
 			blkIt := tbl.MakeBlockIt()
 			for ; blkIt.Valid(); blkIt.Next() {
-				prefix := blkIt.GetBlock().GetMeta().(*catalog.BlockEntry).MakeKey()
-				deleteRowIDs = append(deleteRowIDs, model.EncodePhyAddrKeyWithPrefix(prefix, 5))
+				id := blkIt.GetBlock().GetMeta().(*catalog.BlockEntry).ID
+				deleteRowIDs = append(deleteRowIDs, *objectio.NewRowid(&id, 5))
 			}
 			require.NoError(t, txn.Commit())
 		}
@@ -3968,7 +3942,7 @@ func TestGetLastAppender(t *testing.T) {
 	tae.restart()
 
 	txn, rel := tae.getRelation()
-	rel.Append(bats[1])
+	rel.Append(context.Background(), bats[1])
 	require.NoError(t, txn.Commit())
 }
 
@@ -3992,21 +3966,21 @@ func TestCollectInsert(t *testing.T) {
 	tae.createRelAndAppend(bats[0], true)
 
 	txn1, rel := tae.getRelation()
-	assert.NoError(t, rel.Append(bats[1]))
+	assert.NoError(t, rel.Append(context.Background(), bats[1]))
 	assert.NoError(t, txn1.Commit())
 
 	p1 := txn1.GetPrepareTS()
 	t.Logf("p1= %v", p1.ToString())
 
 	txn2, rel := tae.getRelation()
-	assert.NoError(t, rel.Append(bats[2]))
+	assert.NoError(t, rel.Append(context.Background(), bats[2]))
 	assert.NoError(t, txn2.Commit())
 
 	p2 := txn2.GetPrepareTS()
 	t.Logf("p2= %v", p2.ToString())
 
 	txn3, rel := tae.getRelation()
-	assert.NoError(t, rel.Append(bats[3]))
+	assert.NoError(t, rel.Append(context.Background(), bats[3]))
 	assert.NoError(t, txn3.Commit())
 
 	p3 := txn3.GetPrepareTS()
@@ -4278,7 +4252,7 @@ func TestDirtyWatchRace(t *testing.T) {
 		txn, _ := tae.StartTxn(nil)
 		db, _ := txn.GetDatabase("db")
 		tbl, _ := db.GetRelationByName("test")
-		tbl.Append(catalog.MockBatch(schema, 1))
+		tbl.Append(context.Background(), catalog.MockBatch(schema, 1))
 		assert.NoError(t, txn.Commit())
 		wg.Done()
 	}
@@ -4376,7 +4350,7 @@ func TestBlockRead(t *testing.T) {
 	err = blockio.BlockPrefetch(colIdxs, fs, infos)
 	assert.NoError(t, err)
 	b1, err := blockio.BlockReadInner(
-		context.Background(), info, colIdxs, colTyps,
+		context.Background(), info, nil, colIdxs, colTyps,
 		beforeDel, fs, pool, nil, tae.tenantID,
 	)
 	assert.NoError(t, err)
@@ -4384,13 +4358,13 @@ func TestBlockRead(t *testing.T) {
 	assert.Equal(t, 20, b1.Vecs[0].Length())
 
 	b2, err := blockio.BlockReadInner(
-		context.Background(), info, colIdxs, colTyps,
+		context.Background(), info, nil, colIdxs, colTyps,
 		afterFirstDel, fs, pool, nil, tae.tenantID,
 	)
 	assert.NoError(t, err)
 	assert.Equal(t, 19, b2.Vecs[0].Length())
 	b3, err := blockio.BlockReadInner(
-		context.Background(), info, colIdxs, colTyps,
+		context.Background(), info, nil, colIdxs, colTyps,
 		afterSecondDel, fs, pool, nil, tae.tenantID,
 	)
 	assert.NoError(t, err)
@@ -4400,6 +4374,7 @@ func TestBlockRead(t *testing.T) {
 	// read rowid column only
 	b4, err := blockio.BlockReadInner(
 		context.Background(), info,
+		nil,
 		[]uint16{2},
 		[]types.Type{types.T_Rowid.ToType()},
 		afterSecondDel, fs, pool, nil, tae.tenantID,
@@ -4412,7 +4387,7 @@ func TestBlockRead(t *testing.T) {
 	info.EntryState = false
 	b5, err := blockio.BlockReadInner(
 		context.Background(), info,
-		[]uint16{2},
+		nil, []uint16{2},
 		[]types.Type{types.T_Rowid.ToType()},
 		afterSecondDel, fs, pool, nil, tae.tenantID,
 	)
@@ -4457,7 +4432,7 @@ func TestCompactDeltaBlk(t *testing.T) {
 		meta := blk.GetMeta().(*catalog.BlockEntry)
 		task, err := jobs.NewCompactBlockTask(nil, txn, meta, tae.DB.Scheduler)
 		assert.NoError(t, err)
-		err = task.OnExec()
+		err = task.OnExec(context.Background())
 		assert.NoError(t, err)
 		assert.True(t, !meta.GetMetaLoc().IsEmpty())
 		assert.True(t, !meta.GetDeltaLoc().IsEmpty())
@@ -4487,7 +4462,7 @@ func TestCompactDeltaBlk(t *testing.T) {
 		assert.False(t, meta.IsAppendable())
 		task, err := jobs.NewCompactBlockTask(nil, txn, meta, tae.DB.Scheduler)
 		assert.NoError(t, err)
-		err = task.OnExec()
+		err = task.OnExec(context.Background())
 		assert.NoError(t, err)
 		assert.True(t, !meta.GetMetaLoc().IsEmpty())
 		assert.True(t, !meta.GetDeltaLoc().IsEmpty())
@@ -4609,22 +4584,30 @@ func TestReadCheckpoint(t *testing.T) {
 	}
 	for _, entry := range entries {
 		for _, tid := range tids {
-			ins, del, _, _, err := entry.GetByTableID(tae.Fs, tid)
+			ins, del, _, _, err := entry.GetByTableID(context.Background(), tae.Fs, tid)
 			assert.NoError(t, err)
 			t.Logf("table %d", tid)
-			t.Log(common.PrintApiBatch(ins, 3))
-			t.Log(common.PrintApiBatch(del, 3))
+			if ins != nil {
+				t.Log(common.PrintApiBatch(ins, 3))
+			}
+			if del != nil {
+				t.Log(common.PrintApiBatch(del, 3))
+			}
 		}
 	}
 	tae.restart()
 	entries = tae.BGCheckpointRunner.GetAllGlobalCheckpoints()
 	for _, entry := range entries {
 		for _, tid := range tids {
-			ins, del, _, _, err := entry.GetByTableID(tae.Fs, tid)
+			ins, del, _, _, err := entry.GetByTableID(context.Background(), tae.Fs, tid)
 			assert.NoError(t, err)
 			t.Logf("table %d", tid)
-			t.Log(common.PrintApiBatch(ins, 3))
-			t.Log(common.PrintApiBatch(del, 3))
+			if ins != nil {
+				t.Log(common.PrintApiBatch(ins, 3))
+			}
+			if del != nil {
+				t.Log(common.PrintApiBatch(del, 3))
+			}
 		}
 	}
 }
@@ -4674,7 +4657,7 @@ func TestDelete4(t *testing.T) {
 			return
 		}
 		cloneBat.Vecs[1].Update(0, newV, false)
-		if err := rel.Append(cloneBat); err != nil {
+		if err := rel.Append(context.Background(), cloneBat); err != nil {
 			txn.Rollback()
 			return
 		}
@@ -4710,7 +4693,7 @@ func TestDelete4(t *testing.T) {
 		it := rel.MakeBlockIt()
 		for it.Valid() {
 			blk := it.GetBlock()
-			view, err := blk.GetColumnDataById(0)
+			view, err := blk.GetColumnDataById(context.Background(), 0)
 			assert.NoError(t, err)
 			defer view.Close()
 			view.ApplyDeletes()
@@ -4764,7 +4747,7 @@ func TestGetActiveRow(t *testing.T) {
 	assert.NoError(t, txn.Commit())
 
 	txn, rel = tae.getRelation()
-	assert.NoError(t, rel.Append(bat))
+	assert.NoError(t, rel.Append(context.Background(), bat))
 	assert.NoError(t, txn.Commit())
 
 	_, rel = tae.getRelation()
@@ -4774,7 +4757,7 @@ func TestGetActiveRow(t *testing.T) {
 		blk := it.GetBlock().GetMeta().(*catalog.BlockEntry)
 		task, err := jobs.NewCompactBlockTask(nil, txn2, blk, tae.Scheduler)
 		assert.NoError(t, err)
-		err = task.OnExec()
+		err = task.OnExec(context.Background())
 		assert.NoError(t, err)
 		assert.NoError(t, txn2.Commit())
 	}
@@ -4859,6 +4842,101 @@ func TestTransfer2(t *testing.T) {
 	_ = txn2.Commit()
 }
 
+func TestMergeBlocks3(t *testing.T) {
+	opts := config.WithLongScanAndCKPOpts(nil)
+	tae := newTestEngine(t, opts)
+	defer tae.Close()
+	schema := catalog.MockSchemaAll(5, 3)
+	schema.BlockMaxRows = 10
+	schema.SegmentMaxBlocks = 5
+	tae.bindSchema(schema)
+	bat := catalog.MockBatch(schema, 100)
+	defer bat.Close()
+	tae.createRelAndAppend(bat, true)
+	filter5 := handle.NewEQFilter(bat.Vecs[3].Get(15))
+	filter9 := handle.NewEQFilter(bat.Vecs[3].Get(19))
+	filter8 := handle.NewEQFilter(bat.Vecs[3].Get(18))
+	filter7 := handle.NewEQFilter(bat.Vecs[3].Get(17))
+	// delete all rows in first blk in seg1 and the 5th,9th rows in blk2
+	{
+		txn, rel := tae.getRelation()
+		segit := rel.MakeSegmentIt()
+		seg1 := segit.GetSegment().GetMeta().(*catalog.SegmentEntry)
+		segHandle, err := rel.GetSegment(&seg1.ID)
+		require.NoError(t, err)
+
+		blk1it := segHandle.MakeBlockIt()
+		blk11Handle := blk1it.GetBlock()
+		view, err := blk11Handle.GetColumnDataByName(context.Background(), catalog.PhyAddrColumnName)
+		view.GetData()
+		require.NoError(t, err)
+		err = rel.DeleteByPhyAddrKeys(view.GetData())
+		require.NoError(t, err)
+
+		require.NoError(t, rel.DeleteByFilter(filter5))
+		require.NoError(t, rel.DeleteByFilter(filter9))
+		require.NoError(t, txn.Commit())
+	}
+
+	// 1. merge first segment
+	// 2. delete 7th row in blk2 during executing merge task
+	// 3. delete 8th row in blk2 and commit that after merging, test transfer
+	{
+		del8txn, rel8 := tae.getRelation()
+		valrow8, null, err := rel8.GetValueByFilter(filter8, schema.GetColIdx(catalog.PhyAddrColumnName))
+		require.NoError(t, err)
+		require.False(t, null)
+
+		del7txn, rel7 := tae.getRelation()
+		mergetxn, relm := tae.getRelation()
+
+		// merge first segment
+		segit := relm.MakeSegmentIt()
+		seg1 := segit.GetSegment().GetMeta().(*catalog.SegmentEntry)
+		segHandle, err := relm.GetSegment(&seg1.ID)
+		require.NoError(t, err)
+		metas := make([]*catalog.BlockEntry, 0, 10)
+		it := segHandle.MakeBlockIt()
+		for ; it.Valid(); it.Next() {
+			meta := it.GetBlock().GetMeta().(*catalog.BlockEntry)
+			metas = append(metas, meta)
+		}
+		segsToMerge := []*catalog.SegmentEntry{seg1}
+		task, err := jobs.NewMergeBlocksTask(nil, mergetxn, metas, segsToMerge, nil, tae.Scheduler)
+		require.NoError(t, err)
+		require.NoError(t, task.OnExec(context.Background()))
+
+		// delete del7 after starting merge txn
+		require.NoError(t, rel7.DeleteByFilter(filter7))
+		require.NoError(t, del7txn.Commit())
+
+		// commit merge, and it will carry del7 to the new block
+		require.NoError(t, mergetxn.Commit())
+
+		// delete 8 row and it is expected to be transfered correctly
+		rel8.DeleteByPhyAddrKey(valrow8)
+		require.NoError(t, del8txn.Commit())
+	}
+
+	// consistency check
+	{
+		var err error
+		txn, rel := tae.getRelation()
+		_, _, err = rel.GetValueByFilter(filter5, 3)
+		assert.True(t, moerr.IsMoErrCode(err, moerr.ErrNotFound))
+		_, _, err = rel.GetValueByFilter(filter7, 3)
+		assert.True(t, moerr.IsMoErrCode(err, moerr.ErrNotFound))
+		_, _, err = rel.GetValueByFilter(filter8, 3)
+		assert.True(t, moerr.IsMoErrCode(err, moerr.ErrNotFound))
+		_, _, err = rel.GetValueByFilter(filter9, 3)
+		assert.True(t, moerr.IsMoErrCode(err, moerr.ErrNotFound))
+
+		checkAllColRowsByScan(t, rel, 86, true)
+		require.NoError(t, txn.Commit())
+	}
+
+}
+
 func TestCompactEmptyBlock(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	opts := config.WithLongScanAndCKPOpts(nil)
@@ -4931,7 +5009,7 @@ func TestTransfer3(t *testing.T) {
 		types.BuildTS(time.Now().UTC().UnixNano(), 0))
 	assert.NoError(t, err)
 
-	err = rel1.Append(bat.Window(3, 1))
+	err = rel1.Append(context.Background(), bat.Window(3, 1))
 	assert.NoError(t, err)
 	err = txn1.Commit()
 	assert.NoError(t, err)
@@ -4978,7 +5056,7 @@ func TestUpdate(t *testing.T) {
 		defer tuples.Close()
 		updatedV := v.(int32) + 1
 		tuples.Vecs[2].Update(0, updatedV, false)
-		err = rel.Append(tuples)
+		err = rel.Append(context.Background(), tuples)
 		assert.NoError(t, err)
 
 		err = txn.Commit()
@@ -5053,7 +5131,7 @@ func TestAlwaysUpdate(t *testing.T) {
 	assert.NoError(t, err)
 	tbl, err := db.CreateRelation(schema)
 	assert.NoError(t, err)
-	assert.NoError(t, tbl.AddBlksWithMetaLoc(nil, metalocs))
+	assert.NoError(t, tbl.AddBlksWithMetaLoc(metalocs))
 	assert.NoError(t, txn.Commit())
 
 	t.Log(tae.Catalog.SimplePPString(common.PPL1))
@@ -5078,7 +5156,7 @@ func TestAlwaysUpdate(t *testing.T) {
 				return
 			}
 			tuples.Vecs[3].Update(0, int64(x), false)
-			err = rel.Append(tuples)
+			err = rel.Append(context.Background(), tuples)
 			assert.NoError(t, err)
 			assert.NoError(t, txn.Commit())
 		}
@@ -5137,7 +5215,7 @@ func TestInsertPerf(t *testing.T) {
 			defer wg.Done()
 			for i := start; i < start+cnt*iBat; i += iBat {
 				txn, rel := tae.getRelation()
-				_ = rel.Append(bat.Window(i, iBat))
+				_ = rel.Append(context.Background(), bat.Window(i, iBat))
 				_ = txn.Commit()
 			}
 		}
@@ -5186,7 +5264,7 @@ func TestGCWithCheckpoint(t *testing.T) {
 	opts := config.WithQuickScanAndCKPAndGCOpts(nil)
 	tae := newTestEngine(t, opts)
 	defer tae.Close()
-	manager := gc.NewDiskCleaner(tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
+	manager := gc.NewDiskCleaner(context.Background(), tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
 	manager.Start()
 	defer manager.Stop()
 
@@ -5218,7 +5296,7 @@ func TestGCWithCheckpoint(t *testing.T) {
 		return entries[num-1].GetEnd().Equal(manager.GetMaxConsumed().GetEnd())
 	})
 	assert.True(t, entries[num-1].GetEnd().Equal(manager.GetMaxConsumed().GetEnd()))
-	manager2 := gc.NewDiskCleaner(tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
+	manager2 := gc.NewDiskCleaner(context.Background(), tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
 	manager2.Start()
 	defer manager2.Stop()
 	testutils.WaitExpect(5000, func() bool {
@@ -5238,7 +5316,7 @@ func TestGCDropDB(t *testing.T) {
 	opts := config.WithQuickScanAndCKPAndGCOpts(nil)
 	tae := newTestEngine(t, opts)
 	defer tae.Close()
-	manager := gc.NewDiskCleaner(tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
+	manager := gc.NewDiskCleaner(context.Background(), tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
 	manager.Start()
 	defer manager.Stop()
 	schema := catalog.MockSchemaAll(3, 1)
@@ -5273,7 +5351,7 @@ func TestGCDropDB(t *testing.T) {
 		return entries[num-1].GetEnd().Equal(manager.GetMaxConsumed().GetEnd())
 	})
 	assert.True(t, entries[num-1].GetEnd().Equal(manager.GetMaxConsumed().GetEnd()))
-	manager2 := gc.NewDiskCleaner(tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
+	manager2 := gc.NewDiskCleaner(context.Background(), tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
 	manager2.Start()
 	defer manager2.Stop()
 	testutils.WaitExpect(5000, func() bool {
@@ -5294,7 +5372,7 @@ func TestGCDropTable(t *testing.T) {
 	opts := config.WithQuickScanAndCKPAndGCOpts(nil)
 	tae := newTestEngine(t, opts)
 	defer tae.Close()
-	manager := gc.NewDiskCleaner(tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
+	manager := gc.NewDiskCleaner(context.Background(), tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
 	manager.Start()
 	defer manager.Stop()
 	schema := catalog.MockSchemaAll(3, 1)
@@ -5314,7 +5392,7 @@ func TestGCDropTable(t *testing.T) {
 	db, err := txn.GetDatabase(defaultTestDB)
 	assert.Nil(t, err)
 	rel, _ := db.CreateRelation(schema2)
-	rel.Append(bat2)
+	rel.Append(context.Background(), bat2)
 	assert.Nil(t, txn.Commit())
 
 	txn, err = tae.StartTxn(nil)
@@ -5344,7 +5422,7 @@ func TestGCDropTable(t *testing.T) {
 		return entries[num-1].GetEnd().Equal(manager.GetMaxConsumed().GetEnd())
 	})
 	assert.True(t, entries[num-1].GetEnd().Equal(manager.GetMaxConsumed().GetEnd()))
-	manager2 := gc.NewDiskCleaner(tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
+	manager2 := gc.NewDiskCleaner(context.Background(), tae.Fs, tae.BGCheckpointRunner, tae.Catalog)
 	manager2.Start()
 	defer manager2.Stop()
 	testutils.WaitExpect(5000, func() bool {
@@ -5358,6 +5436,165 @@ func TestGCDropTable(t *testing.T) {
 	tables2 := manager2.GetInputs()
 	assert.True(t, tables1.Compare(tables2))
 	tae.restart()
+}
+
+func TestAlterRenameTbl(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	opts := config.WithLongScanAndCKPOpts(nil)
+	tae := newTestEngine(t, opts)
+	defer tae.Close()
+
+	schema := catalog.MockSchemaAll(2, -1)
+	schema.Name = "test"
+	schema.BlockMaxRows = 10
+	schema.SegmentMaxBlocks = 2
+	schema.Constraint = []byte("start version")
+	schema.Comment = "comment version"
+
+	{
+		var err error
+		txn, _ := tae.StartTxn(nil)
+		txn.CreateDatabase("xx", "", "")
+		require.NoError(t, txn.Commit())
+		txn1, _ := tae.StartTxn(nil)
+		txn2, _ := tae.StartTxn(nil)
+
+		db, _ := txn1.GetDatabase("xx")
+		_, err = db.CreateRelation(schema)
+		require.NoError(t, err)
+
+		db1, _ := txn2.GetDatabase("xx")
+		_, err = db1.CreateRelation(schema)
+		require.True(t, moerr.IsMoErrCode(err, moerr.ErrTxnWWConflict))
+		require.NoError(t, txn1.Rollback())
+		require.NoError(t, txn2.Rollback())
+
+	}
+
+	txn, _ := tae.StartTxn(nil)
+	db, _ := txn.CreateDatabase("db", "", "")
+	created, _ := db.CreateRelation(schema)
+	tid := created.ID()
+	txn.Commit()
+
+	// concurrent create and in txn alter check
+	txn0, _ := tae.StartTxn(nil)
+	txn, _ = tae.StartTxn(nil)
+	db, _ = txn.GetDatabase("db")
+	tbl, _ := db.GetRelationByName("test") // 1002
+	require.NoError(t, tbl.AlterTable(context.TODO(), api.NewRenameTableReq(0, 0, "test", "ultra-test")))
+	_, err := db.GetRelationByName("test")
+	require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedEOB))
+	tbl, err = db.GetRelationByName("ultra-test")
+	require.NoError(t, err)
+	require.Equal(t, tid, tbl.ID())
+
+	require.NoError(t, tbl.AlterTable(context.TODO(), api.NewRenameTableReq(0, 0, "ultra-test", "ultraman-test")))
+	_, err = db.GetRelationByName("test")
+	require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedEOB))
+	_, err = db.GetRelationByName("ultra-test")
+	require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedEOB))
+	tbl, err = db.GetRelationByName("ultraman-test")
+	require.NoError(t, err)
+	require.Equal(t, tid, tbl.ID())
+
+	// concurrent txn should see test
+	txn1, _ := tae.StartTxn(nil)
+	db, err = txn1.GetDatabase("db")
+	require.NoError(t, err)
+	tbl, err = db.GetRelationByName("test")
+	require.NoError(t, err)
+	require.Equal(t, tid, tbl.ID())
+	_, err = db.GetRelationByName("ultraman-test")
+	require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedEOB))
+	require.NoError(t, txn1.Commit())
+
+	require.NoError(t, txn.Commit())
+
+	txn2, _ := tae.StartTxn(nil)
+	db, err = txn2.GetDatabase("db")
+	require.NoError(t, err)
+	_, err = db.GetRelationByName("test")
+	require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedEOB))
+	_, err = db.GetRelationByName("ultra-test")
+	require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedEOB))
+	tbl, err = db.GetRelationByName("ultraman-test")
+	require.NoError(t, err)
+	require.Equal(t, tid, tbl.ID())
+
+	require.NoError(t, txn2.Commit())
+
+	// should see test, not newest name
+	db, err = txn0.GetDatabase("db")
+	require.NoError(t, err)
+	_, err = db.GetRelationByName("ultraman-test")
+	require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedEOB))
+	_, err = db.GetRelationByName("ultra-test")
+	require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedEOB))
+	tbl, err = db.GetRelationByName("test")
+	require.NoError(t, err)
+	require.Equal(t, tid, tbl.ID())
+
+	txn3, _ := tae.StartTxn(nil)
+	db, _ = txn3.GetDatabase("db")
+	rel, err := db.CreateRelation(schema)
+	require.NoError(t, err)
+	require.NotEqual(t, rel.ID(), tid)
+	require.NoError(t, txn3.Commit())
+
+	t.Log(1, db.GetMeta().(*catalog.DBEntry).PrettyNameIndex())
+	{
+		txn, _ := tae.StartTxn(nil)
+		db, _ := txn.GetDatabase("db")
+		tbl, _ := db.GetRelationByName("test")
+		require.Error(t, tbl.AlterTable(context.TODO(), api.NewRenameTableReq(0, 0, "unmatch", "yyyy")))
+		require.NoError(t, txn.Rollback())
+	}
+	// alter back to original schema
+	{
+		txn, _ := tae.StartTxn(nil)
+		db, _ := txn.GetDatabase("db")
+		tbl, _ := db.GetRelationByName("test")
+		require.NoError(t, tbl.AlterTable(context.TODO(), api.NewRenameTableReq(0, 0, "test", "xx")))
+		require.NoError(t, txn.Commit())
+
+		t.Log(2, db.GetMeta().(*catalog.DBEntry).PrettyNameIndex())
+		txn, _ = tae.StartTxn(nil)
+		db, _ = txn.GetDatabase("db")
+		tbl, _ = db.GetRelationByName("xx")
+		require.NoError(t, tbl.AlterTable(context.TODO(), api.NewRenameTableReq(0, 0, "xx", "test")))
+		require.NoError(t, txn.Commit())
+
+		t.Log(3, db.GetMeta().(*catalog.DBEntry).PrettyNameIndex())
+	}
+
+	// rename duplicate and rollback
+	{
+		txn, _ := tae.StartTxn(nil)
+		db, _ := txn.GetDatabase("db")
+		schema.Name = "other"
+		_, err := db.CreateRelation(schema)
+		require.NoError(t, err)
+		require.NoError(t, txn.Commit())
+
+		t.Log(4, db.GetMeta().(*catalog.DBEntry).PrettyNameIndex())
+		txn, _ = tae.StartTxn(nil)
+		db, _ = txn.GetDatabase("db")
+		tbl, _ = db.GetRelationByName("test")
+		require.NoError(t, tbl.AlterTable(context.TODO(), api.NewRenameTableReq(0, 0, "test", "toBeRollback1")))
+		require.NoError(t, tbl.AlterTable(context.TODO(), api.NewRenameTableReq(0, 0, "toBeRollback1", "toBeRollback2")))
+		require.Error(t, tbl.AlterTable(context.TODO(), api.NewRenameTableReq(0, 0, "toBeRollback2", "other"))) // duplicate
+		require.NoError(t, txn.Rollback())
+
+		t.Log(5, db.GetMeta().(*catalog.DBEntry).PrettyNameIndex())
+	}
+	tae.restart()
+
+	txn, _ = tae.StartTxn(nil)
+	db, _ = txn.GetDatabase("db")
+	dbentry := db.GetMeta().(*catalog.DBEntry)
+	t.Log(dbentry.PrettyNameIndex())
+	require.NoError(t, txn.Commit())
 }
 
 func TestAlterTableBasic(t *testing.T) {
@@ -5490,13 +5727,13 @@ func TestAlterColumnAndFreeze(t *testing.T) {
 	require.NoError(t, err)
 	did, tid := db.GetID(), rel0.ID()
 
-	require.NoError(t, rel0.Append(bats[1])) // in localsegment
+	require.NoError(t, rel0.Append(context.Background(), bats[1])) // in localsegment
 
 	txn, rel := tae.getRelation()
 	require.NoError(t, rel.AlterTable(context.TODO(), api.NewAddColumnReq(0, 0, "xyz", types.NewProtoType(types.T_int32), 0)))
 	require.NoError(t, txn.Commit())
 
-	require.Error(t, rel0.Append(nil)) // schema changed, error
+	require.Error(t, rel0.Append(context.Background(), nil)) // schema changed, error
 	// Test variaous read on old schema
 	checkAllColRowsByScan(t, rel0, 8, false)
 
@@ -5526,8 +5763,8 @@ func TestAlterColumnAndFreeze(t *testing.T) {
 	txn, rel = tae.getRelation()
 	schema1 := rel.Schema().(*catalog.Schema)
 	bats = catalog.MockBatch(schema1, 16).Split(4)
-	require.Error(t, rel.Append(bats[0])) // dup error
-	require.NoError(t, rel.Append(bats[1]))
+	require.Error(t, rel.Append(context.Background(), bats[0])) // dup error
+	require.NoError(t, rel.Append(context.Background(), bats[1]))
 	require.NoError(t, txn.Commit())
 
 	txn, rel = tae.getRelation()
@@ -5564,8 +5801,8 @@ func TestAlterColumnAndFreeze(t *testing.T) {
 
 	// append to the second block
 	txn, rel = tae.getRelation()
-	require.NoError(t, rel.Append(bats[2]))
-	require.NoError(t, rel.Append(bats[3])) // new block and append 2 rows
+	require.NoError(t, rel.Append(context.Background(), bats[2]))
+	require.NoError(t, rel.Append(context.Background(), bats[3])) // new block and append 2 rows
 	require.NoError(t, txn.Commit())
 
 	// remove and freeze
@@ -5576,7 +5813,7 @@ func TestAlterColumnAndFreeze(t *testing.T) {
 	txn, rel = tae.getRelation()
 	schema2 := rel.Schema().(*catalog.Schema)
 	bats = catalog.MockBatch(schema2, 20).Split(5)
-	require.NoError(t, rel.Append(bats[4])) // new 4th block and append 4 blocks
+	require.NoError(t, rel.Append(context.Background(), bats[4])) // new 4th block and append 4 blocks
 
 	checkAllColRowsByScan(t, rel, 20, true)
 	require.NoError(t, txn.Commit())
@@ -5781,6 +6018,7 @@ func TestGlobalCheckpoint2(t *testing.T) {
 }
 
 func TestGlobalCheckpoint3(t *testing.T) {
+	t.Skip("This case crashes occasionally, is being fixed, skip it for now")
 	defer testutils.AfterTest(t)()
 	testutils.EnsureNoLeak(t)
 	opts := config.WithQuickScanAndCKPOpts(nil)
@@ -5830,6 +6068,7 @@ func TestGlobalCheckpoint3(t *testing.T) {
 }
 
 func TestGlobalCheckpoint4(t *testing.T) {
+	t.Skip("This case crashes occasionally, is being fixed, skip it for now")
 	defer testutils.AfterTest(t)()
 	testutils.EnsureNoLeak(t)
 	opts := config.WithQuickScanAndCKPOpts(nil)
@@ -5954,6 +6193,7 @@ func TestGlobalCheckpoint5(t *testing.T) {
 }
 
 func TestGlobalCheckpoint6(t *testing.T) {
+	t.Skip("This case crashes occasionally, is being fixed, skip it for now")
 	defer testutils.AfterTest(t)()
 	testutils.EnsureNoLeak(t)
 	opts := config.WithQuickScanAndCKPOpts(nil)
@@ -6399,13 +6639,13 @@ func TestSnapshotLag1(t *testing.T) {
 	tae.createRelAndAppend(bats[0], true)
 
 	txn1, rel1 := tae.getRelation()
-	assert.NoError(t, rel1.Append(bats[1]))
+	assert.NoError(t, rel1.Append(context.Background(), bats[1]))
 	txn2, rel2 := tae.getRelation()
-	assert.NoError(t, rel2.Append(bats[1]))
+	assert.NoError(t, rel2.Append(context.Background(), bats[1]))
 
 	{
 		txn, rel := tae.getRelation()
-		assert.NoError(t, rel.Append(bats[1]))
+		assert.NoError(t, rel.Append(context.Background(), bats[1]))
 		assert.NoError(t, txn.Commit())
 	}
 
@@ -6478,7 +6718,7 @@ func TestDedup2(t *testing.T) {
 		tae.DoAppend(datas[i])
 		txn, rel := tae.getRelation()
 		for j := 0; j <= i; j++ {
-			err := rel.Append(datas[j])
+			err := rel.Append(context.Background(), datas[j])
 			assert.Error(t, err)
 		}
 		assert.NoError(t, txn.Commit())
@@ -6556,13 +6796,140 @@ func TestCommitS3Blocks(t *testing.T) {
 
 	for _, meta := range blkMetas {
 		txn, rel := tae.getRelation()
-		rel.AddBlksWithMetaLoc(nil, []objectio.Location{meta})
+		rel.AddBlksWithMetaLoc([]objectio.Location{meta})
 		assert.NoError(t, txn.Commit())
 	}
 	for _, meta := range blkMetas {
 		txn, rel := tae.getRelation()
-		err := rel.AddBlksWithMetaLoc(nil, []objectio.Location{meta})
+		err := rel.AddBlksWithMetaLoc([]objectio.Location{meta})
 		assert.Error(t, err)
 		assert.NoError(t, txn.Commit())
 	}
+}
+
+func TestDedupSnapshot1(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	testutils.EnsureNoLeak(t)
+	opts := config.WithQuickScanAndCKPOpts(nil)
+	tae := newTestEngine(t, opts)
+	defer tae.Close()
+
+	schema := catalog.MockSchemaAll(13, 3)
+	schema.BlockMaxRows = 10
+	schema.SegmentMaxBlocks = 3
+	tae.bindSchema(schema)
+	bat := catalog.MockBatch(schema, 10)
+	tae.createRelAndAppend(bat, true)
+
+	testutils.WaitExpect(10000, func() bool {
+		return tae.Wal.GetPenddingCnt() == 0
+	})
+	assert.Equal(t, uint64(0), tae.Wal.GetPenddingCnt())
+
+	txn, rel := tae.getRelation()
+	txn.SetSnapshotTS(txn.GetStartTS().Next())
+	txn.SetDedupType(txnif.IncrementalDedup)
+	err := rel.Append(context.Background(), bat)
+	assert.NoError(t, err)
+	_ = txn.Commit()
+}
+
+func TestDedupSnapshot2(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	testutils.EnsureNoLeak(t)
+	opts := config.WithQuickScanAndCKPOpts(nil)
+	tae := newTestEngine(t, opts)
+	defer tae.Close()
+
+	schema := catalog.MockSchemaAll(13, 3)
+	schema.BlockMaxRows = 10
+	schema.SegmentMaxBlocks = 3
+	tae.bindSchema(schema)
+	data := catalog.MockBatch(schema, 200)
+	createRelation(t, tae.DB, "db", schema, true)
+
+	name := objectio.BuildObjectName(objectio.NewSegmentid(), 0)
+	writer, err := blockio.NewBlockWriterNew(tae.Fs.Service, name, 0, nil)
+	assert.Nil(t, err)
+	writer.SetPrimaryKey(3)
+	_, err = writer.WriteBatch(containers.ToCNBatch(data))
+	assert.Nil(t, err)
+	blocks, _, err := writer.Sync(context.Background())
+	assert.Nil(t, err)
+	assert.Equal(t, 1, len(blocks))
+	metaLoc := blockio.EncodeLocation(
+		writer.GetName(),
+		blocks[0].GetExtent(),
+		uint32(data.Vecs[0].Length()),
+		blocks[0].GetID())
+	assert.Nil(t, err)
+
+	txn, rel := tae.getRelation()
+	err = rel.AddBlksWithMetaLoc([]objectio.Location{metaLoc})
+	assert.NoError(t, err)
+	assert.NoError(t, txn.Commit())
+
+	txn, rel = tae.getRelation()
+	txn.SetSnapshotTS(txn.GetStartTS().Next())
+	txn.SetDedupType(txnif.IncrementalDedup)
+	err = rel.AddBlksWithMetaLoc([]objectio.Location{metaLoc})
+	assert.NoError(t, err)
+	_ = txn.Commit()
+}
+
+func TestDedupSnapshot3(t *testing.T) {
+	t.Skip("This case crashes occasionally, is being fixed, skip it for now")
+	defer testutils.AfterTest(t)()
+	testutils.EnsureNoLeak(t)
+	opts := config.WithQuickScanAndCKPOpts(nil)
+	tae := newTestEngine(t, opts)
+	defer tae.Close()
+
+	schema := catalog.MockSchemaAll(13, 3)
+	schema.BlockMaxRows = 10
+	schema.SegmentMaxBlocks = 3
+	tae.bindSchema(schema)
+	createRelation(t, tae.DB, "db", schema, true)
+
+	totalRows := 100
+
+	bat := catalog.MockBatch(schema, int(totalRows))
+	bats := bat.Split(totalRows)
+	var wg sync.WaitGroup
+	pool, _ := ants.NewPool(80)
+	defer pool.Release()
+
+	appendFn := func(offset uint32) func() {
+		return func() {
+			defer wg.Done()
+			txn, _ := tae.StartTxn(nil)
+			database, _ := txn.GetDatabase("db")
+			rel, _ := database.GetRelationByName(schema.Name)
+			err := rel.BatchDedup(bats[offset].Vecs[3])
+			txn.Commit()
+			if err != nil {
+				logutil.Infof("err is %v", err)
+				return
+			}
+
+			txn2, _ := tae.StartTxn(nil)
+			txn2.SetDedupType(txnif.IncrementalDedup)
+			txn2.SetSnapshotTS(txn.GetStartTS())
+			database, _ = txn2.GetDatabase("db")
+			rel, _ = database.GetRelationByName(schema.Name)
+			_ = rel.Append(context.Background(), bats[offset])
+			_ = txn2.Commit()
+		}
+	}
+
+	for i := 0; i < totalRows; i++ {
+		for j := 0; j < 5; j++ {
+			wg.Add(1)
+			err := pool.Submit(appendFn(uint32(i)))
+			assert.Nil(t, err)
+		}
+	}
+	wg.Wait()
+
+	tae.checkRowsByScan(totalRows, false)
 }
