@@ -36,18 +36,10 @@ func LoadColumns(ctx context.Context,
 	m *mpool.MPool,
 	accountId uint32) (bat *batch.Batch, err error) {
 	name := location.Name()
-	//<<<<<<< HEAD
 	fileName := path.Join(strconv.Itoa(int(accountId)), name.String())
-	extent := location.Extent()
 	var meta objectio.ObjectMeta
 	var ioVectors *fileservice.IOVector
-	if meta, err = objectio.ReadObjectMeta(ctx, fileName, &extent, false, fs); err != nil {
-	}
-	//=======
-	var meta objectio.ObjectMeta
-	var ioVectors *fileservice.IOVector
-	if meta, err = objectio.FastLoadObjectMeta(ctx, &location, fs); err != nil {
-		//>>>>>>> main
+	if meta, err = objectio.FastLoadObjectMetaByName(ctx, fileName, &location, fs); err != nil {
 		return
 	}
 	if ioVectors, err = objectio.ReadOneBlock(ctx, &meta, fileName, location.ID(), cols, typs, m, fs); err != nil {

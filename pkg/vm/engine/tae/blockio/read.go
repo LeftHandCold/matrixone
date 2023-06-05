@@ -68,9 +68,10 @@ func BlockCompactionRead(
 	colTypes []types.Type,
 	fs fileservice.FileService,
 	mp *mpool.MPool,
+	accountId uint32,
 ) (*batch.Batch, error) {
 
-	loaded, err := LoadColumns(ctx, seqnums, colTypes, fs, location, mp)
+	loaded, err := LoadColumns(ctx, seqnums, colTypes, fs, location, mp, accountId)
 	if err != nil {
 		return nil, err
 	}
