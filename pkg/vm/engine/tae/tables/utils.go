@@ -35,11 +35,12 @@ func LoadPersistedColumnData(
 	id *common.ID,
 	def *catalog.ColDef,
 	location objectio.Location,
+	tid uint32,
 ) (vec containers.Vector, err error) {
 	if def.IsPhyAddr() {
 		return model.PreparePhyAddrData(&id.BlockID, 0, location.Rows())
 	}
-	bat, err := blockio.LoadColumns(ctx, []uint16{uint16(def.SeqNum)}, []types.Type{def.Type}, fs.Service, location, nil)
+	bat, err := blockio.LoadColumns(ctx, []uint16{uint16(def.SeqNum)}, []types.Type{def.Type}, fs.Service, location, tid, nil)
 	if err != nil {
 		return
 	}
@@ -54,8 +55,9 @@ func LoadPersistedDeletes(
 	ctx context.Context,
 	pkName string,
 	fs *objectio.ObjectFS,
-	location objectio.Location) (bat *containers.Batch, err error) {
-	movbat, err := blockio.LoadColumns(ctx, []uint16{0, 1, 2, 3}, nil, fs.Service, location, nil)
+	location objectio.Location,
+	tid uint32) (bat *containers.Batch, err error) {
+	movbat, err := blockio.LoadColumns(ctx, []uint16{0, 1, 2, 3}, nil, fs.Service, location, tid, nil)
 	if err != nil {
 		return
 	}
@@ -97,7 +99,7 @@ func MakeImmuIndex(
 		return
 	}
 	idx = indexwrapper.NewImmutIndex(
-		*pkZM, bf, meta.GetMetaLoc(), cache, fs,
+		*pkZM, bf, meta.GetMetaLoc(), cache, fs, meta.GetSegment().GetTable().GetDB().GetTenantID(),
 	)
 	return
 }

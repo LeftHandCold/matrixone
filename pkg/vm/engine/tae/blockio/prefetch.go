@@ -27,18 +27,20 @@ type prefetchParams struct {
 	fs     fileservice.FileService
 	key    objectio.Location
 	reader *objectio.ObjectReader
+	tid    uint32
 }
 
-func BuildPrefetchParams(service fileservice.FileService, key objectio.Location) (prefetchParams, error) {
-	return buildPrefetchParams(service, key), nil
+func BuildPrefetchParams(service fileservice.FileService, key objectio.Location, tid uint32) (prefetchParams, error) {
+	return buildPrefetchParams(service, key, tid), nil
 }
 
-func buildPrefetchParams(service fileservice.FileService, key objectio.Location) prefetchParams {
+func buildPrefetchParams(service fileservice.FileService, key objectio.Location, tid uint32) prefetchParams {
 	ids := make(map[uint16]*objectio.ReadBlockOptions)
 	return prefetchParams{
 		ids: ids,
 		fs:  service,
 		key: key,
+		tid: tid,
 	}
 }
 

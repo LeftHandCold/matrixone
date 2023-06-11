@@ -61,7 +61,7 @@ func (r *runner) Replay(dataFactory catalog.DataFactory) (maxTs types.TS, err er
 	})
 	targetIdx := metaFiles[len(metaFiles)-1].index
 	dir := dirs[targetIdx]
-	reader, err := blockio.NewFileReader(r.fs.Service, CheckpointDir+dir.Name)
+	reader, err := blockio.NewFileReader(r.fs.Service, CheckpointDir+dir.Name, objectio.GTID)
 	if err != nil {
 		return
 	}
@@ -135,7 +135,7 @@ func (r *runner) Replay(dataFactory catalog.DataFactory) (maxTs types.TS, err er
 	for i := 0; i < bat.Length(); i++ {
 		metaLoc := objectio.Location(bat.GetVectorByName(CheckpointAttr_MetaLocation).Get(i).([]byte))
 
-		err = blockio.PrefetchMeta(r.fs.Service, metaLoc)
+		err = blockio.PrefetchMeta(r.fs.Service, metaLoc, objectio.GTID)
 		if err != nil {
 			return
 		}

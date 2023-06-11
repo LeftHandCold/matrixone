@@ -16,6 +16,8 @@ package objectio
 
 import (
 	"bytes"
+	"path"
+	"strconv"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -63,6 +65,11 @@ func (b *ObjectBuffer) Length() int {
 
 func (b *ObjectBuffer) GetData() fileservice.IOVector {
 	return b.vector
+}
+
+func (b *ObjectBuffer) SetAccountId(id int) {
+	name := b.vector.FilePath
+	b.vector.FilePath = path.Join(strconv.Itoa(id), name)
 }
 
 func (b *ObjectBuffer) SetDataOptions(items ...WriteOptions) {

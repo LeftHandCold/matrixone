@@ -422,7 +422,7 @@ func (h *Handle) prefetchDeleteRowID(ctx context.Context,
 	if err != nil {
 		return err
 	}
-	pref, err := blockio.BuildPrefetchParams(h.db.Fs.Service, loc)
+	pref, err := blockio.BuildPrefetchParams(h.db.Fs.Service, loc, req.Schema.AcInfo.TenantID)
 	if err != nil {
 		return err
 	}
@@ -448,7 +448,7 @@ func (h *Handle) prefetchMetadata(ctx context.Context,
 		if err != nil {
 			return err
 		}
-		err = blockio.PrefetchMeta(h.db.Fs.Service, loc)
+		err = blockio.PrefetchMeta(h.db.Fs.Service, loc, req.Schema.AcInfo.TenantID)
 		if err != nil {
 			return err
 		}
@@ -904,6 +904,7 @@ func (h *Handle) HandleWrite(
 				nil,
 				h.db.Fs.Service,
 				location,
+				req.Schema.AcInfo.TenantID,
 				nil,
 			)
 			if err != nil {

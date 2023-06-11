@@ -59,9 +59,10 @@ func putJob(job *tasks.Job) {
 
 func getReader(
 	fs fileservice.FileService,
-	location objectio.Location) *objectio.ObjectReader {
+	location objectio.Location,
+	tid uint32) *objectio.ObjectReader {
 	job := _readerPool.Get().(*objectio.ObjectReader)
-	job.Init(location, fs)
+	job.Init(location, tid, fs)
 	return job
 }
 
@@ -132,7 +133,7 @@ func fetchReader(params prefetchParams) (reader *objectio.ObjectReader) {
 	if params.reader != nil {
 		reader = params.reader
 	} else {
-		reader = getReader(params.fs, params.key)
+		reader = getReader(params.fs, params.key, params.tid)
 	}
 	return
 }

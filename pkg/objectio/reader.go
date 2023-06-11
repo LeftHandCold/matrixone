@@ -33,10 +33,10 @@ type objectReaderV1 struct {
 	metaCache atomic.Pointer[objectMetaV1]
 }
 
-func newObjectReaderWithStrV1(name string, fs fileservice.FileService, opts ...ReaderOptionFunc) (*objectReaderV1, error) {
+func newObjectReaderWithStrV1(name string, tid uint32, fs fileservice.FileService, opts ...ReaderOptionFunc) (*objectReaderV1, error) {
 	reader := &objectReaderV1{
 		Object: Object{
-			name: name,
+			name: GetFilePathByAccountID(tid, name),
 			fs:   fs,
 		},
 	}
@@ -48,6 +48,7 @@ func newObjectReaderWithStrV1(name string, fs fileservice.FileService, opts ...R
 
 func newObjectReaderV1(
 	oname *ObjectName,
+	tid uint32,
 	metaExt *Extent,
 	fs fileservice.FileService,
 	opts ...ReaderOptionFunc,
@@ -55,7 +56,7 @@ func newObjectReaderV1(
 	name := oname.String()
 	reader := &objectReaderV1{
 		Object: Object{
-			name: name,
+			name: GetFilePathByAccountID(tid, name),
 			fs:   fs,
 		},
 		oname:   oname,
@@ -67,10 +68,10 @@ func newObjectReaderV1(
 	return reader, nil
 }
 
-func (r *objectReaderV1) Init(location Location, fs fileservice.FileService) {
+func (r *objectReaderV1) Init(location Location, tid uint32, fs fileservice.FileService) {
 	oName := location.Name()
 	extent := location.Extent()
-	r.name = oName.String()
+	r.name = GetFilePathByAccountID(tid, oName.String())
 	r.oname = &oName
 	r.metaExt = &extent
 	r.fs = fs
@@ -131,7 +132,7 @@ func (r *objectReaderV1) ReadMeta(
 	}
 	if r.oname != nil {
 		// read table data block
-		if meta, err = LoadObjectMetaByExtent(ctx, r.oname, r.metaExt, r.noLRUCache, r.fs); err != nil {
+		if meta, err = LoadObjectMetaByExtent(ctx, r.name, r.oname, r.metaExt, r.noLRUCache, r.fs); err != nil {
 			return
 		}
 	} else {

@@ -149,5 +149,7 @@ func (n *baseNode) LoadPersistedColumnData(colIdx int) (vec containers.Vector, e
 		n.table.store.dataFactory.Fs,
 		nil,
 		def,
-		location)
+		location,
+		n.meta.GetSegment().GetTable().GetDB().GetTenantID(),
+	)
 }

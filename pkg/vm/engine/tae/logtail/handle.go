@@ -688,12 +688,12 @@ func LoadCheckpointEntries(
 		if err != nil {
 			return nil, err
 		}
-		reader, err := blockio.NewObjectReader(fs, location)
+		reader, err := blockio.NewObjectReader(fs, location, objectio.GTID)
 		if err != nil {
 			return nil, err
 		}
 		readers[i] = reader
-		err = blockio.PrefetchMeta(fs, location)
+		err = blockio.PrefetchMeta(fs, location, objectio.GTID)
 		if err != nil {
 			return nil, err
 		}
@@ -701,7 +701,7 @@ func LoadCheckpointEntries(
 	}
 
 	for i := range locations {
-		pref, err := blockio.BuildPrefetchParams(fs, objectLocations[i])
+		pref, err := blockio.BuildPrefetchParams(fs, objectLocations[i], objectio.GTID)
 		if err != nil {
 			return nil, err
 		}

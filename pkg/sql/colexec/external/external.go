@@ -816,7 +816,7 @@ func ScanZonemapFile(ctx context.Context, param *ExternalParam, proc *process.Pr
 			}
 		}
 
-		param.Filter.blockReader, err = blockio.NewFileReader(service, param.Fileparam.Filepath)
+		param.Filter.blockReader, err = blockio.NewFileReader(service, param.Fileparam.Filepath, proc.SessionInfo.AccountId)
 		if err != nil {
 			return nil, err
 		}

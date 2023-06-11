@@ -140,5 +140,5 @@ func (n *pnode) GetColumnDataById(idx int) (view *model.ColumnView, err error) {
 
 func (n *pnode) Prefetch(idxes []uint16) error {
 	key := n.meta.FastGetMetaLoc()
-	return blockio.Prefetch(idxes, []uint16{key.ID()}, n.table.store.dataFactory.Fs.Service, key)
+	return blockio.Prefetch(idxes, []uint16{key.ID()}, n.table.store.dataFactory.Fs.Service, key, n.meta.GetSegment().GetTable().GetDB().GetTenantID())
 }

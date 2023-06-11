@@ -73,9 +73,10 @@ func BlockCompactionRead(
 	colTypes []types.Type,
 	fs fileservice.FileService,
 	mp *mpool.MPool,
+	tid uint32,
 ) (*batch.Batch, error) {
 
-	loaded, err := LoadColumns(ctx, seqnums, colTypes, fs, location, mp)
+	loaded, err := LoadColumns(ctx, seqnums, colTypes, fs, location, tid, mp)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +136,7 @@ func BlockReadInner(
 	if !info.DeltaLocation().IsEmpty() {
 		var deletes *batch.Batch
 		// load from storage
-		if deletes, err = readBlockDelete(ctx, info.DeltaLocation(), fs); err != nil {
+		if deletes, err = readBlockDelete(ctx, info.DeltaLocation(), fs, vp.GetAccountId()); err != nil {
 			return
 		}
 
@@ -367,7 +368,7 @@ func readBlockData(
 			return
 		}
 
-		if loaded, err = LoadColumns(ctx, cols, typs, fs, info.MetaLocation(), m); err != nil {
+		if loaded, err = LoadColumns(ctx, cols, typs, fs, info.MetaLocation(), vp.GetAccountId(), m); err != nil {
 			return
 		}
 
@@ -415,8 +416,8 @@ func readBlockData(
 	return
 }
 
-func readBlockDelete(ctx context.Context, deltaloc objectio.Location, fs fileservice.FileService) (*batch.Batch, error) {
-	bat, err := LoadColumns(ctx, []uint16{0, 1, 2, 3}, nil, fs, deltaloc, nil)
+func readBlockDelete(ctx context.Context, deltaloc objectio.Location, fs fileservice.FileService, tid uint32) (*batch.Batch, error) {
+	bat, err := LoadColumns(ctx, []uint16{0, 1, 2, 3}, nil, fs, deltaloc, tid, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -447,11 +448,11 @@ func evalDeleteRowsByTimestamp(deletes *batch.Batch, ts types.TS) (rows *nulls.B
 // columns  Which columns should be taken for columns
 // service  fileservice
 // infos [s3object name][block]
-func BlockPrefetch(idxes []uint16, service fileservice.FileService, infos [][]*pkgcatalog.BlockInfo) error {
+func BlockPrefetch(idxes []uint16, service fileservice.FileService, infos [][]*pkgcatalog.BlockInfo, tid uint32) error {
 	// Generate prefetch task
 	for i := range infos {
 		// build reader
-		pref, err := BuildPrefetchParams(service, infos[i][0].MetaLocation())
+		pref, err := BuildPrefetchParams(service, infos[i][0].MetaLocation(), tid)
 		if err != nil {
 			return err
 		}
@@ -459,7 +460,7 @@ func BlockPrefetch(idxes []uint16, service fileservice.FileService, infos [][]*p
 			pref.AddBlock(idxes, []uint16{info.MetaLocation().ID()})
 			if !info.DeltaLocation().IsEmpty() {
 				// Need to read all delete
-				err = Prefetch([]uint16{0, 1, 2}, []uint16{info.DeltaLocation().ID()}, service, info.DeltaLocation())
+				err = Prefetch([]uint16{0, 1, 2}, []uint16{info.DeltaLocation().ID()}, service, info.DeltaLocation(), tid)
 				if err != nil {
 					return err
 				}

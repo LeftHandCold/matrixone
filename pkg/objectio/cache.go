@@ -41,6 +41,7 @@ func InitMetaCache(size int64) {
 
 func LoadObjectMetaByExtent(
 	ctx context.Context,
+	oname string,
 	name *ObjectName,
 	extent *Extent,
 	noLRUCache bool,
@@ -50,15 +51,16 @@ func LoadObjectMetaByExtent(
 		meta = ObjectMeta(v)
 		return
 	}
-	if meta, err = ReadObjectMeta(ctx, name.String(), extent, noLRUCache, fs); err != nil {
+	if meta, err = ReadObjectMeta(ctx, oname, extent, noLRUCache, fs); err != nil {
 		return
 	}
 	metaCache.Set(*name.Short(), meta, int64(len(meta[:])), false)
 	return
 }
 
-func FastLoadObjectMeta(ctx context.Context, location *Location, fs fileservice.FileService) (ObjectMeta, error) {
+func FastLoadObjectMeta(ctx context.Context, tid uint32, location *Location, fs fileservice.FileService) (ObjectMeta, error) {
 	extent := location.Extent()
 	name := location.Name()
-	return LoadObjectMetaByExtent(ctx, &name, &extent, true, fs)
+	oname := GetFilePathByAccountID(tid, name.String())
+	return LoadObjectMetaByExtent(ctx, oname, &name, &extent, true, fs)
 }

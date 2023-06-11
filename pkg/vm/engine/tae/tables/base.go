@@ -170,6 +170,7 @@ func (blk *baseBlock) LoadPersistedCommitTS() (vec containers.Vector, err error)
 		nil,
 		blk.fs.Service,
 		location,
+		blk.meta.GetSegment().GetTable().GetDB().GetTenantID(),
 		nil,
 	)
 	if err != nil {
@@ -210,7 +211,8 @@ func (blk *baseBlock) LoadPersistedColumnData(ctx context.Context, schema *catal
 		blk.fs,
 		blk.meta.AsCommonID(),
 		def,
-		location)
+		location,
+		blk.meta.GetSegment().GetTable().GetDB().GetTenantID())
 }
 
 func (blk *baseBlock) LoadPersistedDeletes(ctx context.Context) (bat *containers.Batch, err error) {
@@ -223,7 +225,8 @@ func (blk *baseBlock) LoadPersistedDeletes(ctx context.Context) (bat *containers
 		ctx,
 		pkName,
 		blk.fs,
-		location)
+		location,
+		blk.meta.GetSegment().GetTable().GetDB().GetTenantID())
 }
 
 func (blk *baseBlock) FillPersistedDeletes(
@@ -260,7 +263,7 @@ func (blk *baseBlock) Prefetch(idxes []uint16) error {
 		return nil
 	} else {
 		key := blk.meta.GetMetaLoc()
-		return blockio.Prefetch(idxes, []uint16{key.ID()}, blk.fs.Service, key)
+		return blockio.Prefetch(idxes, []uint16{key.ID()}, blk.fs.Service, key, blk.meta.GetSegment().GetTable().GetDB().GetTenantID())
 	}
 }
 

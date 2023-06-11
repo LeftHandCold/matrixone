@@ -149,7 +149,7 @@ func (p *PartitionReader) Read(ctx context.Context, colNames []string, expr *pla
 			}
 			name := location.Name().String()
 			if name != p.currentFileName {
-				p.s3BlockReader, err = blockio.NewObjectReader(p.s3FileService, location)
+				p.s3BlockReader, err = blockio.NewObjectReader(p.s3FileService, location, vp.GetAccountId())
 				p.extendId2s3File[name] = 0
 				p.currentFileName = name
 				if err != nil {

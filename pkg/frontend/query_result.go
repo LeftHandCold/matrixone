@@ -248,7 +248,7 @@ func checkPrivilege(uuids []string, requestCtx context.Context, ses *Session) er
 	for _, id := range uuids {
 		// var size int64 = -1
 		path := catalog.BuildQueryResultMetaPath(ses.GetTenantInfo().GetTenant(), id)
-		reader, err := blockio.NewFileReader(f, path)
+		reader, err := blockio.NewFileReader(f, path, ses.accountId)
 		if err != nil {
 			return err
 		}
@@ -572,7 +572,7 @@ func openResultMeta(ctx context.Context, ses *Session, queryId string) (*plan.Re
 	}
 	metaFile := catalog.BuildQueryResultMetaPath(account.GetTenant(), queryId)
 	// read meta's meta
-	reader, err := blockio.NewFileReader(ses.GetParameterUnit().FileService, metaFile)
+	reader, err := blockio.NewFileReader(ses.GetParameterUnit().FileService, metaFile, ses.accountId)
 	if err != nil {
 		return nil, err
 	}
@@ -628,7 +628,7 @@ func getResultFiles(ctx context.Context, ses *Session, queryId string) ([]result
 func openResultFile(ctx context.Context, ses *Session, fileName string, fileSize int64) (*blockio.BlockReader, []objectio.BlockObject, error) {
 	// read result's blocks
 	filePath := getPathOfQueryResultFile(fileName)
-	reader, err := blockio.NewFileReader(ses.GetParameterUnit().FileService, filePath)
+	reader, err := blockio.NewFileReader(ses.GetParameterUnit().FileService, filePath, ses.accountId)
 	if err != nil {
 		return nil, nil, err
 	}

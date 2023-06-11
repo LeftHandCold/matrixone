@@ -244,6 +244,10 @@ func (proc *Process) PutVector(vec *vector.Vector) {
 	proc.vp.putVector(vec)
 }
 
+func (proc *Process) GetAccountId() uint32 {
+	return proc.SessionInfo.AccountId
+}
+
 func (proc *Process) GetVector(typ types.Type) *vector.Vector {
 	if vec := proc.vp.getVector(typ); vec != nil {
 		vec.Reset(typ)

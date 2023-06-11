@@ -49,11 +49,12 @@ type fetchParams struct {
 func NewObjectReader(
 	service fileservice.FileService,
 	key objectio.Location,
+	tid uint32,
 	opts ...objectio.ReaderOptionFunc,
 ) (*BlockReader, error) {
 	name := key.Name()
 	metaExt := key.Extent()
-	reader, err := objectio.NewObjectReader(&name, &metaExt, service, opts...)
+	reader, err := objectio.NewObjectReader(&name, tid, &metaExt, service, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -63,8 +64,8 @@ func NewObjectReader(
 	}, nil
 }
 
-func NewFileReader(service fileservice.FileService, name string) (*BlockReader, error) {
-	reader, err := objectio.NewObjectReaderWithStr(name, service)
+func NewFileReader(service fileservice.FileService, name string, tid uint32) (*BlockReader, error) {
+	reader, err := objectio.NewObjectReaderWithStr(name, tid, service)
 	if err != nil {
 		return nil, err
 	}
@@ -74,8 +75,8 @@ func NewFileReader(service fileservice.FileService, name string) (*BlockReader, 
 	}, nil
 }
 
-func NewFileReaderNoCache(service fileservice.FileService, name string) (*BlockReader, error) {
-	reader, err := objectio.NewObjectReaderWithStr(name, service, objectio.WithNoLRUCacheOption(true))
+func NewFileReaderNoCache(service fileservice.FileService, name string, tid uint32) (*BlockReader, error) {
+	reader, err := objectio.NewObjectReaderWithStr(name, tid, service, objectio.WithNoLRUCacheOption(true))
 	if err != nil {
 		return nil, err
 	}
@@ -232,9 +233,9 @@ func PrefetchWithMerged(params prefetchParams) error {
 	return pipeline.Prefetch(params)
 }
 
-func Prefetch(idxes []uint16, ids []uint16, service fileservice.FileService, key objectio.Location) error {
+func Prefetch(idxes []uint16, ids []uint16, service fileservice.FileService, key objectio.Location, tid uint32) error {
 
-	params, err := BuildPrefetchParams(service, key)
+	params, err := BuildPrefetchParams(service, key, tid)
 	if err != nil {
 		return err
 	}
@@ -242,16 +243,16 @@ func Prefetch(idxes []uint16, ids []uint16, service fileservice.FileService, key
 	return pipeline.Prefetch(params)
 }
 
-func PrefetchMeta(service fileservice.FileService, key objectio.Location) error {
-	params, err := BuildPrefetchParams(service, key)
+func PrefetchMeta(service fileservice.FileService, key objectio.Location, tid uint32) error {
+	params, err := BuildPrefetchParams(service, key, tid)
 	if err != nil {
 		return err
 	}
 	return pipeline.Prefetch(params)
 }
 
-func PrefetchFile(service fileservice.FileService, name string) error {
-	reader, err := NewFileReader(service, name)
+func PrefetchFile(service fileservice.FileService, name string, tid uint32) error {
+	reader, err := NewFileReader(service, name, tid)
 	if err != nil {
 		return err
 	}

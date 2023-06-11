@@ -185,7 +185,7 @@ func (tbl *txnTable) MaxAndMinValues(ctx context.Context) ([][2]any, []uint8, er
 		if objectio.IsSameObjectLocVsMeta(location, meta) {
 			return nil
 		}
-		if meta, err = objectio.FastLoadObjectMeta(ctx, &location, tbl.db.txn.proc.FileService); err != nil {
+		if meta, err = objectio.FastLoadObjectMeta(ctx, tbl.db.txn.proc.GetAccountId(), &location, tbl.db.txn.proc.FileService); err != nil {
 			return err
 		}
 		if inited {
@@ -368,7 +368,7 @@ func (tbl *txnTable) GetColumMetadataScanInfo(ctx context.Context, name string) 
 		blk := tbl.blockInfos[j]
 		location := blk.MetaLocation()
 		if !objectio.IsSameObjectLocVsMeta(location, meta) {
-			if meta, loadErr = objectio.FastLoadObjectMeta(ctx, &location, tbl.db.txn.proc.FileService); loadErr != nil {
+			if meta, loadErr = objectio.FastLoadObjectMeta(ctx, tbl.db.txn.proc.GetAccountId(), &location, tbl.db.txn.proc.FileService); loadErr != nil {
 				return nil, loadErr
 			}
 		}
@@ -460,6 +460,7 @@ func (tbl *txnTable) LoadDeletesForBlock(bid types.Blockid) (offsets []int64, er
 					nil,
 					tbl.db.txn.engine.fs,
 					location,
+					tbl.db.txn.proc.GetAccountId(),
 					tbl.db.txn.proc.GetMPool())
 				if err != nil {
 					return nil, err
@@ -501,6 +502,7 @@ func (tbl *txnTable) LoadDeletesForBlockIn(
 					nil,
 					tbl.db.txn.engine.fs,
 					location,
+					tbl.db.txn.proc.GetAccountId(),
 					tbl.db.txn.proc.GetMPool())
 				if err != nil {
 					return err
@@ -704,7 +706,7 @@ func (tbl *txnTable) rangesOnePart(
 			//     2. if skipped, skip this block
 			//     3. if not skipped, eval expr on the block
 			if !objectio.IsSameObjectLocVsMeta(location, objMeta) {
-				if objMeta, err = objectio.FastLoadObjectMeta(ctx, &location, proc.FileService); err != nil {
+				if objMeta, err = objectio.FastLoadObjectMeta(ctx, proc.GetAccountId(), &location, proc.FileService); err != nil {
 					return
 				}
 
@@ -1059,7 +1061,10 @@ func (tbl *txnTable) compaction() error {
 			tbl.seqnums = idxs
 			tbl.typs = typs
 		}
-		bat, e := blockio.BlockCompactionRead(tbl.db.txn.proc.Ctx, location, deleteOffsets, tbl.seqnums, tbl.typs, tbl.db.txn.engine.fs, tbl.db.txn.proc.GetMPool())
+		bat, e := blockio.BlockCompactionRead(tbl.db.txn.proc.Ctx,
+			location, deleteOffsets, tbl.seqnums, tbl.typs,
+			tbl.db.txn.engine.fs, tbl.db.txn.proc.GetMPool(),
+			tbl.db.txn.proc.GetAccountId())
 		if e != nil {
 			err = e
 			return false

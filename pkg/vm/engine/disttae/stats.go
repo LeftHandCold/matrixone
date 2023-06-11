@@ -87,7 +87,7 @@ func getInfoFromZoneMap(ctx context.Context, blocks []catalog.BlockInfo, tableDe
 	for _, blk := range blocks {
 		location := blk.MetaLocation()
 		if !objectio.IsSameObjectLocVsMeta(location, objectMeta) {
-			if objectMeta, err = objectio.FastLoadObjectMeta(ctx, &location, proc.FileService); err != nil {
+			if objectMeta, err = objectio.FastLoadObjectMeta(ctx, proc.GetAccountId(), &location, proc.FileService); err != nil {
 				return nil, err
 			}
 			lenobjs++

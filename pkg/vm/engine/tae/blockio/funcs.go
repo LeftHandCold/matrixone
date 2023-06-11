@@ -31,11 +31,12 @@ func LoadColumns(ctx context.Context,
 	typs []types.Type,
 	fs fileservice.FileService,
 	location objectio.Location,
+	tid uint32,
 	m *mpool.MPool) (bat *batch.Batch, err error) {
 	name := location.Name()
 	var meta objectio.ObjectMeta
 	var ioVectors *fileservice.IOVector
-	if meta, err = objectio.FastLoadObjectMeta(ctx, &location, fs); err != nil {
+	if meta, err = objectio.FastLoadObjectMeta(ctx, tid, &location, fs); err != nil {
 		return
 	}
 	if ioVectors, err = objectio.ReadOneBlock(ctx, &meta, name.String(), location.ID(), cols, typs, m, fs); err != nil {
@@ -59,6 +60,7 @@ func LoadBF(
 	cache model.LRUCache,
 	fs fileservice.FileService,
 	noLoad bool,
+	accountID uint32,
 ) (bf objectio.BloomFilter, err error) {
 	v, ok := cache.Get(*loc.ShortName())
 	if ok {
@@ -68,7 +70,7 @@ func LoadBF(
 	if noLoad {
 		return
 	}
-	r, _ := NewObjectReader(fs, loc)
+	r, _ := NewObjectReader(fs, loc, accountID)
 	v, size, err := r.LoadAllBF(ctx)
 	if err != nil {
 		return

@@ -46,7 +46,7 @@ func (txn *Transaction) getBlockInfos(
 		location := entry.MetaLocation()
 		if !objectio.IsSameObjectLocVsShort(location, &objectName) {
 			// Prefetch object meta
-			if err = blockio.PrefetchMeta(txn.proc.FileService, location); err != nil {
+			if err = blockio.PrefetchMeta(txn.proc.FileService, location, txn.proc.GetAccountId()); err != nil {
 				iter.Close()
 				return
 			}

@@ -14,7 +14,9 @@
 package objectio
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/common/util"
 	"io"
+	"path/filepath"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -229,4 +231,12 @@ func ConstructRowidColumnToWithSels(
 		vec.Free(mp)
 	}
 	return
+}
+
+const GTID = 65534
+
+func GetFilePathByAccountID(accountId uint32, name string) string {
+	buf := types.EncodeUint32(&accountId)
+	prefix := util.UnsafeBytesToString(buf)
+	return filepath.Join(prefix, name)
 }

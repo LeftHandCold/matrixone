@@ -625,6 +625,7 @@ func (tbl *txnTable) AddBlksWithMetaLoc(metaLocs []objectio.Location) (err error
 					nil,
 					tbl.store.dataFactory.Fs.Service,
 					loc,
+					tbl.GetMeta().GetDB().GetTenantID(),
 					nil,
 				)
 				if err != nil {
@@ -966,6 +967,7 @@ func (tbl *txnTable) tryGetCurrentObjectBF(
 		tbl.store.indexCache,
 		tbl.store.dataFactory.Fs.Service,
 		false,
+		tbl.entry.GetDB().GetTenantID(),
 	)
 	return
 }
@@ -1101,6 +1103,7 @@ func (tbl *txnTable) DedupSnapByMetaLocs(ctx context.Context, metaLocs []objecti
 					nil,
 					tbl.store.dataFactory.Fs.Service,
 					loc,
+					blk.GetSegment().GetTable().GetDB().GetTenantID(),
 					nil,
 				)
 				if err != nil {

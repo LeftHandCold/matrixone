@@ -34,6 +34,7 @@ type ImmutIndex struct {
 	location objectio.Location
 	cache    model.LRUCache
 	fs       fileservice.FileService
+	tid      uint32
 }
 
 func NewImmutIndex(
@@ -42,6 +43,7 @@ func NewImmutIndex(
 	location objectio.Location,
 	cache model.LRUCache,
 	fs fileservice.FileService,
+	tid uint32,
 ) ImmutIndex {
 	return ImmutIndex{
 		zm:       zm,
@@ -49,6 +51,7 @@ func NewImmutIndex(
 		location: location,
 		cache:    cache,
 		fs:       fs,
+		tid:      tid,
 	}
 }
 
@@ -83,6 +86,7 @@ func (idx ImmutIndex) BatchDedup(
 			idx.cache,
 			idx.fs,
 			false,
+			idx.tid,
 		); err != nil {
 			return
 		}
@@ -124,6 +128,7 @@ func (idx ImmutIndex) Dedup(ctx context.Context, key any) (err error) {
 			idx.cache,
 			idx.fs,
 			false,
+			idx.tid,
 		); err != nil {
 			return
 		}

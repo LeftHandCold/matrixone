@@ -305,7 +305,7 @@ func NewTaeReader(ctx context.Context, tbl *table.Table, filePath string, filesi
 		r.typs = append(r.typs, c.ColType.ToType())
 		r.idxs[idx] = uint16(idx)
 	}
-	r.blockReader, err = blockio.NewFileReaderNoCache(r.fs, r.filepath)
+	r.blockReader, err = blockio.NewFileReaderNoCache(r.fs, r.filepath, 0)
 	if err != nil {
 		return nil, err
 	}
