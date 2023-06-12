@@ -83,7 +83,7 @@ func (task *flushBlkTask) Execute(ctx context.Context) error {
 			return err
 		}
 	}
-	task.blocks, _, err = writer.Sync(ctx)
+	task.blocks, _, err = writer.Sync(ctx, task.meta.GetSegment().GetTable().GetDB().GetTenantID())
 
 	perfcounter.Update(ctx, func(counter *perfcounter.CounterSet) {
 		counter.TAE.Block.Flush.Add(1)

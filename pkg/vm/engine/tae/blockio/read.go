@@ -48,13 +48,14 @@ func BlockRead(
 	fs fileservice.FileService,
 	mp *mpool.MPool,
 	vp engine.VectorPool,
+	accountId uint32,
 ) (*batch.Batch, error) {
 	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
 		logutil.Debugf("read block %s, seqnums %v, typs %v", info.BlockID.String(), seqnums, colTypes)
 	}
 	columnBatch, err := BlockReadInner(
 		ctx, info, deletes, seqnums, colTypes,
-		types.TimestampToTS(ts), filter, fs, mp, vp,
+		types.TimestampToTS(ts), filter, fs, mp, vp, accountId,
 	)
 	if err != nil {
 		return nil, err
@@ -116,6 +117,7 @@ func BlockReadInner(
 	fs fileservice.FileService,
 	mp *mpool.MPool,
 	vp engine.VectorPool,
+	accountId uint32,
 ) (result *batch.Batch, err error) {
 	var (
 		rowidPos    int
@@ -127,7 +129,7 @@ func BlockReadInner(
 
 	// read block data from storage specified by meta location
 	if loaded, rowidPos, deleteMask, err = readBlockData(
-		ctx, seqnums, colTypes, info, ts, fs, mp, vp,
+		ctx, seqnums, colTypes, info, ts, fs, mp, accountId,
 	); err != nil {
 		return
 	}
@@ -136,7 +138,7 @@ func BlockReadInner(
 	if !info.DeltaLocation().IsEmpty() {
 		var deletes *batch.Batch
 		// load from storage
-		if deletes, err = readBlockDelete(ctx, info.DeltaLocation(), fs, vp.GetAccountId()); err != nil {
+		if deletes, err = readBlockDelete(ctx, info.DeltaLocation(), fs, accountId); err != nil {
 			return
 		}
 
@@ -356,7 +358,7 @@ func readBlockData(
 	ts types.TS,
 	fs fileservice.FileService,
 	m *mpool.MPool,
-	vp engine.VectorPool,
+	accountId uint32,
 ) (bat *batch.Batch, rowidPos int, deleteMask nulls.Bitmap, err error) {
 	rowidPos, idxes, typs := getRowsIdIndex(colIndexes, colTypes)
 
@@ -368,7 +370,7 @@ func readBlockData(
 			return
 		}
 
-		if loaded, err = LoadColumns(ctx, cols, typs, fs, info.MetaLocation(), vp.GetAccountId(), m); err != nil {
+		if loaded, err = LoadColumns(ctx, cols, typs, fs, info.MetaLocation(), accountId, m); err != nil {
 			return
 		}
 

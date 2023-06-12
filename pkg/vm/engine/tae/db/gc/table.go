@@ -324,7 +324,7 @@ func (t *GCTable) SaveTable(start, end types.TS, fs *objectio.ObjectFS, files []
 			return nil, err
 		}
 	}
-
+	writer.SetAccountId(objectio.GTID)
 	blocks, err := writer.WriteEnd(context.Background())
 	//logutil.Infof("SaveTable %v-%v, table: %v, gc: %v", start.ToString(), end.ToString(), t.String(), files)
 	return blocks, err
@@ -344,7 +344,7 @@ func (t *GCTable) SaveFullTable(start, end types.TS, fs *objectio.ObjectFS, file
 			return nil, err
 		}
 	}
-
+	writer.SetAccountId(objectio.GTID)
 	blocks, err := writer.WriteEnd(context.Background())
 	//logutil.Infof("SaveTable %v-%v, table: %v, gc: %v", start.ToString(), end.ToString(), t.String(), files)
 	return blocks, err

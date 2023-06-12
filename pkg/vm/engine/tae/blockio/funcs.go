@@ -39,7 +39,8 @@ func LoadColumns(ctx context.Context,
 	if meta, err = objectio.FastLoadObjectMeta(ctx, tid, &location, fs); err != nil {
 		return
 	}
-	if ioVectors, err = objectio.ReadOneBlock(ctx, &meta, name.String(), location.ID(), cols, typs, m, fs); err != nil {
+	oname := objectio.GetFilePathByAccountID(tid, name.String())
+	if ioVectors, err = objectio.ReadOneBlock(ctx, &meta, oname, location.ID(), cols, typs, m, fs); err != nil {
 		return
 	}
 	bat = batch.NewWithSize(len(cols))

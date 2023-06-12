@@ -349,7 +349,7 @@ func (task *mergeBlocksTask) Execute(ctx context.Context) (err error) {
 			return err
 		}
 	}
-	blocks, _, err := writer.Sync(ctx)
+	blocks, _, err := writer.Sync(ctx, task.toSegEntry.GetTable().GetDB().GetTenantID())
 	if err != nil {
 		return err
 	}

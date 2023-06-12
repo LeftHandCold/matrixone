@@ -488,7 +488,7 @@ func (data *CheckpointData) WriteTo(
 			return
 		}
 	}
-	blks, _, err = writer.Sync(context.Background())
+	blks, _, err = writer.Sync(context.Background(), objectio.GTID)
 	return
 }
 

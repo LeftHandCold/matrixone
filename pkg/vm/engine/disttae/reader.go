@@ -308,10 +308,12 @@ func (r *blockReader) Read(
 
 	// get the block read filter
 	filter := r.getReadFilter()
-
+	if vp != nil {
+		logutil.Infof("vp is :%v", vp.GetAccountId())
+	}
 	// read the block
 	bat, err := blockio.BlockRead(
-		r.ctx, blockInfo, nil, r.columns.seqnums, r.columns.colTypes, r.ts, filter, r.fs, mp, vp,
+		r.ctx, blockInfo, nil, r.columns.seqnums, r.columns.colTypes, r.ts, filter, r.fs, mp, vp, vp.GetAccountId(),
 	)
 	if err != nil {
 		return nil, err
@@ -413,8 +415,12 @@ func (r *blockMergeReader) Read(
 
 	filter := r.getReadFilter()
 
+	if vp != nil {
+		logutil.Infof("vp is :%v", vp.GetAccountId())
+	}
+
 	bat, err := blockio.BlockRead(
-		r.ctx, info, r.blks[0].deletes, r.columns.seqnums, r.columns.colTypes, r.ts, filter, r.fs, mp, vp,
+		r.ctx, info, r.blks[0].deletes, r.columns.seqnums, r.columns.colTypes, r.ts, filter, r.fs, mp, vp, vp.GetAccountId(),
 	)
 	if err != nil {
 		return nil, err

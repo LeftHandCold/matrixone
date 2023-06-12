@@ -44,6 +44,7 @@ type objectWriterV1 struct {
 	name        ObjectName
 	compressBuf []byte
 	bloomFilter []byte
+	accountId   uint32
 }
 
 type blockData struct {
@@ -112,6 +113,10 @@ func (w *objectWriterV1) GetSeqnums() []uint16 {
 
 func (w *objectWriterV1) GetMaxSeqnum() uint16 {
 	return w.seqnums.MaxSeq
+}
+
+func (w *objectWriterV1) SetAccountId(accountId uint32) {
+	w.accountId = accountId
 }
 
 func (w *objectWriterV1) Write(batch *batch.Batch) (BlockObject, error) {
@@ -388,6 +393,7 @@ func (w *objectWriterV1) WriteEnd(ctx context.Context, items ...WriteOptions) ([
 // Sync is for testing
 func (w *objectWriterV1) Sync(ctx context.Context, items ...WriteOptions) error {
 	w.buffer.SetDataOptions(items...)
+	w.buffer.SetAccountId(int(w.accountId))
 	// if a compact task is rollbacked, it may leave a written file in fs
 	// here we just delete it and write again
 	err := w.object.fs.Write(ctx, w.buffer.GetData())

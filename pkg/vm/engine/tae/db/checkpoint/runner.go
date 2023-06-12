@@ -458,6 +458,7 @@ func (r *runner) saveCheckpoint(start, end types.TS) (err error) {
 	}
 
 	// TODO: checkpoint entry should maintain the location
+	writer.SetAccountId(objectio.GTID)
 	_, err = writer.WriteEnd(r.ctx)
 	return
 }

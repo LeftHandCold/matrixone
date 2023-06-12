@@ -178,7 +178,7 @@ func (w *TAEWriter) flush() error {
 	if err != nil {
 		return err
 	}
-	_, _, err = w.writer.Sync(w.ctx)
+	_, _, err = w.writer.Sync(w.ctx, objectio.GTID)
 	if err != nil {
 		return err
 	}

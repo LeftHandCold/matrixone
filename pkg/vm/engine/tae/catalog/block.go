@@ -17,6 +17,7 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -427,6 +428,7 @@ func (entry *BlockEntry) GetPKZoneMap(
 	}
 	location := entry.GetMetaLoc()
 	var meta objectio.ObjectMeta
+	logutil.Infof("entry.GetSegment().GetTable().GetDB().GetTenantID() is %v", entry.GetSegment().GetTable().GetDB().GetTenantID())
 	if meta, err = objectio.FastLoadObjectMeta(ctx, entry.GetSegment().GetTable().GetDB().GetTenantID(), &location, fs); err != nil {
 		return
 	}

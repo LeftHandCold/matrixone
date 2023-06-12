@@ -129,7 +129,8 @@ func (w *BlockWriter) WriteBatchWithOutIndex(batch *batch.Batch) (objectio.Block
 	return w.writer.WriteWithoutSeqnum(batch)
 }
 
-func (w *BlockWriter) Sync(ctx context.Context) ([]objectio.BlockObject, objectio.Extent, error) {
+func (w *BlockWriter) Sync(ctx context.Context, accountId uint32) ([]objectio.BlockObject, objectio.Extent, error) {
+	w.writer.SetAccountId(accountId)
 	if w.objMetaBuilder != nil {
 		if w.isSetPK {
 			w.objMetaBuilder.SetPKNdv(w.pk, w.objMetaBuilder.GetTotalRow())
