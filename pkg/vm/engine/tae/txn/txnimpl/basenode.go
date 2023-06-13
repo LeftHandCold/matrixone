@@ -150,6 +150,6 @@ func (n *baseNode) LoadPersistedColumnData(colIdx int) (vec containers.Vector, e
 		nil,
 		def,
 		location,
-		n.meta.GetSegment().GetTable().GetDB().GetTenantID(),
+		n.table.entry.GetDB().GetTenantID(),
 	)
 }

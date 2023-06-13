@@ -422,7 +422,7 @@ func (h *Handle) prefetchDeleteRowID(ctx context.Context,
 	if err != nil {
 		return err
 	}
-	pref, err := blockio.BuildPrefetchParams(h.db.Fs.Service, loc, req.Schema.AcInfo.TenantID)
+	pref, err := blockio.BuildPrefetchParams(h.db.Fs.Service, loc, db.GetTenantID())
 	if err != nil {
 		return err
 	}
@@ -443,12 +443,16 @@ func (h *Handle) prefetchMetadata(ctx context.Context,
 		return nil
 	}
 	//start loading jobs asynchronously,should create a new root context.
+	db, err := h.db.Catalog.GetDatabaseByID(req.DatabaseId)
+	if err != nil {
+		return err
+	}
 	for _, meta := range req.MetaLocs {
 		loc, err := blockio.EncodeLocationFromString(meta)
 		if err != nil {
 			return err
 		}
-		err = blockio.PrefetchMeta(h.db.Fs.Service, loc, req.Schema.AcInfo.TenantID)
+		err = blockio.PrefetchMeta(h.db.Fs.Service, loc, db.GetTenantID())
 		if err != nil {
 			return err
 		}
@@ -904,7 +908,7 @@ func (h *Handle) HandleWrite(
 				nil,
 				h.db.Fs.Service,
 				location,
-				req.Schema.AcInfo.TenantID,
+				tb.GetMeta().(*catalog2.TableEntry).GetDB().GetTenantID(),
 				nil,
 			)
 			if err != nil {
