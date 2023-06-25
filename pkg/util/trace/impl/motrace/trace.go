@@ -59,6 +59,8 @@ func InitWithConfig(ctx context.Context, SV *config.ObservabilityParameters, opt
 		WithLongQueryTime(SV.LongQueryTime),
 		WithLongSpanTime(SV.LongSpanTime.Duration),
 		WithSpanDisable(SV.DisableSpan),
+		WithSkipRunningStmt(SV.SkipRunningStmt),
+		WithSQLWriterDisable(SV.DisableSqlWriter),
 		DebugMode(SV.EnableTraceDebug),
 		WithBufferSizeThreshold(SV.BufferSize),
 	)
@@ -101,9 +103,9 @@ func Init(ctx context.Context, opts ...TracerProviderOption) error {
 	logutil.SpanFieldKey.Store(trace.SpanFieldKey)
 	errutil.SetErrorReporter(ReportError)
 
-	logutil.Infof("trace with LongQueryTime: %v", time.Duration(GetTracerProvider().longQueryTime))
-	logutil.Infof("trace with LongSpanTime: %v", GetTracerProvider().longSpanTime)
-	logutil.Infof("trace with DisableSpan: %v", GetTracerProvider().disableSpan)
+	logutil.Debugf("trace with LongQueryTime: %v", time.Duration(GetTracerProvider().longQueryTime))
+	logutil.Debugf("trace with LongSpanTime: %v", GetTracerProvider().longSpanTime)
+	logutil.Debugf("trace with DisableSpan: %v", GetTracerProvider().disableSpan)
 
 	return nil
 }

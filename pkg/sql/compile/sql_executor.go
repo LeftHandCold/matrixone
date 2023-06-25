@@ -97,7 +97,21 @@ func (s *sqlExecutor) ExecTxn(
 	if err != nil {
 		return exec.rollback()
 	}
-	return exec.commit()
+	if err = exec.commit(); err != nil {
+		return err
+	}
+	s.maybeWaitCommittedLogApplied(exec.opts)
+	return nil
+}
+
+func (s *sqlExecutor) maybeWaitCommittedLogApplied(opts executor.Options) {
+	if !opts.WaitCommittedLogApplied() {
+		return
+	}
+	ts := opts.Txn().Txn().CommitTS
+	if !ts.IsEmpty() {
+		s.txnClient.(client.TxnClientWithCtl).SetLatestCommitTS(ts)
+	}
 }
 
 func (s *sqlExecutor) getCompileContext(
@@ -114,11 +128,11 @@ func (s *sqlExecutor) getCompileContext(
 func (s *sqlExecutor) adjustOptions(
 	ctx context.Context,
 	opts executor.Options) (context.Context, executor.Options, error) {
-	if opts.HasAccoundID() {
+	if opts.HasAccountID() {
 		ctx = context.WithValue(
 			ctx,
 			defines.TenantIDKey{},
-			opts.AccoundID())
+			opts.AccountID())
 	}
 
 	if !opts.HasExistsTxn() {
@@ -172,7 +186,7 @@ func (exec *txnExecutor) Exec(sql string) (executor.Result, error) {
 
 	pn, err := plan.BuildPlan(
 		exec.s.getCompileContext(exec.ctx, proc, exec.opts),
-		stmts[0])
+		stmts[0], false)
 	if err != nil {
 		return executor.Result{}, err
 	}

@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	txn2 "github.com/matrixorigin/matrixone/pkg/pb/txn"
+
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/clusterservice"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -136,7 +138,7 @@ func (e *Engine) Database(ctx context.Context, name string,
 	op client.TxnOperator) (engine.Database, error) {
 	logDebugf(op.Txn(), "Engine.Database %s", name)
 	txn := e.getTransaction(op)
-	if txn == nil {
+	if txn == nil || txn.meta.GetStatus() == txn2.TxnStatus_Aborted {
 		return nil, moerr.NewTxnClosedNoCtx(op.Txn().ID)
 	}
 	if v, ok := txn.databaseMap.Load(genDatabaseKey(ctx, name)); ok {
@@ -219,7 +221,7 @@ func (e *Engine) GetNameById(ctx context.Context, op client.TxnOperator, tableId
 				return "", "", err
 			}
 			distDb := db.(*txnDatabase)
-			tableName, rel, _ := distDb.getRelationById(noRepCtx, tableId)
+			tableName, rel := distDb.getRelationById(noRepCtx, tableId)
 			if rel != nil {
 				tblName = tableName
 				break
@@ -251,7 +253,7 @@ func (e *Engine) GetRelationById(ctx context.Context, op client.TxnOperator, tab
 				return false
 			}
 			distDb := db.(*txnDatabase)
-			tableName, rel, err = distDb.getRelationById(noRepCtx, tableId)
+			tableName, rel = distDb.getRelationById(noRepCtx, tableId)
 			if rel != nil {
 				return false
 			}
@@ -267,7 +269,7 @@ func (e *Engine) GetRelationById(ctx context.Context, op client.TxnOperator, tab
 				return "", "", nil, err
 			}
 			distDb := db.(*txnDatabase)
-			tableName, rel, err = distDb.getRelationById(noRepCtx, tableId)
+			tableName, rel = distDb.getRelationById(noRepCtx, tableId)
 			if rel != nil {
 				break
 			}
@@ -378,11 +380,7 @@ func (e *Engine) New(ctx context.Context, op client.TxnOperator) error {
 	colexec.Srv.PutCnSegment(id, colexec.TxnWorkSpaceIdType)
 	e.newTransaction(op, txn)
 
-	if err := e.pClient.checkTxnTimeIsLegal(ctx, txn.meta.SnapshotTS); err != nil {
-		e.delTransaction(txn)
-		return err
-	}
-
+	e.pClient.validLogTailMustApplied(txn.meta.SnapshotTS)
 	return nil
 }
 
@@ -397,9 +395,10 @@ func (e *Engine) Commit(ctx context.Context, op client.TxnOperator) error {
 	if txn.readOnly.Load() {
 		return nil
 	}
-	txn.mergeTxnWorkspace()
-	err := txn.DumpBatch(true, 0)
-	if err != nil {
+	if err := txn.mergeTxnWorkspace(); err != nil {
+		return err
+	}
+	if err := txn.dumpBatch(true, 0); err != nil {
 		return err
 	}
 	reqs, err := genWriteReqs(ctx, txn.writes)
@@ -468,27 +467,32 @@ func (e *Engine) Hints() (h engine.Hints) {
 }
 
 func (e *Engine) NewBlockReader(ctx context.Context, num int, ts timestamp.Timestamp,
-	expr *plan.Expr, ranges [][]byte, tblDef *plan.TableDef) ([]engine.Reader, error) {
+	expr *plan.Expr, ranges [][]byte, tblDef *plan.TableDef, proc any) ([]engine.Reader, error) {
 	rds := make([]engine.Reader, num)
-	blks := make([]*catalog.BlockInfo, len(ranges))
-	for i := range ranges {
-		blks[i] = catalog.DecodeBlockInfo(ranges[i])
-		blks[i].EntryState = false
+	blkInfos := make([]*catalog.BlockInfo, 0, len(ranges))
+	for _, r := range ranges {
+		blkInfos = append(blkInfos, catalog.DecodeBlockInfo(r))
 	}
-	if len(ranges) < num || len(ranges) == 1 {
-		for i := range ranges {
+	if len(blkInfos) < num || len(blkInfos) == 1 {
+		for i, blk := range blkInfos {
+			//FIXME::why set blk.EntryState = false ?
+			blk.EntryState = false
 			rds[i] = newBlockReader(
-				ctx, tblDef, ts, []*catalog.BlockInfo{blks[i]}, expr, e.fs,
+				ctx, tblDef, ts, []*catalog.BlockInfo{blk}, expr, e.fs, proc.(*process.Process),
 			)
 		}
-		for j := len(ranges); j < num; j++ {
+		for j := len(blkInfos); j < num; j++ {
 			rds[j] = &emptyReader{}
 		}
 		return rds, nil
 	}
 
-	infos, steps := groupBlocksToObjects(blks, num)
-	blockReaders := newBlockReaders(ctx, e.fs, tblDef, -1, ts, num, expr)
+	infos, steps := groupBlocksToObjects(blkInfos, num)
+	fs, err := fileservice.Get[fileservice.FileService](e.fs, defines.SharedFileServiceName)
+	if err != nil {
+		return nil, err
+	}
+	blockReaders := newBlockReaders(ctx, fs, tblDef, -1, ts, num, expr, proc.(*process.Process))
 	distributeBlocksToBlockReaders(blockReaders, num, infos, steps)
 	for i := 0; i < num; i++ {
 		rds[i] = blockReaders[i]
@@ -509,7 +513,7 @@ func (e *Engine) delTransaction(txn *Transaction) {
 		if txn.writes[i].bat == nil {
 			continue
 		}
-		txn.writes[i].bat.Clean(e.mp)
+		txn.proc.PutBatch(txn.writes[i].bat)
 	}
 	txn.tableMap = nil
 	txn.createMap = nil
@@ -542,10 +546,32 @@ func (e *Engine) getDNServices() []DNStore {
 	return values
 }
 
-func (e *Engine) cleanMemoryTable() {
+func (e *Engine) setPushClientStatus(ready bool) {
 	e.Lock()
 	defer e.Unlock()
-	e.partitions = make(map[[2]uint64]*logtailreplay.Partition)
+
+	if tc, ok := e.cli.(client.TxnClientWithFeature); ok {
+		if ready {
+			tc.Resume()
+		} else {
+			tc.Pause()
+		}
+	}
+
+	e.pClient.receivedLogTailTime.ready.Store(ready)
+	if e.pClient.subscriber != nil {
+		if ready {
+			e.pClient.subscriber.setReady()
+		} else {
+			e.pClient.subscriber.setNotReady()
+		}
+	}
+}
+
+func (e *Engine) abortAllRunningTxn() {
+	e.Lock()
+	defer e.Unlock()
+	e.cli.AbortAllRunningTxn()
 }
 
 func (e *Engine) cleanMemoryTableWithTable(dbId, tblId uint64) {
@@ -555,5 +581,5 @@ func (e *Engine) cleanMemoryTableWithTable(dbId, tblId uint64) {
 	// after we set it to empty, actually this part of memory was not immediately released.
 	// maybe a very old transaction still using that.
 	delete(e.partitions, [2]uint64{dbId, tblId})
-	logutil.Infof("clean memory table of tbl[dbId: %d, tblId: %d]", dbId, tblId)
+	logutil.Debugf("clean memory table of tbl[dbId: %d, tblId: %d]", dbId, tblId)
 }

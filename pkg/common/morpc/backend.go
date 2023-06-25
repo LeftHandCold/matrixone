@@ -205,7 +205,7 @@ func NewRemoteBackend(
 	rb.conn = goetty.NewIOSession(rb.options.goettyOptions...)
 
 	if err := rb.resetConn(); err != nil {
-		rb.logger.Error("connect to remote failed", zap.Error(err))
+		rb.logger.Error("connect to remote failed")
 		return nil, err
 	}
 	rb.activeReadLoop(false)
@@ -385,12 +385,12 @@ func (rb *remoteBackend) inactive() {
 }
 
 func (rb *remoteBackend) writeLoop(ctx context.Context) {
-	rb.logger.Info("write loop started")
+	rb.logger.Debug("write loop started")
 	defer func() {
 		rb.closeConn(false)
 		rb.readStopper.Stop()
 		rb.closeConn(true)
-		rb.logger.Info("write loop stopped")
+		rb.logger.Debug("write loop stopped")
 	}()
 
 	defer func() {
@@ -411,8 +411,8 @@ func (rb *remoteBackend) writeLoop(ctx context.Context) {
 	for {
 		messages, stopped = rb.fetch(messages, rb.options.batchSendSize)
 		if len(messages) > 0 {
-			written := 0
 			writeTimeout := time.Duration(0)
+			written := messages[:0]
 			for _, f := range messages {
 				id := f.getSendMessageID()
 				if stopped {
@@ -422,26 +422,24 @@ func (rb *remoteBackend) writeLoop(ctx context.Context) {
 
 				if v := rb.doWrite(id, f); v > 0 {
 					writeTimeout += v
-					written++
+					written = append(written, f)
 				}
 			}
 
-			if written > 0 {
+			if len(written) > 0 {
 				if err := rb.conn.Flush(writeTimeout); err != nil {
-					for _, f := range messages {
-						if rb.options.filter(f.send.Message, rb.remote) {
-							id := f.getSendMessageID()
-							rb.logger.Error("write request failed",
-								zap.Uint64("request-id", id),
-								zap.Error(err))
-							f.messageSent(err)
-						}
+					for _, f := range written {
+						id := f.getSendMessageID()
+						rb.logger.Error("write request failed",
+							zap.Uint64("request-id", id),
+							zap.Error(err))
+						f.messageSent(err)
+					}
+				} else {
+					for _, f := range written {
+						f.messageSent(nil)
 					}
 				}
-			}
-
-			for _, m := range messages {
-				m.messageSent(nil)
 			}
 		}
 		if stopped {
@@ -480,8 +478,7 @@ func (rb *remoteBackend) doWrite(id uint64, f *Future) time.Duration {
 	}
 	if err := rb.conn.Write(f.send, goetty.WriteOptions{}); err != nil {
 		rb.logger.Error("write request failed",
-			zap.Uint64("request-id", id),
-			zap.Error(err))
+			zap.Uint64("request-id", id), zap.Error(err))
 		f.messageSent(err)
 		return 0
 	}
@@ -489,7 +486,7 @@ func (rb *remoteBackend) doWrite(id uint64, f *Future) time.Duration {
 }
 
 func (rb *remoteBackend) readLoop(ctx context.Context) {
-	rb.logger.Info("read loop started")
+	rb.logger.Debug("read loop started")
 	defer rb.logger.Error("read loop stopped")
 
 	wg := &sync.WaitGroup{}
@@ -514,8 +511,7 @@ func (rb *remoteBackend) readLoop(ctx context.Context) {
 		default:
 			msg, err := rb.conn.Read(goetty.ReadOptions{})
 			if err != nil {
-				rb.logger.Error("read from backend failed",
-					zap.Error(err))
+				rb.logger.Error("read from backend failed", zap.Error(err))
 				rb.inactiveReadLoop()
 				rb.cancelActiveStreams()
 				rb.scheduleResetConn()
@@ -556,6 +552,9 @@ func (rb *remoteBackend) fetch(messages []*Future, maxFetchCount int) ([]*Future
 			}
 		}
 	case <-rb.resetConnC:
+		// If the connect needs to be reset, then all futures in the waiting response state will never
+		// get the response and need to be notified of an error immediately.
+		rb.makeAllWaitingFutureFailed()
 		rb.handleResetConn()
 	case <-rb.stopWriteC:
 		for {
@@ -581,10 +580,19 @@ func (rb *remoteBackend) makeAllWritesDoneWithClosed() {
 	}
 }
 
+func (rb *remoteBackend) makeAllWaitingFutureFailed() {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	for id, f := range rb.mu.futures {
+		if f.waiting.Load() {
+			f.error(id, backendClosed, nil)
+		}
+	}
+}
+
 func (rb *remoteBackend) handleResetConn() {
 	if err := rb.resetConn(); err != nil {
-		rb.logger.Error("fail to reset backend connection",
-			zap.Error(err))
+		rb.logger.Error("fail to reset backend connection", zap.Error(err))
 		rb.inactive()
 	}
 }
@@ -645,8 +653,7 @@ func (rb *remoteBackend) requestDone(ctx context.Context, id uint64, msg RPCMess
 			debugStr = response.DebugString()
 		}
 		ce.Write(zap.Uint64("request-id", id),
-			zap.String("response", debugStr),
-			zap.Error(err))
+			zap.String("response", debugStr))
 	}
 
 	rb.mu.Lock()
@@ -710,17 +717,15 @@ func (rb *remoteBackend) resetConn() error {
 		default:
 		}
 
-		rb.logger.Info("start connect to remote")
+		rb.logger.Debug("start connect to remote")
 		rb.closeConn(false)
 		err := rb.conn.Connect(rb.remote, rb.options.connectTimeout)
 		if err == nil {
-			rb.logger.Info("connect to remote succeed")
+			rb.logger.Debug("connect to remote succeed")
 			rb.activeReadLoop(false)
 			return nil
 		}
-		rb.logger.Error("init remote connection failed, retry later",
-			zap.Error(err))
-		rb.notifyAllWaitWritesFailed(moerr.NewInternalErrorNoCtx("init remote connection failed, retry later"))
+		rb.logger.Error("init remote connection failed, retry later", zap.Error(err))
 
 		duration := time.Duration(0)
 		for {
@@ -767,8 +772,7 @@ func (rb *remoteBackend) activeReadLoop(locked bool) {
 	}
 
 	if err := rb.readStopper.RunTask(rb.readLoop); err != nil {
-		rb.logger.Error("active read loop failed",
-			zap.Error(err))
+		rb.logger.Error("active read loop failed", zap.Error(err))
 		return
 	}
 	rb.stateMu.readLoopActive = true
@@ -808,8 +812,7 @@ func (rb *remoteBackend) closeConn(close bool) {
 	}
 
 	if err := fn(); err != nil {
-		rb.logger.Error("close remote conn failed",
-			zap.Error(err))
+		rb.logger.Error("close remote conn failed", zap.Error(err))
 	}
 }
 

@@ -65,6 +65,10 @@ const (
 	INIT_ROWID_OFFSET             = math.MaxUint32
 )
 
+const (
+	WorkspaceThreshold uint64 = 1 * mpool.MB
+)
+
 var (
 	_ client.Workspace = (*Transaction)(nil)
 )
@@ -152,7 +156,7 @@ type Transaction struct {
 	cnBlkId_Pos                     map[types.Blockid]Pos
 	blockId_raw_batch               map[types.Blockid]*batch.Batch
 	blockId_dn_delete_metaLoc_batch map[types.Blockid][]*batch.Batch
-
+	//select list for raw batch comes from txn.writes.batch.
 	batchSelectList map[*batch.Batch][]int64
 
 	rollbackCount int
@@ -161,8 +165,9 @@ type Transaction struct {
 }
 
 type Pos struct {
-	idx    int
-	offset int64
+	idx     int
+	offset  int64
+	blkInfo catalog.BlockInfo
 }
 
 // FIXME: The map inside this one will be accessed concurrently, using
@@ -213,6 +218,12 @@ func (txn *Transaction) PutCnBlockDeletes(blockId *types.Blockid, offsets []int6
 }
 
 func (txn *Transaction) IncrStatemenetID(ctx context.Context) error {
+	if err := txn.mergeTxnWorkspace(); err != nil {
+		return err
+	}
+	if err := txn.dumpBatch(false, 0); err != nil {
+		return err
+	}
 	txn.Lock()
 	defer txn.Unlock()
 	if txn.statementID > 0 {
@@ -269,6 +280,14 @@ func (txn *Transaction) resetSnapshot() error {
 		return true
 	})
 	return nil
+}
+
+// DeleteTable implements the client.Workspace interface.
+func (txn *Transaction) DeleteTable(ctx context.Context, dbID uint64, tableName string) {
+	k := genTableKey(ctx, tableName, dbID)
+	if _, ok := txn.tableMap.Load(k); ok {
+		txn.tableMap.Delete(k)
+	}
 }
 
 // Entry represents a delete/insert
@@ -331,12 +350,12 @@ type txnTable struct {
 	dnList    []int
 	db        *txnDatabase
 	//	insertExpr *plan.Expr
-	defs           []engine.TableDef
-	tableDef       *plan.TableDef
-	seqnums        []uint16
-	typs           []types.Type
-	_partState     *logtailreplay.PartitionState
-	modifiedBlocks []ModifyBlockMeta
+	defs       []engine.TableDef
+	tableDef   *plan.TableDef
+	seqnums    []uint16
+	typs       []types.Type
+	_partState *logtailreplay.PartitionState
+	dirtyBlks  []catalog.BlockInfo
 
 	// blockInfos stores all the block infos for this table of this transaction
 	// it is only generated when the table is not created by this transaction
@@ -375,6 +394,9 @@ type txnTable struct {
 	rowids []types.Rowid
 	//the old table id before truncate
 	oldTableId uint64
+
+	// process for statement
+	proc *process.Process
 }
 
 type column struct {
@@ -423,9 +445,12 @@ type withFilterMixin struct {
 
 	filterState struct {
 		evaluated bool
-		expr      *plan.Expr
-		filter    blockio.ReadFilter
+		//point select for primary key
+		expr   *plan.Expr
+		filter blockio.ReadFilter
 	}
+
+	sels []int32
 }
 
 type blockReader struct {
@@ -437,14 +462,19 @@ type blockReader struct {
 	currentStep int
 
 	// block list to scan
-	blks []*catalog.BlockInfo
+	blks    []*catalog.BlockInfo
+	blkDels map[types.Blockid][]int64
+	proc    *process.Process
 }
 
+// TODO::blockMergeReader should inherit from blockReader.
 type blockMergeReader struct {
 	withFilterMixin
 
-	table *txnTable
-	blks  []ModifyBlockMeta
+	table  *txnTable
+	blks   []catalog.BlockInfo
+	buffer []int64
+	proc   *process.Process
 }
 
 type mergeReader struct {
@@ -454,10 +484,10 @@ type mergeReader struct {
 type emptyReader struct {
 }
 
-type ModifyBlockMeta struct {
-	meta    catalog.BlockInfo
-	deletes []int64
-}
+//type ModifyBlockMeta struct {
+//	meta    catalog.BlockInfo
+//	deletes []int64
+//}
 
 type pkRange struct {
 	isRange bool

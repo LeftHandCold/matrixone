@@ -365,7 +365,9 @@ func TestSnapshotTxnOperator(t *testing.T) {
 
 		tc2, err := newTxnOperatorWithSnapshot(tc.sender, v)
 		assert.NoError(t, err)
+		assert.True(t, tc2.mu.txn.Mirror)
 
+		tc2.mu.txn.Mirror = false
 		assert.Equal(t, tc.mu.txn, tc2.mu.txn)
 		assert.False(t, tc2.option.coordinator)
 		tc2.option.coordinator = true
@@ -419,7 +421,7 @@ func TestAddLockTable(t *testing.T) {
 	})
 }
 
-func TestUpdateSnaphotTSWithWaiter(t *testing.T) {
+func TestUpdateSnapshotTSWithWaiter(t *testing.T) {
 	runTimestampWaiterTests(t, func(waiter *timestampWaiter) {
 		runOperatorTests(t,
 			func(
@@ -442,17 +444,38 @@ func TestUpdateSnaphotTSWithWaiter(t *testing.T) {
 	})
 }
 
-func runOperatorTests(t *testing.T, tc func(context.Context, *txnOperator, *testTxnSender), options ...TxnOption) {
+func TestRollbackMultiTimes(t *testing.T) {
+	runOperatorTests(t, func(ctx context.Context, tc *txnOperator, ts *testTxnSender) {
+		require.NoError(t, tc.Rollback(ctx))
+		require.Error(t, tc.Rollback(ctx))
+	})
+}
+
+func runOperatorTests(
+	t *testing.T,
+	tc func(context.Context, *txnOperator, *testTxnSender),
+	options ...TxnOption) {
+	runOperatorTestsWithOptions(t, tc, newTestTimestamp(0), options)
+}
+
+func runOperatorTestsWithOptions(
+	t *testing.T,
+	tc func(context.Context, *txnOperator, *testTxnSender),
+	minTS timestamp.Timestamp,
+	options []TxnOption,
+	clientOptions ...TxnClientCreateOption) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	RunTxnTests(func(
-		c TxnClient,
-		ts rpc.TxnSender) {
-		txn, err := c.New(ctx, newTestTimestamp(0), options...)
-		assert.Nil(t, err)
-		tc(ctx, txn.(*txnOperator), ts.(*testTxnSender))
-	})
+	RunTxnTests(
+		func(
+			c TxnClient,
+			ts rpc.TxnSender) {
+			txn, err := c.New(ctx, minTS, options...)
+			assert.Nil(t, err)
+			tc(ctx, txn.(*txnOperator), ts.(*testTxnSender))
+		},
+		clientOptions...)
 }
 
 func newDNRequest(op uint32, dn uint64) txn.TxnRequest {

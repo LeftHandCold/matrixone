@@ -16,6 +16,7 @@ package disttae
 
 import (
 	"context"
+	txn2 "github.com/matrixorigin/matrixone/pkg/pb/txn"
 	"strconv"
 	"strings"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/cache"
+	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
 var _ engine.Database = new(txnDatabase)
@@ -97,26 +99,37 @@ func (db *txnDatabase) getTableNameById(ctx context.Context, id uint64) string {
 	return tblName
 }
 
-func (db *txnDatabase) getRelationById(ctx context.Context, id uint64) (string, engine.Relation, error) {
+func (db *txnDatabase) getRelationById(ctx context.Context, id uint64) (string, engine.Relation) {
 	tblName := db.getTableNameById(ctx, id)
 	if tblName == "" {
-		return "", nil, moerr.NewInternalError(ctx, "can not find table by id %d", id)
+		return "", nil
 	}
-	rel, err := db.Relation(ctx, tblName)
-	return tblName, rel, err
+	rel, _ := db.Relation(ctx, tblName, nil)
+	return tblName, rel
 }
 
-func (db *txnDatabase) Relation(ctx context.Context, name string) (engine.Relation, error) {
+func (db *txnDatabase) Relation(ctx context.Context, name string, proc any) (engine.Relation, error) {
 	logDebugf(*db.txn.meta, "txnDatabase.Relation table %s", name)
+	txn := db.txn
+	if txn.meta.GetStatus() == txn2.TxnStatus_Aborted {
+		return nil, moerr.NewTxnClosedNoCtx(txn.meta.ID)
+	}
+
 	//check the table is deleted or not
 	if _, exist := db.txn.deletedTableMap.Load(genTableKey(ctx, name, db.databaseId)); exist {
 		return nil, moerr.NewParseError(ctx, "table %q does not exist", name)
 	}
+	p := db.txn.proc
+	if proc != nil {
+		p = proc.(*process.Process)
+	}
 	if v, ok := db.txn.tableMap.Load(genTableKey(ctx, name, db.databaseId)); ok {
+		v.(*txnTable).proc = p
 		return v.(*txnTable), nil
 	}
 	// get relation from the txn created tables cache: created by this txn
 	if v, ok := db.txn.createMap.Load(genTableKey(ctx, name, db.databaseId)); ok {
+		v.(*txnTable).proc = p
 		return v.(*txnTable), nil
 	}
 
@@ -165,6 +178,7 @@ func (db *txnDatabase) Relation(ctx context.Context, name string) (engine.Relati
 		constraint:    item.Constraint,
 		rowid:         item.Rowid,
 		rowids:        item.Rowids,
+		proc:          p,
 	}
 	db.txn.tableMap.Store(genTableKey(ctx, name, db.databaseId), tbl)
 	return tbl, nil
