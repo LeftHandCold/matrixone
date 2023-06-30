@@ -45,6 +45,7 @@ func BlockRead(
 	colTypes []types.Type,
 	ts timestamp.Timestamp,
 	filter ReadFilter,
+	pkCols []uint16,
 	fs fileservice.FileService,
 	mp *mpool.MPool,
 	vp engine.VectorPool,
@@ -112,6 +113,7 @@ func BlockReadInner(
 	colTypes []types.Type,
 	ts types.TS,
 	filter ReadFilter,
+	pkCols []uint16,
 	fs fileservice.FileService,
 	mp *mpool.MPool,
 	vp engine.VectorPool,
@@ -123,6 +125,12 @@ func BlockReadInner(
 		deleteMask  nulls.Bitmap
 		loaded      *batch.Batch
 	)
+
+	if loaded, rowidPos, deleteMask, err = readBlockData(
+		ctx, pkCols, colTypes, info, ts, fs, mp, vp,
+	); err != nil {
+		return
+	}
 
 	// read block data from storage specified by meta location
 	if loaded, rowidPos, deleteMask, err = readBlockData(

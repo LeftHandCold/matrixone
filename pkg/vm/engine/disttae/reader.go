@@ -233,6 +233,17 @@ func (mixin *withFilterMixin) getNonCompositPKFilter(proc *process.Process) (fil
 	return
 }
 
+func (mixin *withFilterMixin) getPK() []uint16 {
+	if mixin.columns.pkPos == -1 {
+		return nil
+	}
+	pkCols := make([]uint16, 0, len(mixin.columns.compPKPositions))
+	for i, pos := range mixin.columns.compPKPositions {
+		pkCols[i] = uint16(mixin.tableDef.Cols[pos].ColId)
+	}
+	return []uint16{uint16(mixin.tableDef.Cols[mixin.columns.pkPos].ColId)}
+}
+
 // -----------------------------------------------------------------
 // ------------------------ emptyReader ----------------------------
 // -----------------------------------------------------------------
@@ -318,7 +329,7 @@ func (r *blockReader) Read(
 
 	// read the block
 	bat, err := blockio.BlockRead(
-		r.ctx, blockInfo, r.buffer, r.columns.seqnums, r.columns.colTypes, r.ts, filter, r.fs, mp, vp,
+		r.ctx, blockInfo, r.buffer, r.columns.seqnums, r.columns.colTypes, r.ts, filter, r.getPK(), r.fs, mp, vp,
 	)
 	if err != nil {
 		return nil, err
