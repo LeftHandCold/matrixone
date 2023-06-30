@@ -235,15 +235,15 @@ func (mixin *withFilterMixin) getNonCompositPKFilter(proc *process.Process) (fil
 
 func (mixin *withFilterMixin) getPK(cols []uint16) []uint16 {
 	logutil.Infof("cols is %v, mixin.columns is %v", cols, mixin.columns)
-	if mixin.columns.pkPos == -1 {
-		return nil
-	}
 	if len(mixin.columns.compPKPositions) > 0 {
 		pkCols := make([]uint16, 0, len(mixin.columns.compPKPositions))
 		for i, pos := range mixin.columns.compPKPositions {
 			pkCols[i] = cols[pos]
 		}
 		return pkCols
+	}
+	if mixin.columns.pkPos == -1 {
+		return nil
 	}
 	return []uint16{cols[mixin.columns.pkPos]}
 }
