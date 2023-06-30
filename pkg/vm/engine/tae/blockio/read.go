@@ -123,13 +123,26 @@ func BlockReadInner(
 		selectRows  []int32
 		deletedRows []int64
 		deleteMask  nulls.Bitmap
+		pkLoaded    *batch.Batch
 		loaded      *batch.Batch
+		pkPos       []int
+		indexes     []uint16
+		colTy       []types.Type
+		pkTy        []types.Type
 	)
-
-	if loaded, rowidPos, deleteMask, err = readBlockData(
-		ctx, pkCols, colTypes, info, ts, fs, mp, vp,
-	); err != nil {
-		return
+	if filter != nil && info.Sorted {
+		pkPos, indexes, colTy, pkTy = getPKIndex(seqnums, pkCols, colTypes)
+		if pkLoaded, _, deleteMask, err = readBlockData(
+			ctx, pkCols, pkTy, info, ts, fs, mp, vp,
+		); err != nil {
+			return
+		}
+	} else {
+		if loaded, rowidPos, deleteMask, err = readBlockData(
+			ctx, seqnums, colTypes, info, ts, fs, mp, vp,
+		); err != nil {
+			return
+		}
 	}
 
 	// read deletes from storage specified by delta location
@@ -166,7 +179,7 @@ func BlockReadInner(
 	// apply the filter to select rows
 	if filter != nil && info.Sorted {
 		// select rows by filter
-		selectRows = filter(loaded.Vecs)
+		selectRows = filter(pkLoaded.Vecs)
 
 		// apply delete mask to selected rows
 		if !deleteMask.IsEmpty() {
@@ -195,7 +208,7 @@ func BlockReadInner(
 		if len(selectRows) == 0 {
 			var typ types.Type
 			for i, colType := range colTypes {
-				if i == rowidPos {
+				if colType.Oid == types.T_Rowid {
 					typ = objectio.RowidType
 				} else {
 					typ = colType
@@ -208,13 +221,13 @@ func BlockReadInner(
 			}
 			return
 		}
+		if loaded, rowidPos, deleteMask, err = readBlockData(
+			ctx, indexes, colTy, info, ts, fs, mp, vp,
+		); err != nil {
+			return
+		}
 	}
 
-	if loaded, rowidPos, deleteMask, err = readBlockData(
-		ctx, seqnums, colTypes, info, ts, fs, mp, vp,
-	); err != nil {
-		return
-	}
 	if len(selectRows) > 0 {
 		// NOTE: it always goes here if there is a filter and the block is sorted
 		// and there are selected rows after applying the filter and delete mask
@@ -229,19 +242,35 @@ func BlockReadInner(
 		}
 
 		// assemble result batch only with selected rows
-		for i, col := range loaded.Vecs {
-			typ := *col.GetType()
-			if typ.Oid == types.T_Rowid {
-				result.Vecs[i] = col
-				continue
-			}
-			if vp == nil {
-				result.Vecs[i] = vector.NewVec(typ)
-			} else {
-				result.Vecs[i] = vp.GetVector(typ)
-			}
-			if err = result.Vecs[i].Union(col, selectRows, mp); err != nil {
-				break
+		z := 0
+		for i := range result.Vecs {
+			for y, pk := range pkPos {
+				if i == pk {
+					typ := *pkLoaded.Vecs[y].GetType()
+					if vp == nil {
+						result.Vecs[i] = vector.NewVec(typ)
+					} else {
+						result.Vecs[i] = vp.GetVector(typ)
+					}
+					if err = result.Vecs[i].Union(pkLoaded.Vecs[y], selectRows, mp); err != nil {
+						break
+					}
+					z++
+				} else {
+					typ := *loaded.Vecs[i+z].GetType()
+					if typ.Oid == types.T_Rowid {
+						result.Vecs[i] = loaded.Vecs[i+z]
+						continue
+					}
+					if vp == nil {
+						result.Vecs[i] = vector.NewVec(typ)
+					} else {
+						result.Vecs[i] = vp.GetVector(typ)
+					}
+					if err = result.Vecs[i].Union(loaded.Vecs[i+z], selectRows, mp); err != nil {
+						break
+					}
+				}
 			}
 		}
 	} else {
@@ -323,6 +352,26 @@ func getRowsIdIndex(colIndexes []uint16, colTypes []types.Type) (int, []uint16, 
 	typs = append(typs, colTypes[:idx]...)
 	typs = append(typs, colTypes[idx+1:]...)
 	return idx, idxes, typs
+}
+
+func getPKIndex(colIndexes []uint16, pkCols []uint16, colTypes []types.Type) ([]int, []uint16, []types.Type, []types.Type) {
+	idxes := make([]uint16, 0, len(colIndexes)-len(pkCols))
+	typs := make([]types.Type, 0, len(colTypes)-len(pkCols))
+	pkTypes := make([]types.Type, 0, len(pkCols))
+	pkIdxs := make([]int, 0)
+	for i, col := range colIndexes {
+		for _, pk := range pkCols {
+			if col == pk {
+				pkIdxs = append(pkIdxs, i)
+				pkTypes = append(pkTypes, colTypes[i])
+				idxes = append(idxes, colIndexes[:i]...)
+				idxes = append(idxes, colIndexes[i+1:]...)
+				typs = append(typs, colTypes[:i]...)
+				typs = append(typs, colTypes[i+1:]...)
+			}
+		}
+	}
+	return pkIdxs, idxes, typs, pkTypes
 }
 
 func buildRowidColumn(
