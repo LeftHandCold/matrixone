@@ -130,7 +130,6 @@ func BlockReadInner(
 		colTy       []types.Type
 		pkTy        []types.Type
 	)
-	logutil.Infof("pkCols is %v", pkCols)
 	if filter != nil && info.Sorted && len(pkCols) > 0 {
 		pkPos, indexes, colTy, pkTy = getPKIndex(seqnums, pkCols, colTypes)
 		if pkLoaded, _, deleteMask, err = readBlockData(
@@ -138,6 +137,7 @@ func BlockReadInner(
 		); err != nil {
 			return
 		}
+
 	} else {
 		if loaded, rowidPos, deleteMask, err = readBlockData(
 			ctx, seqnums, colTypes, info, ts, fs, mp, vp,
@@ -366,16 +366,20 @@ func getPKIndex(colIndexes []uint16, pkCols []uint16, colTypes []types.Type) ([]
 	pkTypes := make([]types.Type, 0, len(pkCols))
 	pkIdxs := make([]int, 0)
 	for i, col := range colIndexes {
+		ex := false
 		for _, pk := range pkCols {
 			if col == pk {
 				pkIdxs = append(pkIdxs, i)
 				pkTypes = append(pkTypes, colTypes[i])
-				idxes = append(idxes, colIndexes[:i]...)
-				idxes = append(idxes, colIndexes[i+1:]...)
-				typs = append(typs, colTypes[:i]...)
-				typs = append(typs, colTypes[i+1:]...)
+				ex = true
+				continue
 			}
 		}
+		if ex {
+			continue
+		}
+		idxes = append(idxes, col)
+		typs = append(typs, colTypes[i])
 	}
 	return pkIdxs, idxes, typs, pkTypes
 }
