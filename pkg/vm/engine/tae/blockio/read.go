@@ -55,7 +55,7 @@ func BlockRead(
 	}
 	columnBatch, err := BlockReadInner(
 		ctx, info, deletes, seqnums, colTypes,
-		types.TimestampToTS(ts), filter, fs, mp, vp,
+		types.TimestampToTS(ts), filter, pkCols, fs, mp, vp,
 	)
 	if err != nil {
 		return nil, err
@@ -132,13 +132,6 @@ func BlockReadInner(
 		return
 	}
 
-	// read block data from storage specified by meta location
-	if loaded, rowidPos, deleteMask, err = readBlockData(
-		ctx, seqnums, colTypes, info, ts, fs, mp, vp,
-	); err != nil {
-		return
-	}
-
 	// read deletes from storage specified by delta location
 	if !info.DeltaLocation().IsEmpty() {
 		var deletes *batch.Batch
@@ -167,7 +160,7 @@ func BlockReadInner(
 	}
 
 	// assemble result batch for return
-	result = batch.NewWithSize(len(loaded.Vecs))
+	result = batch.NewWithSize(len(colTypes))
 
 	// if there is a filter and the block is sorted,
 	// apply the filter to select rows
@@ -201,11 +194,11 @@ func BlockReadInner(
 		// no rows selected, return empty batch
 		if len(selectRows) == 0 {
 			var typ types.Type
-			for i, col := range loaded.Vecs {
+			for i, colType := range colTypes {
 				if i == rowidPos {
 					typ = objectio.RowidType
 				} else {
-					typ = *col.GetType()
+					typ = colType
 				}
 				if vp == nil {
 					result.Vecs[i] = vector.NewVec(typ)
@@ -217,6 +210,11 @@ func BlockReadInner(
 		}
 	}
 
+	if loaded, rowidPos, deleteMask, err = readBlockData(
+		ctx, seqnums, colTypes, info, ts, fs, mp, vp,
+	); err != nil {
+		return
+	}
 	if len(selectRows) > 0 {
 		// NOTE: it always goes here if there is a filter and the block is sorted
 		// and there are selected rows after applying the filter and delete mask
@@ -359,6 +357,16 @@ func buildRowidColumn(
 		col = nil
 	}
 	return
+}
+
+func readPKData(ctx context.Context,
+	colIndexes []uint16,
+	colTypes []types.Type,
+	info *pkgcatalog.BlockInfo,
+	ts types.TS,
+	fs fileservice.FileService,
+	m *mpool.MPool) {
+
 }
 
 func readBlockData(
