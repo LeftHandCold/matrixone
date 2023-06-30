@@ -168,8 +168,8 @@ func (mixin *withFilterMixin) getCompositPKFilter(proc *process.Process) (filter
 			inputSels []int32
 		)
 		for i := range filterFuncs {
-			pos := mixin.columns.compPKPositions[i]
-			vec := vecs[pos]
+			//pos := mixin.columns.compPKPositions[i]
+			vec := vecs[i]
 			mixin.sels = mixin.sels[:0]
 			filterFuncs[i](vec, inputSels, &mixin.sels)
 			if len(mixin.sels) == 0 {
@@ -233,15 +233,18 @@ func (mixin *withFilterMixin) getNonCompositPKFilter(proc *process.Process) (fil
 	return
 }
 
-func (mixin *withFilterMixin) getPK() []uint16 {
+func (mixin *withFilterMixin) getPK(cols []uint16) []uint16 {
 	if mixin.columns.pkPos == -1 {
 		return nil
 	}
-	pkCols := make([]uint16, 0, len(mixin.columns.compPKPositions))
-	for i, pos := range mixin.columns.compPKPositions {
-		pkCols[i] = uint16(mixin.tableDef.Cols[pos].ColId)
+	if len(mixin.columns.compPKPositions) > 0 {
+		pkCols := make([]uint16, 0, len(mixin.columns.compPKPositions))
+		for i, pos := range mixin.columns.compPKPositions {
+			pkCols[i] = cols[pos]
+		}
+		return pkCols
 	}
-	return []uint16{uint16(mixin.tableDef.Cols[mixin.columns.pkPos].ColId)}
+	return []uint16{cols[mixin.columns.pkPos]}
 }
 
 // -----------------------------------------------------------------
