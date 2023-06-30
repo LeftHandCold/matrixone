@@ -234,6 +234,7 @@ func (mixin *withFilterMixin) getNonCompositPKFilter(proc *process.Process) (fil
 }
 
 func (mixin *withFilterMixin) getPK(cols []uint16) []uint16 {
+	logutil.Infof("cols is %v, mixin.columns is %v", cols, mixin.columns)
 	if mixin.columns.pkPos == -1 {
 		return nil
 	}
