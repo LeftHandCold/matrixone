@@ -332,7 +332,7 @@ func (r *blockReader) Read(
 
 	// read the block
 	bat, err := blockio.BlockRead(
-		r.ctx, blockInfo, r.buffer, r.columns.seqnums, r.columns.colTypes, r.ts, filter, r.getPK(), r.fs, mp, vp,
+		r.ctx, blockInfo, r.buffer, r.columns.seqnums, r.columns.colTypes, r.ts, filter, r.getPK(r.columns.seqnums), r.fs, mp, vp,
 	)
 	if err != nil {
 		return nil, err
