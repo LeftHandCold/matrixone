@@ -130,7 +130,8 @@ func BlockReadInner(
 		colTy       []types.Type
 		pkTy        []types.Type
 	)
-	if filter != nil && info.Sorted {
+	logutil.Infof("pkCols is %v", pkCols)
+	if filter != nil && info.Sorted && len(pkCols) > 0 {
 		pkPos, indexes, colTy, pkTy = getPKIndex(seqnums, pkCols, colTypes)
 		if pkLoaded, _, deleteMask, err = readBlockData(
 			ctx, pkCols, pkTy, info, ts, fs, mp, vp,
