@@ -236,7 +236,7 @@ func (mixin *withFilterMixin) getNonCompositPKFilter(proc *process.Process) (fil
 func (mixin *withFilterMixin) getPK(cols []uint16) []uint16 {
 	logutil.Infof("cols is %v, mixin.columns is %v", cols, mixin.columns)
 	if len(mixin.columns.compPKPositions) > 0 {
-		pkCols := make([]uint16, 0, len(mixin.columns.compPKPositions))
+		pkCols := make([]uint16, len(mixin.columns.compPKPositions))
 		for i, pos := range mixin.columns.compPKPositions {
 			pkCols[i] = cols[pos]
 		}

@@ -245,6 +245,7 @@ func BlockReadInner(
 		// assemble result batch only with selected rows
 		z := 0
 		for i := range result.Vecs {
+			ex := false
 			for y, pk := range pkPos {
 				if i == pk {
 					typ := *pkLoaded.Vecs[y].GetType()
@@ -257,21 +258,25 @@ func BlockReadInner(
 						break
 					}
 					z++
-				} else {
-					typ := *loaded.Vecs[i+z].GetType()
-					if typ.Oid == types.T_Rowid {
-						result.Vecs[i] = loaded.Vecs[i+z]
-						continue
-					}
-					if vp == nil {
-						result.Vecs[i] = vector.NewVec(typ)
-					} else {
-						result.Vecs[i] = vp.GetVector(typ)
-					}
-					if err = result.Vecs[i].Union(loaded.Vecs[i+z], selectRows, mp); err != nil {
-						break
-					}
+					ex = true
+					continue
 				}
+			}
+			if ex {
+				continue
+			}
+			typ := *loaded.Vecs[i-z].GetType()
+			if typ.Oid == types.T_Rowid {
+				result.Vecs[i] = loaded.Vecs[i-z]
+				continue
+			}
+			if vp == nil {
+				result.Vecs[i] = vector.NewVec(typ)
+			} else {
+				result.Vecs[i] = vp.GetVector(typ)
+			}
+			if err = result.Vecs[i].Union(loaded.Vecs[i-z], selectRows, mp); err != nil {
+				break
 			}
 		}
 	} else {
