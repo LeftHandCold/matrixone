@@ -372,7 +372,7 @@ func (task *mergeBlocksTask) Execute(ctx context.Context) (err error) {
 		}
 	}
 	iarg, sarg, flush := fault.TriggerFault("flush_merge_timeout")
-	if flush && rand.Int63n(iarg) == 0 {
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
 		return moerr.NewInternalError(ctx, sarg)
 	}
 	blocks, _, err := writer.Sync(ctx)

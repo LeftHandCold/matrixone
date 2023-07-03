@@ -457,13 +457,13 @@ func (r *runner) saveCheckpoint(start, end types.TS) (err error) {
 		return
 	}
 	iarg, sarg, flush := fault.TriggerFault("save_ckp_meta_fault")
-	if flush && rand.Int63n(iarg) == 0 {
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
 		return moerr.NewInternalError(r.ctx, sarg)
 	}
 	// TODO: checkpoint entry should maintain the location
 	_, err = writer.WriteEnd(r.ctx)
 	iarg, sarg, flush = fault.TriggerFault("save_ckp_meta_timeout")
-	if flush && rand.Int63n(iarg) == 0 {
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
 		return moerr.NewInternalError(r.ctx, sarg)
 	}
 	return

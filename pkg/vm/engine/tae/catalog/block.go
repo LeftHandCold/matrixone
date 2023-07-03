@@ -415,7 +415,7 @@ func (entry *BlockEntry) UpdateMetaLoc(txn txnif.TxnReader, metaLoc objectio.Loc
 		entry.Lock()
 	}
 	iarg, sarg, flush := fault.TriggerFault("update_metaloc_conflict")
-	if flush && rand.Int63n(iarg) == 0 {
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
 		return false, moerr.NewInternalError(txn.GetContext(), sarg)
 	}
 	err = entry.CheckConflict(txn)
@@ -444,7 +444,7 @@ func (entry *BlockEntry) UpdateDeltaLoc(txn txnif.TxnReader, deltaloc objectio.L
 		entry.Lock()
 	}
 	iarg, sarg, flush := fault.TriggerFault("update_deltaloc_conflict")
-	if flush && rand.Int63n(iarg) == 0 {
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
 		return false, moerr.NewInternalError(txn.GetContext(), sarg)
 	}
 	err = entry.CheckConflict(txn)

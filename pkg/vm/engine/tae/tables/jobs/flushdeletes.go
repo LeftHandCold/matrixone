@@ -67,7 +67,7 @@ func (task *flushDeletesTask) Execute(ctx context.Context) error {
 		return err
 	}
 	iarg, sarg, flush := fault.TriggerFault("flush_delete_timeout")
-	if flush && rand.Int63n(iarg) == 0 {
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
 		return moerr.NewInternalError(ctx, sarg)
 	}
 	task.blocks, _, err = writer.Sync(ctx)

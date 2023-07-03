@@ -42,7 +42,7 @@ func LoadColumns(ctx context.Context,
 		return
 	}
 	iarg, sarg, flush := fault.TriggerFault("load_columns_timeout")
-	if flush && rand.Int63n(iarg) == 0 {
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
 		return nil, moerr.NewInternalError(ctx, sarg)
 	}
 	if ioVectors, err = objectio.ReadOneBlock(ctx, &meta, name.String(), location.ID(), cols, typs, m, fs); err != nil {
@@ -68,7 +68,7 @@ func LoadBF(
 	noLoad bool,
 ) (bf objectio.BloomFilter, err error) {
 	iarg, sarg, flush := fault.TriggerFault("load_bf_timeout")
-	if flush && rand.Int63n(iarg) == 0 {
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
 		return nil, moerr.NewInternalError(ctx, sarg)
 	}
 	v, ok := cache.Get(*loc.ShortName())

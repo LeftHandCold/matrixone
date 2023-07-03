@@ -548,12 +548,12 @@ func (data *CheckpointData) WriteTo(
 	}
 	ctx := context.Background()
 	iarg, sarg, flush := fault.TriggerFault("save_ckp_fault")
-	if flush && rand.Int63n(iarg) == 0 {
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
 		return nil, moerr.NewInternalError(ctx, sarg)
 	}
 	blks, _, err = writer.Sync(ctx)
 	iarg, sarg, flush = fault.TriggerFault("save_ckp_timeout")
-	if flush && rand.Int63n(iarg) == 0 {
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
 		return nil, moerr.NewInternalError(ctx, sarg)
 	}
 	return
