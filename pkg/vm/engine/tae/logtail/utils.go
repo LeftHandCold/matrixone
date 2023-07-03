@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	"math/rand"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -544,7 +546,16 @@ func (data *CheckpointData) WriteTo(
 			return
 		}
 	}
-	blks, _, err = writer.Sync(context.Background())
+	ctx := context.Background()
+	iarg, sarg, flush := fault.TriggerFault("save_ckp_fault")
+	if flush && rand.Int63n(iarg) == 0 {
+		return nil, moerr.NewInternalError(ctx, sarg)
+	}
+	blks, _, err = writer.Sync(ctx)
+	iarg, sarg, flush = fault.TriggerFault("save_ckp_timeout")
+	if flush && rand.Int63n(iarg) == 0 {
+		return nil, moerr.NewInternalError(ctx, sarg)
+	}
 	return
 }
 

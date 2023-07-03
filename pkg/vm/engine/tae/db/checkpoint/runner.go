@@ -16,6 +16,8 @@ package checkpoint
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	"math/rand"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -454,9 +456,16 @@ func (r *runner) saveCheckpoint(start, end types.TS) (err error) {
 	if _, err = writer.Write(containers.ToCNBatch(bat)); err != nil {
 		return
 	}
-
+	iarg, sarg, flush := fault.TriggerFault("save_ckp_meta_fault")
+	if flush && rand.Int63n(iarg) == 0 {
+		return moerr.NewInternalError(r.ctx, sarg)
+	}
 	// TODO: checkpoint entry should maintain the location
 	_, err = writer.WriteEnd(r.ctx)
+	iarg, sarg, flush = fault.TriggerFault("save_ckp_meta_timeout")
+	if flush && rand.Int63n(iarg) == 0 {
+		return moerr.NewInternalError(r.ctx, sarg)
+	}
 	return
 }
 
