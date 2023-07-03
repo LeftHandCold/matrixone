@@ -19,6 +19,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
 	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	"math/rand"
 
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
@@ -85,8 +86,8 @@ func (task *flushBlkTask) Execute(ctx context.Context) error {
 			return err
 		}
 	}
-	_, sarg, flush := fault.TriggerFault("flushblock_timeout")
-	if flush {
+	iarg, sarg, flush := fault.TriggerFault("flush_block_timeout")
+	if flush && rand.Int63n(iarg) == 1 {
 		return moerr.NewInternalError(ctx, sarg)
 	}
 	task.blocks, _, err = writer.Sync(ctx)
