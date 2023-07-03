@@ -16,7 +16,10 @@ package jobs
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	"math/rand"
 
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
@@ -62,6 +65,10 @@ func (task *flushDeletesTask) Execute(ctx context.Context) error {
 	_, err = writer.WriteBatchWithOutIndex(containers.ToCNBatch(task.delta))
 	if err != nil {
 		return err
+	}
+	iarg, sarg, flush := fault.TriggerFault("flush_delete_timeout")
+	if flush && rand.Int63n(iarg) == 0 {
+		return moerr.NewInternalError(ctx, sarg)
 	}
 	task.blocks, _, err = writer.Sync(ctx)
 

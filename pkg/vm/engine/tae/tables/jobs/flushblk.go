@@ -87,7 +87,7 @@ func (task *flushBlkTask) Execute(ctx context.Context) error {
 		}
 	}
 	iarg, sarg, flush := fault.TriggerFault("flush_block_timeout")
-	if flush && rand.Int63n(iarg) == 1 {
+	if flush && rand.Int63n(iarg) == 0 {
 		return moerr.NewInternalError(ctx, sarg)
 	}
 	task.blocks, _, err = writer.Sync(ctx)
