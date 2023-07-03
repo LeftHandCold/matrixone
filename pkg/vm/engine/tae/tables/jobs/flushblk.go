@@ -16,7 +16,9 @@ package jobs
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
@@ -82,6 +84,10 @@ func (task *flushBlkTask) Execute(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+	}
+	_, sarg, flush := fault.TriggerFault("flushblock_timeout")
+	if flush {
+		return moerr.NewInternalError(ctx, sarg)
 	}
 	task.blocks, _, err = writer.Sync(ctx)
 
