@@ -15,11 +15,11 @@
 package morpc
 
 import (
+	"runtime"
 	"time"
 
 	"github.com/fagongzi/goetty/v2"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
-	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/util/toml"
 	"go.uber.org/zap"
 )
@@ -99,8 +99,25 @@ func (c *Config) Adjust() {
 		c.SendQueueSize = 100000
 	}
 	if c.ServerWorkers == 0 {
-		c.ServerWorkers = objectio.GetRecommendWorkerCnt()
+		c.ServerWorkers = getDNDefaultServerWorkers()
 	}
+}
+
+// getDNDefaultServerWorkers get dn default server workers
+func getDNDefaultServerWorkers() int {
+	num := 50
+	cpus := runtime.NumCPU()
+	if num < cpus {
+		num = 3 * cpus
+		if num > 200 {
+			num = 200
+		}
+		return num
+	}
+	if cpus < 4 {
+		return num
+	}
+	return num + cpus
 }
 
 // NewClient create client from config
