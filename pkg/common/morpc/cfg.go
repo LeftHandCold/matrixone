@@ -110,7 +110,7 @@ func getDNDefaultServerWorkers() int {
 	if cpus < 4 {
 		return num
 	}
-	num += 150 / 60 * cpus
+	num += 150 * cpus / 60
 	if num > 200 {
 		num = 200
 	}
