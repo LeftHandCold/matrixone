@@ -107,17 +107,17 @@ func (c *Config) Adjust() {
 func getDNDefaultServerWorkers() int {
 	num := 50
 	cpus := runtime.NumCPU()
-	if num < cpus {
-		num = 3 * cpus
-		if num > 200 {
-			num = 200
-		}
-		return num
-	}
 	if cpus < 4 {
 		return num
 	}
-	return num + cpus
+	num += 150 / 60 * cpus
+	if num > 200 {
+		num = 200
+	}
+	if num%2 != 0 {
+		num++
+	}
+	return num
 }
 
 // NewClient create client from config
