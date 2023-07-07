@@ -19,6 +19,7 @@ import (
 
 	"github.com/fagongzi/goetty/v2"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/util/toml"
 	"go.uber.org/zap"
 )
@@ -98,7 +99,7 @@ func (c *Config) Adjust() {
 		c.SendQueueSize = 100000
 	}
 	if c.ServerWorkers == 0 {
-		c.ServerWorkers = 50
+		c.ServerWorkers = objectio.GetRecommendWorkerCnt()
 	}
 }
 

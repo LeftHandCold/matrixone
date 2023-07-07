@@ -15,6 +15,7 @@ package objectio
 
 import (
 	"io"
+	"runtime"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -229,4 +230,21 @@ func ConstructRowidColumnToWithSels(
 		vec.Free(mp)
 	}
 	return
+}
+
+// GetRecommendWorkerCnt simple output a worker number
+func GetRecommendWorkerCnt() int {
+	num := 50
+	cpus := runtime.NumCPU()
+	if num < cpus {
+		num = 3 * cpus
+		if num > 200 {
+			num = 200
+		}
+		return num
+	}
+	if cpus < 4 {
+		return num
+	}
+	return num + cpus
 }
