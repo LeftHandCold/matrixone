@@ -143,6 +143,9 @@ func callBlocking(
 		// no input batch any more, means all lock performed.
 		if bat == nil {
 			arg.rt.step = stepDownstream
+			if len(arg.rt.cachedBatches) == 0 {
+				arg.rt.step = stepEnd
+			}
 			return false, nil
 		}
 
@@ -165,6 +168,7 @@ func callBlocking(
 			arg.rt.step = stepEnd
 			return false, nil
 		}
+
 		bat := arg.rt.cachedBatches[0]
 		arg.rt.cachedBatches = arg.rt.cachedBatches[1:]
 		if len(arg.rt.cachedBatches) == 0 {
@@ -209,7 +213,7 @@ func performLock(
 			DefaultLockOptions(arg.rt.parker).
 				WithLockMode(lock.LockMode_Exclusive).
 				WithFetchLockRowsFunc(arg.rt.fetchers[idx]).
-				WithMaxBytesPerLock(int(proc.LockService.GetConfig().MaxLockRowBytes)).
+				WithMaxBytesPerLock(int(proc.LockService.GetConfig().MaxLockRowCount)).
 				WithFilterRows(target.filter, filterCols).
 				WithLockTable(target.lockTable).
 				WithHasNewVersionInRangeFunc(arg.rt.hasNewVersionInRange),
@@ -346,8 +350,8 @@ func doLock(
 		return timestamp.Timestamp{}, nil
 	}
 
-	if opts.maxBytesPerLock == 0 {
-		opts.maxBytesPerLock = int(lockService.GetConfig().MaxLockRowBytes)
+	if opts.maxCountPerLock == 0 {
+		opts.maxCountPerLock = int(lockService.GetConfig().MaxLockRowCount)
 	}
 	fetchFunc := opts.fetchFunc
 	if fetchFunc == nil {
@@ -358,7 +362,7 @@ func doLock(
 		vec,
 		opts.parker,
 		pkType,
-		opts.maxBytesPerLock,
+		opts.maxCountPerLock,
 		opts.lockTable,
 		opts.filter,
 		opts.filterCols)
@@ -398,6 +402,7 @@ func doLock(
 
 	// if no conflict, maybe data has been updated in [snapshotTS, lockedTS]. So wen need check here
 	if !result.HasConflict &&
+		!txnOp.IsRetry() &&
 		txnOp.Txn().IsRCIsolation() {
 		snapshotTS := txnOp.Txn().SnapshotTS
 		lockedTS := result.Timestamp
@@ -462,7 +467,7 @@ func DefaultLockOptions(parker *types.Packer) LockOptions {
 	return LockOptions{
 		mode:            lock.LockMode_Exclusive,
 		lockTable:       false,
-		maxBytesPerLock: 0,
+		maxCountPerLock: 0,
 		parker:          parker,
 	}
 }
@@ -485,7 +490,7 @@ func (opts LockOptions) WithLockTable(lockTable bool) LockOptions {
 // that can be allocated per lock operation, and if it is exceeded, it will be
 // converted to a range lock.
 func (opts LockOptions) WithMaxBytesPerLock(maxBytesPerLock int) LockOptions {
-	opts.maxBytesPerLock = maxBytesPerLock
+	opts.maxCountPerLock = maxBytesPerLock
 	return opts
 }
 
@@ -675,6 +680,9 @@ func hasNewVersionInRange(
 	eng engine.Engine,
 	vec *vector.Vector,
 	from, to timestamp.Timestamp) (bool, error) {
+	if vec == nil {
+		return true, nil
+	}
 	txnClient := proc.TxnClient
 	txnOp, err := txnClient.New(proc.Ctx, to.Prev())
 	if err != nil {
