@@ -63,7 +63,15 @@ func (task *flushDeletesTask) Execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	err = common.RandomTriggerFault(ctx, "flush_delete_error")
+	if err != nil {
+		return err
+	}
 	task.blocks, _, err = writer.Sync(ctx)
+	err = common.RandomTriggerFault(ctx, "flush_delete_timeout")
+	if err != nil {
+		return err
+	}
 
 	perfcounter.Update(ctx, func(counter *perfcounter.CounterSet) {
 		counter.TAE.Block.Flush.Add(1)

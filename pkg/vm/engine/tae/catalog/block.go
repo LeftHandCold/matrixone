@@ -411,6 +411,10 @@ func (entry *BlockEntry) UpdateMetaLoc(txn txnif.TxnReader, metaLoc objectio.Loc
 		txnToWait.GetTxnState(true)
 		entry.Lock()
 	}
+	err = common.RandomTriggerFault(txn.GetContext(), "update_metaloc_conflict")
+	if err != nil {
+		return
+	}
 	err = entry.CheckConflict(txn)
 	if err != nil {
 		return
@@ -435,6 +439,10 @@ func (entry *BlockEntry) UpdateDeltaLoc(txn txnif.TxnReader, deltaloc objectio.L
 		entry.Unlock()
 		txnToWait.GetTxnState(true)
 		entry.Lock()
+	}
+	err = common.RandomTriggerFault(txn.GetContext(), "update_deltaloc_conflict")
+	if err != nil {
+		return
 	}
 	err = entry.CheckConflict(txn)
 	if err != nil {

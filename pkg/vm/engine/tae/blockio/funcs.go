@@ -16,6 +16,7 @@ package blockio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -36,6 +37,10 @@ func LoadColumns(ctx context.Context,
 	var meta objectio.ObjectMeta
 	var ioVectors *fileservice.IOVector
 	if meta, err = objectio.FastLoadObjectMeta(ctx, &location, fs); err != nil {
+		return
+	}
+	err = common.RandomTriggerFault(ctx, "load_columns_timeout")
+	if err != nil {
 		return
 	}
 	if ioVectors, err = objectio.ReadOneBlock(ctx, &meta, name.String(), location.ID(), cols, typs, m, fs); err != nil {
@@ -60,6 +65,10 @@ func LoadBF(
 	fs fileservice.FileService,
 	noLoad bool,
 ) (bf objectio.BloomFilter, err error) {
+	err = common.RandomTriggerFault(ctx, "load_bf_timeout")
+	if err != nil {
+		return
+	}
 	v, ok := cache.Get(*loc.ShortName())
 	if ok {
 		bf = objectio.BloomFilter(v)

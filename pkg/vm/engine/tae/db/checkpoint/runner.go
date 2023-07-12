@@ -16,8 +16,6 @@ package checkpoint
 
 import (
 	"context"
-	"github.com/matrixorigin/matrixone/pkg/util/fault"
-	"math/rand"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -408,9 +406,9 @@ func (r *runner) DeleteGlobalEntry(entry *CheckpointEntry) {
 	})
 }
 func (r *runner) FlushTable(ctx context.Context, dbID, tableID uint64, ts types.TS) (err error) {
-	iarg, sarg, flush := fault.TriggerFault("flush_table_error")
-	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
-		return moerr.NewInternalError(ctx, sarg)
+	err = common.NonrandomTriggerFault(ctx, "flush_table_error")
+	if err != nil {
+		return
 	}
 	makeCtx := func() *DirtyCtx {
 		tree := r.source.ScanInRangePruned(types.TS{}, ts)
@@ -457,10 +455,18 @@ func (r *runner) saveCheckpoint(start, end types.TS) (err error) {
 	if err != nil {
 		return err
 	}
+	err = common.RandomTriggerFault(r.ctx, "save_ckp_meta_fault")
+	if err != nil {
+		return err
+	}
 	if _, err = writer.Write(containers.ToCNBatch(bat)); err != nil {
 		return
 	}
 
+	err = common.RandomTriggerFault(r.ctx, "save_ckp_meta_timeout")
+	if err != nil {
+		return err
+	}
 	// TODO: checkpoint entry should maintain the location
 	_, err = writer.WriteEnd(r.ctx)
 	return

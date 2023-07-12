@@ -544,7 +544,16 @@ func (data *CheckpointData) WriteTo(
 			return
 		}
 	}
-	blks, _, err = writer.Sync(context.Background())
+	ctx := context.Background()
+	err = common.RandomTriggerFault(ctx, "save_ckp_error")
+	if err != nil {
+		return
+	}
+	blks, _, err = writer.Sync(ctx)
+	err = common.RandomTriggerFault(ctx, "save_ckp_timeout")
+	if err != nil {
+		return
+	}
 	return
 }
 

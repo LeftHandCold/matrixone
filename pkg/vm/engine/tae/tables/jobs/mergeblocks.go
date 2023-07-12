@@ -368,7 +368,15 @@ func (task *mergeBlocksTask) Execute(ctx context.Context) (err error) {
 			return err
 		}
 	}
+	err = common.RandomTriggerFault(ctx, "flush_merge_error")
+	if err != nil {
+		return err
+	}
 	blocks, _, err := writer.Sync(ctx)
+	err = common.RandomTriggerFault(ctx, "flush_merge_timeout")
+	if err != nil {
+		return err
+	}
 	if err != nil {
 		return err
 	}
