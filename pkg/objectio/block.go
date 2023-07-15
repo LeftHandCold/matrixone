@@ -24,7 +24,7 @@ import (
 type BlockObject []byte
 
 func NewBlock(seqnums *Seqnums) BlockObject {
-	header := BuildBlockHeader()
+	header := BuildBlockHeaderV2()
 	header.SetColumnCount(uint16(len(seqnums.Seqs)))
 	metaColCnt := seqnums.MetaColCnt
 	header.SetMetaColumnCount(metaColCnt)
