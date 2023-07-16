@@ -185,6 +185,17 @@ func (w *objectWriterV1) prepareObjectMeta(objectMeta ObjectMeta, offset uint32,
 		blockIndex.SetBlockMetaPos(uint32(i), length, n)
 		length += n
 	}
+	schemaMap := make(map[uint16]uint16)
+	for _, block := range w.blocks {
+		schemaMap[block.meta.BlockHeader().SchemaType()]++
+	}
+
+	schemaIndex := BuildSchemaTypeIndex(uint16(len(schemaMap)))
+	i := uint16(0)
+	for st, count := range schemaMap {
+		schemaIndex.SetSchemaMeta(i, st, count)
+	}
+	length += schemaIndex.Length()
 	extent := NewExtent(compress.None, offset, 0, length)
 	objectMeta.BlockHeader().SetMetaLocation(extent)
 

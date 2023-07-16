@@ -67,8 +67,8 @@ const (
 
 type SchemaTypeIndex []byte
 
-func BuildSchemaTypeIndex(count uint32) SchemaTypeIndex {
-	length := schemaCountLen + uint32(count)*typePosLen
+func BuildSchemaTypeIndex(count uint16) SchemaTypeIndex {
+	length := schemaCountLen + count*typePosLen
 	buf := make([]byte, length)
 	return buf[:]
 }
@@ -92,4 +92,8 @@ func (oh SchemaTypeIndex) SetSchemaMeta(pos uint16, st uint16, count uint16) {
 	offEnd := blockCountLen + pos*posLen + schemaType
 	copy(oh[offStart:offEnd], types.EncodeUint16(&st))
 	copy(oh[offStart+schemaBlockCount:offEnd+schemaBlockCount], types.EncodeUint16(&count))
+}
+
+func (oh SchemaTypeIndex) Length() uint32 {
+	return uint32(oh.SchemaCount()*posLen + schemaCountLen)
 }
