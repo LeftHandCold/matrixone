@@ -258,7 +258,7 @@ func BenchmarkMetadata(b *testing.B) {
 }
 
 func TestNewObjectReader(t *testing.T) {
-	t.Skip("use debug")
+	//t.Skip("use debug")
 	ctx := context.Background()
 
 	dir := InitTestEnv(ModuleName, t.Name())
@@ -286,7 +286,7 @@ func TestNewObjectReader(t *testing.T) {
 		zbuf[63] = 10
 		fd.ColumnMeta(uint16(i)).SetZoneMap(zbuf)
 	}
-	_, err = objectWriter.Write(bat)
+	_, err = objectWriter.WriteWithSchemaType(bat, SchemaCkp)
 	assert.Nil(t, err)
 	ts := time.Now()
 	option := WriteOptions{
@@ -297,6 +297,20 @@ func TestNewObjectReader(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, 2, len(blocks))
 	assert.Nil(t, objectWriter.buffer)
+
+	objectReader, _ := NewObjectReaderWithStr(name, service)
+	ext := blocks[0].BlockHeader().MetaLocation()
+	objectReader.CacheMetaExtent(&ext)
+	meta, err := objectReader.ReadMeta(context.Background(), nil)
+	assert.Nil(t, err)
+	st := meta.SchemaTypeIndex()
+	assert.Equal(t, uint16(2), st.SchemaCount())
+	sType, count := st.SchemaMeta(0)
+	assert.Equal(t, uint16(0), sType)
+	assert.Equal(t, uint16(1), count)
+	sType, count = st.SchemaMeta(1)
+	assert.Equal(t, uint16(2), sType)
+	assert.Equal(t, uint16(1), count)
 }
 
 func newBatch(mp *mpool.MPool) *batch.Batch {

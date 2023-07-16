@@ -63,6 +63,15 @@ func (o objectMetaV1) BlockIndex() BlockIndex {
 	return BlockIndex(o[offset:])
 }
 
+func (o objectMetaV1) SchemaTypeIndex() SchemaTypeIndex {
+	if o.BlockHeader().SchemaType() == InvalidSchemaType {
+		return nil
+	}
+
+	offset := o.Length() + o.BlockIndex().Length()
+	return SchemaTypeIndex(o[offset:])
+}
+
 func (o objectMetaV1) GetBlockMeta(id uint32) BlockObject {
 	offset, length := o.BlockIndex().BlockMetaPos(id)
 	return BlockObject(o[offset : offset+length])

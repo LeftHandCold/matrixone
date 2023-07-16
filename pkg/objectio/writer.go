@@ -189,11 +189,13 @@ func (w *objectWriterV1) prepareObjectMeta(objectMeta ObjectMeta, offset uint32,
 	for _, block := range w.blocks {
 		schemaMap[block.meta.BlockHeader().SchemaType()]++
 	}
-
-	schemaIndex := BuildSchemaTypeIndex(uint16(len(schemaMap)))
+	schemaCount := uint16(len(schemaMap))
+	schemaIndex := BuildSchemaTypeIndex(schemaCount)
+	schemaIndex.SetSchemaCount(schemaCount)
 	i := uint16(0)
 	for st, count := range schemaMap {
 		schemaIndex.SetSchemaMeta(i, st, count)
+		i++
 	}
 	length += schemaIndex.Length()
 	extent := NewExtent(compress.None, offset, 0, length)
@@ -204,6 +206,7 @@ func (w *objectWriterV1) prepareObjectMeta(objectMeta ObjectMeta, offset uint32,
 	buf.Write(EncodeIOEntryHeader(&h))
 	buf.Write(objectMeta)
 	buf.Write(blockIndex)
+	buf.Write(schemaIndex)
 	// writer block metadata
 	for _, block := range w.blocks {
 		buf.Write(block.meta)

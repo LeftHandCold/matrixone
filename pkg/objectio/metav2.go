@@ -14,14 +14,16 @@
 
 package objectio
 
-import "github.com/matrixorigin/matrixone/pkg/container/types"
+import (
+	"github.com/matrixorigin/matrixone/pkg/container/types"
+)
 
 type SchemaType uint16
 
 const (
-	SchemaData SchemaType = 0
-	SchemaTombstone
-	SchemaCkp
+	SchemaData      SchemaType = 0
+	SchemaTombstone SchemaType = 1
+	SchemaCkp       SchemaType = 2
 )
 
 const (
@@ -88,12 +90,12 @@ func (oh SchemaTypeIndex) SchemaMeta(pos uint16) (uint16, uint16) {
 }
 
 func (oh SchemaTypeIndex) SetSchemaMeta(pos uint16, st uint16, count uint16) {
-	offStart := schemaCountLen + pos*posLen
-	offEnd := blockCountLen + pos*posLen + schemaType
+	offStart := schemaCountLen + pos*typePosLen
+	offEnd := schemaCountLen + pos*typePosLen + schemaType
 	copy(oh[offStart:offEnd], types.EncodeUint16(&st))
 	copy(oh[offStart+schemaBlockCount:offEnd+schemaBlockCount], types.EncodeUint16(&count))
 }
 
 func (oh SchemaTypeIndex) Length() uint32 {
-	return uint32(oh.SchemaCount()*posLen + schemaCountLen)
+	return uint32(oh.SchemaCount()*typePosLen + schemaCountLen)
 }
