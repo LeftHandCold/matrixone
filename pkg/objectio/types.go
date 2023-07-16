@@ -67,6 +67,8 @@ type Writer interface {
 	// and returns the handle of the block.
 	Write(batch *batch.Batch) (BlockObject, error)
 
+	WriteWithSchemaType(batch *batch.Batch, st SchemaType) (BlockObject, error)
+
 	// Write metadata for every column of all blocks
 	WriteObjectMeta(ctx context.Context, totalRow uint32, metas []ColumnMeta)
 
