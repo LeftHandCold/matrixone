@@ -25,6 +25,8 @@ type ObjectReader = objectReaderV1
 
 type ObjectMeta = objectMetaV1
 
+type BlockHeader = BlockHeaderV2
+
 var (
 	BuildObjectMeta        = buildObjectMetaV1
 	NewObjectWriterSpecial = newObjectWriterSpecialV1
@@ -48,7 +50,7 @@ const (
 )
 
 func init() {
-	RegisterIOEnrtyCodec(IOEntryHeader{IOET_ObjMeta, IOET_ObjectMeta_V1}, nil, nil)
+	RegisterIOEnrtyCodec(IOEntryHeader{IOET_ObjMeta, IOET_ObjectMeta_V1}, nil, DecodeObjectMetaV2)
 	RegisterIOEnrtyCodec(IOEntryHeader{IOET_ObjMeta, IOET_ObjectMeta_V2}, nil, nil)
 	RegisterIOEnrtyCodec(IOEntryHeader{IOET_ColData, IOET_ColumnData_V1}, EncodeColumnDataV1, DecodeColumnDataV1)
 	RegisterIOEnrtyCodec(IOEntryHeader{IOET_BF, IOET_BloomFilter_V1}, nil, nil)
@@ -67,6 +69,8 @@ func DecodeColumnDataV1(buf []byte) (ioe any, err error) {
 	return vec, err
 }
 
-func ()  {
-	
+func DecodeObjectMetaV2(buf []byte) (ioe any, err error) {
+	meta := ObjectMeta(buf)
+	meta.BlockHeader().SetSchemaType(InvalidSchemaType)
+	return meta, nil
 }

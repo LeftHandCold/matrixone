@@ -157,7 +157,7 @@ const (
 	headerLen          = headerDummyOff + headerDummyLen
 )
 
-type BlockHeader []byte
+type BlockHeaderV1 []byte
 
 func BuildBlockHeader() BlockHeader {
 	var buf [headerLen]byte

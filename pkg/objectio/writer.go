@@ -125,6 +125,18 @@ func (w *objectWriterV1) Write(batch *batch.Batch) (BlockObject, error) {
 	return block, nil
 }
 
+func (w *objectWriterV1) WriteWithSchemaType(batch *batch.Batch, st SchemaType) (BlockObject, error) {
+	if col := len(w.seqnums.Seqs); col == 0 {
+		w.seqnums.InitWithColCnt(len(batch.Vecs))
+	} else if col != len(batch.Vecs) {
+		panic(fmt.Sprintf("Unmatched Write Batch, expect %d, get %d, %v", col, len(batch.Vecs), batch.Attrs))
+	}
+	block := NewBlock(w.seqnums)
+	block.BlockHeader().SetSchemaType(uint16(st))
+	w.AddBlock(block, batch, w.seqnums)
+	return block, nil
+}
+
 func (w *objectWriterV1) WriteWithoutSeqnum(batch *batch.Batch) (BlockObject, error) {
 	denseSeqnums := NewSeqnums(nil)
 	denseSeqnums.InitWithColCnt(len(batch.Vecs))

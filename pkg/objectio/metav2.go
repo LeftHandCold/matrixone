@@ -33,56 +33,9 @@ const (
 	headerDummyLenV2 = 20
 	headerLenV2      = headerDummyOffV2 + headerDummyLenV2
 )
+const InvalidSchemaType = 0xFF
 
-type objectMetaV2 []byte
-
-func buildObjectMetaV2(count uint16) objectMetaV2 {
-	length := headerLenV2 + uint32(count)*colMetaLen
-	buf := make([]byte, length)
-	return buf[:]
-}
-
-func (o objectMetaV2) BlockHeader() BlockHeader {
-	return BlockHeader(o[:headerLenV2])
-}
-
-func (o objectMetaV2) MustGetColumn(seqnum uint16) ColumnMeta {
-	if seqnum > o.BlockHeader().MaxSeqnum() {
-		return BuildObjectColumnMeta()
-	}
-	return GetObjectColumnMeta(seqnum, o[headerLenV2:])
-}
-
-func (o objectMetaV2) AddColumnMeta(idx uint16, col ColumnMeta) {
-	offset := headerLenV2 + uint32(idx)*colMetaLen
-	copy(o[offset:offset+colMetaLen], col)
-}
-
-func (o objectMetaV2) Length() uint32 {
-	return headerLenV2 + uint32(o.BlockHeader().MetaColumnCount())*colMetaLen
-}
-
-func (o objectMetaV2) BlockCount() uint32 {
-	return uint32(o.BlockHeader().Sequence())
-}
-
-func (o objectMetaV2) BlockIndex() BlockIndex {
-	offset := o.Length()
-	return BlockIndex(o[offset:])
-}
-
-func (o objectMetaV2) GetBlockMeta(id uint32) BlockObject {
-	offset, length := o.BlockIndex().BlockMetaPos(id)
-	return BlockObject(o[offset : offset+length])
-}
-
-func (o objectMetaV2) GetColumnMeta(blk uint32, seqnum uint16) ColumnMeta {
-	return o.GetBlockMeta(blk).MustGetColumn(seqnum)
-}
-
-func (o objectMetaV2) IsEmpty() bool {
-	return len(o) == 0
-}
+type BlockHeaderV2 []byte
 
 func BuildBlockHeaderV2() BlockHeader {
 	var buf [headerLenV2]byte
