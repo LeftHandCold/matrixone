@@ -57,3 +57,39 @@ func (bh BlockHeader) SchemaAreaExtent() Extent {
 func (bh BlockHeader) SetSchemaAreaExtent(location Extent) {
 	copy(bh[schemaAreaOff:schemaAreaOff+schemaAreaLen], location)
 }
+
+const (
+	schemaCountLen   = 2
+	schemaType       = 2
+	schemaBlockCount = 2
+	typePosLen       = schemaType + schemaBlockCount
+)
+
+type SchemaTypeIndex []byte
+
+func BuildSchemaTypeIndex(count uint32) SchemaTypeIndex {
+	length := schemaCountLen + uint32(count)*typePosLen
+	buf := make([]byte, length)
+	return buf[:]
+}
+
+func (oh SchemaTypeIndex) SchemaCount() uint16 {
+	return types.DecodeUint16(oh[:schemaCountLen])
+}
+
+func (oh SchemaTypeIndex) SetSchemaCount(cnt uint16) {
+	copy(oh[:schemaCountLen], types.EncodeUint16(&cnt))
+}
+
+func (oh SchemaTypeIndex) SchemaMeta(pos uint16) (uint16, uint16) {
+	offStart := schemaCountLen + pos*typePosLen
+	offEnd := schemaCountLen + pos*typePosLen + schemaType
+	return types.DecodeUint16(oh[offStart:offEnd]), types.DecodeUint16(oh[offStart+schemaBlockCount : offEnd+schemaBlockCount])
+}
+
+func (oh SchemaTypeIndex) SetSchemaMeta(pos uint16, st uint16, count uint16) {
+	offStart := schemaCountLen + pos*posLen
+	offEnd := blockCountLen + pos*posLen + schemaType
+	copy(oh[offStart:offEnd], types.EncodeUint16(&st))
+	copy(oh[offStart+schemaBlockCount:offEnd+schemaBlockCount], types.EncodeUint16(&count))
+}
