@@ -30,9 +30,9 @@ const (
 	schemaTypeOff    = maxSeqOff + maxSeqLen
 	schemaTypeLen    = 2
 	schemaAreaOff    = schemaTypeOff + schemaTypeLen
-	schemaAreaLen    = ExtentSize
+	schemaAreaLen    = 4
 	headerDummyOffV2 = schemaAreaOff + schemaAreaLen
-	headerDummyLenV2 = 20
+	headerDummyLenV2 = 29
 	headerLenV2      = headerDummyOffV2 + headerDummyLenV2
 )
 const InvalidSchemaType = 0xFF

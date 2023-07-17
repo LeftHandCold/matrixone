@@ -59,7 +59,7 @@ func (o objectMetaV1) BlockCount() uint32 {
 }
 
 func (o objectMetaV1) BlockIndex() BlockIndex {
-	offset := o.Length()
+	offset := o.Length() + o.SchemaTypeIndex().Length()
 	return BlockIndex(o[offset:])
 }
 
@@ -68,7 +68,7 @@ func (o objectMetaV1) SchemaTypeIndex() SchemaTypeIndex {
 		return nil
 	}
 
-	offset := o.Length() + o.BlockIndex().Length()
+	offset := o.Length()
 	return SchemaTypeIndex(o[offset:])
 }
 

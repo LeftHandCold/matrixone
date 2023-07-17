@@ -177,14 +177,6 @@ func (w *objectWriterV1) prepareObjectMeta(objectMeta ObjectMeta, offset uint32,
 		objectMeta.AddColumnMeta(seqnums.Seqs[i], colMeta)
 	}
 	length += objectMeta.Length()
-	blockIndex := BuildBlockIndex(blockCount)
-	blockIndex.SetBlockCount(blockCount)
-	length += blockIndex.Length()
-	for i, block := range w.blocks {
-		n := uint32(len(block.meta))
-		blockIndex.SetBlockMetaPos(uint32(i), length, n)
-		length += n
-	}
 	schemaMap := make(map[uint16]uint16)
 	for _, block := range w.blocks {
 		schemaMap[block.meta.BlockHeader().SchemaType()]++
@@ -198,6 +190,14 @@ func (w *objectWriterV1) prepareObjectMeta(objectMeta ObjectMeta, offset uint32,
 		i++
 	}
 	length += schemaIndex.Length()
+	blockIndex := BuildBlockIndex(blockCount)
+	blockIndex.SetBlockCount(blockCount)
+	length += blockIndex.Length()
+	for i, block := range w.blocks {
+		n := uint32(len(block.meta))
+		blockIndex.SetBlockMetaPos(uint32(i), length, n)
+		length += n
+	}
 	extent := NewExtent(compress.None, offset, 0, length)
 	objectMeta.BlockHeader().SetMetaLocation(extent)
 
@@ -205,8 +205,8 @@ func (w *objectWriterV1) prepareObjectMeta(objectMeta ObjectMeta, offset uint32,
 	h := IOEntryHeader{IOET_ObjMeta, IOET_ObjectMeta_CurrVer}
 	buf.Write(EncodeIOEntryHeader(&h))
 	buf.Write(objectMeta)
-	buf.Write(blockIndex)
 	buf.Write(schemaIndex)
+	buf.Write(blockIndex)
 	// writer block metadata
 	for _, block := range w.blocks {
 		buf.Write(block.meta)
