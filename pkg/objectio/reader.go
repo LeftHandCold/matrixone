@@ -121,7 +121,7 @@ func (r *objectReaderV1) ReadZM(
 func (r *objectReaderV1) ReadMeta(
 	ctx context.Context,
 	m *mpool.MPool,
-) (meta ObjectMeta, err error) {
+) (meta objectMetaV1, err error) {
 	if r.withMetaCache {
 		cache := r.metaCache.Load()
 		if cache != nil {

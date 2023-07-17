@@ -25,7 +25,6 @@ const (
 	IOET_ColData = 2
 	IOET_BF      = 3
 	IOET_ZM      = 4
-	IOET_ST      = 5
 )
 
 const IOEntryHeaderSize = 4

@@ -25,8 +25,6 @@ type ObjectReader = objectReaderV1
 
 type ObjectMeta = objectMetaV1
 
-type BlockHeader = BlockHeaderV2
-
 var (
 	BuildObjectMeta        = buildObjectMetaV1
 	NewObjectWriterSpecial = newObjectWriterSpecialV1

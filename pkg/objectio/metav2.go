@@ -37,8 +37,6 @@ const (
 )
 const InvalidSchemaType = 0xFF
 
-type BlockHeaderV2 []byte
-
 func BuildBlockHeaderV2() BlockHeader {
 	var buf [headerLenV2]byte
 	return buf[:]
