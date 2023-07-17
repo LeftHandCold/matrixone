@@ -72,5 +72,5 @@ func DecodeColumnDataV1(buf []byte) (ioe any, err error) {
 func DecodeObjectMetaV2(buf []byte) (ioe any, err error) {
 	meta := ObjectMeta(buf)
 	meta.BlockHeader().SetSchemaType(InvalidSchemaType)
-	return meta, nil
+	return []byte(meta), nil
 }

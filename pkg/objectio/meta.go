@@ -59,7 +59,10 @@ func (o objectMetaV1) BlockCount() uint32 {
 }
 
 func (o objectMetaV1) BlockIndex() BlockIndex {
-	offset := o.Length() + o.SchemaTypeIndex().Length()
+	offset := o.Length()
+	if o.BlockHeader().SchemaType() != InvalidSchemaType {
+		offset += o.SchemaTypeIndex().Length()
+	}
 	return BlockIndex(o[offset:])
 }
 
