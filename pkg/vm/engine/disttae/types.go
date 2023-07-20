@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/objectio"
+
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -171,6 +173,7 @@ type Transaction struct {
 	statements    []int
 
 	hasS3Op atomic.Bool
+	removed bool
 }
 
 type Pos struct {
@@ -247,6 +250,8 @@ func (txn *Transaction) IncrStatementID(ctx context.Context, commit bool) error 
 			}
 		}
 		txn.writes = append(txn.writes[:start], writes...)
+		// restore the scope of the statement
+		txn.statements[txn.statementID-1] = len(txn.writes)
 	}
 	txn.statements = append(txn.statements, len(txn.writes))
 	txn.statementID++
@@ -482,6 +487,11 @@ type blockReader struct {
 type blockMergeReader struct {
 	*blockReader
 	table *txnTable
+
+	//for perfetch deletes
+	loaded     bool
+	pkidx      int
+	deletaLocs map[string][]objectio.Location
 }
 
 type mergeReader struct {
