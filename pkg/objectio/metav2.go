@@ -23,7 +23,22 @@ type SchemaType uint16
 const (
 	SchemaData      SchemaType = 0
 	SchemaTombstone SchemaType = 1
-	SchemaCkp       SchemaType = 2
+
+	CkpMeta         SchemaType = 100
+	CkpSystemDB     SchemaType = 101
+	CkpTxnNode      SchemaType = 102
+	CkpDBDel        SchemaType = 103
+	CkpDBDN         SchemaType = 104
+	CkpSystemTable  SchemaType = 105
+	CkpTblDN        SchemaType = 106
+	CkpTblDel       SchemaType = 107
+	CkpSystemColumn SchemaType = 108
+	CkpColumnDel    SchemaType = 109
+	CkpSegment      SchemaType = 110
+	CkpSegmentDN    SchemaType = 111
+	CkpDel          SchemaType = 112
+	CkpBlkMeta      SchemaType = 113
+	CkpBlkDN        SchemaType = 114
 )
 
 const (
