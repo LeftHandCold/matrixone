@@ -52,6 +52,10 @@ const (
 )
 const InvalidSchemaType = 0xFF
 
+func ConvertToSchemaType(ckpIdx uint16) SchemaType {
+	return 100 + SchemaType(ckpIdx)
+}
+
 func BuildBlockHeaderV2() BlockHeader {
 	var buf [headerLenV2]byte
 	return buf[:]

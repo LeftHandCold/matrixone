@@ -124,6 +124,57 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 	return block, nil
 }
 
+func (w *BlockWriter) WriteBatchWithSchemaType(batch *batch.Batch, st objectio.SchemaType) (objectio.BlockObject, error) {
+	block, err := w.writer.WriteWithSchemaType(batch, st)
+	if err != nil {
+		return nil, err
+	}
+	seqnums := w.writer.GetSeqnums()
+	for i, vec := range batch.Vecs {
+		isPK := false
+		if i == 0 {
+			w.objMetaBuilder.AddRowCnt(vec.Length())
+		}
+		if vec.GetType().Oid == types.T_Rowid || vec.GetType().Oid == types.T_TS {
+			continue
+		}
+		if w.isSetPK && w.pk == uint16(i) {
+			isPK = true
+		}
+		columnData := containers.ToDNVector(vec)
+		// update null count and distinct value
+		w.objMetaBuilder.InspectVector(i, columnData, isPK)
+
+		// Build ZM
+		zm := index.NewZM(vec.GetType().Oid, vec.GetType().Scale)
+		if err = index.BatchUpdateZM(zm, columnData.GetDownstreamVector()); err != nil {
+			return nil, err
+		}
+		// Update column meta zonemap
+		w.writer.UpdateBlockZM(int(block.GetID()), seqnums[i], zm)
+		// update object zonemap
+		w.objMetaBuilder.UpdateZm(i, zm)
+
+		if !w.isSetPK || w.pk != uint16(i) {
+			continue
+		}
+		w.objMetaBuilder.AddPKData(columnData)
+		bf, err := index.NewBinaryFuseFilter(columnData)
+		if err != nil {
+			return nil, err
+		}
+		buf, err := bf.Marshal()
+		if err != nil {
+			return nil, err
+		}
+
+		if err = w.writer.WriteBF(int(block.GetID()), seqnums[i], buf); err != nil {
+			return nil, err
+		}
+	}
+	return block, nil
+}
+
 // WriteBatch write a fixed schema batch, usually not a user table
 func (w *BlockWriter) WriteBatchWithOutIndex(batch *batch.Batch) (objectio.BlockObject, error) {
 	return w.writer.WriteWithoutSeqnum(batch)

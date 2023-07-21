@@ -703,8 +703,8 @@ func (data *CheckpointData) PrintData() {
 
 func (data *CheckpointData) WriteTo(
 	writer *blockio.BlockWriter) (blks []objectio.BlockObject, err error) {
-	for _, bat := range data.bats {
-		if _, err = writer.WriteBatchWithOutIndex(containers.ToCNBatch(bat)); err != nil {
+	for idx, bat := range data.bats {
+		if _, err = writer.WriteBatchWithSchemaType(containers.ToCNBatch(bat), objectio.ConvertToSchemaType(uint16(idx))); err != nil {
 			return
 		}
 	}
