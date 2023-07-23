@@ -254,7 +254,6 @@ func shouldIgnoreTblInLogtail(id uint64) bool {
 
 func init() {
 	BlkMetaSchema = catalog.NewEmptySchema("blkMeta")
-
 	for i, colname := range pkgcatalog.MoTableMetaSchema {
 		if i == 0 {
 			if err := BlkMetaSchema.AppendPKCol(colname, pkgcatalog.MoTableMetaTypes[i], 0); err != nil {
@@ -266,12 +265,18 @@ func init() {
 			}
 		}
 	}
+	if err := BlkMetaSchema.AppendCol(SnapshotAttr_TID, types.New(types.T_uint64, 0, 0)); err != nil {
+		panic(err)
+	}
 	if err := BlkMetaSchema.Finalize(true); err != nil { // no phyaddr column
 		panic(err)
 	}
 
 	// empty schema, no finalize, makeRespBatchFromSchema will add necessary colunms
 	DelSchema = catalog.NewEmptySchema("del")
+	if err := BlkMetaSchema.AppendCol(SnapshotAttr_TID, types.New(types.T_uint64, 0, 0)); err != nil {
+		panic(err)
+	}
 
 	SegSchema = catalog.NewEmptySchema("segment")
 	for i, colname := range SegmentSchemaAttr {
