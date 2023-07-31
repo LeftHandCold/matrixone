@@ -34,7 +34,7 @@ const (
 var IoModel = SyncIo
 
 type BlockReader struct {
-	reader *objectio.ObjectReader
+	reader objectio.ObjectReader
 	aio    *IoPipeline
 }
 
@@ -43,7 +43,7 @@ type fetchParams struct {
 	typs   []types.Type
 	blk    uint16
 	pool   *mpool.MPool
-	reader *objectio.ObjectReader
+	reader objectio.ObjectReader
 }
 
 func NewObjectReader(
@@ -296,7 +296,7 @@ func (r *BlockReader) GetName() string {
 	return r.reader.GetName()
 }
 
-func (r *BlockReader) GetObjectReader() *objectio.ObjectReader {
+func (r *BlockReader) GetObjectReader() objectio.ObjectReader {
 	return r.reader
 }
 
