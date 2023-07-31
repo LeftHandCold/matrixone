@@ -25,6 +25,22 @@ type objectReaderV2 struct {
 	baseObjectReader
 }
 
+func newObjectReaderWithStrV2(name string, fs fileservice.FileService, opts ...ReaderOptionFunc) (objectReader, error) {
+	reader := &objectReaderV2{}
+	reader.Object = Object{
+		name: name,
+		fs:   fs,
+	}
+	for _, f := range opts {
+		f(&reader.ReaderOptions)
+	}
+	return reader, nil
+}
+
+func getReader() objectReader {
+	return &objectReaderV2{}
+}
+
 func newObjectReaderV2(
 	oname *ObjectName,
 	metaExt *Extent,

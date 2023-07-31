@@ -78,6 +78,8 @@ type Writer interface {
 
 // Reader is to read data from fileservice
 type objectReader interface {
+	Init(location Location, fs fileservice.FileService)
+	Reset()
 	// ReadAllMeta is read the meta of all blocks in an object
 	ReadAllMeta(ctx context.Context, m *mpool.MPool) (ObjectMeta, error)
 

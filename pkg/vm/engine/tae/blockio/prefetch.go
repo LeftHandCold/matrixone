@@ -27,7 +27,7 @@ type prefetchParams struct {
 	ids      map[uint16]*objectio.ReadBlockOptions
 	fs       fileservice.FileService
 	key      objectio.Location
-	reader   *objectio.ObjectReader
+	reader   objectio.ObjectReader
 }
 
 func BuildPrefetchParams(service fileservice.FileService, key objectio.Location) (prefetchParams, error) {
