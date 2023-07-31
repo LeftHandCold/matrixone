@@ -16,11 +16,12 @@ package objectio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"math"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
-	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 )
 
@@ -76,36 +77,73 @@ type Writer interface {
 }
 
 // Reader is to read data from fileservice
-type Reader interface {
-	// Read is to read columns data of a block from fileservice at one time
-	// extent is location of the block meta
-	// idxs is the column serial number of the data to be read
-	Read(ctx context.Context,
-		extent *Extent, idxs []uint16,
-		id uint32,
+type objectReader interface {
+	// ReadAllMeta is read the meta of all blocks in an object
+	ReadAllMeta(ctx context.Context, m *mpool.MPool) (ObjectMeta, error)
+
+	GetObject() *Object
+	GetMetaExtent() *Extent
+	GetObjectName() *ObjectName
+	GetName() string
+	CacheMetaExtent(ext *Extent)
+	ReadZM(
+		ctx context.Context,
+		blk uint16,
+		seqnums []uint16,
 		m *mpool.MPool,
-		readFunc CacheConstructorFactory) (*fileservice.IOVector, error)
+	) (zms []ZoneMap, err error)
+
+	ReadMeta(
+		ctx context.Context,
+		m *mpool.MPool,
+	) (meta ObjectMeta, err error)
+
+	ReadOneBlock(
+		ctx context.Context,
+		idxs []uint16,
+		typs []types.Type,
+		blk uint16,
+		m *mpool.MPool,
+	) (ioVec *fileservice.IOVector, err error)
+
+	ReadOneSubBlock(
+		ctx context.Context,
+		idxs []uint16,
+		typs []types.Type,
+		dataType uint16,
+		blk uint16,
+		m *mpool.MPool,
+	) (ioVec *fileservice.IOVector, err error)
 
 	ReadAll(
 		ctx context.Context,
-		extent *Extent,
 		idxs []uint16,
 		m *mpool.MPool,
-		readFunc CacheConstructorFactory,
-	) (*fileservice.IOVector, error)
+	) (ioVec *fileservice.IOVector, err error)
 
-	ReadBlocks(ctx context.Context,
-		extent *Extent,
-		ids map[uint32]*ReadBlockOptions,
+	ReadOneBF(
+		ctx context.Context,
+		blk uint16,
+	) (bf StaticFilter, size uint32, err error)
+
+	ReadAllBF(
+		ctx context.Context,
+	) (bfs BloomFilter, size uint32, err error)
+
+	ReadExtent(
+		ctx context.Context,
+		extent Extent,
+	) ([]byte, error)
+
+	ReadMultiBlocks(
+		ctx context.Context,
+		opts map[uint16]*ReadBlockOptions,
 		m *mpool.MPool,
-		readFunc CacheConstructorFactory) (*fileservice.IOVector, error)
+	) (ioVec *fileservice.IOVector, err error)
 
-	// ReadMeta is the meta that reads a block
-	// extent is location of the block meta
-	ReadMeta(ctx context.Context, extent *Extent, m *mpool.MPool) (ObjectDataMeta, error)
-
-	// ReadAllMeta is read the meta of all blocks in an object
-	ReadAllMeta(ctx context.Context, m *mpool.MPool) (ObjectDataMeta, error)
-
-	GetObject() *Object
+	ReadMultiSubBlocks(
+		ctx context.Context,
+		opts map[uint16]*ReadBlockOptions,
+		m *mpool.MPool,
+	) (ioVec *fileservice.IOVector, err error)
 }
