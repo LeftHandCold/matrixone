@@ -21,7 +21,7 @@ import (
 
 type ObjectWriter = objectWriterV1
 
-type ObjectReader = objectReaderV1
+type ObjectReader = objectReader
 
 type ObjectDataMeta = objectDataMetaV1
 
@@ -32,7 +32,7 @@ var (
 	NewObjectWriterSpecial = newObjectWriterSpecialV1
 	NewObjectWriter        = newObjectWriterV1
 	NewObjectReaderWithStr = newObjectReaderWithStrV1
-	NewObjectReader        = newObjectReaderV1
+	NewObjectReader        = newObjectReaderV2
 )
 
 const (
