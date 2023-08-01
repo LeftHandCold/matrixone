@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -38,7 +40,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnimpl"
 )
 
-const CheckpointBlockRows = 20
+const CheckpointBlockRows = 10
 
 const (
 	CheckpointVersion1 uint32 = 1
@@ -84,16 +86,10 @@ const (
 const MaxIDX = BLKCNMetaInsertIDX + 1
 
 const (
-	Checkpoint_Meta_TID_IDX                = 2
-	Checkpoint_Meta_Insert_Block_Start_IDX = 3
-	Checkpoint_Meta_Insert_Block_End_IDX   = 4
-	Checkpoint_Meta_Insert_Block_LOC       = 5
-	Checkpoint_Meta_Delete_Block_Start_IDX = 6
-	Checkpoint_Meta_Delete_Block_End_IDX   = 7
-	Checkpoint_Meta_Delete_Block_LOC       = 8
-	Checkpoint_Meta_Segment_Start_IDX      = 9
-	Checkpoint_Meta_Segment_End_IDX        = 10
-	Checkpoint_Meta_Segment_LOC            = 11
+	Checkpoint_Meta_TID_IDX              = 2
+	Checkpoint_Meta_Insert_Block_LOC_IDX = 3
+	Checkpoint_Meta_Delete_Block_LOC_IDX = 4
+	Checkpoint_Meta_Segment_LOC_IDX      = 5
 )
 
 type checkpointDataItem struct {
@@ -112,7 +108,40 @@ var checkpointDataRefer_V2 [MaxIDX]*checkpointDataItem
 var checkpointDataRefer_V3 [MaxIDX]*checkpointDataItem
 var checkpointDataReferVersions map[uint32][MaxIDX]*checkpointDataItem
 
+var BatchType map[uint16]int
+
+const (
+	SystemBatch = iota
+	NormalBatch
+	DNBatch
+)
+
 func init() {
+	BatchType = make(map[uint16]int)
+	BatchType[DBInsertIDX] = SystemBatch
+	BatchType[DBInsertTxnIDX] = DNBatch
+	BatchType[DBDeleteIDX] = SystemBatch
+	BatchType[DBDeleteTxnIDX] = DNBatch
+
+	BatchType[TBLInsertIDX] = SystemBatch
+	BatchType[TBLInsertTxnIDX] = DNBatch
+	BatchType[TBLDeleteIDX] = SystemBatch
+	BatchType[TBLDeleteTxnIDX] = DNBatch
+	BatchType[TBLColInsertIDX] = SystemBatch
+	BatchType[TBLColDeleteIDX] = SystemBatch
+
+	BatchType[SEGInsertIDX] = DNBatch
+	BatchType[SEGInsertTxnIDX] = DNBatch
+	BatchType[SEGDeleteIDX] = NormalBatch
+	BatchType[SEGDeleteTxnIDX] = DNBatch
+
+	BatchType[BLKMetaInsertIDX] = NormalBatch
+	BatchType[BLKDNMetaInsertTxnIDX] = DNBatch
+	BatchType[BLKMetaDeleteIDX] = NormalBatch
+	BatchType[BLKDNMetaDeleteTxnIDX] = DNBatch
+
+	BatchType[BLKCNMetaInsertIDX] = NormalBatch
+
 	checkpointDataSchemas_V1 = [MaxIDX]*catalog.Schema{
 		MetaSchema_V1,
 		catalog.SystemDBSchema,
@@ -247,23 +276,151 @@ func GlobalCheckpointDataFactory(end types.TS, versionInterval time.Duration) fu
 	}
 }
 
-type CheckpointMeta struct {
-	blkInsertOffset   *common.ClosedInterval
-	blkDeleteOffset   *common.ClosedInterval
-	segDeleteOffset   *common.ClosedInterval
-	blkInsertLocation objectio.Location
-	blkDeleteLocation objectio.Location
-	segDeleteLocation objectio.Location
+type metaLocation struct {
+	blockOffset uint32
+	offset      *common.ClosedInterval
+	location    objectio.Location
 }
 
+func newEmptyMetaLocation() *metaLocation {
+	return &metaLocation{
+		offset: &common.ClosedInterval{},
+	}
+}
+
+func newMetaLocation(blkOffset uint32, offset *common.ClosedInterval) *metaLocation {
+	return &metaLocation{
+		blockOffset: blkOffset,
+		offset:      offset,
+	}
+}
+
+func (l *metaLocation) DecodeFromString(key string) (err error) {
+	strs := strings.Split(key, "_")
+	l.location = []byte(strs[0])
+	l.offset.Start, err = strconv.ParseUint(strs[1], 10, 32)
+	if err != nil {
+		return
+	}
+	l.offset.End, err = strconv.ParseUint(strs[1], 10, 32)
+	return
+}
+
+func (l *metaLocation) EncodeToString() string {
+	return fmt.Sprintf("%s_%d_%d", l.location, l.offset.Start, l.offset.End)
+}
+
+func (l *metaLocation) tryMerge(other *metaLocation) (merged bool) {
+	if l.blockOffset != other.blockOffset {
+		if l.offset.End != CheckpointBlockRows || other.offset.Start != 0 {
+			panic(fmt.Sprintf("logic error interval %v, start %d, end %d", l, other.offset.Start, other.offset.End))
+		}
+		return
+	}
+	if l.offset.End+1 == other.offset.Start {
+		l.offset.End = other.offset.End
+		merged = true
+	} else {
+		panic(fmt.Sprintf("logic error interval %v, start %d, end %d", l, other.offset.Start, other.offset.End))
+	}
+	return
+}
+
+type CheckpointMeta struct {
+	locations [][]*metaLocation
+}
+
+const (
+	BlockInsert = iota
+	BlockDelete
+	CNBlockInsert
+	SegmentDelete
+)
+
+const MetaMaxIdx = SegmentDelete + 1
+
 func NewCheckpointMeta() *CheckpointMeta {
-	return &CheckpointMeta{}
+	locs := make([][]*metaLocation, MetaMaxIdx)
+	for i := 0; i < int(MetaMaxIdx); i++ {
+		locs[i] = make([]*metaLocation, 0)
+	}
+	return &CheckpointMeta{
+		locations: locs,
+	}
+}
+
+func (m *CheckpointMeta) UpdateLocations(locationIDX int, start, end uint32) (metaLocs []*metaLocation) {
+	metaLocs = make([]*metaLocation, 0)
+	blkOffsetStart := start / CheckpointBlockRows
+	blkOffsetEnd := end / CheckpointBlockRows
+	var lastLocation *metaLocation
+	if len(m.locations[locationIDX]) != 0 {
+		lastLocation = m.locations[locationIDX][len(m.locations[locationIDX])-1]
+	}
+	if blkOffsetStart == blkOffsetEnd {
+		startOffset := start % CheckpointBlockRows
+		endOffset := end % CheckpointBlockRows
+		loc := newMetaLocation(blkOffsetStart, &common.ClosedInterval{uint64(startOffset), uint64(endOffset)})
+		if lastLocation != nil {
+			merged := lastLocation.tryMerge(loc)
+			if !merged {
+				m.locations[locationIDX] = append(m.locations[locationIDX], loc)
+				metaLocs = append(metaLocs, loc)
+			}
+		}
+		return
+	} else {
+		startOffset := start % CheckpointBlockRows
+		loc := newMetaLocation(blkOffsetStart, &common.ClosedInterval{uint64(startOffset), uint64(CheckpointBlockRows)})
+		if lastLocation != nil {
+			merged := lastLocation.tryMerge(loc)
+			if !merged {
+				m.locations[locationIDX] = append(m.locations[locationIDX], loc)
+				metaLocs = append(metaLocs, loc)
+			}
+		}
+		for i := blkOffsetStart + 1; i < blkOffsetEnd; i++ {
+			loc := newMetaLocation(blkOffsetStart, &common.ClosedInterval{0, uint64(CheckpointBlockRows)})
+			m.locations[locationIDX] = append(m.locations[locationIDX], loc)
+			metaLocs = append(metaLocs, loc)
+		}
+		endOffset := end % CheckpointBlockRows
+		loc2 := newMetaLocation(blkOffsetStart, &common.ClosedInterval{0, uint64(endOffset)})
+		m.locations[locationIDX] = append(m.locations[locationIDX], loc2)
+		metaLocs = append(metaLocs, loc2)
+		return
+	}
+}
+
+func (m *CheckpointMeta) DecodeFromString(keys []string) (err error) {
+	for i, key := range keys {
+		strs := strings.Split(key, ";")
+		for _, str := range strs {
+			metaLoc := newEmptyMetaLocation()
+			err = metaLoc.DecodeFromString(str)
+			if err != nil {
+				return
+			}
+			m.locations[i] = append(m.locations[i], metaLoc)
+		}
+	}
+	return
+}
+
+func (m *CheckpointMeta) EncodeToString() []string {
+	strs := make([]string, 3)
+	for i, locations := range m.locations {
+		for _, loc := range locations {
+			strs[i] += loc.EncodeToString() + ";"
+		}
+	}
+	return strs
 }
 
 type CheckpointData struct {
-	meta      map[uint64]*CheckpointMeta
-	locations map[string]objectio.Location
-	bats      [MaxIDX]*containers.Batch
+	meta     map[uint64]*CheckpointMeta
+	bats     [MaxIDX]*containers.Batch
+	metaLocs [MaxIDX][]*metaLocation
 }
 
 func NewCheckpointData() *CheckpointData {
@@ -272,6 +429,7 @@ func NewCheckpointData() *CheckpointData {
 	}
 	for idx, schema := range checkpointDataSchemas_Curr {
 		data.bats[idx] = makeRespBatchFromSchema(schema)
+		data.metaLocs[idx] = make([]*metaLocation, 0)
 	}
 	return data
 }
@@ -367,43 +525,21 @@ func (data *CNCheckpointData) GetTableMeta(tableID uint64) (meta *CheckpointMeta
 	}
 
 	tidVec := vector.MustFixedCol[uint64](data.bats[MetaIDX].Vecs[Checkpoint_Meta_TID_IDX])
-	insStartVec := vector.MustFixedCol[int32](data.bats[MetaIDX].Vecs[Checkpoint_Meta_Insert_Block_Start_IDX])
-	insEndVec := vector.MustFixedCol[int32](data.bats[MetaIDX].Vecs[Checkpoint_Meta_Insert_Block_End_IDX])
-	delStartVec := vector.MustFixedCol[int32](data.bats[MetaIDX].Vecs[Checkpoint_Meta_Delete_Block_Start_IDX])
-	delEndVec := vector.MustFixedCol[int32](data.bats[MetaIDX].Vecs[Checkpoint_Meta_Delete_Block_End_IDX])
-	segDelStartVec := vector.MustFixedCol[int32](data.bats[MetaIDX].Vecs[Checkpoint_Meta_Segment_Start_IDX])
-	segDelEndVec := vector.MustFixedCol[int32](data.bats[MetaIDX].Vecs[Checkpoint_Meta_Segment_End_IDX])
+	insVec := vector.MustBytesCol(data.bats[MetaIDX].Vecs[Checkpoint_Meta_Insert_Block_LOC_IDX])
+	delVec := vector.MustBytesCol(data.bats[MetaIDX].Vecs[Checkpoint_Meta_Delete_Block_LOC_IDX])
+	segVec := vector.MustBytesCol(data.bats[MetaIDX].Vecs[Checkpoint_Meta_Segment_LOC_IDX])
 
 	for i := 0; i < data.bats[MetaIDX].Vecs[Checkpoint_Meta_TID_IDX].Length(); i++ {
 		tid := tidVec[i]
-		insStart := insStartVec[i]
-		insEnd := insEndVec[i]
-		delStart := delStartVec[i]
-		delEnd := delEndVec[i]
-		segDelStart := segDelStartVec[i]
-		segDelEnd := segDelEndVec[i]
+		insLocation := string(insVec[i])
+		delLocation := string(delVec[i])
+		segLocation := string(segVec[i])
 
-		tableMeta := new(CheckpointMeta)
-		if insStart != -1 {
-			tableMeta.blkInsertOffset = &common.ClosedInterval{
-				Start: uint64(insStart),
-				End:   uint64(insEnd),
-			}
-		}
-		if delStart != -1 {
-			tableMeta.blkDeleteOffset = &common.ClosedInterval{
-				Start: uint64(delStart),
-				End:   uint64(delEnd),
-			}
-		}
-		if segDelStart != -1 {
-			tableMeta.segDeleteOffset = &common.ClosedInterval{
-				Start: uint64(segDelStart),
-				End:   uint64(segDelEnd),
-			}
-		}
+		tableMeta := NewCheckpointMeta()
+		tableMeta.DecodeFromString([]string{insLocation, delLocation, segLocation})
+
 		data.meta[tid] = tableMeta
-		// logutil.Infof("GetTableMeta TID=%d, INTERVAL=%s", tid, meta.blkInsertOffset.String())
+		// logutil.Infof("GetTableMeta TID=%d, inslocation=%s", tid, insLocation)
 	}
 	meta = data.meta[tableID]
 	return
@@ -599,11 +735,11 @@ func (data *CNCheckpointData) GetTableData(tid uint64) (ins, del, cnIns, segDel 
 		return nil, nil, nil, nil, nil
 	}
 
-	insInterval := meta.blkInsertOffset
-	if insInterval != nil && insInterval.End-insInterval.Start > 0 {
+	insLocations := meta.locations[BlockInsert]
+	for _, loc := range insLocations {
 		insTaeBat = data.bats[BLKMetaInsertIDX]
 		logutil.Infof("insTaeBat is %d", len(insTaeBat.Vecs))
-		windowCNBatch(insTaeBat, insInterval.Start, insInterval.End)
+		windowCNBatch(insTaeBat, loc.offset.Start, loc.offset.End)
 		ins, err = batch.BatchToProtoBatch(insTaeBat)
 		if err != nil {
 			return
@@ -661,46 +797,22 @@ func windowCNBatch(bat *batch.Batch, start, end uint64) {
 
 func (data *CheckpointData) prepareMeta(key []byte) {
 	bat := data.bats[MetaIDX]
-	blkInsStart := bat.GetVectorByName(SnapshotMetaAttr_BlockInsertBatchStart).GetDownstreamVector()
-	blkInsEnd := bat.GetVectorByName(SnapshotMetaAttr_BlockInsertBatchEnd).GetDownstreamVector()
 	blkInsLoc := bat.GetVectorByName(SnapshotMetaAttr_BlockInsertBatchLocation).GetDownstreamVector()
 
-	blkDelStart := bat.GetVectorByName(SnapshotMetaAttr_BlockDeleteBatchStart).GetDownstreamVector()
-	blkDelEnd := bat.GetVectorByName(SnapshotMetaAttr_BlockDeleteBatchEnd).GetDownstreamVector()
 	blkDelLoc := bat.GetVectorByName(SnapshotMetaAttr_BlockDeleteBatchLocation).GetDownstreamVector()
+	blkCNInsLoc := bat.GetVectorByName(SnapshotMetaAttr_BlockCNInsertBatchLocation).GetDownstreamVector()
 
-	segDelStart := bat.GetVectorByName(SnapshotMetaAttr_SegDeleteBatchStart).GetDownstreamVector()
-	segDelEnd := bat.GetVectorByName(SnapshotMetaAttr_SegDeleteBatchEnd).GetDownstreamVector()
 	segDelLoc := bat.GetVectorByName(SnapshotMetaAttr_SegDeleteBatchLocation).GetDownstreamVector()
 
 	tidVec := bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector()
 
 	for tid, meta := range data.meta {
+		strs := meta.EncodeToString()
 		vector.AppendFixed(tidVec, tid, false, common.DefaultAllocator)
-		if meta.blkInsertOffset == nil {
-			vector.AppendFixed(blkInsStart, int32(-1), false, common.DefaultAllocator)
-			vector.AppendFixed(blkInsEnd, int32(-1), false, common.DefaultAllocator)
-		} else {
-			vector.AppendFixed(blkInsStart, int32(meta.blkInsertOffset.Start), false, common.DefaultAllocator)
-			vector.AppendFixed(blkInsEnd, int32(meta.blkInsertOffset.End), false, common.DefaultAllocator)
-		}
-		vector.AppendBytes(blkInsLoc, key, false, common.DefaultAllocator)
-		if meta.blkDeleteOffset == nil {
-			vector.AppendFixed(blkDelStart, int32(-1), false, common.DefaultAllocator)
-			vector.AppendFixed(blkDelEnd, int32(-1), false, common.DefaultAllocator)
-		} else {
-			vector.AppendFixed(blkDelStart, int32(meta.blkDeleteOffset.Start), false, common.DefaultAllocator)
-			vector.AppendFixed(blkDelEnd, int32(meta.blkDeleteOffset.End), false, common.DefaultAllocator)
-		}
-		vector.AppendBytes(blkDelLoc, key, false, common.DefaultAllocator)
-		if meta.segDeleteOffset == nil {
-			vector.AppendFixed(segDelStart, int32(-1), false, common.DefaultAllocator)
-			vector.AppendFixed(segDelEnd, int32(-1), false, common.DefaultAllocator)
-		} else {
-			vector.AppendFixed(segDelStart, int32(meta.segDeleteOffset.Start), false, common.DefaultAllocator)
-			vector.AppendFixed(segDelEnd, int32(meta.segDeleteOffset.End), false, common.DefaultAllocator)
-		}
-		vector.AppendBytes(segDelLoc, key, false, common.DefaultAllocator)
+		vector.AppendBytes(blkInsLoc, []byte(strs[BlockInsert]), false, common.DefaultAllocator)
+		vector.AppendBytes(blkDelLoc, []byte(strs[BlockDelete]), false, common.DefaultAllocator)
+		vector.AppendBytes(blkCNInsLoc, []byte(strs[CNBlockInsert]), false, common.DefaultAllocator)
+		vector.AppendBytes(segDelLoc, []byte(strs[SegmentDelete]), false, common.DefaultAllocator)
 	}
 }
 
@@ -714,31 +826,46 @@ func (data *CheckpointData) UpdateBlkMeta(tid uint64, insStart, insEnd, delStart
 		data.meta[tid] = meta
 	}
 	if delEnd >= delStart {
-		if meta.blkDeleteOffset == nil {
-			meta.blkDeleteOffset = &common.ClosedInterval{Start: uint64(delStart), End: uint64(delEnd)}
-		} else {
-			if !meta.blkDeleteOffset.TryMerge(common.ClosedInterval{Start: uint64(delStart), End: uint64(delEnd)}) {
-				panic(fmt.Sprintf("logic error interval %v, start %d, end %d", meta.blkDeleteOffset, delStart, delEnd))
-			}
-		}
+		deleteMetaLocs := meta.UpdateLocations(BlockDelete, uint32(delStart), uint32(delEnd))
+		data.metaLocs[BLKMetaDeleteIDX] = append(data.metaLocs[BLKMetaDeleteIDX], deleteMetaLocs...)
+		cnInsertMetaLocs := meta.UpdateLocations(BlockInsert, uint32(delStart), uint32(delEnd))
+		data.metaLocs[BLKCNMetaInsertIDX] = append(data.metaLocs[BLKCNMetaInsertIDX], cnInsertMetaLocs...)
 	}
 	if insEnd >= insStart {
-		if meta.blkInsertOffset == nil {
-			meta.blkInsertOffset = &common.ClosedInterval{Start: uint64(insStart), End: uint64(insEnd)}
-		} else {
-			if !meta.blkInsertOffset.TryMerge(common.ClosedInterval{Start: uint64(insStart), End: uint64(insEnd)}) {
-				panic(fmt.Sprintf("logic error interval %v, start %d, end %d", meta.blkInsertOffset, insStart, insEnd))
-			}
-		}
+		insertLocs := meta.UpdateLocations(BlockInsert, uint32(insStart), uint32(insEnd))
+		data.metaLocs[BLKCNMetaInsertIDX] = append(data.metaLocs[BLKCNMetaInsertIDX], insertLocs...)
 	}
 }
 
-func (data *CheckpointData) updateBlkInsertLocation(tid uint64, location objectio.Location) {
-	data.meta[tid].blkInsertLocation = location
+func (data *CheckpointData) addLocationForDNBatch(location objectio.Location) {
+	// use tid=0 for all dn batches
+	meta := data.meta[0]
+	if meta == nil {
+		meta = NewCheckpointMeta()
+		data.meta[0] = meta
+	}
+	metalocation := newEmptyMetaLocation()
+	metalocation.location = location
+	meta.locations[0] = append(meta.locations[0], metalocation)
+	return
 }
-
-func (data *CheckpointData) updateBlkDeleteLocation(tid uint64, location objectio.Location) {
-	data.meta[tid].blkDeleteLocation = location
+func (data *CheckpointData) updateLocationForNormalBatch(location objectio.Location, schemaidx uint16, blockOffset uint32) {
+	for _, metaloc := range data.metaLocs[schemaidx] {
+		if metaloc.blockOffset == blockOffset {
+			metaloc.location = location
+		}
+	}
+}
+func (data *CheckpointData) addLocationForSystemBatch(tid int, metaIdx int, location objectio.Location) {
+	meta := data.meta[uint64(tid)]
+	if meta == nil {
+		meta = NewCheckpointMeta()
+		data.meta[0] = meta
+	}
+	metaloc := newEmptyMetaLocation()
+	metaloc.location = location
+	meta.locations[metaIdx] = append(meta.locations[metaIdx], metaloc)
+	return
 }
 
 func (data *CheckpointData) UpdateSegMeta(tid uint64, delStart, delEnd int32) {
@@ -751,18 +878,9 @@ func (data *CheckpointData) UpdateSegMeta(tid uint64, delStart, delEnd int32) {
 		data.meta[tid] = meta
 	}
 	if delEnd >= delStart {
-		if meta.segDeleteOffset == nil {
-			meta.segDeleteOffset = &common.ClosedInterval{Start: uint64(delStart), End: uint64(delEnd)}
-		} else {
-			if !meta.segDeleteOffset.TryMerge(common.ClosedInterval{Start: uint64(delStart), End: uint64(delEnd)}) {
-				panic(fmt.Sprintf("logic error interval %v, start %d, end %d", meta.segDeleteOffset, delStart, delEnd))
-			}
-		}
+		locs := meta.UpdateLocations(SegmentDelete, uint32(delStart), uint32(delEnd))
+		data.metaLocs[SEGDeleteIDX] = append(data.metaLocs[SEGDeleteIDX], locs...)
 	}
-}
-
-func (data *CheckpointData) updateSegmentLocation(tid uint64, location objectio.Location) {
-	data.meta[tid].segDeleteLocation = location
 }
 
 func (data *CheckpointData) PrintData() {
@@ -779,31 +897,53 @@ func (data *CheckpointData) WriteTo(
 	if err != nil {
 		return
 	}
+	schemaIdxes := make([]int, 0)
+	blockOffsets := make([]int, MaxIDX)
+	currentOffset := 0
 	for i := range checkpointDataSchemas_Curr {
 		if i == int(MetaIDX) {
 			continue
 		}
-		bats := containers.SplitDNBatch(data.bats[i], 10)
+		bats := containers.SplitDNBatch(data.bats[i], CheckpointBlockRows)
 		for _, bat := range bats {
 			if _, err = writer.WriteSubBatch(containers.ToCNBatch(bat), objectio.ConvertToSchemaType(uint16(i))); err != nil {
-				return
+				return nil, err
 			}
+			schemaIdxes = append(schemaIdxes, i)
 		}
+		blockOffsets[i] = currentOffset
+		currentOffset += len(bats)
 	}
 	blks, _, err := writer.Sync(context.Background())
-
-	location = objectio.BuildLocation(name, blks[0].GetExtent(), 0, blks[0].GetID())
-	for tid := range data.meta {
-		data.updateBlkDeleteLocation(tid, location)
-		data.updateBlkInsertLocation(tid, location)
-		data.updateSegmentLocation(tid, location)
-	}
-	//mocatalog
-	for tid := uint64(1); tid < 4; tid++ {
-		data.meta[tid] = NewCheckpointMeta()
-		data.updateBlkDeleteLocation(tid, location)
-		data.updateBlkInsertLocation(tid, location)
-		data.updateSegmentLocation(tid, location)
+	for i, blk := range blks {
+		location = objectio.BuildLocation(name, blk.GetExtent(), 0, blk.GetID())
+		schemaIdx := schemaIdxes[i]
+		batchType := BatchType[uint16(schemaIdx)]
+		switch batchType {
+		case DNBatch:
+			data.addLocationForDNBatch(location)
+		case NormalBatch:
+			blkOffset := i - blockOffsets[schemaIdx]
+			data.updateLocationForNormalBatch(location, uint16(schemaIdx), uint32(blkOffset))
+		case SystemBatch:
+			tid := 0
+			switch uint16(schemaIdx) {
+			case DBInsertIDX, DBDeleteIDX:
+				tid = pkgcatalog.MO_DATABASE_ID
+			case TBLInsertIDX, TBLDeleteIDX:
+				tid = pkgcatalog.MO_TABLES_ID
+			case TBLColInsertIDX, TBLColDeleteIDX:
+				tid = pkgcatalog.MO_COLUMNS_ID
+			}
+			schemaIdx := 0
+			switch uint16(schemaIdx) {
+			case DBInsertIDX, TBLInsertIDX, TBLColInsertIDX:
+				schemaIdx = BlockInsert
+			case TBLColDeleteIDX, TBLDeleteIDX, DBDeleteIDX:
+				schemaIdx = BlockDelete
+			}
+			data.addLocationForSystemBatch(tid, schemaIdx, location)
+		}
 	}
 	//data.prepareMeta()
 	data.prepareMeta(location)
