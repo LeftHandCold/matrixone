@@ -186,12 +186,6 @@ var (
 	}
 	MetaSchemaAttr_V1 = []string{
 		SnapshotAttr_TID,
-		SnapshotMetaAttr_BlockInsertBatchStart,
-		SnapshotMetaAttr_BlockInsertBatchEnd,
-		SnapshotMetaAttr_BlockDeleteBatchStart,
-		SnapshotMetaAttr_BlockDeleteBatchEnd,
-		SnapshotMetaAttr_SegDeleteBatchStart,
-		SnapshotMetaAttr_SegDeleteBatchEnd,
 	}
 	MetaShcemaTypes_V1 = []types.Type{
 		types.New(types.T_uint64, 0, 0),
