@@ -922,10 +922,10 @@ func (data *CheckpointData) WriteTo(
 				return
 			}
 			Endoffset := offset + bat.Length()
-			offset += bat.Length()
 			blockLoc := BuildBlockLoaction(block.GetID(), uint64(offset), uint64(Endoffset))
 			logutil.Infof("blockLoc id  is %d-%d", blockLoc.GetStartOffset(), blockLoc.GetEndOffset())
 			blockIndexs[i] = append(blockIndexs[i], &blockLoc)
+			offset += bat.Length()
 		}
 	}
 	blks, _, err := writer.Sync(context.Background())
