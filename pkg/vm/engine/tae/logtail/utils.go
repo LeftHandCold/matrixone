@@ -508,13 +508,14 @@ func (data *CNCheckpointData) GetTableMeta(tableID uint64) (meta *CheckpointMeta
 		return
 	}
 	tid := tidVec[i]
-	logutil.Infof("GetTableMetaGetTableMeta is %d", tid)
 	blkInsStr := blkIns.GetBytesAt(i)
 	blkCNInsStr := blkCNIns.GetBytesAt(i)
 	blkDelStr := blkDel.GetBytesAt(i)
 	segDelStr := segDel.GetBytesAt(i)
 	tableMeta := NewCheckpointMeta()
+	logutil.Infof("GetTableMetaGetTableMeta is %d", tid)
 	if len(blkInsStr) > 0 {
+		logutil.Infof("GetTableMetaGetTableMeta is %d, blkInsStr is %v", tid, blkInsStr)
 		blkInsertTableMeta := NewTableMeta()
 		blkInsertTableMeta.locations = blkInsStr
 		// blkInsertOffset
@@ -533,7 +534,7 @@ func (data *CNCheckpointData) GetTableMeta(tableID uint64) (meta *CheckpointMeta
 		segDeleteTableMeta.locations = segDelStr
 		tableMeta.tables[SegmentDelete] = segDeleteTableMeta
 	}
-
+	logutil.Infof("GetTableMetaGetTableMeta111 is %d", tid)
 	data.meta[tid] = tableMeta
 	meta = data.meta[tableID]
 	return
