@@ -561,6 +561,7 @@ func (data *CNCheckpointData) ReadFromData(
 		logutil.Infof("data.GetTableMeta is %d nil", tableID)
 		return
 	}
+	logutil.Infof("data.GetTableMeta11 is %d nil", tableID)
 	dataBats = make([]*batch.Batch, MetaMaxIdx)
 	for i, table := range meta.tables {
 		if table == nil {
