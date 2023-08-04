@@ -503,39 +503,37 @@ func (data *CNCheckpointData) GetTableMeta(tableID uint64) (meta *CheckpointMeta
 	blkDel := data.bats[MetaIDX].Vecs[Checkpoint_Meta_Delete_Block_LOC_IDX]
 	segDel := data.bats[MetaIDX].Vecs[Checkpoint_Meta_Segment_LOC_IDX]
 
-	/*i := vector.OrderedFindFirstIndexInSortedSlice[uint64](tableID, tidVec)
+	i := vector.OrderedFindFirstIndexInSortedSlice[uint64](tableID, tidVec)
 	if i < 0 {
 		return
-	}*/
-	for i := 0; i < data.bats[MetaIDX].Vecs[Checkpoint_Meta_TID_IDX].Length(); i++ {
-		tid := tidVec[i]
-		blkInsStr := blkIns.GetBytesAt(i)
-		blkCNInsStr := blkCNIns.GetBytesAt(i)
-		blkDelStr := blkDel.GetBytesAt(i)
-		segDelStr := segDel.GetBytesAt(i)
-		tableMeta := NewCheckpointMeta()
-		if len(blkInsStr) > 0 {
-			blkInsertTableMeta := NewTableMeta()
-			blkInsertTableMeta.locations = blkInsStr
-			// blkInsertOffset
-			tableMeta.tables[BlockInsert] = blkInsertTableMeta
-		}
-		if len(blkCNInsStr) > 0 {
-			blkDeleteTableMeta := NewTableMeta()
-			blkDeleteTableMeta.locations = blkDelStr
-			tableMeta.tables[BlockDelete] = blkDeleteTableMeta
-			cnBlkInsTableMeta := NewTableMeta()
-			cnBlkInsTableMeta.locations = blkCNInsStr
-			tableMeta.tables[CNBlockInsert] = cnBlkInsTableMeta
-		}
-		if len(segDelStr) > 0 {
-			segDeleteTableMeta := NewTableMeta()
-			segDeleteTableMeta.locations = segDelStr
-			tableMeta.tables[SegmentDelete] = segDeleteTableMeta
-		}
-
-		data.meta[tid] = tableMeta
 	}
+	tid := tidVec[i]
+	blkInsStr := blkIns.GetBytesAt(i)
+	blkCNInsStr := blkCNIns.GetBytesAt(i)
+	blkDelStr := blkDel.GetBytesAt(i)
+	segDelStr := segDel.GetBytesAt(i)
+	tableMeta := NewCheckpointMeta()
+	if len(blkInsStr) > 0 {
+		blkInsertTableMeta := NewTableMeta()
+		blkInsertTableMeta.locations = blkInsStr
+		// blkInsertOffset
+		tableMeta.tables[BlockInsert] = blkInsertTableMeta
+	}
+	if len(blkCNInsStr) > 0 {
+		blkDeleteTableMeta := NewTableMeta()
+		blkDeleteTableMeta.locations = blkDelStr
+		tableMeta.tables[BlockDelete] = blkDeleteTableMeta
+		cnBlkInsTableMeta := NewTableMeta()
+		cnBlkInsTableMeta.locations = blkCNInsStr
+		tableMeta.tables[CNBlockInsert] = cnBlkInsTableMeta
+	}
+	if len(segDelStr) > 0 {
+		segDeleteTableMeta := NewTableMeta()
+		segDeleteTableMeta.locations = segDelStr
+		tableMeta.tables[SegmentDelete] = segDeleteTableMeta
+	}
+
+	data.meta[tid] = tableMeta
 	meta = data.meta[tableID]
 	return
 }
