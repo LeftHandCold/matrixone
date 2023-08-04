@@ -558,6 +558,7 @@ func (data *CNCheckpointData) ReadFromData(
 	data.bats[MetaIDX] = metaBat
 	meta := data.GetTableMeta(tableID)
 	if meta == nil {
+		logutil.Infof("data.GetTableMeta is %d nil", tableID)
 		return
 	}
 	dataBats = make([]*batch.Batch, MetaMaxIdx)
@@ -921,14 +922,16 @@ func (data *CheckpointData) WriteTo(
 				return
 			}
 			Endoffset := offset + bat.Length()
+			offset += bat.Length()
 			blockLoc := BuildBlockLoaction(block.GetID(), uint64(offset), uint64(Endoffset))
-			logutil.Infof("blockLoc is %d-%d", blockLoc.GetStartOffset(), blockLoc.GetEndOffset())
+			logutil.Infof("blockLoc id  is %d-%d", blockLoc.GetStartOffset(), blockLoc.GetEndOffset())
 			blockIndexs[i] = append(blockIndexs[i], &blockLoc)
 		}
 	}
 	blks, _, err := writer.Sync(context.Background())
 
 	for tid, mata := range data.meta {
+		logutil.Infof("tid is %d", tid)
 		for i, table := range mata.tables {
 			if table == nil || table.ClosedInterval.Start == table.ClosedInterval.End {
 				continue
