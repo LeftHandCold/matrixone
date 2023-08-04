@@ -979,6 +979,9 @@ func (data *CheckpointData) WriteTo(
 				if table.End < block.GetStartOffset() {
 					break
 				}
+				if table.Start >= block.GetEndOffset() {
+					continue
+				}
 				blockLoc1 := objectio.BuildLocation(name, blks[block.GetID()].GetExtent(), 0, block.GetID())
 				logutil.Infof("write block %v to %d-%d, table is %d-%d, tid is %d", blockLoc1.String(), block.GetStartOffset(), block.GetEndOffset(), table.Start, table.End, tid)
 				if table.Uint64Contains(block.GetStartOffset(), block.GetEndOffset()) {
