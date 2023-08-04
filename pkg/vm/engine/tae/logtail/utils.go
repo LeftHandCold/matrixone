@@ -508,6 +508,7 @@ func (data *CNCheckpointData) GetTableMeta(tableID uint64) (meta *CheckpointMeta
 		return
 	}
 	tid := tidVec[i]
+	logutil.Infof("GetTableMetaGetTableMeta is %d", tid)
 	blkInsStr := blkIns.GetBytesAt(i)
 	blkCNInsStr := blkCNIns.GetBytesAt(i)
 	blkDelStr := blkDel.GetBytesAt(i)
