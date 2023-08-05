@@ -21,12 +21,12 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 )
 
-type objectReaderV2 struct {
-	baseObjectReader
+type objectReaderImpV2 struct {
+	objectReader
 }
 
-func newObjectReaderWithStrV2(name string, fs fileservice.FileService, opts ...ReaderOptionFunc) (objectReader, error) {
-	reader := &objectReaderV2{}
+func newObjectReaderWithStrV2(name string, fs fileservice.FileService, opts ...ReaderOptionFunc) (readerImp, error) {
+	reader := &objectReaderImpV2{}
 	reader.Object = Object{
 		name: name,
 		fs:   fs,
@@ -37,10 +37,6 @@ func newObjectReaderWithStrV2(name string, fs fileservice.FileService, opts ...R
 	return reader, nil
 }
 
-func getReader() objectReader {
-	return &objectReaderV2{}
-}
-
 func newObjectReaderV2(
 	oname *ObjectName,
 	metaExt *Extent,
@@ -48,7 +44,7 @@ func newObjectReaderV2(
 	opts ...ReaderOptionFunc,
 ) (objectReader, error) {
 	name := oname.String()
-	reader := &objectReaderV2{}
+	reader := &objectReaderImpV2{}
 	reader.Object = Object{
 		name: name,
 		fs:   fs,
@@ -61,7 +57,7 @@ func newObjectReaderV2(
 	return reader, nil
 }
 
-func (r *objectReaderV2) getDataMeta(ctx context.Context, m *mpool.MPool) (meta ObjectDataMeta, err error) {
+func (r *objectReaderImpV2) getDataMeta(ctx context.Context, m *mpool.MPool) (meta ObjectDataMeta, err error) {
 	var objMeta ObjectMeta
 	if objMeta, err = r.ReadMeta(ctx, m); err != nil {
 		return
@@ -70,7 +66,7 @@ func (r *objectReaderV2) getDataMeta(ctx context.Context, m *mpool.MPool) (meta 
 	return
 }
 
-func (r *objectReaderV2) ReadOneBlock(
+func (r *objectReaderImpV2) ReadOneBlock(
 	ctx context.Context,
 	idxs []uint16,
 	typs []types.Type,
@@ -84,7 +80,7 @@ func (r *objectReaderV2) ReadOneBlock(
 	return ReadOneBlockWithMeta(ctx, &meta, r.name, blk, idxs, typs, m, r.fs, constructorFactory)
 }
 
-func (r *objectReaderV2) ReadAll(
+func (r *objectReaderImpV2) ReadAll(
 	ctx context.Context,
 	idxs []uint16,
 	m *mpool.MPool,
@@ -96,7 +92,7 @@ func (r *objectReaderV2) ReadAll(
 	return ReadAllBlocksWithMeta(ctx, &meta, r.name, idxs, r.noLRUCache, m, r.fs, constructorFactory)
 }
 
-func (r *objectReaderV2) ReadMultiBlocks(
+func (r *objectReaderImpV2) ReadMultiBlocks(
 	ctx context.Context,
 	opts map[uint16]*ReadBlockOptions,
 	m *mpool.MPool,

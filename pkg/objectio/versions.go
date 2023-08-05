@@ -28,21 +28,21 @@ type ObjectDataMeta = objectDataMetaV1
 type ObjectMeta = objectMetaV1
 
 var (
-	BuildObjectMeta         = buildObjectDataMetaV1
-	NewObjectWriterSpecial  = newObjectWriterSpecialV1
-	NewObjectWriter         = newObjectWriterV1
-	NewObjectReaderWithStr  = newObjectReaderWithStrV2
-	NewObjectReader         = newObjectReaderV2
-	NewObjectReaderWithPool = getReader
+	BuildObjectMeta        = buildObjectDataMetaV1
+	NewObjectWriterSpecial = newObjectWriterSpecialV1
+	NewObjectWriter        = newObjectWriterV1
+	NewObjectReaderWithStr = newObjectReaderWithStrV2
+	NewObjectReader        = newObjectReaderV2
 )
 
 const (
 	IOET_ObjectMeta_V1  = 1
+	IOET_ObjectMeta_V2  = 2
 	IOET_ColumnData_V1  = 1
 	IOET_BloomFilter_V1 = 1
 	IOET_ZoneMap_V1     = 1
 
-	IOET_ObjectMeta_CurrVer  = IOET_ObjectMeta_V1
+	IOET_ObjectMeta_CurrVer  = IOET_ObjectMeta_V2
 	IOET_ColumnData_CurrVer  = IOET_ColumnData_V1
 	IOET_BloomFilter_CurrVer = IOET_BloomFilter_V1
 	IOET_ZoneMap_CurrVer     = IOET_ZoneMap_V1
@@ -50,6 +50,7 @@ const (
 
 func init() {
 	RegisterIOEnrtyCodec(IOEntryHeader{IOET_ObjMeta, IOET_ObjectMeta_V1}, nil, nil)
+	RegisterIOEnrtyCodec(IOEntryHeader{IOET_ObjMeta, IOET_ObjectMeta_V2}, nil, nil)
 	RegisterIOEnrtyCodec(IOEntryHeader{IOET_ColData, IOET_ColumnData_V1}, EncodeColumnDataV1, DecodeColumnDataV1)
 	RegisterIOEnrtyCodec(IOEntryHeader{IOET_BF, IOET_BloomFilter_V1}, nil, nil)
 	RegisterIOEnrtyCodec(IOEntryHeader{IOET_ZM, IOET_ZoneMap_V1}, nil, nil)

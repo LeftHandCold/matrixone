@@ -21,11 +21,32 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 )
 
-type objectReaderV1 struct {
-	baseObjectReader
+type objectReaderImpV1 struct {
+	baseImp
 }
 
-func (r *objectReaderV1) ReadOneBlock(
+func newObjectReaderV1(
+	oname *ObjectName,
+	metaExt *Extent,
+	fs fileservice.FileService,
+	opts ...ReaderOptionFunc,
+) (readerImp, error) {
+	name := oname.String()
+	reader := &baseImp{
+		Object: Object{
+			name: name,
+			fs:   fs,
+		},
+		oname:   oname,
+		metaExt: metaExt,
+	}
+	for _, f := range opts {
+		f(&reader.ReaderOptions)
+	}
+	return reader, nil
+}
+
+func (r *objectReaderImpV1) ReadOneBlock(
 	ctx context.Context,
 	idxs []uint16,
 	typs []types.Type,

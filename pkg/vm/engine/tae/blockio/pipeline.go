@@ -42,7 +42,7 @@ var (
 	}
 	_readerPool = sync.Pool{
 		New: func() any {
-			return objectio.NewObjectReaderWithPool()
+			return new(objectio.ObjectReader)
 		},
 	}
 )

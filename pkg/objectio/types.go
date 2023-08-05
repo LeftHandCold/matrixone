@@ -77,7 +77,7 @@ type Writer interface {
 }
 
 // Reader is to read data from fileservice
-type objectReader interface {
+type readerImp interface {
 	Init(location Location, fs fileservice.FileService)
 	Reset()
 	// ReadAllMeta is read the meta of all blocks in an object

@@ -69,3 +69,16 @@ func Decode(buf []byte) (any, error) {
 	}
 	return v, nil
 }
+
+func DecodeMeta(buf []byte) (any, error, *IOEntryHeader) {
+	header := DecodeIOEntryHeader(buf)
+	codec := GetIOEntryCodec(*header)
+	if codec.NoUnmarshal() {
+		return buf[IOEntryHeaderSize:], nil, nil
+	}
+	v, err := codec.Decode(buf[IOEntryHeaderSize:])
+	if err != nil {
+		return nil, err, nil
+	}
+	return v, nil, header
+}
