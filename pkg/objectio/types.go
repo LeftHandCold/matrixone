@@ -117,6 +117,14 @@ type objectReader interface {
 		m *mpool.MPool,
 	) (ioVec *fileservice.IOVector, err error)
 
+	ReadSubBlock(
+		ctx context.Context,
+		idxs []uint16,
+		typs []types.Type,
+		blk uint16,
+		m *mpool.MPool,
+	) (ioVecs []*fileservice.IOVector, err error)
+
 	ReadAll(
 		ctx context.Context,
 		idxs []uint16,
