@@ -59,7 +59,7 @@ func BackupData(ctx context.Context, fs fileservice.FileService, dst string, db 
 	}
 
 	for file := range files {
-		copy(file, dst)
+		_, err = copy(file, dst)
 	}
 
 	return
@@ -91,7 +91,7 @@ func copy(src, dst string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer source.Close
+	defer source.Close()
 
 	destination, err := os.Create(dst)
 	if err != nil {
