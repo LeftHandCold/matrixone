@@ -330,7 +330,7 @@ func (l *LocalFS) read(ctx context.Context, vector *IOVector) error {
 	defer func() {
 		FSProfileHandler.AddSample(time.Since(t0))
 	}()
-
+	time.Sleep(50 * time.Millisecond)
 	path, err := ParsePathAtService(vector.FilePath, l.name)
 	if err != nil {
 		return err

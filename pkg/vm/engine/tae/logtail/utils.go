@@ -617,7 +617,7 @@ func (data *CNCheckpointData) PrefetchMetaIdx(
 		return
 	}
 	pref, err = blockio.BuildSubPrefetchParams(service, key)
-	pref.AddBlockWithType(idxes, []uint16{key.ID()}, MetaIDX)
+	pref.AddBlockWithType(idxes, []uint16{0}, MetaIDX)
 
 	return blockio.PrefetchWithMerged(pref)
 }
@@ -696,6 +696,7 @@ func (data *CNCheckpointData) PrefetchFrom(
 					return
 				}
 			}
+			logutil.Infof("PrefetchFrom1 block is %v", block.String())
 			pref.AddBlockWithType(idxes, []uint16{block.GetID()}, idx)
 		}
 	}
@@ -969,6 +970,8 @@ func (data *CNCheckpointData) ReadFromData(
 		return
 	}
 	dataBats = make([]*batch.Batch, MetaMaxIdx)
+	latency := uint64(0)
+	tim := 0
 	for i, table := range meta.tables {
 		if table == nil {
 			continue
@@ -987,7 +990,11 @@ func (data *CNCheckpointData) ReadFromData(
 			var bat *batch.Batch
 			schema := checkpointDataReferVersions[version][uint32(idx)]
 			reader, err = blockio.NewObjectReader(reader.GetObjectReader().GetObject().GetFs(), block.GetLocation())
+			now := time.Now()
+			logutil.Infof("PrefetchFrom1 LoadCNSubBlkColumnsByMetaWithId block is %v", block.String())
 			bat, err = LoadCNSubBlkColumnsByMetaWithId(ctx, schema.types, schema.attrs, uint16(idx), block.GetID(), version, reader, m)
+			latency += uint64(time.Since(now))
+			tim++
 			if err != nil {
 				return
 			}
@@ -1015,7 +1022,7 @@ func (data *CNCheckpointData) ReadFromData(
 			}
 		}
 	}
-
+	logutil.Infof("LoadCheckpointEntries load table %d, version %d, latency %d, time %d", tableID, version, latency, tim)
 	return
 }
 

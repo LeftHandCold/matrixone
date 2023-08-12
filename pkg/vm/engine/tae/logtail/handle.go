@@ -698,6 +698,7 @@ func LoadCheckpointEntries(
 	objectLocations := make([]objectio.Location, len(locationsAndVersions)/2)
 	versions := make([]uint32, len(locationsAndVersions)/2)
 	locations := make([]objectio.Location, len(locationsAndVersions)/2)
+	now1 := time.Now()
 	for i := 0; i < len(locationsAndVersions); i += 2 {
 		key := locationsAndVersions[i]
 		version, err := strconv.ParseUint(locationsAndVersions[i+1], 10, 32)
@@ -721,7 +722,8 @@ func LoadCheckpointEntries(
 		objectLocations[i/2] = location
 		versions[i/2] = uint32(version)
 	}
-
+	logutil.Infof("LoadCheckpointEntries PrefetchMeta duration: %v", time.Since(now1))
+	now1 = time.Now()
 	for i := range objectLocations {
 		data := NewCNCheckpointData()
 		meteIdxSchema := checkpointDataReferVersions[versions[i]][MetaIDX]
@@ -735,7 +737,8 @@ func LoadCheckpointEntries(
 		}
 		datas[i] = data
 	}
-
+	logutil.Infof("LoadCheckpointEntries PrefetchMetaIdx duration: %v", time.Since(now1))
+	now1 = time.Now()
 	for i := range datas {
 		if versions[i] < CheckpointVersion4 {
 			continue
@@ -745,21 +748,25 @@ func LoadCheckpointEntries(
 			return nil, nil, err
 		}
 	}
-
+	logutil.Infof("LoadCheckpointEntries InitMetaIdx duration: %v", time.Since(now1))
+	now1 = time.Now()
 	for i := range datas {
 		err := datas[i].PrefetchMetaFrom(ctx, versions[i], fs, tableID)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
-
+	logutil.Infof("LoadCheckpointEntries PrefetchMetaFrom duration: %v", time.Since(now1))
+	now1 = time.Now()
 	for i := range datas {
 		err := datas[i].PrefetchFrom(ctx, versions[i], fs, locations[i],tableID)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
-
+	logutil.Infof("LoadCheckpointEntries PrefetchFrom duration: %v", time.Since(now1))
+	time.Sleep(50 *time.Millisecond)
+	now1 = time.Now()
 	closeCBs := make([]func(), 0)
 	bats := make([][]*batch.Batch, len(locationsAndVersions)/2)
 	var err error
@@ -772,7 +779,7 @@ func LoadCheckpointEntries(
 		}
 		bats[i] = bat
 	}
-
+	logutil.Infof("LoadCheckpointEntries ReadFromData duration: %v, tableid is %d", time.Since(now1), tableID)
 	entries := make([]*api.Entry, 0)
 	for i := range objectLocations {
 		data := datas[i]
