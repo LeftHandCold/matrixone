@@ -22,6 +22,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
 	"github.com/stretchr/testify/assert"
 )
@@ -366,4 +367,85 @@ func TestICKPSeekLT(t *testing.T) {
 		t.Log(e.String())
 	}
 	assert.Equal(t, 0, len(ckps))
+}
+
+func TestGetAllCheckpoints(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	r := NewRunner(context.Background(), nil, nil, nil, nil)
+	timestamps := make([]types.TS, 0)
+	for i := 0; i < 6; i++ {
+		ts := types.BuildTS(int64(i*10), 0)
+		timestamps = append(timestamps, ts)
+	}
+
+	ckps := r.GetAllCheckpoints()
+	assert.Equal(t, 0, len(ckps))
+
+	ckp1 := &CheckpointEntry{
+		start:      timestamps[0].Next(),
+		end:        timestamps[1],
+		state:      ST_Pending,
+		cnLocation: objectio.Location(fmt.Sprintf("ckp1")),
+		version:    logtail.CheckpointCurrentVersion,
+	}
+	r.storage.entries.Set(ckp1)
+
+	ckps = r.GetAllCheckpoints()
+	assert.Equal(t, 0, len(ckps))
+
+	ckp1.state = ST_Finished
+	ckps = r.GetAllCheckpoints()
+	assert.Equal(t, 1, len(ckps))
+	assert.Equal(t, "ckp1", string(ckps[0].cnLocation))
+
+	global1 := &CheckpointEntry{
+		start:      timestamps[0].Next(),
+		end:        timestamps[1],
+		state:      ST_Pending,
+		cnLocation: objectio.Location(fmt.Sprintf("global1")),
+		version:    logtail.CheckpointCurrentVersion,
+	}
+	r.storage.globals.Set(global1)
+
+	ckps = r.GetAllCheckpoints()
+	assert.Equal(t, 1, len(ckps))
+	assert.Equal(t, "ckp1", string(ckps[0].cnLocation))
+
+	global1.state = ST_Finished
+	ckps = r.GetAllCheckpoints()
+	assert.Equal(t, 1, len(ckps))
+	assert.Equal(t, "global1", string(ckps[0].cnLocation))
+
+	ckp2 := &CheckpointEntry{
+		start:      timestamps[1].Next(),
+		end:        timestamps[2],
+		state:      ST_Pending,
+		cnLocation: objectio.Location(fmt.Sprintf("ckp2")),
+		version:    logtail.CheckpointCurrentVersion,
+	}
+	r.storage.entries.Set(ckp2)
+
+	ckps = r.GetAllCheckpoints()
+	assert.Equal(t, 1, len(ckps))
+	assert.Equal(t, "global1", string(ckps[0].cnLocation))
+
+	ckp2.state = ST_Finished
+	ckps = r.GetAllCheckpoints()
+	assert.Equal(t, 2, len(ckps))
+	assert.Equal(t, "global1", string(ckps[0].cnLocation))
+	assert.Equal(t, "ckp2", string(ckps[1].cnLocation))
+
+	ckp3 := &CheckpointEntry{
+		start:      timestamps[0].Next(),
+		end:        timestamps[1],
+		state:      ST_Pending,
+		cnLocation: objectio.Location(fmt.Sprintf("ckp1")),
+		version:    logtail.CheckpointCurrentVersion,
+	}
+	r.storage.entries.Set(ckp3)
+
+	ckps = r.GetAllCheckpoints()
+	assert.Equal(t, 2, len(ckps))
+	assert.Equal(t, "global1", string(ckps[0].cnLocation))
+	assert.Equal(t, "ckp2", string(ckps[1].cnLocation))
 }

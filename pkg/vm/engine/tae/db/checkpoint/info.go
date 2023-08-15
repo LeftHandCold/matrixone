@@ -123,6 +123,52 @@ func (r *runner) ICKPSeekLT(ts types.TS, cnt int) []*CheckpointEntry {
 	return incrementals
 }
 
+func (r *runner) getLastFinishedGlobalCheckpointLocked() *CheckpointEntry {
+	g, ok := r.storage.globals.Max()
+	if !ok {
+		return nil
+	}
+	if g.IsFinished() {
+		return g
+	}
+	it := r.storage.globals.Iter()
+	it.Seek(g)
+	defer it.Release()
+	if !it.Prev() {
+		return nil
+	}
+	return it.Item()
+}
+
+func (r *runner) GetAllCheckpoints() []*CheckpointEntry {
+	ckps := make([]*CheckpointEntry, 0)
+	var ts types.TS
+	r.storage.Lock()
+	g := r.getLastFinishedGlobalCheckpointLocked()
+	tree := r.storage.entries.Copy()
+	r.storage.Unlock()
+	if g != nil {
+		ts = g.GetEnd()
+		ckps = append(ckps, g)
+	}
+	pivot := NewCheckpointEntry(ts.Next(), ts.Next(), ET_Incremental)
+	iter := tree.Iter()
+	defer iter.Release()
+	if ok := iter.Seek(pivot); ok {
+		for {
+			e := iter.Item()
+			if !e.IsFinished() {
+				break
+			}
+			ckps = append(ckps, e)
+			if !iter.Next() {
+				break
+			}
+		}
+	}
+	return ckps
+}
+
 func (r *runner) GetPenddingIncrementalCount() int {
 	entries := r.GetAllIncrementalCheckpoints()
 	global := r.MaxGlobalCheckpoint()
