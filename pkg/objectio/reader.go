@@ -16,6 +16,7 @@ package objectio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
@@ -320,6 +321,11 @@ func (r *objectReaderV1) ReadTombstoneMultiBlocks(
 		return
 	}
 	meta := metaHeader.MustTombstoneMeta()
+	logutil.Infof("read tombstone multi blocks, meta: %v", meta.BlockCount())
+	for _, opt := range opts {
+		logutil.Infof("1 read tombstone multi blocks, opt: %d, type: %d, name : %v", opt.Id, opt.DataType, r.name)
+		meta.GetBlockMeta(uint32(opt.Id))
+	}
 	return ReadMultiBlocksWithMeta(
 		ctx,
 		r.name,

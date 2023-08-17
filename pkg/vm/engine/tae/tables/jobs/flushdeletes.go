@@ -16,6 +16,7 @@ package jobs
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
 
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -64,7 +65,7 @@ func (task *flushDeletesTask) Execute(ctx context.Context) error {
 		return err
 	}
 	task.blocks, _, err = writer.Sync(ctx)
-
+	logutil.Infof("flush deletes %s, block length %d", name, len(task.blocks))
 	perfcounter.Update(ctx, func(counter *perfcounter.CounterSet) {
 		counter.TAE.Block.Flush.Add(1)
 	})

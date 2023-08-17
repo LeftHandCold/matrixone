@@ -557,6 +557,7 @@ func BlockPrefetch(idxes []uint16, service fileservice.FileService, infos [][]*p
 			pref.AddBlock(idxes, []uint16{info.MetaLocation().ID()})
 			if !info.DeltaLocation().IsEmpty() {
 				// Need to read all delete
+				logutil.Infof("prefetch tombstone for %s", info.DeltaLocation().String())
 				err = PrefetchTombstone([]uint16{0, 1, 2}, []uint16{info.DeltaLocation().ID()}, service, info.DeltaLocation())
 				if err != nil {
 					return err
