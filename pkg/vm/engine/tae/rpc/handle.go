@@ -472,17 +472,20 @@ func (h *Handle) prefetchDeleteRowID(ctx context.Context,
 		return err
 	}
 	pref, err := blockio.BuildPrefetchParams(h.db.Runtime.Fs.Service, loc)
+	logutil.Infof("prefetchDeleteRowID start: %v", loc.String())
 	if err != nil {
 		return err
 	}
 	for _, key := range req.DeltaLocs {
 		var location objectio.Location
 		location, err = blockio.EncodeLocationFromString(key)
+		logutil.Infof("prefetchDeleteRowID: %v", key)
 		if err != nil {
 			return err
 		}
 		pref.AddBlock([]uint16{uint16(columnIdx), uint16(pkIdx)}, []uint16{location.ID()})
 	}
+	logutil.Infof("prefetchDeleteRowID is end")
 	return blockio.PrefetchWithMerged(pref)
 }
 

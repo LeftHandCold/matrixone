@@ -230,6 +230,7 @@ func ReadMultiBlocksWithMeta(
 		Entries:  make([]fileservice.IOEntry, 0),
 	}
 	for _, opt := range options {
+		logutil.Infof("prefetch111 %v", opt.Id)
 		for seqnum := range opt.Idxes {
 			blkmeta := meta.GetBlockMeta(uint32(opt.Id))
 			if seqnum > blkmeta.GetMaxSeqnum() || blkmeta.ColumnMeta(seqnum).DataType() == 0 {

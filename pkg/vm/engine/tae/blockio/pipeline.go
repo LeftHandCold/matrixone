@@ -172,6 +172,7 @@ func prefetchJob(ctx context.Context, params PrefetchParams) *tasks.Job {
 				res.Res = nil
 				ioVectors.Release()
 			} else {
+				logutil.Infof("prefetchstart %s", params.key.String())
 				ioVectors, err := reader.ReadMultiBlocks(ctx,
 					params.ids, nil)
 				if err != nil {
