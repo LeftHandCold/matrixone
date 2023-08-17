@@ -20,7 +20,7 @@ import (
 
 type objectMetaV3 []byte
 
-func buildObjectMetaV3() objectMetaV3 {
+func buildObjectMetaV2() objectMetaV2 {
 	var buf [metaHeaderLen]byte
 	return buf[:]
 }
