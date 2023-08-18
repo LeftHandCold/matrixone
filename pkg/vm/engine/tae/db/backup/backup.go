@@ -28,14 +28,14 @@ import (
 	"time"
 )
 
-func BackupData(ctx context.Context, fs fileservice.FileService, dst string, db *db.DB, catalog *catalog.Catalog) error {
+func BackupData(ctx context.Context, fs fileservice.FileService, db *db.DB, catalog *catalog.Catalog) error {
 	currTs := types.BuildTS(time.Now().UTC().UnixNano(), 0)
 
 	err := db.ForceCheckpoint(ctx, currTs, 10*time.Second)
 	if err != nil {
 		return err
 	}
-	checkpoints := db.BGCheckpointRunner.GetAllIncrementalCheckpoints()
+	checkpoints := db.BGCheckpointRunner.GetAllCheckpoints()
 	var data *logtail.CheckpointData
 	files := make(map[string]*fileservice.DirEntry, 0)
 	for _, candidate := range checkpoints {
@@ -93,12 +93,14 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, dentry 
 		Entries:     make([]fileservice.IOEntry, 1),
 		CachePolicy: fileservice.SkipAll,
 	}
+	logutil.Infof("copy file %v", dentry)
 	ioVec.Entries[0] = fileservice.IOEntry{
 		Offset: 0,
 		Size:   dentry.Size,
 	}
 	err := srcFs.Read(ctx, ioVec)
 	if err != nil {
+		panic("fsdfsdfsdf")
 		return err
 	}
 	dstIoVec := fileservice.IOVector{
@@ -109,6 +111,7 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, dentry 
 	dstIoVec.Entries[0] = fileservice.IOEntry{
 		Offset: 0,
 		Data:   ioVec.Entries[0].Data,
+		Size:   dentry.Size,
 	}
 	err = dstFs.Write(ctx, dstIoVec)
 	return err
