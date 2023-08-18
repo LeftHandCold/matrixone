@@ -25,6 +25,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
+	"path"
 	"time"
 )
 
@@ -66,12 +67,19 @@ func BackupData(ctx context.Context, fs fileservice.FileService, db *db.DB, cata
 		if dentry.IsDir {
 			panic("not support dir")
 		}
-		err = CopyFile(ctx, db.Opts.Fs, fs, dentry)
+		err = CopyFile(ctx, db.Opts.Fs, fs, dentry, "")
 		if err != nil {
 			return err
 		}
 	}
-
+	err = CopyDir(ctx, db.Opts.Fs, fs, "ckp")
+	if err != nil {
+		return err
+	}
+	err = CopyDir(ctx, db.Opts.Fs, fs, "gc")
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -87,9 +95,30 @@ func collectCkpData(
 	return
 }
 
-func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, dentry *fileservice.DirEntry) error {
+func CopyDir(ctx context.Context, srcFs, dstFs fileservice.FileService, dir string) error {
+	files, err := srcFs.List(ctx, dir)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		if file.IsDir {
+			panic("not support dir")
+		}
+		err = CopyFile(ctx, srcFs, dstFs, &file, dir)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, dentry *fileservice.DirEntry, dstDir string) error {
+	name := dentry.Name
+	if dstDir != "" {
+		name = path.Join(dstDir, name)
+	}
 	ioVec := &fileservice.IOVector{
-		FilePath:    dentry.Name,
+		FilePath:    name,
 		Entries:     make([]fileservice.IOEntry, 1),
 		CachePolicy: fileservice.SkipAll,
 	}
@@ -100,11 +129,10 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, dentry 
 	}
 	err := srcFs.Read(ctx, ioVec)
 	if err != nil {
-		panic("fsdfsdfsdf")
 		return err
 	}
 	dstIoVec := fileservice.IOVector{
-		FilePath:    dentry.Name,
+		FilePath:    name,
 		Entries:     make([]fileservice.IOEntry, 1),
 		CachePolicy: fileservice.SkipAll,
 	}
