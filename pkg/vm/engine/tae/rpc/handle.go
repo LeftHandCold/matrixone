@@ -60,7 +60,6 @@ const (
 	MAX_TXN_COMMIT_LATENCY  = time.Minute * 2
 )
 
-// TODO::GC the abandoned txn.
 type Handle struct {
 	db *db.DB
 	mu struct {
@@ -314,6 +313,14 @@ func (h *Handle) HandlePrepare(
 	txnCtx, ok := h.mu.txnCtxs[string(meta.GetID())]
 	h.mu.RUnlock()
 	var txn txnif.AsyncTxn
+	defer func() {
+		if ok {
+			//delete the txn's context.
+			h.mu.Lock()
+			delete(h.mu.txnCtxs, string(meta.GetID()))
+			h.mu.Unlock()
+		}
+	}()
 	if ok {
 		//handle pre-commit write for 2PC
 		txn, err = h.db.GetOrCreateTxnWithMeta(nil, meta.GetID(),
@@ -335,10 +342,6 @@ func (h *Handle) HandlePrepare(
 	var ts types.TS
 	ts, err = txn.Prepare(ctx)
 	pts = ts.ToTimestamp()
-	//delete the txn's context.
-	h.mu.Lock()
-	delete(h.mu.txnCtxs, string(meta.GetID()))
-	h.mu.Unlock()
 	return
 }
 
@@ -478,7 +481,7 @@ func (h *Handle) prefetchDeleteRowID(ctx context.Context,
 		if err != nil {
 			return err
 		}
-		pref.AddBlock([]uint16{uint16(columnIdx), uint16(pkIdx)}, []uint16{location.ID()})
+		pref.AddBlockWithType([]uint16{uint16(columnIdx), uint16(pkIdx)}, []uint16{location.ID()}, uint16(objectio.SchemaTombstone))
 	}
 	return blockio.PrefetchWithMerged(pref)
 }
@@ -929,7 +932,7 @@ func (h *Handle) HandleWrite(
 			}
 			var ok bool
 			var bat *batch.Batch
-			bat, err = blockio.LoadColumns(
+			bat, err = blockio.LoadTombstoneColumns(
 				ctx,
 				[]uint16{uint16(rowidIdx), uint16(pkIdx)},
 				nil,
