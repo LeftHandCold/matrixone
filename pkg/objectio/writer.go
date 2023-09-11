@@ -23,7 +23,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/compress"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
-	"github.com/pierrec/lz4/v4"
+	//"github.com/pierrec/lz4/v4"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -491,7 +491,7 @@ func (w *objectWriterV1) Sync(ctx context.Context, items ...WriteOptions) error 
 }
 
 func (w *objectWriterV1) WriteWithCompress(offset uint32, buf []byte) (data []byte, extent Extent, err error) {
-	var tmpData []byte
+	/*var tmpData []byte
 	dataLen := len(buf)
 	compressBlockBound := lz4.CompressBlockBound(dataLen)
 	if len(w.compressBuf) < compressBlockBound {
@@ -499,11 +499,11 @@ func (w *objectWriterV1) WriteWithCompress(offset uint32, buf []byte) (data []by
 	}
 	if tmpData, err = compress.Compress(buf, w.compressBuf[:compressBlockBound], compress.Lz4); err != nil {
 		return
-	}
-	length := uint32(len(tmpData))
+	}*/
+	length := uint32(len(buf))
 	data = make([]byte, length)
-	copy(data, tmpData[:length])
-	extent = NewExtent(compress.Lz4, offset, length, uint32(dataLen))
+	copy(data, buf)
+	extent = NewExtent(compress.None, offset, length, uint32(length))
 	return
 }
 
