@@ -494,6 +494,7 @@ func (h *Handle) prefetchDeleteRowID(ctx context.Context,
 	if err != nil {
 		return err
 	}
+	logutil.Infof("prefetchDeleteRowID: %v", loc.Name().String())
 	for _, key := range req.DeltaLocs {
 		var location objectio.Location
 		location, err = blockio.EncodeLocationFromString(key)
@@ -519,6 +520,7 @@ func (h *Handle) prefetchMetadata(ctx context.Context,
 		}
 		if !objectio.IsSameObjectLocVsShort(loc, &objectName) {
 			err := blockio.PrefetchMeta(h.db.Runtime.Fs.Service, loc)
+			logutil.Infof("prefetchMetadata meta: %v", loc.Name().String())
 			if err != nil {
 				return err
 			}
