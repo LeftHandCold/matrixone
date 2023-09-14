@@ -152,6 +152,7 @@ func prefetchJob(ctx context.Context, params PrefetchParams) *tasks.Job {
 		func(_ context.Context) (res *tasks.JobResult) {
 			// TODO
 			res = &tasks.JobResult{}
+			logutil.Infof("prefetchJob ReadMultiBlocks is %v, params is %v, id is %d", reader.GetName(), params.key.Name(), params.key.ID())
 			ioVectors, err := reader.ReadMultiBlocks(ctx,
 				params.ids, nil)
 			if err != nil {

@@ -572,6 +572,7 @@ func evalDeleteRowsByTimestampForDeletesPersistedByCN(deletes *batch.Batch, ts t
 // service  fileservice
 // infos [s3object name][block]
 func BlockPrefetch(idxes []uint16, service fileservice.FileService, infos [][]*pkgcatalog.BlockInfo) error {
+	return nil
 	// Generate prefetch task
 	for i := range infos {
 		// build reader
