@@ -17,6 +17,7 @@ package tables
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -351,6 +352,7 @@ func (blk *baseBlock) Prefetch(idxes []uint16) error {
 		return nil
 	} else {
 		key := blk.meta.GetMetaLoc()
+		logutil.Infof("baseBlock Prefetch is %v, idxes is %v, id is %d", key.Name().String(), idxes, key.ID())
 		return blockio.Prefetch(idxes, []uint16{key.ID()}, blk.rt.Fs.Service, key)
 	}
 }
