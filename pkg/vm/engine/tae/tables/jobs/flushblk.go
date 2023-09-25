@@ -16,6 +16,9 @@ package jobs
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
 
@@ -71,8 +74,10 @@ func (task *flushBlkTask) Execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var pkIdx int
 	if task.meta.GetSchema().HasPK() {
-		writer.SetPrimaryKey(uint16(task.meta.GetSchema().GetSingleSortKeyIdx()))
+		pkIdx = task.meta.GetSchema().GetSingleSortKeyIdx()
+		writer.SetPrimaryKey(uint16(pkIdx))
 	}
 
 	_, err = writer.WriteBatch(containers.ToCNBatch(task.data))
@@ -86,7 +91,37 @@ func (task *flushBlkTask) Execute(ctx context.Context) error {
 		}
 	}
 	task.blocks, _, err = writer.Sync(ctx)
-
+	if task.meta.GetSchema().HasPK() {
+		metaLoc1 := blockio.EncodeLocation(name, task.blocks[0].GetExtent(), uint32(task.data.Length()), task.blocks[0].GetID())
+		var reader *blockio.BlockReader
+		reader, err = blockio.NewObjectReader(task.fs.Service, metaLoc1)
+		if err != nil {
+			return err
+		}
+		var bf objectio.BloomFilter
+		bf, _, err = reader.LoadAllBF(ctx)
+		if err != nil {
+			return err
+		}
+		buf := bf.GetBloomFilter(uint32(task.blocks[0].GetID()))
+		bfIndex := index.NewEmptyBinaryFuseFilter()
+		if err = index.DecodeBloomFilter(bfIndex, buf); err != nil {
+			return err
+		}
+		val := task.data.Vecs[pkIdx]
+		for j := 0; j < val.Length(); j++ {
+			key := val.Get(j)
+			v := types.EncodeValue(key, val.GetType().Oid)
+			var exist bool
+			exist, err = bfIndex.MayContainsKey(v)
+			if err != nil {
+				panic(err)
+			}
+			if !exist {
+				logutil.Infof("keyyy %v not exist in bloom filter, table is %v, block is %v, meta is %v, pk is %d", key, task.meta.GetSchema().Name, 0, metaLoc1.String(), pkIdx)
+			}
+		}
+	}
 	perfcounter.Update(ctx, func(counter *perfcounter.CounterSet) {
 		counter.TAE.Block.Flush.Add(1)
 	})

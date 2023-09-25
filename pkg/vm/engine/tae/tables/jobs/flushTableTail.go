@@ -17,6 +17,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 	"time"
 	"unsafe"
 
@@ -511,8 +512,9 @@ func (task *flushTableTailTask) mergeAblks(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	var pkIdx int
 	if schema.HasPK() {
-		pkIdx := schema.GetSingleSortKeyIdx()
+		pkIdx = schema.GetSingleSortKeyIdx()
 		writer.SetPrimaryKey(uint16(pkIdx))
 	}
 	for _, bat := range writtenBatches {
@@ -527,6 +529,40 @@ func (task *flushTableTailTask) mergeAblks(ctx context.Context) (err error) {
 	}
 	task.createdMergedObjectName = name.String()
 
+	if schema.HasPK() {
+
+		metaLoc1 := blockio.EncodeLocation(name, writtenBlocks[0].GetExtent(), uint32(writtenBatches[0].Length()), writtenBlocks[0].GetID())
+		var reader *blockio.BlockReader
+		reader, err = blockio.NewObjectReader(task.rt.Fs.Service, metaLoc1)
+		if err != nil {
+			return err
+		}
+		var bf objectio.BloomFilter
+		bf, _, err = reader.LoadAllBF(ctx)
+		if err != nil {
+			return err
+		}
+		for i, bat := range writtenBatches {
+			buf := bf.GetBloomFilter(uint32(i))
+			bfIndex := index.NewEmptyBinaryFuseFilter()
+			if err = index.DecodeBloomFilter(bfIndex, buf); err != nil {
+				return
+			}
+			val := bat.Vecs[pkIdx]
+			for j := 0; j < val.Length(); j++ {
+				key := val.Get(j)
+				v := types.EncodeValue(key, bat.Vecs[pkIdx].GetType().Oid)
+				var exist bool
+				exist, err = bfIndex.MayContainsKey(v)
+				if err != nil {
+					panic(err)
+				}
+				if !exist {
+					logutil.Infof("key1111 %v not exist in bloom filter, table is %v, block is %v, meta is %v, pk is %d", key, schema.Name, i, metaLoc1.String(), pkIdx)
+				}
+			}
+		}
+	}
 	// update new status for created blocks
 	var metaLoc objectio.Location
 	for i, block := range writtenBlocks {

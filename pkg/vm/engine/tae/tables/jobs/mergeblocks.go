@@ -381,8 +381,9 @@ func (task *mergeBlocksTask) Execute(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	var pkIdx int
 	if schema.HasPK() {
-		pkIdx := schema.GetSingleSortKeyIdx()
+		pkIdx = schema.GetSingleSortKeyIdx()
 		writer.SetPrimaryKey(uint16(pkIdx))
 	}
 	for _, bat := range batchs {
@@ -398,8 +399,6 @@ func (task *mergeBlocksTask) Execute(ctx context.Context) (err error) {
 	phaseNumber = 5
 	var metaLoc objectio.Location
 	if schema.HasPK() {
-		pkIdx := schema.GetSingleSortKeyIdx()
-		writer.SetPrimaryKey(uint16(pkIdx))
 
 		metaLoc1 := blockio.EncodeLocation(name, blocks[0].GetExtent(), uint32(batchs[0].Length()), blocks[0].GetID())
 		var reader *blockio.BlockReader
