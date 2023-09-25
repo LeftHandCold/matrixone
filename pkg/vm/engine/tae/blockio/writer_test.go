@@ -226,7 +226,7 @@ func TestDebugData(t *testing.T) {
 		sid,
 		0,
 		block1.GetID())
-	meta, err := LoadMetaDataWithBlockId(ctx, service, blockId)
+	meta, location, err := GetLocationWithBlockID(ctx, service, blockId.String())
 	assert.Nil(t, err)
 	dataMeta := meta.MustDataMeta()
 	block := dataMeta.GetBlockMeta(0)
@@ -234,4 +234,13 @@ func TestDebugData(t *testing.T) {
 	colZoneMap := colx.ZoneMap()
 	zm := index.DecodeZM(colZoneMap)
 	logutil.Infof("zone map max: %v, min: %v", zm.GetMax(), zm.GetMin())
+
+	reader, err := NewObjectReader(service, location)
+	assert.Nil(t, err)
+	dataMeta1, err := reader.LoadObjectMeta(ctx, nil)
+	blocksss := dataMeta1.GetBlockMeta(0)
+	colx1 := blocksss.MustGetColumn(12 /* xyz seqnum*/)
+	colZoneMap1 := colx1.ZoneMap()
+	zm1 := index.DecodeZM(colZoneMap1)
+	logutil.Infof("zone map max: %v, min: %v", zm1.GetMax(), zm1.GetMin())
 }

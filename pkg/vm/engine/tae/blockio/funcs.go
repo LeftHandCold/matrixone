@@ -105,19 +105,22 @@ func LoadBF(
 	return
 }
 
-func LoadMetaDataWithBlockId(
+func GetLocationWithBlockID(
 	ctx context.Context,
 	fs fileservice.FileService,
 	block string,
-) (objectio.ObjectMeta, error) {
-	fileName := GetObjectFileName(block)
+) (objectio.ObjectMeta, objectio.Location, error) {
+	sid, fileName, id, filenum := GetObjectFileName(block)
 	reader, err := NewFileReader(fs, fileName)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	meta, err := reader.reader.ReadAllMeta(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return meta, nil
+	extent := reader.reader.GetMetaExtent()
+	name := objectio.BuildObjectName(&sid, filenum)
+	location := objectio.BuildLocation(name, *extent, 0, id)
+	return meta, location, nil
 }
