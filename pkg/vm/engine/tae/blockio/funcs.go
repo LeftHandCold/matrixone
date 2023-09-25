@@ -104,3 +104,20 @@ func LoadBF(
 	bf = objectio.BloomFilter(v)
 	return
 }
+
+func LoadMetaDataWithBlockId(
+	ctx context.Context,
+	fs fileservice.FileService,
+	block objectio.Blockid,
+) (objectio.ObjectMeta, error) {
+	fileName := GetObjectFileName(block.String())
+	reader, err := NewFileReader(fs, fileName)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := reader.reader.ReadAllMeta(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	return meta, nil
+}

@@ -16,6 +16,7 @@ package blockio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"path"
 	"testing"
 
@@ -191,4 +192,46 @@ func TestWriter_WriteBlockAfterAlter(t *testing.T) {
 	require.True(t, zm.Contains(int32(40000)))
 	require.True(t, zm.Contains(int32(79999)))
 	require.False(t, zm.Contains(int32(80000)))
+}
+
+func TestDebugData(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+
+	dir := testutils.InitTestEnv(ModuleName, t)
+	dir = path.Join(dir, "/local")
+	sid := objectio.NewSegmentid()
+	name := objectio.BuildObjectName(sid, 0)
+	c := fileservice.Config{
+		Name:    defines.LocalFileServiceName,
+		Backend: "DISK",
+		DataDir: dir,
+	}
+	service, err := fileservice.NewFileService(ctx, c, nil)
+	assert.Nil(t, err)
+	writer, _ := NewBlockWriterNew(service, name, 0, nil)
+
+	schema := catalog.MockSchemaAll(13, 2)
+	bats := catalog.MockBatch(schema, 40000*2).Split(2)
+
+	_, err = writer.WriteBatch(containers.ToCNBatch(bats[0]))
+	assert.Nil(t, err)
+	_, err = writer.WriteBatch(containers.ToCNBatch(bats[1]))
+	assert.Nil(t, err)
+	blocks, _, err := writer.Sync(context.Background())
+	assert.Nil(t, err)
+	assert.Equal(t, 2, len(blocks))
+	block1 := blocks[0]
+	blockId := *objectio.NewBlockid(
+		sid,
+		0,
+		block1.GetID())
+	meta, err := LoadMetaDataWithBlockId(ctx, service, blockId)
+	assert.Nil(t, err)
+	dataMeta := meta.MustDataMeta()
+	block := dataMeta.GetBlockMeta(0)
+	colx := block.MustGetColumn(12 /* xyz seqnum*/)
+	colZoneMap := colx.ZoneMap()
+	zm := index.DecodeZM(colZoneMap)
+	logutil.Infof("zone map max: %v, min: %v", zm.GetMax(), zm.GetMin())
 }

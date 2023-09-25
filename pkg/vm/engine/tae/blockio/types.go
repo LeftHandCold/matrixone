@@ -129,3 +129,15 @@ func EncodeLocation(
 	id uint16) objectio.Location {
 	return objectio.BuildLocation(name, extent, rows, id)
 }
+
+func GetObjectFileName(blockId string) string {
+	location := strings.Split(blockId, "-")
+	if len(location) < 7 {
+		panic(fmt.Sprintf("blockId: %v", blockId))
+	}
+	filenum, err := strconv.ParseUint(location[5], 10, 32)
+	if err != nil {
+		panic(fmt.Sprintf("GetObjectFileName err: %v", err.Error()))
+	}
+	return fmt.Sprintf("%s-%s-%s-%s-%s_%05d", location[0], location[1], location[2], location[3], location[4], filenum)
+}
