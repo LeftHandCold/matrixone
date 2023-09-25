@@ -431,10 +431,6 @@ func (task *mergeBlocksTask) Execute(ctx context.Context) (err error) {
 					logutil.Infof("key %v not exist in bloom filter, table is %v, block is %v, meta is %v, pk is %d", key, schema.Name, i, metaLoc1.String(), pkIdx)
 				}
 			}
-			_, err = writer.WriteBatch(containers.ToCNBatch(bat))
-			if err != nil {
-				return err
-			}
 		}
 	}
 	for i, block := range blocks {
