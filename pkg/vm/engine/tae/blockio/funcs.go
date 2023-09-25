@@ -108,9 +108,9 @@ func LoadBF(
 func LoadMetaDataWithBlockId(
 	ctx context.Context,
 	fs fileservice.FileService,
-	block objectio.Blockid,
+	block string,
 ) (objectio.ObjectMeta, error) {
-	fileName := GetObjectFileName(block.String())
+	fileName := GetObjectFileName(block)
 	reader, err := NewFileReader(fs, fileName)
 	if err != nil {
 		return nil, err
