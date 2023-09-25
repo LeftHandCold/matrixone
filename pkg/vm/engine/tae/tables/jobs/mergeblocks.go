@@ -17,6 +17,8 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 	"time"
 	"unsafe"
 
@@ -395,6 +397,46 @@ func (task *mergeBlocksTask) Execute(ctx context.Context) (err error) {
 	}
 	phaseNumber = 5
 	var metaLoc objectio.Location
+	if schema.HasPK() {
+		pkIdx := schema.GetSingleSortKeyIdx()
+		writer.SetPrimaryKey(uint16(pkIdx))
+
+		metaLoc1 := blockio.EncodeLocation(name, blocks[0].GetExtent(), uint32(batchs[0].Length()), blocks[0].GetID())
+		var reader *blockio.BlockReader
+		reader, err = blockio.NewObjectReader(task.mergedBlks[0].GetBlockData().GetFs().Service, metaLoc1)
+		if err != nil {
+			return err
+		}
+		var bf objectio.BloomFilter
+		bf, _, err = reader.LoadAllBF(ctx)
+		if err != nil {
+			return err
+		}
+		for i, bat := range batchs {
+			buf := bf.GetBloomFilter(uint32(i))
+			bfIndex := index.NewEmptyBinaryFuseFilter()
+			if err = index.DecodeBloomFilter(bfIndex, buf); err != nil {
+				return
+			}
+			val := bat.Vecs[pkIdx]
+			for j := 0; j < val.Length(); j++ {
+				key := val.Get(j)
+				v := types.EncodeValue(key, bat.Vecs[pkIdx].GetType().Oid)
+				var exist bool
+				exist, err = bfIndex.MayContainsKey(v)
+				if err != nil {
+					panic(err)
+				}
+				if !exist {
+					logutil.Infof("key %v not exist in bloom filter, table is %v, block is %v, meta is %v, pk is %d", key, schema.Name, i, metaLoc1.String(), pkIdx)
+				}
+			}
+			_, err = writer.WriteBatch(containers.ToCNBatch(bat))
+			if err != nil {
+				return err
+			}
+		}
+	}
 	for i, block := range blocks {
 		metaLoc = blockio.EncodeLocation(name, block.GetExtent(), uint32(batchs[i].Length()), block.GetID())
 		if err = blockHandles[i].UpdateMetaLoc(metaLoc); err != nil {
