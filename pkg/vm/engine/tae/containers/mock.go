@@ -16,6 +16,7 @@ package containers
 
 import (
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"math"
 	"math/rand"
 	"strconv"
@@ -172,16 +173,12 @@ func MockVector(t types.Type, rows int, unique bool, provider Vector) (vec Vecto
 			vec.Append(float64(v1)/float64(v2), false)
 		}
 	case types.T_varchar, types.T_char, types.T_binary, types.T_varbinary, types.T_blob, types.T_text:
-		if unique {
-			for i := 0; i < rows; i++ {
-				s := fmt.Sprintf("%d-%d", i, 0)
-				vec.Append([]byte(s), false)
-			}
-		} else {
-			for i := 0; i < rows; i++ {
-				s := fmt.Sprintf("%d%d", i, rand.Intn(10000000))
-				vec.Append([]byte(s), false)
-			}
+		mp := mpool.MustNewZero()
+		for i := 0; i < rows; i++ {
+			packer := types.NewPacker(mp)
+			packer.EncodeInt32(int32(rand.Intn(10)))
+			packer.EncodeInt32(int32(rand.Intn(100000)))
+			vec.Append(packer.Bytes(), false)
 		}
 	case types.T_datetime:
 		for i := 1; i <= rows; i++ {

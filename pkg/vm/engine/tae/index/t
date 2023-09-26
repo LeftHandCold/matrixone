@@ -1,0 +1,27 @@
+func Test_DebugBF(t *testing.T) {
+	strs, err := ReadLines("/Users/shenjiangwei/Downloads/debugfile")
+	str2, err := ReadLines("/Users/shenjiangwei/Downloads/debugfile2")
+	assert.Nil(t, err)
+	var data []uint64
+	for j := 0; j < len(strs); j++ {
+		key := strs[j]
+		location := strings.Split(key, "-")
+		k := location[0]
+		logutil.Infof(" k: %v, kk %v, d %v", k, []byte(str2[j]), j)
+		tuples, _, err := types.DecodeTuple([]byte(str2[j]))
+		if err != nil {
+			panic(err)
+		}
+		logutil.Infof("key: %v, t1 : %d, t2: %d", k, tuples[0], tuples[1])
+		data = append(data, xxhash.Sum64([]byte(str2[j])))
+	}
+	inner, err := xorfilter.PopulateBinaryFuse8(data)
+	assert.Nil(t, err)
+	for _, d := range data {
+		e := inner.Contains(d)
+		if !e {
+			logutil.Infof("fsdfsdfdsfsdfsdf")
+		}
+	}
+
+}

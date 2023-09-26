@@ -16,8 +16,10 @@ package blockio
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"github.com/FastFilter/xorfilter"
+	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/cespare/xxhash/v2"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"io"
@@ -368,5 +370,48 @@ func Test_DebugBF(t *testing.T) {
 			logutil.Infof("fsdfsdfdsfsdfsdf")
 		}
 	}
+}
 
+func Test_NewBF(t *testing.T) {
+	mp := mpool.MustNewZero()
+	colbyte := make([][]byte, 0)
+	filter := bloom.NewWithEstimates(8192, 0.01)
+	for i := 0; i < 8192; i++ {
+		packer := types.NewPacker(mp)
+		packer.EncodeInt32(int32(rand.Intn(10)))
+		packer.EncodeInt32(int32(rand.Intn(100000)))
+		filter.Add(packer.Bytes())
+		colbyte = append(colbyte, packer.Bytes())
+	}
+	for _, ts := range colbyte {
+		if filter.Test(ts) {
+			logutil.Infof("fsdfsdf")
+		}
+	}
+
+}
+
+func BenchmarkNewBF(b *testing.B) {
+	mp := mpool.MustNewZero()
+	colbyte := make([][]byte, 0)
+	filter := bloom.NewWithEstimates(8192, 0.01)
+	for i := 0; i < 8192; i++ {
+		packer := types.NewPacker(mp)
+		packer.EncodeInt32(int32(rand.Intn(10)))
+		packer.EncodeInt32(int32(rand.Intn(100000)))
+		filter.Add(packer.Bytes())
+		colbyte = append(colbyte, packer.Bytes())
+	}
+	var err error
+	var buf bytes.Buffer
+	_, err = filter.WriteTo(&buf)
+	var g bloom.BloomFilter
+	assert.Nil(b, err)
+	b.Run("GetBlockMeta", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			err = g.GobDecode(buf.Bytes())
+		}
+	})
+	assert.Nil(b, err)
 }
