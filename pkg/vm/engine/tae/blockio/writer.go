@@ -118,6 +118,18 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		if err != nil {
 			return nil, err
 		}
+		for j := 0; j < columnData.Length(); j++ {
+			key := columnData.Get(j)
+			v := types.EncodeValue(key, columnData.GetType().Oid)
+			var exist bool
+			exist, err = bf.MayContainsKey(v)
+			if err != nil {
+				panic(err)
+			}
+			if !exist {
+				logutil.Infof("pk not exist, key: %v, bf : %v, bf : %v", key, bf.String(), buf[:30])
+			}
+		}
 
 		if err = w.writer.WriteBF(int(block.GetID()), seqnums[i], buf); err != nil {
 			return nil, err
