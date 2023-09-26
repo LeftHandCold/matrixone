@@ -138,7 +138,7 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 					panic(err)
 				}
 				if !exist {
-					logutil.Infof("pk not exist, key: %v, val: %d, test: %v, bf : %v, bf : %v, i is %v, type is %v", key.([]byte), tuples[0], test, bf.String(), buf[:30], i, columnData.GetType())
+					logutil.Infof("pk not exist, key: %v, val1: %d, val2: %d test: %v, bf : %v, bf : %v, i is %v, type is %v", key.([]byte), tuples[0], tuples[1], test, bf.String(), buf[:30], i, columnData.GetType())
 				}
 			}
 		}
