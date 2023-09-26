@@ -119,7 +119,7 @@ func (task *flushBlkTask) Execute(ctx context.Context) error {
 			}
 			if !exist {
 				logutil.Infof("keyyy %v not exist in bloom filter, table is %v, block is %v, meta is %v, pk is %d", key, task.meta.GetSchema().Name, 0, metaLoc1.String(), pkIdx)
-				logutil.Infof("bfIndex is %v, buf is %v, w is %v", bfIndex.String(), buf[:30], writer.Buf[:30])
+				logutil.Infof("bfIndex is %v, bf is %v, buf is %v, w is %v", bfIndex.String(), writer.BF.String(), buf[:30], writer.Buf[:30])
 			}
 		}
 	}
