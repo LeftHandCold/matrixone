@@ -111,8 +111,11 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		}
 		w.objMetaBuilder.AddPKData(columnData)
 		data := columnData.Get(0)
-		test := make([]byte, len(data.([]byte)))
-		copy(test, data.([]byte))
+		var test []byte
+		if columnData.GetType().Oid == types.T_varchar {
+			test = make([]byte, len(data.([]byte)))
+			copy(test, data.([]byte))
+		}
 		bf, err := index.NewBinaryFuseFilter(columnData)
 		if err != nil {
 			return nil, err
