@@ -126,6 +126,10 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		}
 		for j := 0; j < columnData.Length(); j++ {
 			key := columnData.Get(j)
+			tuples, _, err := types.DecodeTuple(key.([]byte))
+			if err != nil {
+				panic(err)
+			}
 			v := types.EncodeValue(key, columnData.GetType().Oid)
 			var exist bool
 			exist, err = bf.MayContainsKey(v)
@@ -133,7 +137,7 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 				panic(err)
 			}
 			if !exist {
-				logutil.Infof("pk not exist, key: %v, test: %v, bf : %v, bf : %v, i is %v, type is %v", key.([]byte), test, bf.String(), buf[:30], i, columnData.GetType())
+				logutil.Infof("pk not exist, key: %v, val: %d, test: %v, bf : %v, bf : %v, i is %v, type is %v", key.([]byte), tuples[0], test, bf.String(), buf[:30], i, columnData.GetType())
 			}
 		}
 
