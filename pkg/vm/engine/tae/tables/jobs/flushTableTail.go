@@ -617,6 +617,7 @@ func (task *flushTableTailTask) flushAblksForSnapshot(ctx context.Context) (subt
 			mergesort.SortBlockColumns(deletes.Vecs, 0, task.rt.VectorPool.Transient)
 		}
 
+		logutil.Infof("NewFlushBlkTask for snapshot read, table is %v, block is %v, data is %v, deletes is %v", task.schema.Name, blk.ID.String(), data.Length(), deletes.Length())
 		ablockTask := NewFlushBlkTask(
 			tasks.WaitableCtx,
 			dataVer.Version,

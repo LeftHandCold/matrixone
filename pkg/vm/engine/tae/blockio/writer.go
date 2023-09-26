@@ -36,6 +36,7 @@ type BlockWriter struct {
 	pk             uint16
 	nameStr        string
 	name           objectio.ObjectName
+	Buf            []byte
 }
 
 func NewBlockWriter(fs fileservice.FileService, name string) (*BlockWriter, error) {
@@ -120,6 +121,7 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		if err = w.writer.WriteBF(int(block.GetID()), seqnums[i], buf); err != nil {
 			return nil, err
 		}
+		w.Buf = buf
 	}
 	return block, nil
 }
