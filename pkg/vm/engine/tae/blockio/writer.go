@@ -110,6 +110,9 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 			continue
 		}
 		w.objMetaBuilder.AddPKData(columnData)
+		data := columnData.Get(0)
+		test := make([]byte, len(data.([]byte)))
+		copy(test, data.([]byte))
 		bf, err := index.NewBinaryFuseFilter(columnData)
 		if err != nil {
 			return nil, err
@@ -127,7 +130,7 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 				panic(err)
 			}
 			if !exist {
-				logutil.Infof("pk not exist, key: %v, bf : %v, bf : %v, i is %v", key, bf.String(), buf[:30], i)
+				logutil.Infof("pk not exist, key: %v, test: %v, bf : %v, bf : %v, i is %v, type is %v", key.([]byte), test, bf.String(), buf[:30], i, columnData.GetType())
 			}
 		}
 
