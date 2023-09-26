@@ -17,6 +17,7 @@ package blockio
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 
@@ -127,10 +128,6 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		if columnData.GetType().Oid == types.T_varchar {
 			for j := 0; j < columnData.Length(); j++ {
 				key := columnData.Get(j)
-				tuples, _, err := types.DecodeTuple(key.([]byte))
-				if err != nil {
-					panic(err)
-				}
 				v := types.EncodeValue(key, columnData.GetType().Oid)
 				var exist bool
 				exist, err = bf.MayContainsKey(v)
@@ -138,7 +135,22 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 					panic(err)
 				}
 				if !exist {
-					logutil.Infof("pk not exist, key: %v, val1: %d, val2: %d test: %v, bf : %v, bf : %v, i is %v, type is %v", key.([]byte), tuples[0], tuples[1], test, bf.String(), buf[:30], i, columnData.GetType())
+					var debug string
+					for k := 0; k < columnData.Length(); k++ {
+						key1 := columnData.Get(j)
+						tuples, _, err := types.DecodeTuple(key1.([]byte))
+						if err != nil {
+							panic(err)
+						}
+						debug += fmt.Sprintf("%v-%d-%d\n", key1.([]byte), tuples[0], tuples[1])
+					}
+					file, _ := os.Create("debugfile")
+					file.Write([]byte(debug))
+					logutil.Infof("columnData.String() is %s", columnData.String())
+					panic("fsdfsdf")
+					//logutil.Infof("key: %v, t1 : %d, t2: %d", key.([]byte), tuples[0], tuples[1])
+					panic("pk not exist")
+					//logutil.Infof("pk not exist, key: %v, val1: %d, val2: %d test: %v, bf : %v, bf : %v, i is %v, type is %v", key.([]byte), tuples[0], tuples[1], test, bf.String(), buf[:30], i, columnData.GetType())
 				}
 			}
 		}

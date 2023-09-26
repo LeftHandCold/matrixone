@@ -15,9 +15,17 @@
 package blockio
 
 import (
+	"bufio"
 	"context"
+	"github.com/FastFilter/xorfilter"
+	"github.com/cespare/xxhash/v2"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"io"
+	"math/rand"
+	"os"
 	"path"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -246,23 +254,119 @@ func TestDebugData(t *testing.T) {
 }
 
 func TestBlockWriter_BF(t *testing.T) {
-	schema := catalog.MockSchemaAll(1, -1)
-	bats := catalog.MockBatch(schema, 40000*2).Split(2)
-	columnData := bats[0].Vecs[0]
+	schema := catalog.MockSchemaAll(13, -1)
+	bats := catalog.MockBatch(schema, 40000).Split(1)
+	cnbat := containers.ToCNBatch(bats[0])
+	columnData := containers.ToTNVector(cnbat.Vecs[12])
+	logutil.Infof("bats[0].Attrs[13] : %v, type: %v, key: %v", bats[0].Attrs[12], columnData.GetType(), columnData.Get(0))
 	bf, err := index.NewBinaryFuseFilter(columnData)
 	assert.Nil(t, err)
 	buf, err := bf.Marshal()
+	logutil.Infof("buf leng is %d", len(buf))
 	assert.Nil(t, err)
 	for j := 0; j < columnData.Length(); j++ {
 		key := columnData.Get(j)
+		tuples, _, err := types.DecodeTuple(key.([]byte))
 		v := types.EncodeValue(key, columnData.GetType().Oid)
 		var exist bool
 		exist, err = bf.MayContainsKey(v)
 		if err != nil {
 			panic(err)
 		}
+		if j == 0 {
+			logutil.Infof("pk not exist, key: %v, t: %d, al2: %d,bf : %v, bf : %v", key.([]byte), tuples[0], tuples[1], bf.String(), buf[:30])
+		}
 		if !exist {
-			logutil.Infof("pk not exist, key: %v, bf : %v, bf : %v", key, bf.String(), buf[:30])
+			logutil.Infof("pk not exist, key: %v, val: %d, al2: %d v,bf : %v, bf : %v", key.([]byte), tuples[0], tuples[1], bf.String(), buf[:30])
 		}
 	}
+}
+
+func ReadLinesV2(path string) ([]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var lines []string
+	reader := bufio.NewReader(file)
+	for {
+		// ReadString reads until the first occurrence of delim in the input,
+		// returning a string containing the data up to and including the delimiter.
+		line, err := reader.ReadString('\n')
+		if err == io.EOF {
+			lines = append(lines, line)
+			break
+		}
+		if err != nil {
+			return lines, err
+		}
+		lines = append(lines, line[:len(line)-1])
+	}
+	return lines, nil
+}
+
+func Test_DebugBF2(t *testing.T) {
+	strs, err := ReadLinesV2("/Users/shenjiangwei/Downloads/debugfile")
+	assert.Nil(t, err)
+	var data []uint64
+	mp := mpool.MustNewZero()
+	for j := 0; j < len(strs)-1; j++ {
+		key := strs[j]
+		location := strings.Split(key, "-")
+		k := location[0]
+		logutil.Infof(" k: %v, kk %v, d %v", key, k, j)
+		val1, err := strconv.ParseUint(location[1], 10, 32)
+		assert.Nil(t, err)
+		val2, err := strconv.ParseUint(location[2], 10, 32)
+		packer := types.NewPacker(mp)
+		packer.EncodeInt32(int32(val1))
+		packer.EncodeInt32(int32(val2))
+		tuples, _, err := types.DecodeTuple(packer.Bytes())
+		if err != nil {
+			panic(err)
+		}
+		logutil.Infof("key: %v, t1 : %d, t2: %d", k, tuples[0], tuples[1])
+		data = append(data, xxhash.Sum64(packer.Bytes()))
+	}
+	inner, err := xorfilter.PopulateBinaryFuse8(data)
+	assert.Nil(t, err)
+	for _, d := range data {
+		e := inner.Contains(d)
+		if !e {
+			logutil.Infof("fsdfsdfdsfsdfsdf")
+		}
+	}
+
+}
+
+func Test_DebugBF(t *testing.T) {
+	data := make([]uint64, 0)
+	mp := mpool.MustNewZero()
+	colbyte := make([][]byte, 0)
+	for i := 0; i < 4000; i++ {
+		packer := types.NewPacker(mp)
+		packer.EncodeInt32(int32(rand.Intn(10)))
+		packer.EncodeInt32(int32(rand.Intn(100000)))
+		colbyte = append(colbyte, packer.Bytes())
+	}
+	for j := 0; j < len(colbyte); j++ {
+		key := colbyte[j]
+		tuples, _, err := types.DecodeTuple(key)
+		if err != nil {
+			panic(err)
+		}
+		logutil.Debugf("key: %v, t1 : %d, t2: %d", key, tuples[0], tuples[1])
+		data = append(data, xxhash.Sum64(key))
+	}
+	inner, err := xorfilter.PopulateBinaryFuse8(data)
+	assert.Nil(t, err)
+	for _, d := range data {
+		e := inner.Contains(d)
+		if !e {
+			logutil.Infof("fsdfsdfdsfsdfsdf")
+		}
+	}
+
 }
