@@ -244,3 +244,25 @@ func TestDebugData(t *testing.T) {
 	zm1 := index.DecodeZM(colZoneMap1)
 	logutil.Infof("zone map max: %v, min: %v", zm1.GetMax(), zm1.GetMin())
 }
+
+func TestBlockWriter_BF(t *testing.T) {
+	schema := catalog.MockSchemaAll(1, -1)
+	bats := catalog.MockBatch(schema, 40000*2).Split(2)
+	columnData := bats[0].Vecs[0]
+	bf, err := index.NewBinaryFuseFilter(columnData)
+	assert.Nil(t, err)
+	buf, err := bf.Marshal()
+	assert.Nil(t, err)
+	for j := 0; j < columnData.Length(); j++ {
+		key := columnData.Get(j)
+		v := types.EncodeValue(key, columnData.GetType().Oid)
+		var exist bool
+		exist, err = bf.MayContainsKey(v)
+		if err != nil {
+			panic(err)
+		}
+		if !exist {
+			logutil.Infof("pk not exist, key: %v, bf : %v, bf : %v", key, bf.String(), buf[:30])
+		}
+	}
+}
