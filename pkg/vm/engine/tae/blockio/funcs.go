@@ -21,6 +21,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
 )
@@ -103,4 +104,44 @@ func LoadBF(
 	cache.Set(ctx, *loc.ShortName(), v)
 	bf = objectio.BloomFilter(v)
 	return
+}
+
+func GetLocationWithBlockID(
+	ctx context.Context,
+	fs fileservice.FileService,
+	block string,
+) (objectio.ObjectMeta, objectio.Location, error) {
+	sid, fileName, id, filenum := GetObjectFileName(block)
+	reader, err := NewFileReader(fs, fileName)
+	if err != nil {
+		return nil, nil, err
+	}
+	meta, err := reader.reader.ReadAllMeta(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	extent := reader.reader.GetMetaExtent()
+	name := objectio.BuildObjectName(&sid, filenum)
+	location := objectio.BuildLocation(name, *extent, 0, id)
+	return meta, location, nil
+}
+
+func DebugDataWithBlockID(
+	ctx context.Context,
+	fs fileservice.FileService,
+	block string,
+) (*batch.Batch, error) {
+	meta, location, err := GetLocationWithBlockID(ctx, fs, block)
+	if err != nil {
+		return nil, err
+	}
+
+	data := meta.MustDataMeta()
+	idxes := make([]uint16, data.BlockHeader().ColumnCount())
+	for i := range idxes {
+		idxes[i] = uint16(i)
+	}
+	bat, err := objectio.ReadOneBlockWithOutType(ctx, &data, location.Name().String(), uint32(location.ID()), idxes, fileservice.SkipMemory, fs)
+	logutil.Infof("DebugDataWithBlockID: %s", bat.String())
+	return bat, nil
 }
