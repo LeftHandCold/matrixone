@@ -108,9 +108,6 @@ func (s *sqlStore) Allocate(
 				if sarg != "" {
 					logutil.Infof("lock_deadline fault: %s, tableid: %d", sarg, tableID)
 					time.Sleep(10 * time.Second)
-					if _, ok := ctx.Deadline(); !ok {
-						logutil.Infof("lock_deadline fault: %s, tableid: %d, no deadline", sarg, tableID)
-					}
 				}*/
 				res, err := te.Exec(fetchSQL)
 				if err != nil {
