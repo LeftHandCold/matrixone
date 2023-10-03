@@ -389,6 +389,16 @@ func doLock(
 	if fetchFunc == nil {
 		fetchFunc = GetFetchRowsFunc(pkType)
 	}
+	_, tablename, _ := eng.GetNameById(proc.Ctx, proc.TxnOperator, tableID)
+	_, sarg, _ := fault.TriggerFault("lock_deadline")
+	if sarg != "" && tablename == "mo_increment_columns" {
+		logutil.Infof("lock_deadline fault: %s, tableid: %d", sarg, tableID)
+
+		time.Sleep(10 * time.Second)
+		if _, ok := ctx.Deadline(); !ok {
+			logutil.Infof("lock_deadline fault: %s, tableid: %d, deadline not set", sarg, tableID)
+		}
+	}
 	has, rows, g := fetchFunc(
 		vec,
 		opts.parker,
@@ -500,16 +510,6 @@ func doLock(
 	snapshotTS = result.Timestamp.Next()
 	if err := txnOp.UpdateSnapshot(ctx, snapshotTS); err != nil {
 		return false, false, timestamp.Timestamp{}, err
-	}
-	_, tablename, _ := eng.GetNameById(proc.Ctx, proc.TxnOperator, tableID)
-	_, sarg, _ := fault.TriggerFault("lock_deadline")
-	if sarg != "" && tablename == "mo_increment_columns" {
-		logutil.Infof("lock_deadline fault: %s, tableid: %d", sarg, tableID)
-
-		time.Sleep(10 * time.Second)
-		if _, ok := ctx.Deadline(); !ok {
-			logutil.Infof("lock_deadline fault: %s, tableid: %d, deadline not set", sarg, tableID)
-		}
 	}
 	return true, result.TableDefChanged, snapshotTS, nil
 }
