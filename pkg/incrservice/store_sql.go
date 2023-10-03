@@ -17,9 +17,6 @@ package incrservice
 import (
 	"context"
 	"fmt"
-	"math"
-	"time"
-
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -31,6 +28,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/logtailreplay"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
 	"go.uber.org/zap"
+	"math"
 )
 
 var (
@@ -106,8 +104,17 @@ func (s *sqlStore) Allocate(
 		err := s.exec.ExecTxn(
 			ctx,
 			func(te executor.TxnExecutor) error {
+				/*_, sarg, _ := fault.TriggerFault("lock_deadline")
+				if sarg != "" {
+					logutil.Infof("lock_deadline fault: %s, tableid: %d", sarg, tableID)
+					time.Sleep(10 * time.Second)
+					if _, ok := ctx.Deadline(); !ok {
+						logutil.Infof("lock_deadline fault: %s, tableid: %d, no deadline", sarg, tableID)
+					}
+				}*/
 				res, err := te.Exec(fetchSQL)
 				if err != nil {
+					logutil.Infof("fetchSQL: %s, err: %v", fetchSQL, err)
 					return err
 				}
 				rows := 0
@@ -120,19 +127,35 @@ func (s *sqlStore) Allocate(
 				res.Close()
 
 				if rows != 1 {
-					done := false
-					select {
-					case <- ctx.Done():
-						done = true
-					default:
-					}
 					getLogger().Info("BUG: read incr record invalid",
 						zap.String("fetch-sql", fetchSQL),
 						zap.Any("account", ctx.Value(defines.TenantIDKey{})),
 						zap.Uint64("table", tableID),
 						zap.String("col", colName),
-						zap.Int("rows", rows),
-						zap.Bool("done", done))
+						zap.Int("rows", rows))
+
+					fetchNoUpdateSQL := fmt.Sprintf(`select offset, step from %s where table_id = %d and col_name = '%s'`,
+						incrTableName,
+						tableID,
+						colName)
+					res, err := te.Exec(fetchNoUpdateSQL)
+					if err != nil {
+						return err
+					}
+					rows = 0
+					res.ReadRows(func(cols []*vector.Vector) bool {
+						current = executor.GetFixedRows[uint64](cols[0])[0]
+						step = executor.GetFixedRows[uint64](cols[1])[0]
+						rows += len(executor.GetFixedRows[uint64](cols[0]))
+						return true
+					})
+					res.Close()
+					getLogger().Info("After BUG: read incr record invalid, fetch without for update",
+						zap.String("fetch-sql", fetchNoUpdateSQL),
+						zap.Any("account", ctx.Value(defines.TenantIDKey{})),
+						zap.Uint64("table", tableID),
+						zap.String("col", colName),
+						zap.Int("rows", rows))
 
 					fetchAllSQL := fmt.Sprintf(`select offset, step, table_id, col_name from %s`,
 						incrTableName)
@@ -167,12 +190,8 @@ func (s *sqlStore) Allocate(
 					// read all data from blocks
 					fs := s.exec.GetFileService()
 					blocks := txnOp2.(client.TxnOperatorWithBlocks).GetAllBlocks().([]catalog.BlockInfo)
-					tctx, tcancel := context.WithTimeout(context.Background(), time.Second*60)
-					defer tcancel()
 					for _, b := range blocks {
-						getLogger().Error("incr record invalid", 
-							zap.String("blockid", fmt.Sprintf("%x", b.BlockID)))
-						_, err := blockio.DebugDataWithBlockID(tctx, fs, b.BlockID.String())
+						_, err := blockio.DebugDataWithBlockID(ctx, fs, b.BlockID.String())
 						if err != nil {
 							getLogger().Error("read block data failed",
 								zap.String("block", b.String()),
@@ -202,26 +221,8 @@ func (s *sqlStore) Allocate(
 
 						tid := executor.GetFixedRows[uint64](e.Batch.Vecs[v1ColIndex])[e.Offset]
 						col := executor.GetStringRows(e.Batch.Vecs[v2ColIndex])[e.Offset]
-						logutil.Infof("%x: read mem [%d, %s, %s], blockid is %x", txnOp2.Txn().ID, tid, col, e.Time.ToTimestamp().DebugString(), e.BlockID)
+						logutil.Infof("%x: read mem [%d, %s, %s]", txnOp2.Txn().ID, tid, col, e.Time.ToTimestamp().DebugString())
 					}
-
-					biter,err := state.NewBlocksIter(types.TimestampToTS(timestamp.Timestamp{PhysicalTime: math.MaxInt64}))
-
-					if err != nil {
-						logutil.Infof("call NewBlockIter failed, %v", err)	
-					} else {
-
-						for {
-							if !biter.Next() {
-								break
-							}
-							e := biter.Entry()
-							logutil.Infof("%x: read mem without ts, blockid is %x", txnOp2.Txn().ID, e.BlockID)					
-						}
-					}
-
-					
-
 
 					getLogger().Fatal("BUG: read incr record invalid",
 						zap.String("fetch-sql", fetchSQL),
