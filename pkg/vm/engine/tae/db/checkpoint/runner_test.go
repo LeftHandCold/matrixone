@@ -381,7 +381,7 @@ func TestBlockWriter_GetName(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
 
-	fsDir := "/Users/shenjiangwei/Work/code/view/matrixone/mo-data/shared"
+	fsDir := "/data1/shenjiangwei/mo-data/shared"
 	c := fileservice.Config{
 		Name:    defines.LocalFileServiceName,
 		Backend: "DISK",
@@ -454,6 +454,7 @@ func TestBlockWriter_GetName(t *testing.T) {
 		typ := ET_Global
 		if isIncremental {
 			typ = ET_Incremental
+			return
 		}
 		var version uint32
 		if isCheckpointVersion1 {
