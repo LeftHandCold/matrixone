@@ -504,6 +504,7 @@ func TestBlockWriter_GetName(t *testing.T) {
 			} else {
 				entries[i] = checkpointEntry
 			}
+			datas[i].PrintMetaBatch()
 		}
 	}
 	t0 = time.Now()

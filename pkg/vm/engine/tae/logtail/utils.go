@@ -1830,6 +1830,39 @@ func (data *CheckpointData) ReadFrom(
 	return
 }
 
+type tableAndLength struct {
+	tid    uint64
+	length uint64
+}
+
+func (data *CheckpointData) PrintMetaBatch() {
+	bat := data.bats[MetaIDX]
+	tables := make([]*tableAndLength, 0)
+	tidVec := bat.GetVectorByName(SnapshotAttr_TID)
+	locationsVec := bat.GetVectorByName(SnapshotAttr_TID)
+	for i := 0; i < bat.Length(); i++ {
+		tid := tidVec.Get(i).(uint64)
+		var locations BlockLocations
+		locations = locationsVec.Get(i).([]byte)
+		it := locations.MakeIterator()
+		length := uint64(0)
+		for it.HasNext() {
+			loc := it.Next()
+			length += loc.GetEndOffset() - loc.GetStartOffset()
+		}
+		pair := &tableAndLength{
+			tid:    tid,
+			length: length,
+		}
+		tables = append(tables, pair)
+	}
+	sort.Slice(tables, func(i, j int) bool {
+		return tables[i].length < tables[j].length
+	})
+	logutil.Infof("lalala table count %d", len(tables))
+	maxTable := tables[len(tables)]
+	logutil.Infof("lalala max table %d, length is %d", maxTable.tid, maxTable.length)
+}
 func (data *CheckpointData) readMetaBatch(
 	ctx context.Context,
 	version uint32,
