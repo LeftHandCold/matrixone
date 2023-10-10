@@ -126,6 +126,23 @@ func GetLocationWithBlockID(
 	return meta, location, nil
 }
 
+func GetLocationWithFilename(
+	ctx context.Context,
+	fs fileservice.FileService,
+	name string,
+) (objectio.ObjectMeta, *objectio.Extent, error) {
+	reader, err := NewFileReader(fs, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	meta, err := reader.reader.ReadAllMeta(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	extent := reader.reader.GetMetaExtent()
+	return meta, extent, nil
+}
+
 func DebugDataWithBlockID(
 	ctx context.Context,
 	fs fileservice.FileService,

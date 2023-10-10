@@ -247,3 +247,21 @@ func TestDebugData(t *testing.T) {
 	_, err = DebugDataWithBlockID(ctx, service, blockId.String())
 	assert.Nil(t, err)
 }
+
+func TestBlockWriter_GetName(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+
+	dir := testutils.InitTestEnv(ModuleName, t)
+	dir = path.Join(dir, "/local")
+	c := fileservice.Config{
+		Name:    defines.LocalFileServiceName,
+		Backend: "DISK",
+		DataDir: dir,
+	}
+	service, err := fileservice.NewFileService(ctx, c, nil)
+	assert.Nil(t, err)
+	meta, extent, err := GetLocationWithFilename(ctx, service, "/Users/shenjiangwei/Downloads/7e625e16-6740-11ee-83ce-16a5e7607fd0_00000")
+	assert.Nil(t, err)
+	logutil.Infof("meta: %d, extent: %v", meta.SubMetaCount(), extent.String())
+}
