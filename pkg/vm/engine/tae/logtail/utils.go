@@ -1909,6 +1909,7 @@ func (data *CheckpointData) readAll(
 			item := checkpointDataReferVersions[version][idx]
 			bats, err = LoadBlkColumnsByMeta(version, ctx, item.types, item.attrs, uint16(idx), reader)
 			if err != nil {
+				logutil.Infof("readAll err is %v, location is %v", err, val.String())
 				return
 			}
 			if version == CheckpointVersion1 {

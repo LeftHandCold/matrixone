@@ -15,6 +15,7 @@
 package objectio
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"io"
 
 	"github.com/matrixorigin/matrixone/pkg/compress"
@@ -53,6 +54,7 @@ func constructorFactory(size int64, algo uint8) CacheConstructor {
 }
 
 func Decode(buf []byte) (any, error) {
+	logutil.Infof("decode buf: %d", len(buf))
 	header := DecodeIOEntryHeader(buf)
 	codec := GetIOEntryCodec(*header)
 	if codec.NoUnmarshal() {

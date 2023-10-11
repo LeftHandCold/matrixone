@@ -387,7 +387,6 @@ func (l *LocalFS) read(ctx context.Context, vector *IOVector) (err error) {
 		return err
 	}
 	nativePath := l.toNativeFilePath(path.File)
-	logutil.Infof("fileservice: open root path %s", nativePath)
 	file, err := os.Open(nativePath)
 	if os.IsNotExist(err) {
 		return moerr.NewFileNotFoundNoCtx(path.File)

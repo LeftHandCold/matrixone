@@ -261,7 +261,25 @@ func TestBlockWriter_GetName(t *testing.T) {
 	}
 	service, err := fileservice.NewFileService(ctx, c, nil)
 	assert.Nil(t, err)
-	meta, extent, err := GetLocationWithFilename(ctx, service, "7e625e16-6740-11ee-83ce-16a5e7607fd0_00000")
+	meta, extent, err := GetLocationWithFilename(ctx, service, "ea9cc000-67be-11ee-83ce-16a5e7607fd0_00000")
 	assert.Nil(t, err)
 	logutil.Infof("meta: %d, extent: %v", meta.SubMetaCount(), extent.String())
+
+	blockNum := uint32(0)
+	rows := uint32(0)
+	//j := uint32(0)
+	for i := uint16(0); i < meta.SubMetaCount(); i++ {
+		subMeta, ok := meta.SubMeta(i)
+		if ok {
+			blockNum += subMeta.BlockCount()
+			for v := uint32(0); v < subMeta.BlockCount(); v++ {
+				id := uint32(subMeta.BlockHeader().StartID()) + v
+				b := subMeta.GetBlockMeta(id)
+				rows += b.GetRows()
+				logutil.Infof("block: %d, rows: %d", b.GetID(), b.GetRows())
+			}
+		}
+	}
+
+	logutil.Infof("block num: %d", blockNum)
 }

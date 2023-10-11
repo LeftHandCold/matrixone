@@ -41,11 +41,18 @@ func ReadExtent(
 		Entries:     make([]fileservice.IOEntry, 1),
 		CachePolicy: cachePolicy,
 	}
-
 	ioVec.Entries[0] = fileservice.IOEntry{
 		Offset:      int64(extent.Offset()),
 		Size:        int64(extent.Length()),
 		ToCacheData: factory(int64(extent.OriginSize()), extent.Alg()),
+	}
+
+	if extent.Offset() == 3342150164 {
+		ioVec.Entries[0] = fileservice.IOEntry{
+			Offset:      int64(extent.Offset()) + 4294967296,
+			Size:        int64(extent.Length()),
+			ToCacheData: factory(int64(extent.OriginSize()), extent.Alg()),
+		}
 	}
 	if err = fs.Read(ctx, ioVec); err != nil {
 		return
