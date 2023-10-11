@@ -387,7 +387,7 @@ func (l *LocalFS) read(ctx context.Context, vector *IOVector) (err error) {
 		return err
 	}
 	nativePath := l.toNativeFilePath(path.File)
-
+	logutil.Infof("fileservice: open root path %s", nativePath)
 	file, err := os.Open(nativePath)
 	if os.IsNotExist(err) {
 		return moerr.NewFileNotFoundNoCtx(path.File)
@@ -592,8 +592,8 @@ func (l *LocalFS) List(ctx context.Context, dirPath string) (ret []DirEntry, err
 			return nil, err
 		}
 		fileSize := info.Size()
-		nBlock := ceilingDiv(fileSize, _BlockSize)
-		contentSize := fileSize - _ChecksumSize*nBlock
+		//nBlock := ceilingDiv(fileSize, _BlockSize)
+		//contentSize := fileSize - _ChecksumSize*nBlock
 
 		isDir, err := entryIsDir(nativePath, name, info)
 		if err != nil {
@@ -602,7 +602,7 @@ func (l *LocalFS) List(ctx context.Context, dirPath string) (ret []DirEntry, err
 		ret = append(ret, DirEntry{
 			Name:  name,
 			IsDir: isDir,
-			Size:  contentSize,
+			Size:  fileSize,
 		})
 	}
 
