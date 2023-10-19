@@ -17,6 +17,7 @@ package gc
 import (
 	"bytes"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 )
 
@@ -66,6 +67,9 @@ func (d *dropTable) merge(dropTable *dropTable) {
 
 func (d *dropTable) softGC() []string {
 	gc := make([]string, 0)
+	if d.drop {
+		logutil.Infof("drop soft gc table %s", d.String())
+	}
 	for name := range d.object {
 		if d.object[name] == nil {
 			panic(any("error"))

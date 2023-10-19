@@ -342,6 +342,7 @@ func (cleaner *DiskCleaner) createDebugInput(
 
 func (cleaner *DiskCleaner) tryGC() error {
 	if !cleaner.delWorker.Start() {
+		logutil.Infof("GC is running, skip")
 		return nil
 	}
 	gc := cleaner.softGC()
@@ -358,6 +359,7 @@ func (cleaner *DiskCleaner) softGC() []string {
 	cleaner.inputs.Lock()
 	defer cleaner.inputs.Unlock()
 	if len(cleaner.inputs.tables) == 0 {
+		logutil.Infof("No input tables, skip softGC")
 		return nil
 	}
 	mergeTable := NewGCTable()

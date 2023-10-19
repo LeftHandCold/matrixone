@@ -75,6 +75,9 @@ func (g *GCWorker) ExecDelete(ctx context.Context, names []string) error {
 		g.state = Idle
 		return err
 	}
+	if err != nil {
+		logutil.Infof("[DB GC] file not found: %v", err.Error())
+	}
 	g.cleaner.updateOutputs(g.objects)
 	g.resetObjects()
 	g.state = Idle

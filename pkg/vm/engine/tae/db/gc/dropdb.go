@@ -17,6 +17,7 @@ package gc
 import (
 	"bytes"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 )
@@ -73,6 +74,7 @@ func (d *dropDB) softGC() []string {
 	gc := make([]string, 0)
 	for _, entry := range d.tables {
 		if d.drop {
+			logutil.Infof("db %d is drop, soft gc table %d", d.dbid, entry.tid)
 			entry.drop = d.drop
 		}
 		objects := entry.softGC()
