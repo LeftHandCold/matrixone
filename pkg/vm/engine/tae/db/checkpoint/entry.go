@@ -176,6 +176,22 @@ func (e *CheckpointEntry) Prefetch(
 	return
 }
 
+func (e *CheckpointEntry) PrefetchWithFs(
+	ctx context.Context,
+	fs fileservice.FileService,
+	data *logtail.CheckpointData,
+) (err error) {
+	if err = data.PrefetchFrom(
+		ctx,
+		e.version,
+		fs,
+		e.tnLocation,
+	); err != nil {
+		return
+	}
+	return
+}
+
 func (e *CheckpointEntry) Read(
 	ctx context.Context,
 	fs *objectio.ObjectFS,
@@ -208,6 +224,8 @@ func (e *CheckpointEntry) ReadWithFs(
 	if err != nil {
 		return
 	}
+
+	logutil.Infof("read checkpoint from %s", e.tnLocation.String())
 
 	if err = data.ReadFrom(
 		ctx,

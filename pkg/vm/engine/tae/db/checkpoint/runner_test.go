@@ -381,7 +381,7 @@ func TestBlockWriter_GetName(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
 
-	fsDir := "/data1/shenjiangwei/mo-data/shared"
+	fsDir := "/Users/shenjiangwei/Work/code/view/matrixone/mo-data/shared"
 	c := fileservice.Config{
 		Name:    defines.LocalFileServiceName,
 		Backend: "DISK",
@@ -441,6 +441,7 @@ func TestBlockWriter_GetName(t *testing.T) {
 		}
 		bat.AddVector(colNames[i], vec)
 	}
+	logutil.Infof("bat len %d", bat.Length())
 	readDuration += time.Since(t0)
 	datas := make([]*logtail.CheckpointData, bat.Length())
 
@@ -488,6 +489,9 @@ func TestBlockWriter_GetName(t *testing.T) {
 		var err2 error
 		if readType == PrefetchData {
 			logutil.Warnf("read %v failed: %v", checkpointEntry.String(), err2)
+			if err2 = checkpointEntry.PrefetchWithFs(ctx, service, datas[i]); err2 != nil {
+				logutil.Warnf("read %v failed: %v", checkpointEntry.String(), err2)
+			}
 		} else if readType == PrefetchMetaIdx {
 			datas[i], err = checkpointEntry.PrefetchMetaIdxWithFs(ctx, service)
 			if err != nil {

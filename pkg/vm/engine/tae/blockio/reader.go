@@ -318,6 +318,10 @@ func (r *BlockReader) GetObjectReader() *objectio.ObjectReader {
 
 // The caller has merged the block information that needs to be prefetched
 func PrefetchWithMerged(params PrefetchParams) error {
+	/*logutil.Infof("PrefetchWithMerged name is %v", params.key.String())
+	for _, id := range params.ids {
+		logutil.Infof("PrefetchFrom idxes is %d, dataType is %d, idx is %d", id.Id, id.DataType, id.Idxes)
+	}*/
 	return pipeline.Prefetch(params)
 }
 

@@ -1686,6 +1686,9 @@ func (data *CheckpointData) ReadTNMetaBatch(
 	location objectio.Location,
 	reader *blockio.BlockReader,
 ) (err error) {
+	if version == 8 {
+		version = 7
+	}
 	if data.bats[TNMetaIDX].Length() == 0 {
 		if version < CheckpointVersion5 {
 			for i := 2; i < MetaMaxIdx; i++ {
@@ -1719,6 +1722,9 @@ func (data *CheckpointData) PrefetchMeta(
 	pref, err = blockio.BuildPrefetchParams(service, key)
 	if err != nil {
 		return
+	}
+	if version == 8 {
+		version = 7
 	}
 	meteIdxSchema := checkpointDataReferVersions[version][MetaIDX]
 	tnMeteIdxSchema := checkpointDataReferVersions[version][TNMetaIDX]
@@ -1769,6 +1775,9 @@ func (data *CheckpointData) PrefetchFrom(
 			return
 		}
 		for _, idx := range blockIdxes {
+			if version > 7 {
+				version = 7
+			}
 			schema := checkpointDataReferVersions[version][idx.dataType]
 			idxes := make([]uint16, len(schema.attrs))
 			for attr := range schema.attrs {
@@ -1839,8 +1848,8 @@ func (data *CheckpointData) PrintMetaBatch() {
 	bat := data.bats[MetaIDX]
 	tables := make([]*tableAndLength, 0)
 	tidVec := bat.GetVectorByName(SnapshotAttr_TID)
-	locationsVec := bat.GetVectorByName(SnapshotAttr_TID)
-	for i := 0; i < bat.Length(); i++ {
+	locationsVec := bat.GetVectorByName(SnapshotMetaAttr_BlockInsertBatchLocation)
+	for i := 0; i < tidVec.Length(); i++ {
 		tid := tidVec.Get(i).(uint64)
 		var locations BlockLocations
 		locations = locationsVec.Get(i).([]byte)
@@ -1860,8 +1869,27 @@ func (data *CheckpointData) PrintMetaBatch() {
 		return tables[i].length < tables[j].length
 	})
 	logutil.Infof("lalala table count %d", len(tables))
-	maxTable := tables[len(tables)]
+	if len(tables) == 0 {
+		return
+	}
+	maxTable := tables[len(tables)-1]
 	logutil.Infof("lalala max table %d, length is %d", maxTable.tid, maxTable.length)
+	ml := data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc)
+	files := make(map[string]uint64)
+	for i := 0; i < ml.Length(); i++ {
+		loc := BlockLocation(ml.Get(i).([]byte))
+		name := loc.GetLocation().Name()
+		if files[name.String()] == 0 {
+			files[name.String()] = 0
+		}
+		files[name.String()] += uint64(loc.GetLocation().Extent().Length())
+	}
+
+	for name, size := range files {
+		if size > 100000000 {
+			logutil.Infof("lalala file %s, size is %d", name, size)
+		}
+	}
 }
 func (data *CheckpointData) readMetaBatch(
 	ctx context.Context,
@@ -1871,12 +1899,17 @@ func (data *CheckpointData) readMetaBatch(
 ) (err error) {
 	if data.bats[MetaIDX].Length() == 0 {
 		var bats []*containers.Batch
+		if version == 8 {
+			version = 7
+		}
 		item := checkpointDataReferVersions[version][MetaIDX]
 		bats, err = LoadBlkColumnsByMeta(version, ctx, item.types, item.attrs, uint16(0), reader)
 		if err != nil {
 			return
 		}
+
 		data.bats[MetaIDX] = bats[0]
+		logutil.Infof("bats[0] is %d", bats[0].Length())
 	}
 	return
 }
@@ -1893,9 +1926,14 @@ func (data *CheckpointData) replayMetaBatch() {
 	for i := 0; i < data.bats[MetaIDX].GetVectorByName(SnapshotAttr_TID).Length(); i++ {
 		tid := tidVec[i]
 		if tid == 0 {
-			bl := BlockLocation(insVec[i])
-			loc := bl.GetLocation()
-			data.locations[loc.Name().String()] = loc
+			bl := BlockLocations(insVec[i])
+			it := bl.MakeIterator()
+			for it.HasNext() {
+				block := it.Next()
+				if !block.GetLocation().IsEmpty() {
+					data.locations[block.GetLocation().Name().String()] = block.GetLocation()
+				}
+			}
 			continue
 		}
 		insLocation := insVec[i]
@@ -1915,7 +1953,6 @@ func (data *CheckpointData) replayMetaBatch() {
 				block := it.Next()
 				if !block.GetLocation().IsEmpty() {
 					data.locations[block.GetLocation().Name().String()] = block.GetLocation()
-					return
 				}
 			}
 		}
@@ -1928,6 +1965,7 @@ func (data *CheckpointData) readAll(
 	service fileservice.FileService,
 ) (err error) {
 	data.replayMetaBatch()
+	logutil.Infof("readAll data.locations %d", len(data.locations))
 	for _, val := range data.locations {
 		var reader *blockio.BlockReader
 		reader, err = blockio.NewObjectReader(service, val)
@@ -1939,8 +1977,11 @@ func (data *CheckpointData) readAll(
 			if uint16(idx) == MetaIDX || uint16(idx) == TNMetaIDX {
 				continue
 			}
+			if version == 8 {
+				version = 7
+			}
 			item := checkpointDataReferVersions[version][idx]
-			bats, err = LoadBlkColumnsByMeta(version, ctx, item.types, item.attrs, uint16(idx), reader)
+			bats, err = LoadBlkColumnsByMeta(8, ctx, item.types, item.attrs, uint16(idx), reader)
 			if err != nil {
 				logutil.Infof("readAll err is %v, location is %v", err, val.String())
 				return
