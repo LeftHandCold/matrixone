@@ -455,7 +455,7 @@ func TestBlockWriter_GetName(t *testing.T) {
 		typ := ET_Global
 		if isIncremental {
 			typ = ET_Incremental
-			return
+			//return
 		}
 		var version uint32
 		if isCheckpointVersion1 {
