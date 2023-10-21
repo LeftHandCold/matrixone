@@ -293,6 +293,9 @@ func (s *service) handleCreatesLocked(txnMeta txn.TxnMeta) {
 		if tc, ok := s.mu.tables[id]; ok {
 			if txnMeta.Status == txn.TxnStatus_Committed {
 				tc.commit()
+				getLogger().Info("create auto incr column committed",
+					zap.Uint64("table", id),
+					zap.String("txn", txnMeta.DebugString()))
 			} else {
 				_ = tc.close()
 				delete(s.mu.tables, id)

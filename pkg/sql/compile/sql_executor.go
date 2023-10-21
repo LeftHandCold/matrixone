@@ -261,6 +261,7 @@ func (exec *txnExecutor) Exec(sql string) (executor.Result, error) {
 
 	result.Batches = batches
 	result.AffectedRows = runResult.AffectRows
+	result.Txn = exec.opts.Txn()
 	return result, nil
 }
 

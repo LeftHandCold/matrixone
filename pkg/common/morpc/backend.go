@@ -882,7 +882,7 @@ func (rb *remoteBackend) nextID() uint64 {
 
 func (rb *remoteBackend) getPingTimeout() time.Duration {
 	if rb.options.readTimeout > 0 {
-		return rb.options.readTimeout / 5
+		return rb.options.readTimeout / 10
 	}
 	return time.Duration(math.MaxInt64)
 }

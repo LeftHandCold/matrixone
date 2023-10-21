@@ -16,6 +16,7 @@ package objectio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
@@ -352,6 +353,7 @@ func (r *objectReaderV1) ReadAllMeta(
 			return nil, err
 		}
 		ext := header.Extent()
+		logutil.Infof("readAllMeta: %v", ext)
 		r.CacheMetaExtent(&ext)
 	}
 	return r.ReadMeta(ctx, m)

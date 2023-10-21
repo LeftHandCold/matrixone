@@ -116,13 +116,13 @@ func (s *sqlStore) Allocate(
 				res.ReadRows(func(cols []*vector.Vector) bool {
 					current = executor.GetFixedRows[uint64](cols[0])[0]
 					step = executor.GetFixedRows[uint64](cols[1])[0]
-					rows++
+					rows += len(executor.GetFixedRows[uint64](cols[0]))
 					return true
 				})
 				res.Close()
 
 				if rows != 1 {
-					getLogger().Fatal("BUG: read incr record invalid",
+					getLogger().Info("BUG: read incr record invalid",
 						zap.String("fetch-sql", fetchSQL),
 						zap.Any("account", ctx.Value(defines.TenantIDKey{})),
 						zap.Uint64("table", tableID),
@@ -130,6 +130,66 @@ func (s *sqlStore) Allocate(
 						zap.Int("rows", rows),
 						zap.Duration("cost", time.Since(start)),
 						zap.Bool("ctx-done", ctxDone()))
+
+					fetchNoUpdateSQL := fmt.Sprintf(`select offset, step from %s where table_id = %d and col_name = '%s'`,
+						incrTableName,
+						tableID,
+						colName)
+					res, err := te.Exec(fetchNoUpdateSQL)
+					if err != nil {
+						return err
+					}
+					rows = 0
+					res.ReadRows(func(cols []*vector.Vector) bool {
+						current = executor.GetFixedRows[uint64](cols[0])[0]
+						step = executor.GetFixedRows[uint64](cols[1])[0]
+						rows += len(executor.GetFixedRows[uint64](cols[0]))
+						return true
+					})
+					res.Close()
+					getLogger().Info("After BUG: read incr record invalid, fetch without for update",
+						zap.String("fetch-sql", fetchNoUpdateSQL),
+						zap.Any("account", ctx.Value(defines.TenantIDKey{})),
+						zap.Uint64("table", tableID),
+						zap.String("col", colName),
+						zap.Int("rows", rows))
+
+					fetchAllSQL := fmt.Sprintf(`select offset, step, table_id, col_name from %s`,
+						incrTableName)
+					getLogger().Info("After BUG: read incr record invalid, begin to fetch all data",
+						zap.String("fetch-sql", fetchAllSQL))
+					res, err = te.Exec(fetchAllSQL)
+					if err != nil {
+						return err
+					}
+					getLogger().Info("After BUG: read incr record invalid, finish fetch all data",
+						zap.String("fetch-sql", fetchAllSQL))
+					rows = 0
+					res.ReadRows(func(cols []*vector.Vector) bool {
+						getLogger().Info("After BUG: read incr record invalid, begin to read rows for fetching all data")
+						for i := 0; i < len(executor.GetFixedRows[uint64](cols[0])); i++ {
+							current = executor.GetFixedRows[uint64](cols[0])[i]
+							step = executor.GetFixedRows[uint64](cols[1])[i]
+							tid := executor.GetFixedRows[uint64](cols[2])[i]
+							coln := executor.GetStringRows(cols[3])[i]
+							getLogger().Info("After BUG: read incr record invalid, fetch all data",
+								zap.Uint64("current", current),
+								zap.Uint64("step", step),
+								zap.Uint64("tid", tid),
+								zap.String("colName", coln))
+							rows++
+						}
+						return true
+					})
+					res.Close()
+
+					getLogger().Fatal("BUG: read incr record invalid",
+						zap.String("fetch-sql", fetchSQL),
+						zap.Any("account", ctx.Value(defines.TenantIDKey{})),
+						zap.Uint64("table", tableID),
+						zap.String("col", colName),
+						zap.Int("rows", rows),
+						zap.String("txn", res.Txn.Txn().DebugString()))
 				}
 
 				next = getNext(current, count, int(step))

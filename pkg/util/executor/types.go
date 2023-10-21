@@ -56,6 +56,7 @@ type Options struct {
 type Result struct {
 	AffectedRows uint64
 	Batches      []*batch.Batch
+	Txn          client.TxnOperator
 	mp           *mpool.MPool
 }
 
