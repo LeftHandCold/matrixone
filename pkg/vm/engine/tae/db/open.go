@@ -87,7 +87,8 @@ func Open(ctx context.Context, dirname string, opts *options.Options) (db *DB, e
 	case options.LogstoreBatchStore:
 		db.Wal = wal.NewDriverWithBatchStore(opts.Ctx, dirname, WALDir, nil)
 	case options.LogstoreLogservice:
-		db.Wal = wal.NewDriverWithLogservice(opts.Ctx, opts.Lc)
+		//db.Wal = wal.NewDriverWithLogservice(opts.Ctx, opts.Lc)
+		db.Wal = nil
 	}
 	scheduler := newTaskScheduler(db, db.Opts.SchedulerCfg.AsyncWorkers, db.Opts.SchedulerCfg.IOWorkers)
 	db.Runtime = dbutils.NewRuntime(

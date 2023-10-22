@@ -151,10 +151,10 @@ func startService(
 	if err := cfg.validate(); err != nil {
 		return err
 	}
-	if err := cfg.resolveGossipSeedAddresses(); err != nil {
+	/*if err := cfg.resolveGossipSeedAddresses(); err != nil {
 		return err
 	}
-	setupProcessLevelRuntime(cfg, stopper)
+	setupProcessLevelRuntime(cfg, stopper)*/
 
 	st, err := cfg.getServiceType()
 	if err != nil {
@@ -188,13 +188,13 @@ func startService(
 		return err
 	}
 
-	etlFS, err := fileservice.Get[fileservice.FileService](fs, defines.ETLFileServiceName)
+	/*etlFS, err := fileservice.Get[fileservice.FileService](fs, defines.ETLFileServiceName)
 	if err != nil {
 		return err
 	}
 	if err = initTraceMetric(ctx, st, cfg, stopper, etlFS, uuid); err != nil {
 		return err
-	}
+	}*/
 
 	switch st {
 	case metadata.ServiceType_CN:
@@ -267,9 +267,6 @@ func startTNService(
 	perfCounterSet *perfcounter.CounterSet,
 	shutdownC chan struct{},
 ) error {
-	if err := waitClusterCondition(cfg.HAKeeperClient, waitHAKeeperRunning); err != nil {
-		return err
-	}
 	r, err := getRuntime(metadata.ServiceType_TN, cfg, stopper)
 	if err != nil {
 		return err

@@ -164,6 +164,7 @@ func (e *CheckpointEntry) Prefetch(
 	fs *objectio.ObjectFS,
 	data *logtail.CheckpointData,
 ) (err error) {
+	logutil.Infof("prefetch checkpoint data from %s", e.tnLocation.String())
 	if err = data.PrefetchFrom(
 		ctx,
 		e.version,
@@ -185,6 +186,7 @@ func (e *CheckpointEntry) Read(
 		return
 	}
 
+	logutil.Infof("read checkpoint from %s", e.tnLocation.String())
 	if err = data.ReadFrom(
 		ctx,
 		e.version,

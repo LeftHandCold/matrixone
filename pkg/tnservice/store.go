@@ -165,7 +165,7 @@ func NewService(
 		s.options.adjustConfigFunc(s.cfg)
 	}
 
-	if err := s.initLockTableAllocator(); err != nil {
+	/*if err := s.initLockTableAllocator(); err != nil {
 		return nil, err
 	}
 	if err := s.initClocker(); err != nil {
@@ -187,7 +187,10 @@ func NewService(
 		return nil, err
 	}
 	s.initTaskHolder()
-	s.initSqlWriterFactory()
+	s.initSqlWriterFactory()*/
+	if err := s.initTxnServer(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -198,9 +201,9 @@ func (s *store) Start() error {
 	if err := s.server.Start(); err != nil {
 		return err
 	}
-	if err := s.ctlservice.Start(); err != nil {
+	/*if err := s.ctlservice.Start(); err != nil {
 		return err
-	}
+	}*/
 	s.rt.SubLogger(runtime.SystemInit).Info("dn heartbeat task started")
 	return s.stopper.RunTask(s.heartbeatTask)
 }
@@ -244,7 +247,10 @@ func (s *store) CloseTNReplica(shard metadata.TNShard) error {
 func (s *store) startTNShards() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	if err := s.createReplica(metadata.TNShard{}); err != nil {
+		return err
+	}
+	return nil
 	for _, shard := range s.mu.metadata.Shards {
 		if err := s.createReplica(shard); err != nil {
 			return err
@@ -267,6 +273,8 @@ func (s *store) getTNShardInfo() []logservicepb.TNShardInfo {
 }
 
 func (s *store) createReplica(shard metadata.TNShard) error {
+	s.createTxnStorage(context.Background(), shard)
+	return nil
 	r := newReplica(shard, s.rt)
 	v, ok := s.replicas.LoadOrStore(shard.ShardID, r)
 	if ok {

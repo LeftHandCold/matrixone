@@ -1970,6 +1970,8 @@ func (data *CheckpointData) readAll(
 ) (err error) {
 	data.replayMetaBatch()
 	for _, val := range data.locations {
+		blockNum := 0
+		rows := 0
 		var reader *blockio.BlockReader
 		reader, err = blockio.NewObjectReader(service, val)
 		if err != nil {
@@ -1985,6 +1987,11 @@ func (data *CheckpointData) readAll(
 			if err != nil {
 				return
 			}
+			blockNum += len(bats)
+			for _, b := range bats {
+				rows += b.Length()
+			}
+
 			if version == CheckpointVersion1 {
 				if uint16(idx) == TBLInsertIDX {
 					for _, bat := range bats {
@@ -2085,6 +2092,7 @@ func (data *CheckpointData) readAll(
 				data.bats[idx].Append(bats[i])
 			}
 		}
+		logutil.Infof("readAll val is %v, read block %d, row is %d", val.String(), blockNum, rows)
 	}
 	return
 }

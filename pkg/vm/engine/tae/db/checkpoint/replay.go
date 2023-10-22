@@ -16,6 +16,7 @@ package checkpoint
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -82,6 +83,7 @@ func (r *runner) Replay(dataFactory catalog.DataFactory) (
 	if err != nil {
 		return
 	}
+	t1 := time.Now()
 	bats, err := reader.LoadAllColumns(ctx, nil, common.DefaultAllocator)
 	if err != nil {
 		return
@@ -108,6 +110,7 @@ func (r *runner) Replay(dataFactory catalog.DataFactory) (
 		}
 		bat.AddVector(colNames[i], vec)
 	}
+	logutil.Infof("load checkpoint metadata %s, rows is %d,  %s", dir.Name, bat.Length(), time.Since(t1))
 	readDuration += time.Since(t0)
 	datas := make([]*logtail.CheckpointData, bat.Length())
 
@@ -193,18 +196,28 @@ func (r *runner) Replay(dataFactory catalog.DataFactory) (
 			return
 		}
 	}
+	logutil.Infof("prefetch checkpoint metadata, rows is %d,  %s", bat.Length(), time.Since(t0))
+	t1 = time.Now()
 	for i := 0; i < bat.Length(); i++ {
 		readfn(i, PrefetchMetaIdx)
 	}
+	logutil.Infof("prefetch checkpoint meta index, rows is %d,  %s", bat.Length(), time.Since(t1))
+	t1 = time.Now()
 	for i := 0; i < bat.Length(); i++ {
 		readfn(i, ReadMetaIdx)
 	}
+	logutil.Infof("read checkpoint meta index, rows is %d,  %s", bat.Length(), time.Since(t1))
+	t1 = time.Now()
 	for i := 0; i < bat.Length(); i++ {
 		readfn(i, PrefetchData)
 	}
+	logutil.Infof("prefetch checkpoint data, rows is %d,  %s", bat.Length(), time.Since(t1))
+	t1 = time.Now()
 	for i := 0; i < bat.Length(); i++ {
 		readfn(i, ReadData)
 	}
+	logutil.Infof("read checkpoint data, rows is %d,  %s", bat.Length(), time.Since(t1))
+	os.Exit(0)
 	readDuration += time.Since(t0)
 	if err != nil {
 		return
@@ -286,5 +299,6 @@ func (r *runner) Replay(dataFactory catalog.DataFactory) (
 		common.AnyField("apply cost", applyDuration),
 		common.AnyField("read cost", readDuration))
 	r.source.Init(maxTs)
+	os.Exit(0)
 	return
 }
