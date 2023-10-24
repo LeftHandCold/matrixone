@@ -3070,13 +3070,6 @@ func (v *Vector) CloneWindowTo(w *Vector, start, end int, mp *mpool.MPool) error
 			}
 		} else {
 			tlen := v.typ.TypeSize()
-			if len(w.data) == 0 {
-				logutil.Infof("CloneWindowTo: %d %d %d %d", start, end, length, tlen)
-				w.data, err = mp.Alloc(length)
-				if err != nil {
-					return err
-				}
-			}
 			copy(w.data[:length], v.data[start*tlen:end*tlen])
 		}
 	}
