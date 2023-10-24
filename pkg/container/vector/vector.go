@@ -17,6 +17,7 @@ package vector
 import (
 	"bytes"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -3047,9 +3048,12 @@ func (v *Vector) CloneWindowTo(w *Vector, start, end int, mp *mpool.MPool) error
 			}
 		} else {
 			tlen := v.typ.TypeSize()
-			w.data, err = mp.Alloc(length)
-			if err != nil {
-				return err
+			if len(w.data) == 0 {
+				logutil.Infof("CloneWindowTo: %d %d %d %d", start, end, length, tlen)
+				w.data, err = mp.Alloc(length)
+				if err != nil {
+					return err
+				}
 			}
 			copy(w.data[:length], v.data[start*tlen:end*tlen])
 		}
