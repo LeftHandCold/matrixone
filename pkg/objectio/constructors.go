@@ -52,6 +52,44 @@ func constructorFactory(size int64, algo uint8) CacheConstructor {
 	}
 }
 
+var DebugSize4 uint64
+var DebugSize5 uint64
+
+func init() {
+	DebugSize4 = 0
+	DebugSize5 = 0
+}
+
+// use this to replace all other constructors
+func constructorFactory2(size int64, algo uint8) CacheConstructor {
+	return func(reader io.Reader, data []byte, allocator fileservice.CacheDataAllocator) (cacheData fileservice.CacheData, err error) {
+		if len(data) == 0 {
+			data, err = io.ReadAll(reader)
+			if err != nil {
+				return
+			}
+		}
+
+		// no compress
+		if algo == compress.None {
+			cacheData = allocator.Alloc(len(data))
+			copy(cacheData.Bytes(), data)
+			return cacheData, nil
+		}
+
+		// lz4 compress
+		decompressed := allocator.Alloc(int(size))
+		DebugSize4 += uint64(len(data))
+		DebugSize5 += uint64(size)
+		bs, err := compress.Decompress(data, decompressed.Bytes(), compress.Lz4)
+		if err != nil {
+			return
+		}
+		decompressed = decompressed.Slice(len(bs))
+		return decompressed, nil
+	}
+}
+
 func Decode(buf []byte) (any, error) {
 	header := DecodeIOEntryHeader(buf)
 	codec := GetIOEntryCodec(*header)

@@ -15,6 +15,7 @@
 package tnservice
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"path/filepath"
 
 	"github.com/fagongzi/util/protoc"
@@ -36,7 +37,7 @@ func (s *store) initMetadata() error {
 	if err != nil {
 		return err
 	}
-
+	logutil.Infof("local DNStore metadata file: %s", data)
 	if len(data) == 0 {
 		s.mustUpdateMetadataLocked()
 		return nil

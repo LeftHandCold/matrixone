@@ -41,6 +41,11 @@ var (
 )
 
 func (s *store) createTxnStorage(ctx context.Context, shard metadata.TNShard) (storage.TxnStorage, error) {
+	ts, err := s.newTAEStorage(ctx, shard, nil)
+	if err != nil {
+		return nil, err
+	}
+	return ts, nil
 	factory := s.createLogServiceClientFactroy(shard)
 	closeLogClientFn := func(logClient logservice.Client) {
 		if err := logClient.Close(); err != nil {

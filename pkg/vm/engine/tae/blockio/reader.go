@@ -21,6 +21,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 )
@@ -179,6 +180,50 @@ func (r *BlockReader) LoadSubColumns(
 	return
 }
 
+func (r *BlockReader) LoadSubColumns2(
+	ctx context.Context,
+	cols []uint16,
+	typs []types.Type,
+	blk uint16,
+	m *mpool.MPool,
+) (bats []*batch.Batch, err error) {
+	metaExt := r.reader.GetMetaExtent()
+	if metaExt == nil || metaExt.End() == 0 {
+		return
+	}
+	var ioVectors []*fileservice.IOVector
+	ioVectors, err = r.reader.ReadSubBlock(ctx, cols, typs, blk, m)
+	if err != nil {
+		return
+	}
+	bats = make([]*batch.Batch, 0)
+	for idx := range ioVectors {
+		bat := batch.NewWithSize(len(cols))
+		var obj any
+		for i := range cols {
+			DebugSize6 += uint64(len(ioVectors[idx].Entries[i].CachedData.Bytes()))
+			obj, err = objectio.Decode(ioVectors[idx].Entries[i].CachedData.Bytes())
+			if err != nil {
+				return
+			}
+			bat.Vecs[i] = obj.(*vector.Vector)
+			bat.SetRowCount(bat.Vecs[i].Length())
+		}
+		bats = append(bats, bat)
+	}
+	return
+}
+
+var DebugSize uint64
+var DebugSize2 uint64
+var DebugSize6 uint64
+
+func init() {
+	DebugSize = 0
+	DebugSize2 = 0
+	DebugSize6 = 0
+}
+
 // LoadColumns needs typs to generate columns, if the target table has no schema change, nil can be passed.
 func (r *BlockReader) LoadOneSubColumns(
 	ctx context.Context,
@@ -207,6 +252,52 @@ func (r *BlockReader) LoadOneSubColumns(
 		bat.Vecs[i] = obj.(*vector.Vector)
 		bat.SetRowCount(bat.Vecs[i].Length())
 	}
+	return
+}
+
+func (r *BlockReader) LoadOneSubColumns2(
+	ctx context.Context,
+	cols []uint16,
+	typs []types.Type,
+	dataType uint16,
+	blk uint16,
+	m *mpool.MPool,
+) (bat *batch.Batch, err error, vect *vector.Vector) {
+	metaExt := r.reader.GetMetaExtent()
+	if metaExt == nil || metaExt.End() == 0 {
+		return
+	}
+	var ioVector *fileservice.IOVector
+	ioVector, err = r.reader.ReadOneSubBlock2(ctx, cols, typs, dataType, blk, m)
+	if err != nil {
+		return
+	}
+	bat = batch.NewWithSize(len(cols))
+	var obj any
+	size := uint64(0)
+	size2 := uint64(0)
+	for i := range cols {
+		if i == 2 {
+			//DebugSize += uint64(len(ioVector.Entries[i].CachedData.Bytes()))
+		}
+		obj, err = objectio.Decode(ioVector.Entries[i].CachedData.Bytes())
+		if err != nil {
+			return
+		}
+		bat.Vecs[i] = obj.(*vector.Vector)
+		if i == 2 {
+			for l := 0; l < bat.Vecs[i].Length(); l++ {
+				size += uint64(len(bat.Vecs[i].GetBytesAt(l)))
+				//logutil.Infof("content: %v", string(bat.Vecs[i].GetBytesAt(l)))
+			}
+			vect = obj.(*vector.Vector)
+			size2 = uint64(vect.Allocated())
+			//v, _ := vect.MarshalBinary()
+			//DebugSize += uint64(len(v))
+		}
+		bat.SetRowCount(bat.Vecs[i].Length())
+	}
+	logutil.Infof("data size: %d, vector allocated: %d", size, size2)
 	return
 }
 

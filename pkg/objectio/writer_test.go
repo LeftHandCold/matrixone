@@ -17,6 +17,7 @@ package objectio
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -189,6 +190,46 @@ func TestNewObjectWriter(t *testing.T) {
 	assert.Equal(t, uint8(0xa), buf[63])
 }
 
+func TestAppendBatch(t *testing.T) {
+	mp := mpool.MustNewZero()
+	bat := newBatch(mp)
+	defer bat.Clean(mp)
+	bat2 := newBatch2(mp)
+	defer bat2.Clean(mp)
+	size := 0
+	size2 := 0
+	for _, vec := range bat2.Vecs {
+		byteVec, err := vec.MarshalBinary()
+		assert.Nil(t, err)
+		size += len(byteVec)
+	}
+	cnBatch := batch.NewWithSize(len(bat2.Vecs))
+	cnBatch.Attrs = make([]string, len(bat2.Attrs))
+	copy(cnBatch.Attrs, bat2.Attrs)
+	for n := range cnBatch.Vecs {
+		cnBatch.Vecs[n] = vector.NewVec(*bat2.Vecs[n].GetType())
+		if err := cnBatch.Vecs[n].UnionBatch(bat2.Vecs[n], 0, bat2.Vecs[n].Length(), nil, mp); err != nil {
+			return
+		}
+	}
+	for i := 0; i < 100; i++ {
+		bat = newBatch2(mp)
+		defer bat.Clean(mp)
+		for _, vec := range bat.Vecs {
+			byteVec, err := vec.MarshalBinary()
+			assert.Nil(t, err)
+			size += len(byteVec)
+		}
+		cnBatch, _ = cnBatch.Append(context.Background(), mp, bat)
+	}
+	for _, vec := range cnBatch.Vecs {
+		byteVec, err := vec.MarshalBinary()
+		assert.Nil(t, err)
+		size2 += len(byteVec)
+	}
+	logutil.Infof("size is %d, size2 is %d", size, size2)
+}
+
 func getObjectMeta(ctx context.Context, t *testing.B) ObjectDataMeta {
 	dir := InitTestEnv(ModuleName, t.Name())
 	dir = path.Join(dir, "/local")
@@ -336,12 +377,10 @@ func newBatch(mp *mpool.MPool) *batch.Batch {
 
 func newBatch2(mp *mpool.MPool) *batch.Batch {
 	types := []types.Type{
-		types.T_int8.ToType(),
-		types.T_int16.ToType(),
-		types.T_int32.ToType(),
-		types.T_int64.ToType(),
-		types.T_uint16.ToType(),
-		types.T_uint32.ToType(),
+		types.T_varchar.ToType(),
+		types.T_varchar.ToType(),
+		types.T_varchar.ToType(),
+		types.T_varchar.ToType(),
 	}
-	return testutil.NewBatch(types, false, int(40000*2), mp)
+	return testutil.NewBatchWithNulls(types, false, int(10000), mp)
 }

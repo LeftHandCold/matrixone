@@ -709,6 +709,7 @@ func LoadCheckpointEntries(
 		logutil.Debugf("LoadCheckpointEntries latency: %v", time.Since(now))
 	}()
 	locationsAndVersions := strings.Split(metLoc, ";")
+	logutil.Infof("LoadCheckpointEntries: %v", locationsAndVersions)
 	datas := make([]*CNCheckpointData, len(locationsAndVersions)/2)
 
 	readers := make([]*blockio.BlockReader, len(locationsAndVersions)/2)
@@ -777,6 +778,7 @@ func LoadCheckpointEntries(
 	closeCBs := make([]func(), 0)
 	bats := make([][]*batch.Batch, len(locationsAndVersions)/2)
 	var err error
+	debugSize := uint64(0)
 	for i, data := range datas {
 		var bat []*batch.Batch
 		bat, err = data.ReadFromData(ctx, tableID, locations[i], readers[i], versions[i], mp)
@@ -787,6 +789,7 @@ func LoadCheckpointEntries(
 		bats[i] = bat
 	}
 
+	logutil.Infof("debugSize is %d", debugSize)
 	entries := make([]*api.Entry, 0)
 	for i := range objectLocations {
 		data := datas[i]
