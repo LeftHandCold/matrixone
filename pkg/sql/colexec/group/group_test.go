@@ -16,8 +16,9 @@ package group
 
 import (
 	"bytes"
-	"github.com/matrixorigin/matrixone/pkg/sql/plan/function"
 	"testing"
+
+	"github.com/matrixorigin/matrixone/pkg/sql/plan/function"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/agg"
@@ -116,7 +117,7 @@ func TestGroup(t *testing.T) {
 		tc.proc.Reg.InputBatch = nil
 		_, err = Call(0, tc.proc, tc.arg, false, false)
 		require.NoError(t, err)
-		tc.arg.Free(tc.proc, false)
+		tc.arg.Free(tc.proc, false, nil)
 		tc.proc.FreeVectors()
 		require.Equal(t, int64(0), tc.proc.Mp().CurrNB())
 	}

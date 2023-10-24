@@ -16,7 +16,9 @@ package disttae
 
 import (
 	"context"
+	"go.uber.org/zap"
 	"math"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,7 +35,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
-	"github.com/matrixorigin/matrixone/pkg/pb/txn"
 	"github.com/matrixorigin/matrixone/pkg/queryservice"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
@@ -117,7 +118,7 @@ type Transaction struct {
 	// blockId uint64
 
 	// local timestamp for workspace operations
-	meta     *txn.TxnMeta
+	//meta     *txn.TxnMeta
 	op       client.TxnOperator
 	sqlCount atomic.Uint64
 
@@ -183,6 +184,8 @@ type Transaction struct {
 	startStatementCalled bool
 	incrStatementCalled  bool
 	syncCommittedTSCount uint64
+	//!!!NOTE: record the last call stack of StartStatement
+	startStatementLastCallStack []byte
 }
 
 type Pos struct {
@@ -239,10 +242,14 @@ func (txn *Transaction) PutCnBlockDeletes(blockId *types.Blockid, offsets []int6
 
 func (txn *Transaction) StartStatement() {
 	if txn.startStatementCalled {
-		logutil.Fatal("BUG: StartStatement called twice")
+		currentStack := string(debug.Stack())
+		logutil.Fatal("BUG: StartStatement called twice",
+			zap.String("currentStack", currentStack),
+			zap.String("lastCallback", string(txn.startStatementLastCallStack)))
 	}
 	txn.startStatementCalled = true
 	txn.incrStatementCalled = false
+	txn.startStatementLastCallStack = debug.Stack()
 }
 
 func (txn *Transaction) EndStatement() {
@@ -379,7 +386,7 @@ func (txn *Transaction) handleRCSnapshot(ctx context.Context, commit bool) error
 		txn.syncCommittedTSCount = newTimes
 		needResetSnapshot = true
 	}
-	if !commit && txn.meta.IsRCIsolation() &&
+	if !commit && txn.op.Txn().IsRCIsolation() &&
 		(txn.GetSQLCount() > 1 || needResetSnapshot) {
 		if err := txn.op.UpdateSnapshot(
 			ctx,
@@ -496,7 +503,8 @@ type txnTable struct {
 	oldTableId uint64
 
 	// process for statement
-	proc *process.Process
+	//proc *process.Process
+	proc atomic.Pointer[process.Process]
 }
 
 type column struct {

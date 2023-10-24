@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	pkgcatalog "github.com/matrixorigin/matrixone/pkg/catalog"
@@ -290,6 +291,28 @@ func (entry *TableEntry) PPString(level common.PPLevel, depth int, prefix string
 	return w.String()
 }
 
+func (entry *TableEntry) ObjectStatsString() string {
+	var w bytes.Buffer
+
+	it := entry.MakeSegmentIt(true)
+	composeSortKey := false
+	if schema := entry.GetLastestSchema(); schema.HasSortKey() {
+		composeSortKey = strings.HasPrefix(schema.GetSingleSortKey().Name, "__")
+	}
+	for ; it.Valid(); it.Next() {
+		segment := it.Get().GetPayload()
+		if !segment.IsActive() {
+			continue
+		}
+		_ = w.WriteByte('\n')
+		_, _ = w.WriteString(segment.ID.ToString())
+		_ = w.WriteByte('\n')
+		_, _ = w.WriteString("    ")
+		_, _ = w.WriteString(segment.Stat.String(composeSortKey))
+	}
+	return w.String()
+}
+
 func (entry *TableEntry) String() string {
 	entry.RLock()
 	defer entry.RUnlock()
@@ -305,7 +328,7 @@ func (entry *TableEntry) StringLockedWithLevel(level common.PPLevel) string {
 	name := entry.GetLastestSchema().Name
 	if level <= common.PPL1 {
 		return fmt.Sprintf("TBL[%d][name=%s][C@%s,D@%s]",
-			entry.ID, name, entry.GetCreatedAt().ToString(), entry.GetDeleteAt().ToString())
+			entry.ID, name, entry.GetCreatedAtLocked().ToString(), entry.GetDeleteAt().ToString())
 	}
 	return fmt.Sprintf("TBL%s[name=%s, id=%d]", entry.BaseEntryImpl.StringLocked(), name, entry.ID)
 }

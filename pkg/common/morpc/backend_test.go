@@ -58,7 +58,7 @@ func TestSend(t *testing.T) {
 	)
 }
 
-func TestReadTimeoutWithNormal(t *testing.T) {
+func TestReadTimeoutWithNormalMessageMissed(t *testing.T) {
 	testBackendSend(t,
 		func(conn goetty.IOSession, msg interface{}, _ uint64) error {
 			request := msg.(RPCMessage)
@@ -78,22 +78,19 @@ func TestReadTimeoutWithNormal(t *testing.T) {
 						panic(fmt.Sprintf("invalid internal message, flag %d", m.flag))
 					}
 				}
-				return nil
-			} else {
-				return conn.Write(msg, goetty.WriteOptions{Flush: true})
 			}
+			// no response
+			return nil
 		},
 		func(b *remoteBackend) {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			req := newTestMessage(1)
 			f, err := b.Send(ctx, req)
 			assert.NoError(t, err)
 			defer f.Close()
-
-			resp, err := f.Get()
-			assert.NoError(t, err)
-			assert.Equal(t, req, resp)
+			_, err = f.Get()
+			assert.Equal(t, ctx.Err(), err)
 		},
 		WithBackendReadTimeout(time.Millisecond*200),
 	)
@@ -130,9 +127,8 @@ func TestReadTimeout(t *testing.T) {
 			f, err := b.Send(ctx, req)
 			assert.NoError(t, err)
 			defer f.Close()
-
 			_, err = f.Get()
-			assert.Error(t, err)
+			assert.Equal(t, backendClosed, err)
 		},
 		WithBackendReadTimeout(time.Millisecond*200),
 	)

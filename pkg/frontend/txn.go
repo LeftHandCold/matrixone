@@ -17,6 +17,8 @@ package frontend
 import (
 	"context"
 	"fmt"
+	"github.com/google/uuid"
+	"runtime/debug"
 	"sync"
 
 	"github.com/matrixorigin/matrixone/pkg/logutil"
@@ -84,6 +86,9 @@ func (th *TxnHandler) createTxnCtx() context.Context {
 	if v := reqCtx.Value(defines.RoleIDKey{}); v != nil {
 		retTxnCtx = context.WithValue(retTxnCtx, defines.RoleIDKey{}, v)
 	}
+	if v := reqCtx.Value(defines.NodeIDKey{}); v != nil {
+		retTxnCtx = context.WithValue(retTxnCtx, defines.NodeIDKey{}, v)
+	}
 	retTxnCtx = trace.ContextWithSpan(retTxnCtx, trace.SpanFromContext(reqCtx))
 	if th.ses != nil && th.ses.tenant != nil && th.ses.tenant.User == db_holder.MOLoggerUser {
 		retTxnCtx = context.WithValue(retTxnCtx, defines.IsMoLogger{}, true)
@@ -120,6 +125,7 @@ func (th *TxnHandler) GetTxnClient() TxnClient {
 // NewTxnOperator creates a new txn operator using TxnClient
 func (th *TxnHandler) NewTxnOperator() (context.Context, TxnOperator, error) {
 	var err error
+	sessionInfo := th.ses.GetDebugString()
 	th.mu.Lock()
 	defer th.mu.Unlock()
 	if th.txnClient == nil {
@@ -142,8 +148,13 @@ func (th *TxnHandler) NewTxnOperator() (context.Context, TxnOperator, error) {
 	if txnCtx == nil {
 		panic("context should not be nil")
 	}
+	labelUuid, _ := uuid.NewUUID()
+	stack := ""
+	if th.ses.IsBackgroundSession() {
+		stack = string(debug.Stack())
+	}
 	opts = append(opts,
-		client.WithTxnCreateBy(fmt.Sprintf("frontend-session-%p", th.ses)))
+		client.WithTxnCreateBy(fmt.Sprintf("frontend-session-%p labelUUID:%s sesInfo(%s) background:%v stack:%s ", th.ses, labelUuid.String(), sessionInfo, th.ses.IsBackgroundSession(), stack)))
 
 	if th.ses != nil && th.ses.GetFromRealUser() {
 		opts = append(opts,
@@ -268,6 +279,10 @@ func (th *TxnHandler) GetSession() *Session {
 }
 
 func (th *TxnHandler) CommitTxn() error {
+	_, span := trace.Start(th.ses.requestCtx, "TxnHandler.CommitTxn",
+		trace.WithKind(trace.SpanKindStatement))
+	defer span.End(trace.WithStatementExtra(th.ses.GetTxnId(), th.ses.GetStmtId(), th.ses.GetSqlOfStmt()))
+
 	th.entryMu.Lock()
 	defer th.entryMu.Unlock()
 	if !th.IsValidTxnOperator() || th.IsShareTxn() {
@@ -334,6 +349,10 @@ func (th *TxnHandler) CommitTxn() error {
 }
 
 func (th *TxnHandler) RollbackTxn() error {
+	_, span := trace.Start(th.ses.requestCtx, "TxnHandler.RollbackTxn",
+		trace.WithKind(trace.SpanKindStatement))
+	defer span.End(trace.WithStatementExtra(th.ses.GetTxnId(), th.ses.GetStmtId(), th.ses.GetSqlOfStmt()))
+
 	th.entryMu.Lock()
 	defer th.entryMu.Unlock()
 	if !th.IsValidTxnOperator() || th.IsShareTxn() {

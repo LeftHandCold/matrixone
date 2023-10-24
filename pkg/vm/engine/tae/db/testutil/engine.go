@@ -123,14 +123,14 @@ func (e *TestEngine) CheckRowsByScan(exp int, applyDelete bool) {
 func (e *TestEngine) ForceCheckpoint() {
 	err := e.BGCheckpointRunner.ForceFlushWithInterval(e.TxnMgr.StatMaxCommitTS(), context.Background(), time.Second*2, time.Millisecond*10)
 	assert.NoError(e.t, err)
-	err = e.BGCheckpointRunner.ForceIncrementalCheckpoint(e.TxnMgr.StatMaxCommitTS())
+	err = e.BGCheckpointRunner.ForceIncrementalCheckpoint(e.TxnMgr.StatMaxCommitTS(), false)
 	assert.NoError(e.t, err)
 }
 
 func (e *TestEngine) ForceLongCheckpoint() {
 	err := e.BGCheckpointRunner.ForceFlush(e.TxnMgr.StatMaxCommitTS(), context.Background(), 20*time.Second)
 	assert.NoError(e.t, err)
-	err = e.BGCheckpointRunner.ForceIncrementalCheckpoint(e.TxnMgr.StatMaxCommitTS())
+	err = e.BGCheckpointRunner.ForceIncrementalCheckpoint(e.TxnMgr.StatMaxCommitTS(), false)
 	assert.NoError(e.t, err)
 }
 
@@ -277,7 +277,7 @@ func (e *TestEngine) IncrementalCheckpoint(
 		flushed := e.DB.BGCheckpointRunner.IsAllChangesFlushed(types.TS{}, end, true)
 		assert.True(e.t, flushed)
 	}
-	err := e.DB.BGCheckpointRunner.ForceIncrementalCheckpoint(end)
+	err := e.DB.BGCheckpointRunner.ForceIncrementalCheckpoint(end, false)
 	assert.NoError(e.t, err)
 	if truncate {
 		lsn := e.DB.BGCheckpointRunner.MaxLSNInRange(end)
@@ -378,13 +378,14 @@ func writeIncrementalCheckpoint(
 	start, end types.TS,
 	c *catalog.Catalog,
 	checkpointBlockRows int,
+	checkpointSize int,
 	fs fileservice.FileService,
 ) (objectio.Location, objectio.Location) {
 	factory := logtail.IncrementalCheckpointDataFactory(start, end)
 	data, err := factory(c)
 	assert.NoError(t, err)
 	defer data.Close()
-	cnLocation, tnLocation, err := data.WriteTo(fs, checkpointBlockRows)
+	cnLocation, tnLocation, err := data.WriteTo(fs, checkpointBlockRows, checkpointSize)
 	assert.NoError(t, err)
 	return cnLocation, tnLocation
 }
@@ -437,6 +438,9 @@ func cnReadCheckpointWithVersion(t *testing.T, tid uint64, location objectio.Loc
 		} else {
 			ins = e.Bat
 		}
+	}
+	for _, c := range cb {
+		c()
 	}
 	return
 }
@@ -610,9 +614,10 @@ func CheckCheckpointReadWrite(
 	start, end types.TS,
 	c *catalog.Catalog,
 	checkpointBlockRows int,
+	checkpointSize int,
 	fs fileservice.FileService,
 ) {
-	location, _ := writeIncrementalCheckpoint(t, start, end, c, checkpointBlockRows, fs)
+	location, _ := writeIncrementalCheckpoint(t, start, end, c, checkpointBlockRows, checkpointSize, fs)
 	tnData := tnReadCheckpoint(t, location, fs)
 
 	checkTNCheckpointData(context.Background(), t, tnData, start, end, c)

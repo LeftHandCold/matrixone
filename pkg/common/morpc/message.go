@@ -20,6 +20,10 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 )
 
+const (
+	internalTimeout = time.Second * 10
+)
+
 // Timeout return true if the message is timeout
 func (m RPCMessage) Timeout() bool {
 	select {
@@ -33,7 +37,7 @@ func (m RPCMessage) Timeout() bool {
 // GetTimeoutFromContext returns the timeout duration from context.
 func (m RPCMessage) GetTimeoutFromContext() (time.Duration, error) {
 	if m.internal {
-		return time.Duration(time.Second * 10), nil
+		return internalTimeout, nil
 	}
 
 	d, ok := m.Ctx.Deadline()

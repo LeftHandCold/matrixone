@@ -61,19 +61,10 @@ func (p *timeBasedPolicy) Check(last types.TS) bool {
 
 type countBasedPolicy struct {
 	minCount int
-	current  int
 }
 
-func (p *countBasedPolicy) Check() bool {
-	return p.current >= p.minCount
-}
-
-func (p *countBasedPolicy) Add(cnt int) {
-	p.current++
-}
-
-func (p *countBasedPolicy) Reset() {
-	p.current = 0
+func (p *countBasedPolicy) Check(current int) bool {
+	return current >= p.minCount
 }
 
 type globalCheckpointContext struct {
@@ -190,6 +181,7 @@ type runner struct {
 		checkpointQueueSize int
 
 		checkpointBlockRows int
+		checkpointSize      int
 
 		reservedWALEntryCount uint64
 	}
@@ -287,6 +279,7 @@ func (r *runner) String() string {
 	_, _ = fmt.Fprintf(&buf, "waitQueueSize=%v, ", r.options.waitQueueSize)
 	_, _ = fmt.Fprintf(&buf, "checkpointQueueSize=%v, ", r.options.checkpointQueueSize)
 	_, _ = fmt.Fprintf(&buf, "checkpointBlockRows=%v, ", r.options.checkpointBlockRows)
+	_, _ = fmt.Fprintf(&buf, "checkpointSize=%v, ", r.options.checkpointSize)
 	_, _ = fmt.Fprintf(&buf, ">")
 	return buf.String()
 }
@@ -305,8 +298,8 @@ func (r *runner) onGlobalCheckpointEntries(items ...any) {
 		if ctx.force {
 			doCheckpoint = true
 		} else {
-			r.globalPolicy.Add(1)
-			if r.globalPolicy.Check() {
+			entriesCount := r.GetPenddingIncrementalCount()
+			if r.globalPolicy.Check(entriesCount) {
 				doCheckpoint = true
 			}
 		}
@@ -322,7 +315,6 @@ func (r *runner) onGlobalCheckpointEntries(items ...any) {
 				continue
 			}
 			logutil.Infof("%s is done, takes %s", entry.String(), time.Since(now))
-			r.globalPolicy.Reset()
 		}
 	}
 }
@@ -515,7 +507,7 @@ func (r *runner) doIncrementalCheckpoint(entry *CheckpointEntry) (err error) {
 		return
 	}
 	defer data.Close()
-	cnLocation, tnLocation, err := data.WriteTo(r.rt.Fs.Service, r.options.checkpointBlockRows)
+	cnLocation, tnLocation, err := data.WriteTo(r.rt.Fs.Service, r.options.checkpointBlockRows, r.options.checkpointSize)
 	if err != nil {
 		return
 	}
@@ -538,7 +530,7 @@ func (r *runner) doGlobalCheckpoint(end types.TS, ckpLSN, truncateLSN uint64, in
 	}
 	defer data.Close()
 
-	cnLocation, tnLocation, err := data.WriteTo(r.rt.Fs.Service, r.options.checkpointBlockRows)
+	cnLocation, tnLocation, err := data.WriteTo(r.rt.Fs.Service, r.options.checkpointBlockRows, r.options.checkpointSize)
 	if err != nil {
 		return
 	}
@@ -604,17 +596,17 @@ func (r *runner) tryAddNewIncrementalCheckpointEntry(entry *CheckpointEntry) (su
 	return
 }
 
-func (r *runner) tryScheduleIncrementalCheckpoint(start types.TS) {
-	ts := types.BuildTS(time.Now().UTC().UnixNano(), 0)
-	_, count := r.source.ScanInRange(start, ts)
+func (r *runner) tryScheduleIncrementalCheckpoint(start, end types.TS) {
+	// ts := types.BuildTS(time.Now().UTC().UnixNano(), 0)
+	_, count := r.source.ScanInRange(start, end)
 	if count < r.options.minCount {
 		return
 	}
-	entry := NewCheckpointEntry(start, ts, ET_Incremental)
+	entry := NewCheckpointEntry(start, end, ET_Incremental)
 	r.tryAddNewIncrementalCheckpointEntry(entry)
 }
 
-func (r *runner) tryScheduleCheckpoint() {
+func (r *runner) tryScheduleCheckpoint(endts types.TS) {
 	if r.disabled.Load() {
 		return
 	}
@@ -625,12 +617,12 @@ func (r *runner) tryScheduleCheckpoint() {
 	// checkpoint
 	if entry == nil {
 		if global == nil {
-			r.tryScheduleIncrementalCheckpoint(types.TS{})
+			r.tryScheduleIncrementalCheckpoint(types.TS{}, endts)
 			return
 		} else {
 			maxTS := global.end.Prev()
 			if r.incrementalPolicy.Check(maxTS) {
-				r.tryScheduleIncrementalCheckpoint(maxTS.Next())
+				r.tryScheduleIncrementalCheckpoint(maxTS.Next(), endts)
 			}
 			return
 		}
@@ -665,7 +657,7 @@ func (r *runner) tryScheduleCheckpoint() {
 	}
 
 	if r.incrementalPolicy.Check(entry.end) {
-		r.tryScheduleIncrementalCheckpoint(entry.end.Next())
+		r.tryScheduleIncrementalCheckpoint(entry.end.Next(), endts)
 	}
 }
 
@@ -700,6 +692,9 @@ func (r *runner) fillDefaults() {
 	}
 	if r.options.checkpointBlockRows <= 0 {
 		r.options.checkpointBlockRows = logtail.DefaultCheckpointBlockRows
+	}
+	if r.options.checkpointSize <= 0 {
+		r.options.checkpointSize = logtail.DefaultCheckpointSize
 	}
 }
 
@@ -815,19 +810,6 @@ func (r *runner) EstimateTableMemSize(table *catalog.TableEntry, tree *model.Tab
 	return size
 }
 
-func humanReadableSize(size int) string {
-	if size < 1024 {
-		return fmt.Sprintf("%dB", size)
-	}
-	if size < 1024*1024 {
-		return fmt.Sprintf("%dKB", size/1024)
-	}
-	if size < 1024*1024*1024 {
-		return fmt.Sprintf("%dMB", size/1024/1024)
-	}
-	return fmt.Sprintf("%dGB", size/1024/1024/1024)
-}
-
 func (r *runner) tryCompactTree(entry *logtail.DirtyTreeEntry, force bool) {
 	if entry.IsEmpty() {
 		return
@@ -851,10 +833,6 @@ func (r *runner) tryCompactTree(entry *logtail.DirtyTreeEntry, force bool) {
 			table.Stats.Unlock()
 		}
 
-		if !table.Stats.FlushTableTailEnabled {
-			return nil
-		}
-
 		dirtyTree := entry.GetTree().GetTable(tableID)
 		_, endTs := entry.GetTimeRange()
 
@@ -868,7 +846,7 @@ func (r *runner) tryCompactTree(entry *logtail.DirtyTreeEntry, force bool) {
 		if !stats.LastFlush.IsEmpty() && size > 2*1000*1024 {
 			logutil.Infof("[flushtabletail] %s(%s)  FlushCountDown %v",
 				table.GetLastestSchema().Name,
-				humanReadableSize(size),
+				common.HumanReadableBytes(size),
 				time.Until(stats.FlushDeadline))
 		}
 
@@ -931,6 +909,7 @@ func (r *runner) crontask(ctx context.Context) {
 	hb := w.NewHeartBeaterWithFunc(r.options.collectInterval, func() {
 		r.source.Run()
 		entry := r.source.GetAndRefreshMerged()
+		_, endts := entry.GetTimeRange()
 		if entry.IsEmpty() {
 			logutil.Debugf("[flushtabletail]No dirty block found")
 		} else {
@@ -938,7 +917,7 @@ func (r *runner) crontask(ctx context.Context) {
 			e.tree = entry
 			r.dirtyEntryQueue.Enqueue(e)
 		}
-		r.tryScheduleCheckpoint()
+		r.tryScheduleCheckpoint(endts)
 	}, nil)
 	hb.Start()
 	<-ctx.Done()
