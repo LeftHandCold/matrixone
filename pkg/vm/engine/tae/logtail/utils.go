@@ -2685,7 +2685,7 @@ func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) 
 					false,
 					common.DefaultAllocator,
 				)
-				logutil.Infof("metaNode.BaseNode.DeltaLoc1111 is null : %v", metaNode.BaseNode.DeltaLoc.String())
+				logutil.Infof("metaNode.BaseNode.DeltaLoc1111 is null : %v, stat", metaNode.BaseNode.DeltaLoc.String(), entry.IsAppendable())
 				vector.AppendBytes(
 					blkTNMetaInsDelLocVec,
 					[]byte(metaNode.BaseNode.DeltaLoc),
@@ -2809,7 +2809,7 @@ func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) 
 					false,
 					common.DefaultAllocator,
 				)
-				logutil.Infof("metaNode.BaseNode.DeltaLoc not null : %v", metaNode.BaseNode.DeltaLoc.String())
+				logutil.Infof("metaNode.BaseNode.DeltaLoc not null : %v ，stat is %v", metaNode.BaseNode.DeltaLoc.String(), entry.IsAppendable())
 				vector.AppendBytes(
 					blkCNMetaInsDelLocVec,
 					[]byte(metaNode.BaseNode.DeltaLoc),
@@ -2875,7 +2875,7 @@ func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) 
 					false,
 					common.DefaultAllocator,
 				)
-				logutil.Infof("metaNode.BaseNode.DeltaLoc null : %v", metaNode.BaseNode.DeltaLoc.String())
+				logutil.Infof("metaNode.BaseNode.DeltaLoc null : %v, stat is %v", metaNode.BaseNode.DeltaLoc.String(), entry.IsAppendable())
 				vector.AppendBytes(
 					blkMetaInsDelLocVec,
 					[]byte(metaNode.BaseNode.DeltaLoc),
