@@ -1071,7 +1071,7 @@ func ReWriteCheckpointAndBlockFromKey(
 	if isCkpChange {
 		for fileName, objectData := range objectsData {
 			if objectData.isChange {
-				writer, err := blockio.NewBlockWriter(fs, fileName)
+				writer, err := blockio.NewBlockWriter(dstFs, fileName)
 				if err != nil {
 					return nil, nil, nil, nil, err
 				}
