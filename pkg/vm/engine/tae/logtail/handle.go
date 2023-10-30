@@ -971,7 +971,6 @@ func ReWriteCheckpointAndBlockFromKey(
 	}
 	var files []string
 	isCkpChange := false
-	nblkFiles := make(map[string]bool)
 	for i := 0; i < data.bats[BLKCNMetaInsertIDX].Length(); i++ {
 		var location objectio.Location
 		deltaLoc := objectio.Location(
@@ -987,18 +986,17 @@ func ReWriteCheckpointAndBlockFromKey(
 		if !isAblk && !deltaLoc.IsEmpty() {
 			deltaBat, err = blockio.LoadOneBlock(ctx, fs, deltaLoc, objectio.SchemaTombstone)
 			location = deltaLoc
-			logutil.Infof("rewrite delta block %s, metaLoc is %s", deltaLoc.String(), metaLoc.String())
+			logutil.Infof("rewrite delta block %s, metaLoc is %s, row is %d", deltaLoc.String(), metaLoc.String(), i)
 		} else if isAblk {
-			logutil.Infof("rewrite meta block %s", metaLoc.String())
 			bat, err = blockio.LoadOneBlock(ctx, fs, metaLoc, objectio.SchemaData)
 			if err != nil {
 				return nil, nil, nil, nil, err
 			}
 			if !deltaLoc.IsEmpty() {
-				logutil.Infof("rewrite delta block %s", deltaLoc.String())
 				deltaBat, err = blockio.LoadOneBlock(ctx, fs, deltaLoc, objectio.SchemaTombstone)
 			}
 			location = metaLoc
+			logutil.Infof("rewrite meta block %s, delta is %s, row is %d", metaLoc.String(),deltaLoc.String(), i)
 		} else {
 			continue
 		}
@@ -1015,6 +1013,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					return nil, nil, nil, nil, err
 				}
 				if !commitTs.LessEq(ts) {
+					logutil.Infof("commitTs %v ts %v", commitTs.ToString(), ts.ToString())
 					windowCNBatch(bat, 0, uint64(v))
 					isChange = true
 					isCkpChange = true
@@ -1113,12 +1112,14 @@ func ReWriteCheckpointAndBlockFromKey(
 				for row := range blocks {
 					blockLocation := objectio.BuildLocation(objectData.name, extent, blocks[row].GetRows(), objectData.data[row].num)
 					if objectData.data[row].blockType == objectio.SchemaData {
+						logutil.Infof("rewrite BlockMeta_MetaLoc %s, row is %d", blockLocation.String(), objectData.data[row].row)
 						data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 							int(objectData.data[row].row),
 							[]byte(blockLocation),
 							false)
 					}
 					if objectData.data[row].blockType == objectio.SchemaTombstone {
+						logutil.Infof("rewrite BlockMeta_DeltaLoc %s, row is %d", blockLocation.String(), objectData.data[row].row)
 						data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
 							int(objectData.data[row].row),
 							[]byte(blockLocation),
