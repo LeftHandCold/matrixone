@@ -971,10 +971,10 @@ func ReWriteCheckpointAndBlockFromKey(
 	}
 	var files []string
 	isCkpChange := false
-	for i := 0; i < data.bats[BLKTNMetaInsertIDX].Length(); i++ {
+	for i := 0; i < data.bats[BLKCNMetaInsertIDX].Length(); i++ {
 		var location objectio.Location
 		deltaLoc := objectio.Location(
-			data.bats[BLKTNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte))
+			data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte))
 		metaLoc := objectio.Location(
 			data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte))
 		isAblk := data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_EntryState).Get(i).(bool)
