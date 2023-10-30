@@ -718,6 +718,7 @@ func (catalog *Catalog) OnReplayBlockBatch(ins, insTxn, del, delTxn *containers.
 		sid := blkID.Segment()
 		metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
 		deltaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte)
+		logutil.Infof("OnReplayBlockBatch metaLoc %s deltaLoc %s", objectio.Location(metaLoc).String(), objectio.Location(deltaLoc).String())
 		txnNode := txnbase.ReadTuple(insTxn, i)
 		catalog.onReplayCreateBlock(dbid, tid, sid, &blkID, state, metaLoc, deltaLoc, txnNode, dataFactory)
 	}
