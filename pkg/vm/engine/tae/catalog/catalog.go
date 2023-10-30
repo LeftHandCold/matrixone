@@ -731,6 +731,7 @@ func (catalog *Catalog) OnReplayBlockBatch(ins, insTxn, del, delTxn *containers.
 		un := txnbase.ReadTuple(delTxn, i)
 		metaLoc := delTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
 		deltaLoc := delTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte)
+		logutil.Infof("OnReplayBlockBatch delete metaLoc %s deltaLoc %s", objectio.Location(metaLoc).String(), objectio.Location(deltaLoc).String())
 		catalog.onReplayDeleteBlock(dbid, tid, sid, blkID, metaLoc, deltaLoc, un)
 	}
 }

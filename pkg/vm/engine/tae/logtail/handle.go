@@ -1117,10 +1117,18 @@ func ReWriteCheckpointAndBlockFromKey(
 							int(objectData.data[row].row),
 							[]byte(blockLocation),
 							false)
+						data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+							int(objectData.data[row].row),
+							[]byte(blockLocation),
+							false)
 					}
 					if objectData.data[row].blockType == objectio.SchemaTombstone {
 						logutil.Infof("rewrite BlockMeta_DeltaLoc %s, row is %d", blockLocation.String(), objectData.data[row].row)
 						data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+							int(objectData.data[row].row),
+							[]byte(blockLocation),
+							false)
+						data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
 							int(objectData.data[row].row),
 							[]byte(blockLocation),
 							false)
