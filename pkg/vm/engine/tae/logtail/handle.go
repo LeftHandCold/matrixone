@@ -971,6 +971,7 @@ func ReWriteCheckpointAndBlockFromKey(
 	}
 	var files []string
 	isCkpChange := false
+	nblkFiles := make(map[string]bool)
 	for i := 0; i < data.bats[BLKCNMetaInsertIDX].Length(); i++ {
 		var location objectio.Location
 		deltaLoc := objectio.Location(
@@ -1089,6 +1090,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						if err != nil {
 							return nil, nil, nil, nil, err
 						}
+						break
 					}
 				}
 
@@ -1108,8 +1110,8 @@ func ReWriteCheckpointAndBlockFromKey(
 					}
 				}
 
-				for row, block := range blocks {
-					blockLocation := objectio.BuildLocation(objectData.name, extent, 0, block.GetID())
+				for row := range blocks {
+					blockLocation := objectio.BuildLocation(objectData.name, extent, blocks[row].GetRows(), objectData.data[row].num)
 					if objectData.data[row].blockType == objectio.SchemaData {
 						data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 							int(objectData.data[row].row),
