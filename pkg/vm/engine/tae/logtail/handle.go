@@ -971,10 +971,10 @@ func ReWriteCheckpointAndBlockFromKey(
 	}
 	var files []string
 	isCkpChange := false
-	for i := 0; i < data.bats[BLKCNMetaInsertIDX].Length(); i++ {
+	for i := 0; i < data.bats[BLKTNMetaInsertIDX].Length(); i++ {
 		var location objectio.Location
 		deltaLoc := objectio.Location(
-			data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte))
+			data.bats[BLKTNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte))
 		metaLoc := objectio.Location(
 			data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte))
 		isAblk := data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_EntryState).Get(i).(bool)
@@ -986,12 +986,15 @@ func ReWriteCheckpointAndBlockFromKey(
 		if !isAblk && !deltaLoc.IsEmpty() {
 			deltaBat, err = blockio.LoadOneBlock(ctx, fs, deltaLoc, objectio.SchemaTombstone)
 			location = deltaLoc
+			logutil.Infof("rewrite delta block %s", deltaLoc.String())
 		} else if isAblk {
+			logutil.Infof("rewrite meta block %s", metaLoc.String())
 			bat, err = blockio.LoadOneBlock(ctx, fs, metaLoc, objectio.SchemaData)
 			if err != nil {
 				return nil, nil, nil, nil, err
 			}
 			if !deltaLoc.IsEmpty() {
+				logutil.Infof("rewrite delta block %s", deltaLoc.String())
 				deltaBat, err = blockio.LoadOneBlock(ctx, fs, deltaLoc, objectio.SchemaTombstone)
 			}
 			location = metaLoc
@@ -1025,6 +1028,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					return nil, nil, nil, nil, err
 				}
 				if !deltaCommitTs.LessEq(ts) {
+					logutil.Infof("deltaCommitTs %v ts %v", deltaCommitTs.ToString(), ts.ToString())
 					windowCNBatch(deltaBat, 0, uint64(v))
 					isChange = true
 					isCkpChange = true
