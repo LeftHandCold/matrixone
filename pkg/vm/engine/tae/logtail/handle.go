@@ -986,7 +986,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		if !isAblk && !deltaLoc.IsEmpty() {
 			deltaBat, err = blockio.LoadOneBlock(ctx, fs, deltaLoc, objectio.SchemaTombstone)
 			location = deltaLoc
-			logutil.Infof("rewrite delta block %s", deltaLoc.String())
+			logutil.Infof("rewrite delta block %s, metaLoc is %s", deltaLoc.String(), metaLoc.String())
 		} else if isAblk {
 			logutil.Infof("rewrite meta block %s", metaLoc.String())
 			bat, err = blockio.LoadOneBlock(ctx, fs, metaLoc, objectio.SchemaData)
