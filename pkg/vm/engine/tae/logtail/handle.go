@@ -1089,7 +1089,6 @@ func ReWriteCheckpointAndBlockFromKey(
 						if err != nil {
 							return nil, nil, nil, nil, err
 						}
-						break
 					}
 				}
 
