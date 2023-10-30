@@ -2622,6 +2622,7 @@ func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) 
 		metaNode := node
 		if metaNode.BaseNode.MetaLoc.IsEmpty() || metaNode.Aborted {
 			if metaNode.HasDropCommitted() {
+				logutil.Infof("sdfsdfdsfdsfsfds")
 				vector.AppendFixed(
 					blkTNMetaDelRowIDVec,
 					objectio.HackBlockid2Rowid(&entry.ID),
@@ -2684,6 +2685,7 @@ func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) 
 					false,
 					common.DefaultAllocator,
 				)
+				logutil.Infof("metaNode.BaseNode.DeltaLoc1111 is null : %v", metaNode.BaseNode.DeltaLoc.String())
 				vector.AppendBytes(
 					blkTNMetaInsDelLocVec,
 					[]byte(metaNode.BaseNode.DeltaLoc),
@@ -2807,6 +2809,7 @@ func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) 
 					false,
 					common.DefaultAllocator,
 				)
+				logutil.Infof("metaNode.BaseNode.DeltaLoc not null : %v", metaNode.BaseNode.DeltaLoc.String())
 				vector.AppendBytes(
 					blkCNMetaInsDelLocVec,
 					[]byte(metaNode.BaseNode.DeltaLoc),
@@ -2872,6 +2875,7 @@ func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) 
 					false,
 					common.DefaultAllocator,
 				)
+				logutil.Infof("metaNode.BaseNode.DeltaLoc null : %v", metaNode.BaseNode.DeltaLoc.String())
 				vector.AppendBytes(
 					blkMetaInsDelLocVec,
 					[]byte(metaNode.BaseNode.DeltaLoc),
