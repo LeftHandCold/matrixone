@@ -1561,6 +1561,7 @@ func (data *CheckpointData) WriteTo(
 			objectSize = 0
 		}
 		if data.bats[i].Length() == 0 {
+			logutil.Infof("batch %d is empty", i)
 			if block, size, err = writer.WriteSubBatch(containers.ToCNBatch(data.bats[i]), objectio.ConvertToSchemaType(uint16(i))); err != nil {
 				return
 			}
@@ -2138,6 +2139,9 @@ func (data *CheckpointData) readAll(
 				}
 			}
 			for i := range bats {
+				if bats[i].Length() == 0 {
+					bats[i] = makeRespBatchFromSchema(checkpointDataSchemas_Curr[idx])
+				}
 				data.bats[idx].Append(bats[i])
 			}
 		}
