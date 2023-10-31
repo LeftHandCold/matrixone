@@ -1236,11 +1236,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
-		err = dstFs.Delete(ctx, loc.Name().String())
-		if err != nil {
-			logutil.Infof("delete %s failed: %v", loc.Name().String(), err.Error())
-			err = nil
-		}
+		logutil.Infof("delete %s failed: %v", loc.Name().String(), err.Error())
 		loc = cnLocation
 		tnLocation = dnLocation
 		files = checkpointFiles

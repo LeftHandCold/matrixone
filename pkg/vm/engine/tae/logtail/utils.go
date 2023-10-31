@@ -1507,6 +1507,7 @@ func (data *CheckpointData) FormatData(mp *mpool.MPool) (err error) {
 			data.bats[idx].Vecs[i] = vec
 		}
 	}
+	data.bats[MetaIDX] = nil
 	return
 }
 
@@ -1956,6 +1957,7 @@ func (data *CheckpointData) readMetaBatch(
 ) (err error) {
 	if data.bats[MetaIDX].Length() == 0 {
 		var bats []*containers.Batch
+		logutil.Infof("readMetaBatch name is %v", reader.GetName())
 		item := checkpointDataReferVersions[version][MetaIDX]
 		bats, err = LoadBlkColumnsByMeta(version, ctx, item.types, item.attrs, uint16(0), reader)
 		if err != nil {
