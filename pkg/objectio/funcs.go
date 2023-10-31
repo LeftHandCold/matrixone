@@ -237,8 +237,10 @@ func ReadMultiBlocksWithMeta(
 			} else if DataMetaType(opt.DataType) == SchemaTombstone {
 				dataMeta = meta.MustTombstoneMeta()
 			} else {
+				logutil.Infof("opt.DataType %d", opt.DataType)
 				dataMeta, _ = meta.SubMeta(ConvertToCkpIdx(opt.DataType))
 			}
+			logutil.Infof("read block %d seqnum %d", opt.Id, seqnum)
 			blkmeta := dataMeta.GetBlockMeta(uint32(opt.Id))
 			if seqnum > blkmeta.GetMaxSeqnum() || blkmeta.ColumnMeta(seqnum).DataType() == 0 {
 				// prefetch, do not generate
