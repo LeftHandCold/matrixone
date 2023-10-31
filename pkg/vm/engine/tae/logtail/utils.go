@@ -1513,6 +1513,12 @@ func (data *CheckpointData) FormatData(mp *mpool.MPool) (err error) {
 	for tid := range data.meta {
 		for idx := range data.meta[tid].tables {
 			if data.meta[tid].tables[idx] != nil {
+				locaiton := data.meta[tid].tables[idx].locations.MakeIterator()
+				if locaiton.HasNext() {
+					loc := locaiton.Next()
+					data.meta[tid].tables[idx].Start = loc.GetStartOffset()
+					data.meta[tid].tables[idx].End = loc.GetEndOffset()
+				}
 				data.meta[tid].tables[idx].locations = make([]byte, 0)
 			}
 		}
