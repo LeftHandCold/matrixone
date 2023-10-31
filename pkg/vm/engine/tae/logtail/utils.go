@@ -1561,10 +1561,10 @@ func (data *CheckpointData) WriteTo(
 			objectSize = 0
 		}
 		if data.bats[i].Length() == 0 {
-			logutil.Infof("batch %d is empty", i)
 			if block, size, err = writer.WriteSubBatch(containers.ToCNBatch(data.bats[i]), objectio.ConvertToSchemaType(uint16(i))); err != nil {
 				return
 			}
+			logutil.Infof("batch %d is empty, id is %d", i, block.GetID())
 			blockLoc := BuildBlockLoaction(block.GetID(), uint64(offset), uint64(0))
 			indexes[i] = append(indexes[i], blockIndexes{
 				fileNum: fileNum,
@@ -1583,6 +1583,7 @@ func (data *CheckpointData) WriteTo(
 				if block, size, err = writer.WriteSubBatch(containers.ToCNBatch(bat), objectio.ConvertToSchemaType(uint16(i))); err != nil {
 					return
 				}
+				logutil.Infof("batch %d isnot empty, id is %d", i, block.GetID())
 				Endoffset := offset + bat.Length()
 				blockLoc := BuildBlockLoaction(block.GetID(), uint64(offset), uint64(Endoffset))
 				indexes[i] = append(indexes[i], blockIndexes{
