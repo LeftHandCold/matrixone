@@ -1507,7 +1507,7 @@ func (data *CheckpointData) FormatData(mp *mpool.MPool) (err error) {
 			data.bats[idx].Vecs[i] = vec
 		}
 	}
-	data.bats[MetaIDX] = nil
+	data.bats[MetaIDX] = makeRespBatchFromSchema(checkpointDataSchemas_Curr[MetaIDX])
 	return
 }
 
