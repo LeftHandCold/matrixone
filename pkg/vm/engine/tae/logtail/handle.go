@@ -979,6 +979,7 @@ func ReWriteCheckpointAndBlockFromKey(
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+	data.FormatData(common.DefaultAllocator)
 	var files []string
 	isCkpChange := false
 	blkCNMetaInsert := data.bats[BLKCNMetaInsertIDX]
@@ -1231,11 +1232,11 @@ func ReWriteCheckpointAndBlockFromKey(
 
 			}
 		}
-		data.FormatData(common.DefaultAllocator)
 		cnLocation, dnLocation, checkpointFiles, err := data.WriteTo(dstFs, DefaultCheckpointBlockRows, DefaultCheckpointSize)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
+		logutil.Infof("checkpoint cnLocation %s, dnLocation %s, checkpointFiles %s", cnLocation.String(), dnLocation.String(), checkpointFiles)
 		loc = cnLocation
 		tnLocation = dnLocation
 		files = checkpointFiles

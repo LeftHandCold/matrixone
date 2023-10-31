@@ -1491,6 +1491,7 @@ func (data *CheckpointData) prepareTNMetaBatch(
 			location := objectio.BuildLocation(checkpointNames[i], blk.GetExtent(), 0, blk.GetID())
 			data.bats[TNMetaIDX].GetVectorByName(CheckpointMetaAttr_BlockLocation).Append([]byte(location), false)
 			data.bats[TNMetaIDX].GetVectorByName(CheckpointMetaAttr_SchemaType).Append(schemaTypes[i][y], false)
+			logutil.Infof("prepareTNMetaBatch %s %s %d schemaTypes[i][y] is %s", checkpointNames[i], location.String(), blk.GetID(), schemaTypes[i][y])
 		}
 	}
 }
@@ -2140,9 +2141,6 @@ func (data *CheckpointData) readAll(
 				}
 			}
 			for i := range bats {
-				if bats[i].Length() == 0 {
-					bats[i] = makeRespBatchFromSchema(checkpointDataSchemas_Curr[idx])
-				}
 				data.bats[idx].Append(bats[i])
 			}
 		}
