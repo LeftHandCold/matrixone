@@ -1508,6 +1508,7 @@ func (data *CheckpointData) FormatData(mp *mpool.MPool) (err error) {
 		}
 	}
 	data.bats[MetaIDX] = makeRespBatchFromSchema(checkpointDataSchemas_Curr[MetaIDX])
+	data.bats[TNMetaIDX] = makeRespBatchFromSchema(checkpointDataSchemas_Curr[TNMetaIDX])
 	return
 }
 
@@ -1598,6 +1599,7 @@ func (data *CheckpointData) WriteTo(
 		return
 	}
 	checkpointFiles = append(checkpointFiles, name.String())
+	logutil.Infof("checkpointFiles: %v", checkpointFiles)
 	schemas = append(schemas, schemaTypes)
 	objectBlocks = append(objectBlocks, blks)
 
@@ -1692,6 +1694,7 @@ func (data *CheckpointData) WriteTo(
 	blks2, _, err := writer2.Sync(context.Background())
 	CNLocation = objectio.BuildLocation(name2, blks2[0].GetExtent(), 0, blks2[0].GetID())
 	TNLocation = objectio.BuildLocation(name2, blks2[1].GetExtent(), 0, blks2[1].GetID())
+	logutil.Infof("write meta to %v, %v", CNLocation.String(), TNLocation.String())
 	return
 }
 
