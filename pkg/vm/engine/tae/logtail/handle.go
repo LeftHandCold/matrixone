@@ -1036,43 +1036,47 @@ func ReWriteCheckpointAndBlockFromKey(
 	}
 
 	for i := 0; i < blkMetaInsert.Length(); i++ {
-		var location objectio.Location
 		metaLoc := objectio.Location(blkMetaInsertMetaLoc.Get(i).([]byte))
 		deltaLoc := objectio.Location(blkMetaInsertDeltaLoc.Get(i).([]byte))
 		isAblk := blkMetaInsertEntryState.Get(i).(bool)
-		name := metaLoc.Name().String()
-		if objectsData[name] == nil {
-			object := &fileData{
-				name:     location.Name(),
-				data:     make(map[uint16]*blockData),
-				isChange: false,
+		if !metaLoc.IsEmpty() {
+			name := metaLoc.Name().String()
+			if objectsData[name] == nil {
+				object := &fileData{
+					name:     metaLoc.Name(),
+					data:     make(map[uint16]*blockData),
+					isChange: false,
+				}
+				objectsData[name] = object
 			}
-			objectsData[name] = object
-		}
-		objectsData[name].data[metaLoc.ID()] = &blockData{
-			location:  metaLoc,
-			blockType: objectio.SchemaData,
-			dnRow:  []int{i},
-			isAblk: isAblk,
-		}
-		name = deltaLoc.Name().String()
-		if objectsData[name] == nil {
-			object := &fileData{
-				name:     location.Name(),
-				data:     make(map[uint16]*blockData),
-				isChange: false,
-			}
-			objectsData[name] = object
-		}
-		if objectsData[name].data[deltaLoc.ID()] == nil {
-			objectsData[name].data[deltaLoc.ID()] = &blockData{
-				location:  deltaLoc,
-				blockType: objectio.SchemaTombstone,
+			objectsData[name].data[metaLoc.ID()] = &blockData{
+				location:  metaLoc,
+				blockType: objectio.SchemaData,
 				dnRow:  []int{i},
 				isAblk: isAblk,
 			}
-		} else {
-			objectsData[name].data[deltaLoc.ID()].dnRow = append(objectsData[name].data[deltaLoc.ID()].dnRow, i)
+		}
+
+		if !deltaLoc.IsEmpty() {
+			name := deltaLoc.Name().String()
+			if objectsData[name] == nil {
+				object := &fileData{
+					name:     location.Name(),
+					data:     make(map[uint16]*blockData),
+					isChange: false,
+				}
+				objectsData[name] = object
+			}
+			if objectsData[name].data[deltaLoc.ID()] == nil {
+				objectsData[name].data[deltaLoc.ID()] = &blockData{
+					location:  deltaLoc,
+					blockType: objectio.SchemaTombstone,
+					dnRow:  []int{i},
+					isAblk: isAblk,
+				}
+			} else {
+				objectsData[name].data[deltaLoc.ID()].dnRow = append(objectsData[name].data[deltaLoc.ID()].dnRow, i)
+			}
 		}
 	}
 
