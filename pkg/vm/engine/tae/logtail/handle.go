@@ -995,39 +995,43 @@ func ReWriteCheckpointAndBlockFromKey(
 		metaLoc := objectio.Location(blkCNMetaInsertMetaLoc.Get(i).([]byte))
 		deltaLoc := objectio.Location(blkCNMetaInsertDeltaLoc.Get(i).([]byte))
 		isAblk := blkCNMetaInsertEntryState.Get(i).(bool)
-		name := metaLoc.Name().String()
-		if objectsData[name] == nil {
-			object := &fileData{
-				name:     metaLoc.Name(),
-				data:     make(map[uint16]*blockData),
-				isChange: false,
+		if !metaLoc.IsEmpty() {
+			name := metaLoc.Name().String()
+			if objectsData[name] == nil {
+				object := &fileData{
+					name:     metaLoc.Name(),
+					data:     make(map[uint16]*blockData),
+					isChange: false,
+				}
+				objectsData[name] = object
 			}
-			objectsData[name] = object
-		}
-		objectsData[name].data[metaLoc.ID()] = &blockData{
-			location:  metaLoc,
-			blockType: objectio.SchemaData,
-			cnRow:  []int{i},
-			isAblk: isAblk,
-		}
-		name = deltaLoc.Name().String()
-		if objectsData[name] == nil {
-			object := &fileData{
-				name:     deltaLoc.Name(),
-				data:     make(map[uint16]*blockData),
-				isChange: false,
-			}
-			objectsData[name] = object
-		}
-		if objectsData[name].data[deltaLoc.ID()] == nil {
-			objectsData[name].data[deltaLoc.ID()] = &blockData{
-				location:  deltaLoc,
+			objectsData[name].data[metaLoc.ID()] = &blockData{
+				location:  metaLoc,
 				blockType: objectio.SchemaData,
 				cnRow:  []int{i},
 				isAblk: isAblk,
 			}
-		} else {
-			objectsData[name].data[deltaLoc.ID()].cnRow = append(objectsData[name].data[deltaLoc.ID()].cnRow, i)
+		}
+		if !deltaLoc.IsEmpty() {
+			name := deltaLoc.Name().String()
+			if objectsData[name] == nil {
+				object := &fileData{
+					name:     deltaLoc.Name(),
+					data:     make(map[uint16]*blockData),
+					isChange: false,
+				}
+				objectsData[name] = object
+			}
+			if objectsData[name].data[deltaLoc.ID()] == nil {
+				objectsData[name].data[deltaLoc.ID()] = &blockData{
+					location:  deltaLoc,
+					blockType: objectio.SchemaData,
+					cnRow:  []int{i},
+					isAblk: isAblk,
+				}
+			} else {
+				objectsData[name].data[deltaLoc.ID()].cnRow = append(objectsData[name].data[deltaLoc.ID()].cnRow, i)
+			}
 		}
 	}
 
