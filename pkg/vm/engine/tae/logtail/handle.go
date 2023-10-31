@@ -1188,43 +1188,43 @@ func ReWriteCheckpointAndBlockFromKey(
 					blockLocation := objectio.BuildLocation(objectData.name, extent, blocks[row].GetRows(), objectData.data[row].num)
 					for _, cnRow := range objectData.data[row].cnRow {
 						if objectData.data[row].blockType == objectio.SchemaData {
-							logutil.Infof("rewrite BlockMeta_DataLoc %s, row is %d", blockLocation.String(), objectData.data[row].dnRow)
-							data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+							logutil.Infof("rewrite BlockMeta_DataLoc %s, row is %d", blockLocation.String(), cnRow)
+							/*data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 								cnRow,
 								[]byte(blockLocation),
 								false)
 							data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 								cnRow,
 								[]byte(blockLocation),
-								false)
+								false)*/
 						}
 
 						if objectData.data[row].blockType == objectio.SchemaTombstone {
-							logutil.Infof("rewrite BlockMeta_DeltaLoc %s, row is %d", blockLocation.String(), objectData.data[row].dnRow)
-							data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+							logutil.Infof("rewrite BlockMeta_DeltaLoc %s, row is %d", blockLocation.String(), cnRow)
+							/*data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
 								cnRow,
 								[]byte(blockLocation),
 								false)
 							data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
 								cnRow,
 								[]byte(blockLocation),
-								false)
+								false)*/
 						}
 					}
 					for _, dnRow := range objectData.data[row].dnRow {
 						if objectData.data[row].blockType == objectio.SchemaData {
-							logutil.Infof("rewrite BlockMeta_DataLoc %s, row is %d", blockLocation.String(), objectData.data[row].dnRow)
-							data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+							logutil.Infof("rewrite BlockMeta_DataLocdn %s, row is %d", blockLocation.String(), dnRow)
+							/*data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 								dnRow,
 								[]byte(blockLocation),
-								false)
+								false)*/
 						}
 						if objectData.data[row].blockType == objectio.SchemaTombstone {
-							logutil.Infof("rewrite BlockMeta_DeltaLoc %s, row is %d", blockLocation.String(), objectData.data[row].dnRow)
-							data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+							logutil.Infof("rewrite BlockMeta_DeltaLocdn %s, row is %d", blockLocation.String(), dnRow)
+							/*data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
 								dnRow,
 								[]byte(blockLocation),
-								false)
+								false)*/
 						}
 					}
 				}
