@@ -990,11 +990,15 @@ func ReWriteCheckpointAndBlockFromKey(
 	blkMetaInsertMetaLoc := data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc)
 	blkMetaInsertDeltaLoc := data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc)
 	blkMetaInsertEntryState := data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_EntryState)
-	//blkCNMetaInsertCommitTs := data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_CommitTs)
+	blkCNMetaInsertCommitTs := data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_CommitTs)
 	for i := 0; i < blkCNMetaInsert.Length(); i++ {
 		metaLoc := objectio.Location(blkCNMetaInsertMetaLoc.Get(i).([]byte))
 		deltaLoc := objectio.Location(blkCNMetaInsertDeltaLoc.Get(i).([]byte))
 		isAblk := blkCNMetaInsertEntryState.Get(i).(bool)
+		commits := blkCNMetaInsertCommitTs.Get(i).(types.TS)
+		if commits.Less(ts) {
+			continue
+		}
 		if !metaLoc.IsEmpty() {
 			name := metaLoc.Name().String()
 			if objectsData[name] == nil {
@@ -1061,7 +1065,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			name := deltaLoc.Name().String()
 			if objectsData[name] == nil {
 				object := &fileData{
-					name:     location.Name(),
+					name:     deltaLoc.Name(),
 					data:     make(map[uint16]*blockData),
 					isChange: false,
 				}

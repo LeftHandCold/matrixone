@@ -613,10 +613,12 @@ func (data *CheckpointData) ApplyReplayTo(
 	ins, tnins, del, tndel = data.GetSegBatchs()
 	c.OnReplaySegmentBatch(ins, tnins, del, tndel, dataFactory)
 	ins, tnins, del, tndel = data.GetTNBlkBatchs()
-	logutil.Infof("ApplyReplayTo ins1")
+	logutil.Infof("ApplyReplayTo ins1, data.GetTNBlkBatchs()")
+	data.PrintData()
 	c.OnReplayBlockBatch(ins, tnins, del, tndel, dataFactory)
 	ins, tnins, del, tndel = data.GetBlkBatchs()
 	logutil.Infof("ApplyReplayTo ins2")
+	data.PrintData()
 	c.OnReplayBlockBatch(ins, tnins, del, tndel, dataFactory)
 	return
 }
