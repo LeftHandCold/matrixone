@@ -21,6 +21,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 )
@@ -193,6 +194,7 @@ func (r *BlockReader) LoadOneSubColumns(
 		return
 	}
 	var ioVector *fileservice.IOVector
+	logutil.Infof("LoadOneSubColumns blk %d, key is %v, dataType is %d", blk, r.reader.GetName(), dataType)
 	ioVector, err = r.reader.ReadOneSubBlock(ctx, cols, typs, dataType, blk, m)
 	if err != nil {
 		return
