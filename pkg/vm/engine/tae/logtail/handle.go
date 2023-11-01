@@ -1150,9 +1150,16 @@ func ReWriteCheckpointAndBlockFromKey(
 			}
 
 			if block.isAblk {
-				bat, err = blockio.LoadOneBlock(ctx, fs, block.location, objectio.SchemaData)
-				if err != nil {
-					return nil, nil, nil, nil, err
+				if block.blockType == objectio.SchemaTombstone{
+					bat, err = blockio.LoadOneBlock(ctx, fs, block.location, objectio.SchemaTombstone)
+					if err != nil {
+						return nil, nil, nil, nil, err
+					}
+				} else {
+					bat, err = blockio.LoadOneBlock(ctx, fs, block.location, objectio.SchemaData)
+					if err != nil {
+						return nil, nil, nil, nil, err
+					}
 				}
 				commitTs := types.TS{}
 				for v := 0; v < bat.Vecs[0].Length(); v++ {
