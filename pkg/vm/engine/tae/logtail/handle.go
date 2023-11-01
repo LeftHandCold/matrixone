@@ -1011,6 +1011,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				objectsData[name] = object
 			}
 			objectsData[name].data[metaLoc.ID()] = &blockData{
+				num:       metaLoc.ID(),
 				location:  metaLoc,
 				blockType: objectio.SchemaData,
 				cnRow:  []int{i},
@@ -1029,6 +1030,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			}
 			if objectsData[name].data[deltaLoc.ID()] == nil {
 				objectsData[name].data[deltaLoc.ID()] = &blockData{
+					num:	   deltaLoc.ID(),
 					location:  deltaLoc,
 					blockType: objectio.SchemaData,
 					cnRow:  []int{i},
@@ -1055,6 +1057,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				objectsData[name] = object
 			}
 			objectsData[name].data[metaLoc.ID()] = &blockData{
+				num: metaLoc.ID(),
 				location:  metaLoc,
 				blockType: objectio.SchemaData,
 				dnRow:  []int{i},
@@ -1074,6 +1077,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			}
 			if objectsData[name].data[deltaLoc.ID()] == nil {
 				objectsData[name].data[deltaLoc.ID()] = &blockData{
+					num: deltaLoc.ID(),
 					location:  deltaLoc,
 					blockType: objectio.SchemaTombstone,
 					dnRow:  []int{i},
