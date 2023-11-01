@@ -1103,9 +1103,11 @@ func ReWriteCheckpointAndBlockFromKey(
 					if err != nil {
 						return nil, nil, nil, nil, err
 					}
-					if !commitTs.LessEq(ts) {
-						logutil.Infof("deltaCommitTs %v ts %v", commitTs.ToString(), ts.ToString())
+					if commitTs.Greater(ts) {
 						windowCNBatch(bat, 0, uint64(v))
+						c := types.TS{}
+						err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(bat.Vecs[0].Length() -1))
+						logutil.Infof("deltaCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
 						isChange = true
 						isCkpChange = true
 						break
@@ -1125,9 +1127,11 @@ func ReWriteCheckpointAndBlockFromKey(
 					if err != nil {
 						return nil, nil, nil, nil, err
 					}
-					if !commitTs.LessEq(ts) {
-						logutil.Infof("blkCommitTs %v ts %v", commitTs.ToString(), ts.ToString())
+					if commitTs.Greater(ts) {
 						windowCNBatch(bat, 0, uint64(v))
+						c := types.TS{}
+						err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(bat.Vecs[0].Length() -1))
+						logutil.Infof("blkCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
 						isChange = true
 						isCkpChange = true
 						break
