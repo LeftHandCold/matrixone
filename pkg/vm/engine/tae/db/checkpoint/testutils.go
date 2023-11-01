@@ -208,6 +208,7 @@ func (r *runner) ForceCheckpointForBackup(end types.TS) (location string, err er
 	}
 	backupTime := time.Now().UTC()
 	currTs := types.BuildTS(backupTime.UnixNano(), 0)
+	logutil.Infof("backup time is %v", backupTime.String())
 	backup := NewCheckpointEntry(end.Next(), currTs, ET_Incremental)
 	location, err = r.doCheckpointForBackup(backup)
 	if err != nil {

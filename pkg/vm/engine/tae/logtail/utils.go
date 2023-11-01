@@ -2657,6 +2657,7 @@ func (collector *GlobalCollector) VisitSeg(entry *catalog.SegmentEntry) error {
 
 func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (err error) {
 	entry.RLock()
+	logutil.Infof("VisitBlkForBackup: %v, %v-%v", entry.ID.String(), collector.start, collector.end)
 	mvccNodes := entry.ClonePreparedInRangeForBackup(collector.start, collector.end)
 	entry.RUnlock()
 	if len(mvccNodes) == 0 {
@@ -2802,7 +2803,7 @@ func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (er
 					false,
 					common.DefaultAllocator,
 				)
-				logutil.Infof("metaNode.BaseNode.DeltaLoc1111 is null : %v, metaNode.BaseNode.MetaLoc is :%v, stat, entry.ID is : %v : %v-%v",
+				logutil.Infof("metaNode.BaseNode.DeltaLoc1111 is null : %v, metaNode.BaseNode.MetaLoc is :%v, stat is  %v, entry.ID is : %v : %v-%v",
 					metaNode.BaseNode.DeltaLoc.String(), metaNode.BaseNode.MetaLoc.String(), entry.IsAppendable(), entry.ID.String(), metaNode.GetStart().ToString(), metaNode.GetEnd().ToString())
 				vector.AppendBytes(
 					blkTNMetaInsDelLocVec,
