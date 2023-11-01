@@ -1121,7 +1121,6 @@ func ReWriteCheckpointAndBlockFromKey(
 								//panic("debugcommitTs is not sorted")
 							}
 						}
-						deleteRow = append(deleteRow, int64(v))
 						/*windowCNBatch(bat, 0, uint64(v))
 						c := types.TS{}
 						err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(bat.Vecs[0].Length() -1))
@@ -1129,6 +1128,8 @@ func ReWriteCheckpointAndBlockFromKey(
 						isChange = true
 						isCkpChange = true
 						//break
+					} else {
+						deleteRow = append(deleteRow, int64(v))
 					}
 				}
 				if len(deleteRow) > 0 {
