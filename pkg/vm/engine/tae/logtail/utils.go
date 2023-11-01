@@ -1517,7 +1517,12 @@ func (data *CheckpointData) FormatData(mp *mpool.MPool) (err error) {
 				if location.HasNext() {
 					loc := location.Next()
 					logutil.Infof("FormatData tid %d idx %d loc %s", tid, idx, loc.String())
-					data.meta[tid].tables[idx].TryMerge(common.ClosedInterval{Start: loc.GetStartOffset(), End: loc.GetEndOffset()})
+					if data.meta[tid].tables[idx].Start == 0 && data.meta[tid].tables[idx].End == 0 {
+						data.meta[tid].tables[idx].Start = loc.GetStartOffset()
+						data.meta[tid].tables[idx].End = loc.GetEndOffset()
+					} else {
+						data.meta[tid].tables[idx].TryMerge(common.ClosedInterval{Start: loc.GetStartOffset(), End: loc.GetEndOffset()})
+					}
 				}
 				data.meta[tid].tables[idx].locations = make([]byte, 0)
 			}
