@@ -401,7 +401,7 @@ func (be *MVCCChain[T]) ClonePreparedInRange(start, end types.TS) (ret []T) {
 func (be *MVCCChain[T]) ClonePreparedInRangeForBackup(start, end types.TS) (ret []T) {
 	be.MVCC.Loop(func(n *common.GenericDLNode[T]) bool {
 		un := n.GetPayload()
-		in, before := un.PreparedIn(start, end)
+		in, before := un.PreparedLess(start, end)
 		if in {
 			if ret == nil {
 				ret = make([]T, 0)

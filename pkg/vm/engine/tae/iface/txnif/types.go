@@ -198,6 +198,7 @@ type BaseMVCCNode interface {
 	CheckConflict(txn TxnReader) error
 
 	PreparedIn(minTS, maxTS types.TS) (in, before bool)
+	PreparedLess(minTS, maxTS types.TS) (in, before bool)
 	CommittedIn(minTS, maxTS types.TS) (in, before bool)
 	NeedWaitCommitting(ts types.TS) (bool, TxnReader)
 	IsSameTxn(txn TxnReader) bool
