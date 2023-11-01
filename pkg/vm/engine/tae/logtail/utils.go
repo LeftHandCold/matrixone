@@ -2557,11 +2557,13 @@ func (collector *BaseCollector) VisitSeg(entry *catalog.SegmentEntry) (err error
 
 func (collector *BaseCollector) VisitSegForBackup(entry *catalog.SegmentEntry) (err error) {
 	entry.RLock()
+	logutil.Infof("VisitSegForBackup: %v, %v-%v, entry.GetSegment().GetTable().String() %v", entry.ID.ToString(), collector.start.ToString(), collector.end.ToString(), entry.GetTable().String())
 	if entry.GetCreatedAtLocked().Greater(collector.start) {
 		entry.RUnlock()
 		return nil
 	}
 	mvccNodes := entry.ClonePreparedInRange(collector.start, collector.end)
+	logutil.Infof("VisitSegForBackup222: %v, %v-%v, %v", entry.ID.ToString(), collector.start.ToString(), collector.end.ToString(), len(mvccNodes))
 	entry.RUnlock()
 	if len(mvccNodes) == 0 {
 		return nil
