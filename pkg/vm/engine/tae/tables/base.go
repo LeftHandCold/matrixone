@@ -640,16 +640,18 @@ func (blk *baseBlock) inMemoryCollectDeleteInRange(
 	schema := blk.meta.GetSchema()
 	pkDef := schema.GetPrimaryKey()
 	rowID, ts, pk, abort, abortedMap, deletes, minTS := blk.mvcc.CollectDeleteLocked(start.Next(), end, pkDef.Type)
-	for i := 0; i < ts.Length(); i++ {
-		tss := types.TS{}
-		tp := types.TS{}
-		if i == 0 {
-			continue
-		}
-		tss.Unmarshal(ts.Get(i).([]byte))
-		tp.Unmarshal(ts.Get(i - 1).([]byte))
-		if tss.Less(tp) {
-			panic(fmt.Sprintf("ts %v less than %v", tss, tp))
+	if ts != nil {
+		for i := 0; i < ts.Length(); i++ {
+			tss := types.TS{}
+			tp := types.TS{}
+			if i == 0 {
+				continue
+			}
+			tss.Unmarshal(ts.Get(i).([]byte))
+			tp.Unmarshal(ts.Get(i - 1).([]byte))
+			if tss.Less(tp) {
+				panic(fmt.Sprintf("ts %v less than %v", tss, tp))
+			}
 		}
 	}
 	blk.RUnlock()
