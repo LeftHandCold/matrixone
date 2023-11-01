@@ -1104,6 +1104,16 @@ func ReWriteCheckpointAndBlockFromKey(
 						return nil, nil, nil, nil, err
 					}
 					if commitTs.Greater(ts) {
+						for y := v; y < bat.Vecs[0].Length(); y++ {
+							debugcommitTs := types.TS{}
+							err = debugcommitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(y))
+							if err != nil {
+								return nil, nil, nil, nil, err
+							}
+							if debugcommitTs.Greater(ts) {
+								panic("debugcommitTs is not sorted")
+							}
+						}
 						windowCNBatch(bat, 0, uint64(v))
 						c := types.TS{}
 						err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(bat.Vecs[0].Length() -1))

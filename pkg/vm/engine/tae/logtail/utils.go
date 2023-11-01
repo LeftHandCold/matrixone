@@ -2667,6 +2667,12 @@ func (collector *GlobalCollector) VisitSeg(entry *catalog.SegmentEntry) error {
 func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (err error) {
 	entry.RLock()
 	logutil.Infof("VisitBlkForBackup: %v, %v-%v, entry.GetSegment().GetTable().String() %v", entry.ID.String(), collector.start.ToString(), collector.end.ToString(), entry.GetSegment().GetTable().String())
+	mvccNodes := entry.ClonePreparedInRange(collector.start, collector.end)
+	for _, node := range mvccNodes {
+		if node.IsAborted() {
+			continue
+		}
+	}
 	if entry.GetCreatedAtLocked().Greater(collector.start) &&
 		entry.ID.String() == "65000000-0000-0000-0000-000000000000-0-0" ||
 		entry.ID.String() == "66000000-0000-0000-0000-000000000000-0-0" ||
@@ -2674,7 +2680,6 @@ func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (er
 		entry.RUnlock()
 		return nil
 	}
-	mvccNodes := entry.ClonePreparedInRange(collector.start, collector.end)
 	logutil.Infof("VisitBlkForBackup222: %v, %v-%v, %v", entry.ID.String(), collector.start.ToString(), collector.end.ToString(), len(mvccNodes))
 	entry.RUnlock()
 	if len(mvccNodes) == 0 {
