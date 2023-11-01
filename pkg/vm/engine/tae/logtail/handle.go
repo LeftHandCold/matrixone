@@ -1103,6 +1103,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 				commitTs := types.TS{}
 				deleteRow := make([]int64,0)
+				logutil.Infof("block length is %d", bat.Vecs[0].Length())
 				for v := 0; v < bat.Vecs[0].Length(); v++ {
 					err = commitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(v))
 					if err != nil {
@@ -1132,6 +1133,18 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 				if len(deleteRow) > 0 {
 					bat.Shrink(deleteRow)
+					logutil.Infof("deleteRow is %d, bat length %d", len(deleteRow), bat.Vecs[0].Length())
+					commitTs1 := types.TS{}
+					for v := 0; v < bat.Vecs[0].Length(); v++ {
+						err = commitTs1.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(v))
+						if err != nil {
+							return nil, nil, nil, nil, err
+						}
+					}
+					if commitTs.Greater(ts) {
+						logutil.Infof("commitTs1 %v ts %v, block is %v", commitTs.ToString(), ts.ToString(), block.location.String())
+						panic("commitTs.Greater(ts)")
+					}
 				}
 				objectData.data[id].data = bat
 			}
