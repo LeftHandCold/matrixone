@@ -1153,6 +1153,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			if block.isAblk {
 				if block.blockType == objectio.SchemaTombstone{
 					bat, err = blockio.LoadOneBlock(ctx, fs, block.location, objectio.SchemaTombstone)
+					logutil.Infof("sdfsdfsdfdsfsdfsss")
 					if err != nil {
 						return nil, nil, nil, nil, err
 					}
@@ -1172,7 +1173,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					if commitTs.Greater(ts) {
 						for y := v; y < bat.Vecs[0].Length(); y++ {
 							debugcommitTs := types.TS{}
-							err = debugcommitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(y))
+							err = debugcommitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(y))
 							if err != nil {
 								return nil, nil, nil, nil, err
 							}
@@ -1196,7 +1197,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					logutil.Infof("deleteRow1 is %d, bat length %d", len(deleteRow), bat.Vecs[0].Length())
 					commitTs1 := types.TS{}
 					for v := 0; v < bat.Vecs[0].Length(); v++ {
-						err = commitTs1.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(v))
+						err = commitTs1.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(v))
 						if err != nil {
 							return nil, nil, nil, nil, err
 						}
