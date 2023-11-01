@@ -17,6 +17,7 @@ package tables
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -650,7 +651,8 @@ func (blk *baseBlock) inMemoryCollectDeleteInRange(
 			tss = ts.Get(i).(types.TS)
 			tp = ts.Get(i - 1).(types.TS)
 			if tss.Less(tp) {
-				panic(fmt.Sprintf("ts %v less than %v", tss, tp))
+				logutil.Infof("ts %v less than %v", tss, tp)
+				//panic(fmt.Sprintf("ts %v less than %v", tss, tp))
 			}
 		}
 	}

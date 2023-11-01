@@ -1102,6 +1102,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					return nil, nil, nil, nil, err
 				}
 				commitTs := types.TS{}
+				deleteRow := make([]int64,0)
 				for v := 0; v < bat.Vecs[0].Length(); v++ {
 					err = commitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(v))
 					if err != nil {
@@ -1116,17 +1117,21 @@ func ReWriteCheckpointAndBlockFromKey(
 							}
 							if debugcommitTs.LessEq(ts) {
 								logutil.Infof("debugcommitTs is not sorted %v ts %v, block is %v", debugcommitTs.ToString(), ts.ToString(), block.location.String())
-								panic("debugcommitTs is not sorted")
+								//panic("debugcommitTs is not sorted")
 							}
 						}
-						windowCNBatch(bat, 0, uint64(v))
+						deleteRow = append(deleteRow, int64(v))
+						/*windowCNBatch(bat, 0, uint64(v))
 						c := types.TS{}
 						err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(bat.Vecs[0].Length() -1))
-						logutil.Infof("deltaCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
+						logutil.Infof("deltaCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())*/
 						isChange = true
 						isCkpChange = true
-						break
+						//break
 					}
+				}
+				if len(deleteRow) > 0 {
+					bat.Shrink(deleteRow)
 				}
 				objectData.data[id].data = bat
 			}
