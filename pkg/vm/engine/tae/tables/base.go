@@ -647,8 +647,8 @@ func (blk *baseBlock) inMemoryCollectDeleteInRange(
 			if i == 0 {
 				continue
 			}
-			tss.Unmarshal(ts.Get(i).([]byte))
-			tp.Unmarshal(ts.Get(i - 1).([]byte))
+			tss = ts.Get(i).(types.TS)
+			tp = ts.Get(i - 1).(types.TS)
 			if tss.Less(tp) {
 				panic(fmt.Sprintf("ts %v less than %v", tss, tp))
 			}
