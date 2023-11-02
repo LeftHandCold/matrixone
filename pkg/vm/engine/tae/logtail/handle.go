@@ -998,6 +998,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		isAblk := blkCNMetaInsertEntryState.Get(i).(bool)
 		commits := blkCNMetaInsertCommitTs.Get(i).(types.TS)
 		if commits.Less(ts) {
+			logutil.Infof("commits.Less(ts) %v less than ts %v", commits, ts)
 			continue
 		}
 		if !metaLoc.IsEmpty() {
@@ -1010,6 +1011,9 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 				objectsData[name] = object
 			}
+if objectsData[name].data[metaLoc.ID()] != nil {
+	panic("fsdfsdfsdfsdfsdfs")
+}
 			objectsData[name].data[metaLoc.ID()] = &blockData{
 				num:       metaLoc.ID(),
 				location:  metaLoc,
@@ -1055,6 +1059,9 @@ func ReWriteCheckpointAndBlockFromKey(
 					isChange: false,
 				}
 				objectsData[name] = object
+			}
+			if objectsData[name].data[metaLoc.ID()] != nil {
+				panic("fsdfsdfsdfsdfsdfs")
 			}
 			objectsData[name].data[metaLoc.ID()] = &blockData{
 				num: metaLoc.ID(),
