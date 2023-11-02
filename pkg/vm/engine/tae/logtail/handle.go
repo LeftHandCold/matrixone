@@ -1117,7 +1117,7 @@ func ReWriteCheckpointAndBlockFromKey(
 								return nil, nil, nil, nil, err
 							}
 							if debugcommitTs.LessEq(ts) {
-								logutil.Infof("debugcommitTs is not sorted %v ts %v, block is %v", debugcommitTs.ToString(), ts.ToString(), block.location.String())
+								//logutil.Infof("debugcommitTs is not sorted %v ts %v, block is %v", debugcommitTs.ToString(), ts.ToString(), block.location.String())
 								//panic("debugcommitTs is not sorted")
 							}
 						}
@@ -1172,7 +1172,7 @@ func ReWriteCheckpointAndBlockFromKey(
 									return nil, nil, nil, nil, err
 								}
 								if debugcommitTs.LessEq(ts) {
-									logutil.Infof("debugcommitTss1 is not sorted %v ts %v, block is %v", debugcommitTs.ToString(), ts.ToString(), block.location.String())
+									//logutil.Infof("debugcommitTss1 is not sorted %v ts %v, block is %v", debugcommitTs.ToString(), ts.ToString(), block.location.String())
 									//panic("debugcommitTs is not sorted")
 								}
 							}
