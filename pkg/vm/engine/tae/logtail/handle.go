@@ -1012,6 +1012,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				objectsData[name] = object
 			}
 if objectsData[name].data[metaLoc.ID()] != nil {
+	logutil.Infof("cn metaLoc2 %v, row is %d", metaLoc.String(), i)
 	panic("fsdfsdfsdfsdfsdfs")
 }
 			objectsData[name].data[metaLoc.ID()] = &blockData{
@@ -1021,6 +1022,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 				cnRow:  []int{i},
 				isAblk: isAblk,
 			}
+			logutil.Infof("cn metaLoc %v, row is %d", metaLoc.String(), i)
 		}
 		if !deltaLoc.IsEmpty() {
 			name := deltaLoc.Name().String()
@@ -1061,6 +1063,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 				objectsData[name] = object
 			}
 			if objectsData[name].data[metaLoc.ID()] != nil {
+				logutil.Infof("dn metaLoc2 %v, row is %d", metaLoc.String(), i)
 				panic("fsdfsdfsdfsdfsdfs")
 			}
 			objectsData[name].data[metaLoc.ID()] = &blockData{
@@ -1070,6 +1073,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 				dnRow:  []int{i},
 				isAblk: isAblk,
 			}
+			logutil.Infof("dn metaLoc %v, row is %d", metaLoc.String(), i)
 		}
 
 		if !deltaLoc.IsEmpty() {
