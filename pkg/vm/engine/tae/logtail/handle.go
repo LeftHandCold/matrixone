@@ -1014,9 +1014,9 @@ func ReWriteCheckpointAndBlockFromKey(
 if objectsData[name].data[metaLoc.ID()] != nil {
 	logutil.Infof("cn metaLoc2 %v, row is %d", metaLoc.String(), i)
 	if len(objectsData[name].data[metaLoc.ID()].cnRow) > 0 {
-		panic("fsdfsdfsdfsdfsdfs")
+		logutil.Infof("len(objectsData[name].data[metaLoc.ID()].cnRow) > 0 %v, row is %d", objectsData[name].data[metaLoc.ID()].cnRow, i)
 	}
-	objectsData[name].data[metaLoc.ID()].cnRow = []int{i}
+	objectsData[name].data[metaLoc.ID()].cnRow = append(objectsData[name].data[metaLoc.ID()].cnRow, i)
 } else {
 	objectsData[name].data[metaLoc.ID()] = &blockData{
 		num:       metaLoc.ID(),
@@ -1070,9 +1070,9 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 			if objectsData[name].data[metaLoc.ID()] != nil {
 				logutil.Infof("dn metaLoc2 %v, row is %d", metaLoc.String(), i)
 				if len(objectsData[name].data[metaLoc.ID()].dnRow)> 0 {
-					panic("fsdfsdfsdfsdfsdfs")
+					logutil.Infof("len(objectsData[name].data[metaLoc.ID()].dnRow) > 0 %v, row is %d", objectsData[name].data[metaLoc.ID()].dnRow, i)
 				}
-				objectsData[name].data[metaLoc.ID()].dnRow = []int{i}
+				objectsData[name].data[metaLoc.ID()].dnRow = append(objectsData[name].data[metaLoc.ID()].dnRow, i)
 			} else {
 				objectsData[name].data[metaLoc.ID()] = &blockData{
 					num: metaLoc.ID(),
