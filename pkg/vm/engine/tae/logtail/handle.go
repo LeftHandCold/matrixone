@@ -1316,7 +1316,12 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								false)
 						}
 						for v, vec:= range data.bats[BLKCNMetaInsertIDX].Vecs {
-							data.bats[BLKMetaInsertIDX].Vecs[v].Append(vec.Get(v), false)
+							val := vec.Get(v)
+							if val == nil {
+								data.bats[BLKMetaInsertIDX].Vecs[v].Append(val, true)
+							} else {
+								data.bats[BLKMetaInsertIDX].Vecs[v].Append(val, false)
+							}
 						}
 						/*if objectData.data[row].blockType == objectio.SchemaTombstone {
 							logutil.Infof("rewrite BlockMeta_DeltaLoc %s, row is %d", blockLocation.String(), cnRow)

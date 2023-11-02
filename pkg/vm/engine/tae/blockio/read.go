@@ -282,9 +282,6 @@ func BlockReadInner(
 		if deletes, persistedByCN, err = ReadBlockDelete(ctx, info.DeltaLocation(), fs); err != nil {
 			return
 		}
-		if info.DeltaLocation().String() == "ff0073de-7961-11ee-bb2a-5254000adb85_00000_1_12969_1132_5490_13_1" {
-			logutil.Infof("read delete %v", deletes.String())
-		}
 		readcost := time.Since(now)
 
 		// eval delete rows by timestamp
@@ -452,11 +449,6 @@ func readBlockData(
 
 		if loaded, err = LoadColumns(ctx, cols, typs, fs, info.MetaLocation(), m); err != nil {
 			return
-		}
-
-		if info.MetaLocation().String() == "ff0073de-7961-11ee-bb2a-5254000adb85_00000_1_12969_1132_5490_113_0" ||
-			info.MetaLocation().String() == "10c810f8-7962-11ee-bb2a-5254000adb85_00000_1_1676_727_3567_13_0" {
-			logutil.Infof("loaded: %s", loaded.String())
 		}
 
 		colPos := 0
