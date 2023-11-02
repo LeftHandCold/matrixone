@@ -1371,6 +1371,8 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 						data.bats[BLKMetaDeleteTxnIDX].Delete(cnRow)
 						data.bats[BLKCNMetaInsertIDX].Delete(cnRow)
 					}
+					data.bats[BLKMetaDeleteTxnIDX].Compact()
+					data.bats[BLKCNMetaInsertIDX].Compact()
 				}
 
 			}
