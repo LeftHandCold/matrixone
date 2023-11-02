@@ -128,7 +128,6 @@ func BlockRead(
 		err  error
 	)
 
-	logutil.Infof("inof is %v", info.DeltaLocation().String(), info.MetaLocation().String())
 	if filter != nil && info.Sorted {
 		if sels, err = ReadByFilter(
 			ctx, info, inputDeletes, filterSeqnums, filterColTypes,
