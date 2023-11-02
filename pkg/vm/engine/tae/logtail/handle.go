@@ -1373,13 +1373,13 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 						logutil.Infof("redata.bats[BLKMetaDeleteIDX] %d", data.bats[BLKMetaDeleteIDX].Length())
 						data.bats[BLKMetaDeleteIDX].Delete(cnRow)
 					}
-					data.bats[BLKMetaDeleteTxnIDX].Compact()
-					data.bats[BLKCNMetaInsertIDX].Compact()
-					data.bats[BLKMetaDeleteIDX].Compact()
 				}
 
 			}
 		}
+		data.bats[BLKMetaDeleteTxnIDX].Compact()
+		data.bats[BLKCNMetaInsertIDX].Compact()
+		data.bats[BLKMetaDeleteIDX].Compact()
 		cnLocation, dnLocation, checkpointFiles, err := data.WriteTo(dstFs, DefaultCheckpointBlockRows, DefaultCheckpointSize)
 		if err != nil {
 			return nil, nil, nil, nil, err
