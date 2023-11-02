@@ -1186,6 +1186,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 							return nil, nil, nil, nil, err
 						}
 						if commitTs.Greater(ts) {
+							logutil.Infof("SchemaTombstone commitTs %v ts %v, block is %v", commitTs.ToString(), ts.ToString(), block.location.String())
 							for y := v; y < bat.Vecs[0].Length(); y++ {
 								debugcommitTs := types.TS{}
 								err = debugcommitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(y))
