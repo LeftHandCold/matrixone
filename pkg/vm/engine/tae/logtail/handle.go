@@ -1032,7 +1032,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				objectsData[name].data[deltaLoc.ID()] = &blockData{
 					num:	   deltaLoc.ID(),
 					location:  deltaLoc,
-					blockType: objectio.SchemaData,
+					blockType: objectio.SchemaTombstone,
 					cnRow:  []int{i},
 					isAblk: isAblk,
 				}
