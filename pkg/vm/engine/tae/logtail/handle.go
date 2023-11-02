@@ -1167,7 +1167,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						if commitTs.Greater(ts) {
 							for y := v; y < bat.Vecs[0].Length(); y++ {
 								debugcommitTs := types.TS{}
-								err = debugcommitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(y))
+								err = debugcommitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(y))
 								if err != nil {
 									return nil, nil, nil, nil, err
 								}
