@@ -1340,7 +1340,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								false)
 						}
 						for v, vec:= range data.bats[BLKCNMetaInsertIDX].Vecs {
-							val := vec.Get(v)
+							val := vec.Get(cnRow)
 							if val == nil {
 								data.bats[BLKMetaInsertIDX].Vecs[v].Append(val, true)
 							} else {
@@ -1348,7 +1348,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 							}
 						}
 						for v, vec:= range data.bats[BLKMetaDeleteTxnIDX].Vecs {
-							val := vec.Get(v)
+							val := vec.Get(cnRow)
 							if val == nil {
 								data.bats[BLKMetaInsertTxnIDX].Vecs[v].Append(val, true)
 							} else {
