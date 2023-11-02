@@ -1151,47 +1151,75 @@ func ReWriteCheckpointAndBlockFromKey(
 			}
 
 			if block.isAblk {
+				commitTs := types.TS{}
+				deleteRow := make([]int64,0)
 				if block.blockType == objectio.SchemaTombstone{
 					bat, err = blockio.LoadOneBlock(ctx, fs, block.location, objectio.SchemaTombstone)
 					logutil.Infof("sdfsdfsdfdsfsdfsss")
 					if err != nil {
 						return nil, nil, nil, nil, err
 					}
+					for v := 0; v < bat.Vecs[0].Length(); v++ {
+						err = commitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(v))
+						if err != nil {
+							return nil, nil, nil, nil, err
+						}
+						if commitTs.Greater(ts) {
+							for y := v; y < bat.Vecs[0].Length(); y++ {
+								debugcommitTs := types.TS{}
+								err = debugcommitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(y))
+								if err != nil {
+									return nil, nil, nil, nil, err
+								}
+								if debugcommitTs.LessEq(ts) {
+									logutil.Infof("debugcommitTss1 is not sorted %v ts %v, block is %v", debugcommitTs.ToString(), ts.ToString(), block.location.String())
+									//panic("debugcommitTs is not sorted")
+								}
+							}
+							/*windowCNBatch(bat, 0, uint64(v))
+							c := types.TS{}
+							err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(bat.Vecs[0].Length() -1))*/
+							//logutil.Infof("blkCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
+							isChange = true
+							isCkpChange = true
+						} else {
+							deleteRow = append(deleteRow, int64(v))
+						}
+					}
 				} else {
 					bat, err = blockio.LoadOneBlock(ctx, fs, block.location, objectio.SchemaData)
 					if err != nil {
 						return nil, nil, nil, nil, err
 					}
-				}
-				commitTs := types.TS{}
-				deleteRow := make([]int64,0)
-				for v := 0; v < bat.Vecs[0].Length(); v++ {
-					err = commitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(v))
-					if err != nil {
-						return nil, nil, nil, nil, err
-					}
-					if commitTs.Greater(ts) {
-						for y := v; y < bat.Vecs[0].Length(); y++ {
-							debugcommitTs := types.TS{}
-							err = debugcommitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(y))
-							if err != nil {
-								return nil, nil, nil, nil, err
-							}
-							if debugcommitTs.LessEq(ts) {
-								logutil.Infof("debugcommitTs1 is not sorted %v ts %v, block is %v", debugcommitTs.ToString(), ts.ToString(), block.location.String())
-								//panic("debugcommitTs is not sorted")
-							}
+					for v := 0; v < bat.Vecs[0].Length(); v++ {
+						err = commitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(v))
+						if err != nil {
+							return nil, nil, nil, nil, err
 						}
-						/*windowCNBatch(bat, 0, uint64(v))
-						c := types.TS{}
-						err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(bat.Vecs[0].Length() -1))*/
-						//logutil.Infof("blkCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
-						isChange = true
-						isCkpChange = true
-					} else {
-						deleteRow = append(deleteRow, int64(v))
+						if commitTs.Greater(ts) {
+							for y := v; y < bat.Vecs[0].Length(); y++ {
+								debugcommitTs := types.TS{}
+								err = debugcommitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(y))
+								if err != nil {
+									return nil, nil, nil, nil, err
+								}
+								if debugcommitTs.LessEq(ts) {
+									logutil.Infof("debugcommitTs1 is not sorted %v ts %v, block is %v", debugcommitTs.ToString(), ts.ToString(), block.location.String())
+									//panic("debugcommitTs is not sorted")
+								}
+							}
+							/*windowCNBatch(bat, 0, uint64(v))
+							c := types.TS{}
+							err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(bat.Vecs[0].Length() -1))*/
+							//logutil.Infof("blkCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
+							isChange = true
+							isCkpChange = true
+						} else {
+							deleteRow = append(deleteRow, int64(v))
+						}
 					}
 				}
+
 				if len(deleteRow) != bat.Vecs[0].Length()  {
 					bat.Shrink(deleteRow)
 					logutil.Infof("deleteRow1 is %d, bat length %d", len(deleteRow), bat.Vecs[0].Length())
