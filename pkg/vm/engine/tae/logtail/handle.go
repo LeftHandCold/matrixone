@@ -1198,6 +1198,25 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 							deleteRow = append(deleteRow, int64(v))
 						}
 					}
+					if len(deleteRow) != bat.Vecs[0].Length()  {
+						bat.Shrink(deleteRow)
+						logutil.Infof("deleteRow1 is %d, bat length %d", len(deleteRow), bat.Vecs[0].Length())
+						commitTs1 := types.TS{}
+						for v := 0; v < bat.Vecs[0].Length(); v++ {
+							if block.blockType == objectio.SchemaTombstone {
+								err = commitTs1.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(v))
+							} else {
+								err = commitTs1.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(v))
+							}
+							if err != nil {
+								return nil, nil, nil, nil, err
+							}
+							if commitTs1.Greater(ts) {
+								logutil.Infof("commitTs111 %v ts %v, block is %v", commitTs.ToString(), ts.ToString(), block.location.String())
+								panic("commitTs.Greater(ts2)")
+							}
+						}
+					}
 				} else {
 					bat, err = blockio.LoadOneBlock(ctx, fs, block.location, objectio.SchemaData)
 					if err != nil {
@@ -1209,48 +1228,17 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 							return nil, nil, nil, nil, err
 						}
 						if commitTs.Greater(ts) {
-							for y := v; y < bat.Vecs[0].Length(); y++ {
-								debugcommitTs := types.TS{}
-								err = debugcommitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(y))
-								if err != nil {
-									return nil, nil, nil, nil, err
-								}
-								if debugcommitTs.LessEq(ts) {
-									logutil.Infof("debugcommitTs1 is not sorted %v ts %v, block is %v", debugcommitTs.ToString(), ts.ToString(), block.location.String())
-									//panic("debugcommitTs is not sorted")
-								}
-							}
-							/*windowCNBatch(bat, 0, uint64(v))
+							windowCNBatch(bat, 0, uint64(v))
 							c := types.TS{}
-							err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(bat.Vecs[0].Length() -1))*/
-							//logutil.Infof("blkCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
+							err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(bat.Vecs[0].Length() -1))
+							logutil.Infof("blkCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
 							isChange = true
 							isCkpChange = true
-						} else {
-							deleteRow = append(deleteRow, int64(v))
+							break
 						}
 					}
 				}
 
-				if len(deleteRow) != bat.Vecs[0].Length()  {
-					bat.Shrink(deleteRow)
-					logutil.Infof("deleteRow1 is %d, bat length %d", len(deleteRow), bat.Vecs[0].Length())
-					commitTs1 := types.TS{}
-					for v := 0; v < bat.Vecs[0].Length(); v++ {
-						if block.blockType == objectio.SchemaTombstone {
-							err = commitTs1.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(v))
-						} else {
-							err = commitTs1.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(v))
-						}
-						if err != nil {
-							return nil, nil, nil, nil, err
-						}
-						if commitTs1.Greater(ts) {
-							logutil.Infof("commitTs111 %v ts %v, block is %v", commitTs.ToString(), ts.ToString(), block.location.String())
-							panic("commitTs.Greater(ts2)")
-						}
-					}
-				}
 				objectData.data[id].data = bat
 			}
 		}
