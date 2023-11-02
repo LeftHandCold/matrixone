@@ -56,6 +56,7 @@ func NewObjectReader(
 		key.String() == "ff0073de-7961-11ee-bb2a-5254000adb85_00000_1_12969_1132_5490_13_1" {
 		panic("here")
 	}
+	logutil.Infof("new object reader: %s", key.String())
 	name := key.Name()
 	metaExt := key.Extent()
 	var reader *objectio.ObjectReader
