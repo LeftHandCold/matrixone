@@ -2870,6 +2870,7 @@ func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (er
 		} else {
 			{
 				if !entry.IsAppendable() {
+					logutil.Infof("delete blk is%v, ts is %v", entry.ID.String(), metaNode.GetEnd().ToString())
 					return nil
 				}
 				is_sorted := false
