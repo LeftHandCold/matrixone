@@ -1100,6 +1100,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 		isChange := false
 		for id, block := range objectData.data {
 			if !block.isAblk && block.blockType == objectio.SchemaData {
+				logutil.Infof("ec block is %v", block.location.String() )
 				continue
 			}
 			var bat *batch.Batch
