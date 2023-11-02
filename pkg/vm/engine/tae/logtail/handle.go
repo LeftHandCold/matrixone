@@ -1225,7 +1225,11 @@ func ReWriteCheckpointAndBlockFromKey(
 					logutil.Infof("deleteRow1 is %d, bat length %d", len(deleteRow), bat.Vecs[0].Length())
 					commitTs1 := types.TS{}
 					for v := 0; v < bat.Vecs[0].Length(); v++ {
-						err = commitTs1.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(v))
+						if block.blockType == objectio.SchemaTombstone {
+							err = commitTs1.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(v))
+						} else {
+							err = commitTs1.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(v))
+						}
 						if err != nil {
 							return nil, nil, nil, nil, err
 						}
