@@ -51,6 +51,11 @@ func NewObjectReader(
 	key objectio.Location,
 	opts ...objectio.ReaderOptionFunc,
 ) (*BlockReader, error) {
+	if key.String() == "10c810f8-7962-11ee-bb2a-5254000adb85_00000_1_1676_727_3567_13_0" ||
+		key.String() == "ff0073de-7961-11ee-bb2a-5254000adb85_00000_1_12969_1132_5490_113_0" ||
+		key.String() == "ff0073de-7961-11ee-bb2a-5254000adb85_00000_1_12969_1132_5490_13_1" {
+		panic("here")
+	}
 	name := key.Name()
 	metaExt := key.Extent()
 	var reader *objectio.ObjectReader
