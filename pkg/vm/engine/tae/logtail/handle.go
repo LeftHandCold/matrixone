@@ -1013,16 +1013,21 @@ func ReWriteCheckpointAndBlockFromKey(
 			}
 if objectsData[name].data[metaLoc.ID()] != nil {
 	logutil.Infof("cn metaLoc2 %v, row is %d", metaLoc.String(), i)
-	panic("fsdfsdfsdfsdfsdfs")
+	if len(objectsData[name].data[metaLoc.ID()].cnRow) > 0 {
+		panic("fsdfsdfsdfsdfsdfs")
+	}
+	objectsData[name].data[metaLoc.ID()].cnRow = []int{i}
+} else {
+	objectsData[name].data[metaLoc.ID()] = &blockData{
+		num:       metaLoc.ID(),
+		location:  metaLoc,
+		blockType: objectio.SchemaData,
+		cnRow:  []int{i},
+		isAblk: isAblk,
+	}
+	logutil.Infof("cn metaLoc %v, row is %d", metaLoc.String(), i)
+
 }
-			objectsData[name].data[metaLoc.ID()] = &blockData{
-				num:       metaLoc.ID(),
-				location:  metaLoc,
-				blockType: objectio.SchemaData,
-				cnRow:  []int{i},
-				isAblk: isAblk,
-			}
-			logutil.Infof("cn metaLoc %v, row is %d", metaLoc.String(), i)
 		}
 		if !deltaLoc.IsEmpty() {
 			name := deltaLoc.Name().String()
@@ -1064,16 +1069,20 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 			}
 			if objectsData[name].data[metaLoc.ID()] != nil {
 				logutil.Infof("dn metaLoc2 %v, row is %d", metaLoc.String(), i)
-				panic("fsdfsdfsdfsdfsdfs")
+				if len(objectsData[name].data[metaLoc.ID()].dnRow)> 0 {
+					panic("fsdfsdfsdfsdfsdfs")
+				}
+				objectsData[name].data[metaLoc.ID()].dnRow = []int{i}
+			} else {
+				objectsData[name].data[metaLoc.ID()] = &blockData{
+					num: metaLoc.ID(),
+					location:  metaLoc,
+					blockType: objectio.SchemaData,
+					dnRow:  []int{i},
+					isAblk: isAblk,
+				}
+				logutil.Infof("dn metaLoc %v, row is %d", metaLoc.String(), i)
 			}
-			objectsData[name].data[metaLoc.ID()] = &blockData{
-				num: metaLoc.ID(),
-				location:  metaLoc,
-				blockType: objectio.SchemaData,
-				dnRow:  []int{i},
-				isAblk: isAblk,
-			}
-			logutil.Infof("dn metaLoc %v, row is %d", metaLoc.String(), i)
 		}
 
 		if !deltaLoc.IsEmpty() {
