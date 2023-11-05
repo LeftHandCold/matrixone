@@ -1328,9 +1328,9 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					row := uint16(i)
 					blockLocation := datas[row].location
 					if objectData.isChange{
-						blockLocation = objectio.BuildLocation(objectData.name, extent, blocks[row].GetRows(), objectData.data[row].num)
+						blockLocation = objectio.BuildLocation(objectData.name, extent, blocks[row].GetRows(), datas[i].num)
 					}
-					for _, dnRow := range objectData.data[row].dnRow {
+					for _, dnRow := range datas[i].dnRow {
 						if objectData.data[row].blockType == objectio.SchemaData {
 							logutil.Infof("rewrite BlockMeta_DataLocdn %s, row is %d", blockLocation.String(), dnRow)
 							data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
