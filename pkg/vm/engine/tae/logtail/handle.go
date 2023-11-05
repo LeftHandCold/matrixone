@@ -1323,7 +1323,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 						}
 					}
 				}
-
+				cnrs := make(map[int]bool)
 				for i := range datas {
 					row := uint16(i)
 					blockLocation := datas[row].location
@@ -1354,7 +1354,6 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								false)
 						}
 					}
-					cnrs := make(map[int]bool)
 					for _, cnRow := range objectData.data[row].cnRow {
 						if objectData.data[row].blockType == objectio.SchemaData {
 							logutil.Infof("rewrite BlockMeta_DataLoc %s, row is %d", blockLocation.String(), cnRow)
@@ -1431,12 +1430,12 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								false)
 						}*/
 					}
-					for cnRow  := range cnrs{
-						data.bats[BLKMetaDeleteTxnIDX].Delete(cnRow)
-						data.bats[BLKCNMetaInsertIDX].Delete(cnRow)
-						logutil.Infof("redata.bats[BLKMetaDeleteIDX] %d", data.bats[BLKMetaDeleteIDX].Length())
-						data.bats[BLKMetaDeleteIDX].Delete(cnRow)
-					}
+				}
+				for cnRow  := range cnrs{
+					data.bats[BLKMetaDeleteTxnIDX].Delete(cnRow)
+					data.bats[BLKCNMetaInsertIDX].Delete(cnRow)
+					logutil.Infof("redata.bats[BLKMetaDeleteIDX] %d", data.bats[BLKMetaDeleteIDX].Length())
+					data.bats[BLKMetaDeleteIDX].Delete(cnRow)
 				}
 
 			}
