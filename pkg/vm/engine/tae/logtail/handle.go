@@ -1287,7 +1287,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					return datas[i].num < datas[j].num
 				})
 				for _, block := range datas {
-					logutil.Infof("write object %v, block is %d, id is %d", fileName, block.data.Vecs[0].Length(), block.num)
+					logutil.Infof("write object %v, id is %d", fileName, block.num)
 					if block.pk > -1{
 						writer.SetPrimaryKey(uint16(block.pk))
 					}
