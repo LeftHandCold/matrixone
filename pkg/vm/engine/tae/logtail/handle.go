@@ -1275,54 +1275,61 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 	if isCkpChange {
 		for fileName, objectData := range objectsData {
 			if objectData.isChange || objectData.isCnBatch{
-				writer, err := blockio.NewBlockWriter(dstFs, fileName)
-				if err != nil {
-					return nil, nil, nil, nil, err
-				}
 				datas := make([]*blockData,0)
-				for _, block := range objectData.data {
-					datas = append(datas, block)
-				}
-				sort.Slice(datas, func(i, j int) bool {
-					return datas[i].num < datas[j].num
-				})
-				for _, block := range datas {
-					logutil.Infof("write object %v, id is %d", fileName, block.num)
-					if block.pk > -1{
-						writer.SetPrimaryKey(uint16(block.pk))
-					}
-					if block.blockType == objectio.SchemaData {
-						_, err = writer.WriteBatch(block.data)
-						if err != nil {
-							return nil, nil, nil, nil, err
-						}
-					} else if block.blockType == objectio.SchemaTombstone {
-						_, err = writer.WriteTombstoneBatch(block.data)
-						if err != nil {
-							return nil, nil, nil, nil, err
-						}
-					}
-				}
-
-				blocks, extent, err := writer.Sync(ctx)
-				if err != nil {
-					if moerr.IsMoErrCode(err, moerr.ErrFileAlreadyExists) {
-						err = fs.Delete(ctx, fileName)
-						if err != nil {
-							return nil, nil, nil, nil, err
-						}
-						blocks, extent, err = writer.Sync(ctx)
-						if err != nil {
-							return nil, nil, nil, nil, err
-						}
-					} else {
+				var blocks []objectio.BlockObject
+				var extent  objectio.Extent
+				if objectData.isChange {
+					writer, err := blockio.NewBlockWriter(dstFs, fileName)
+					if err != nil {
 						return nil, nil, nil, nil, err
 					}
+					for _, block := range objectData.data {
+						datas = append(datas, block)
+					}
+					sort.Slice(datas, func(i, j int) bool {
+						return datas[i].num < datas[j].num
+					})
+					for _, block := range datas {
+						logutil.Infof("write object %v, id is %d", fileName, block.num)
+						if block.pk > -1{
+							writer.SetPrimaryKey(uint16(block.pk))
+						}
+						if block.blockType == objectio.SchemaData {
+							_, err = writer.WriteBatch(block.data)
+							if err != nil {
+								return nil, nil, nil, nil, err
+							}
+						} else if block.blockType == objectio.SchemaTombstone {
+							_, err = writer.WriteTombstoneBatch(block.data)
+							if err != nil {
+								return nil, nil, nil, nil, err
+							}
+						}
+					}
+
+					blocks, extent, err = writer.Sync(ctx)
+					if err != nil {
+						if moerr.IsMoErrCode(err, moerr.ErrFileAlreadyExists) {
+							err = fs.Delete(ctx, fileName)
+							if err != nil {
+								return nil, nil, nil, nil, err
+							}
+							blocks, extent, err = writer.Sync(ctx)
+							if err != nil {
+								return nil, nil, nil, nil, err
+							}
+						} else {
+							return nil, nil, nil, nil, err
+						}
+					}
 				}
 
-				for i := range blocks {
+				for i := range datas {
 					row := uint16(i)
-					blockLocation := objectio.BuildLocation(objectData.name, extent, blocks[row].GetRows(), objectData.data[row].num)
+					blockLocation := datas[row].location
+					if objectData.isChange{
+						blockLocation = objectio.BuildLocation(objectData.name, extent, blocks[row].GetRows(), objectData.data[row].num)
+					}
 					for _, dnRow := range objectData.data[row].dnRow {
 						if objectData.data[row].blockType == objectio.SchemaData {
 							logutil.Infof("rewrite BlockMeta_DataLocdn %s, row is %d", blockLocation.String(), dnRow)
