@@ -1331,7 +1331,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 						blockLocation = objectio.BuildLocation(objectData.name, extent, blocks[row].GetRows(), datas[i].num)
 					}
 					for _, dnRow := range datas[i].dnRow {
-						if objectData.data[row].blockType == objectio.SchemaData {
+						if datas[row].blockType == objectio.SchemaData {
 							logutil.Infof("rewrite BlockMeta_DataLocdn %s, row is %d", blockLocation.String(), dnRow)
 							data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 								dnRow,
@@ -1342,7 +1342,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								[]byte(blockLocation),
 								false)
 						}
-						if objectData.data[row].blockType == objectio.SchemaTombstone {
+						if datas[row].blockType == objectio.SchemaTombstone {
 							logutil.Infof("rewrite BlockMeta_DeltaLocdn %s, row is %d", blockLocation.String(), dnRow)
 							data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
 								dnRow,
@@ -1354,8 +1354,8 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								false)
 						}
 					}
-					for _, cnRow := range objectData.data[row].cnRow {
-						if objectData.data[row].blockType == objectio.SchemaData {
+					for _, cnRow := range datas[row].cnRow {
+						if datas[row].blockType == objectio.SchemaData {
 							logutil.Infof("rewrite BlockMeta_DataLoc %s, row is %d", blockLocation.String(), cnRow)
 							data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 								cnRow,
@@ -1376,7 +1376,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 									false)
 							}
 						}
-						if objectData.data[row].blockType == objectio.SchemaTombstone {
+						if datas[row].blockType == objectio.SchemaTombstone {
 							logutil.Infof("rewrite BlockMeta_DeltaLoc %s, row is %d", blockLocation.String(), cnRow)
 							data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
 								cnRow,
