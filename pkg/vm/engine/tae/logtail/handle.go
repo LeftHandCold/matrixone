@@ -1399,8 +1399,8 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 						}
 						if cnrs[cnRow] == false {
 							cnrs[cnRow] = true
+							logutil.Infof("rewrite BLKCNMetaInsertIDX %s, row is %d", blockLocation.String(), cnRow)
 							for v, vec:= range data.bats[BLKCNMetaInsertIDX].Vecs {
-								logutil.Infof("rewrite BLKCNMetaInsertIDX %s, row is %d", blockLocation.String(), cnRow)
 								val := vec.Get(cnRow)
 								if val == nil {
 									data.bats[BLKMetaInsertIDX].Vecs[v].Append(val, true)
@@ -1408,8 +1408,8 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 									data.bats[BLKMetaInsertIDX].Vecs[v].Append(val, false)
 								}
 							}
+							logutil.Infof("rewrite BLKMetaDeleteTxnIDX %s, row is %d", blockLocation.String(), cnRow)
 							for v, vec:= range data.bats[BLKMetaDeleteTxnIDX].Vecs {
-								logutil.Infof("rewrite BLKMetaDeleteTxnIDX %s, row is %d", blockLocation.String(), cnRow)
 								val := vec.Get(cnRow)
 								if val == nil {
 									data.bats[BLKMetaInsertTxnIDX].Vecs[v].Append(val, true)
