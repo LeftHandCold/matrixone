@@ -1242,6 +1242,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					if err != nil {
 						return nil, nil, nil, nil, err
 					}
+					isWindow := false
 					for v := 0; v < bat.Vecs[0].Length(); v++ {
 						err = commitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(v))
 						if err != nil {
@@ -1254,8 +1255,12 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 							logutil.Infof("blkCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
 							isChange = true
 							isCkpChange = true
+							isWindow = true
 							break
 						}
+					}
+					if !isWindow {
+						windowCNBatch(bat, 0, uint64(bat.Vecs[0].Length()))
 					}
 				}
 
