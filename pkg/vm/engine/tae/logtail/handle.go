@@ -1274,6 +1274,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					return datas[i].num < datas[j].num
 				})
 				for _, block := range datas {
+					logutil.Infof("write object %v, block is %d", fileName, block.data.Vecs[0].Length())
 					if block.blockType == objectio.SchemaData {
 						_, err = writer.WriteBatch(block.data)
 						if err != nil {
