@@ -1278,17 +1278,17 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 				datas := make([]*blockData,0)
 				var blocks []objectio.BlockObject
 				var extent  objectio.Extent
+				for _, block := range objectData.data {
+					datas = append(datas, block)
+				}
+				sort.Slice(datas, func(i, j int) bool {
+					return datas[i].num < datas[j].num
+				})
 				if objectData.isChange {
 					writer, err := blockio.NewBlockWriter(dstFs, fileName)
 					if err != nil {
 						return nil, nil, nil, nil, err
 					}
-					for _, block := range objectData.data {
-						datas = append(datas, block)
-					}
-					sort.Slice(datas, func(i, j int) bool {
-						return datas[i].num < datas[j].num
-					})
 					for _, block := range datas {
 						logutil.Infof("write object %v, id is %d", fileName, block.num)
 						if block.pk > -1{
