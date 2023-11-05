@@ -950,6 +950,7 @@ type blockData struct {
 	blockType objectio.DataMetaType
 	location  objectio.Location
 	data      *batch.Batch
+	pk   int32
 	isAblk	bool
 	commitTs  types.TS
 }
@@ -1177,6 +1178,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 			if block.isAblk {
 				commitTs := types.TS{}
 				deleteRow := make([]int64,0)
+				pk := int32(-1)
 				if block.blockType == objectio.SchemaTombstone{
 					bat, err = blockio.LoadOneBlock(ctx, fs, block.location, objectio.SchemaTombstone)
 					logutil.Infof("sdfsdfsdfdsfsdfsss")
@@ -1231,6 +1233,11 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 						}
 					}
 				} else {
+					meta, err := objectio.FastLoadObjectMeta(ctx, &block.location, false, fs)
+					if err != nil {
+						return nil, nil, nil, nil, err
+					}
+					pk = meta.MustDataMeta().BlockHeader().PkIdxID()
 					bat, err = blockio.LoadOneBlock(ctx, fs, block.location, objectio.SchemaData)
 					if err != nil {
 						return nil, nil, nil, nil, err
@@ -1253,6 +1260,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 				}
 
 				objectData.data[id].data = bat
+				objectData.data[id].pk = pk
 			}
 		}
 		objectsData[name].isChange = isChange
@@ -1274,7 +1282,10 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					return datas[i].num < datas[j].num
 				})
 				for _, block := range datas {
-					logutil.Infof("write object %v, block is %d", fileName, block.data.Vecs[0].Length())
+					logutil.Infof("write object %v, block is %d, id is %d", fileName, block.data.Vecs[0].Length(), block.num)
+					if block.pk > -1{
+						writer.SetPrimaryKey(uint16(block.pk))
+					}
 					if block.blockType == objectio.SchemaData {
 						_, err = writer.WriteBatch(block.data)
 						if err != nil {
