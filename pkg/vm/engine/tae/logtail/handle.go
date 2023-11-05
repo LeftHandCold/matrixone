@@ -1365,7 +1365,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								cnRow,
 								[]byte(blockLocation),
 								false)
-							if cnrs[cnRow] {
+							if cnrs[cnRow] && datas[row].isAblk{
 								data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 									cnRow,
 									[]byte(blockLocation),
@@ -1397,7 +1397,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 									false)
 							}
 						}
-						if cnrs[cnRow] == false {
+						if cnrs[cnRow] == false && datas[row].isAblk{
 							cnrs[cnRow] = true
 							logutil.Infof("rewrite BLKCNMetaInsertIDX %s, row is %d", blockLocation.String(), cnRow)
 							for v, vec:= range data.bats[BLKCNMetaInsertIDX].Vecs {
