@@ -1354,6 +1354,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								false)
 						}
 					}
+					cnrs := make(map[int]bool)
 					for _, cnRow := range objectData.data[row].cnRow {
 						if objectData.data[row].blockType == objectio.SchemaData {
 							logutil.Infof("rewrite BlockMeta_DataLoc %s, row is %d", blockLocation.String(), cnRow)
@@ -1365,21 +1366,55 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								cnRow,
 								[]byte(blockLocation),
 								false)
-						}
-						for v, vec:= range data.bats[BLKCNMetaInsertIDX].Vecs {
-							val := vec.Get(cnRow)
-							if val == nil {
-								data.bats[BLKMetaInsertIDX].Vecs[v].Append(val, true)
-							} else {
-								data.bats[BLKMetaInsertIDX].Vecs[v].Append(val, false)
+							if cnrs[cnRow] {
+								data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+									cnRow,
+									[]byte(blockLocation),
+									false)
+								data.bats[BLKMetaInsertTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+									cnRow,
+									[]byte(blockLocation),
+									false)
 							}
 						}
-						for v, vec:= range data.bats[BLKMetaDeleteTxnIDX].Vecs {
-							val := vec.Get(cnRow)
-							if val == nil {
-								data.bats[BLKMetaInsertTxnIDX].Vecs[v].Append(val, true)
-							} else {
-								data.bats[BLKMetaInsertTxnIDX].Vecs[v].Append(val, false)
+						if objectData.data[row].blockType == objectio.SchemaTombstone {
+							logutil.Infof("rewrite BlockMeta_DeltaLoc %s, row is %d", blockLocation.String(), cnRow)
+							data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+								cnRow,
+								[]byte(blockLocation),
+								false)
+							data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+								cnRow,
+								[]byte(blockLocation),
+								false)
+							if cnrs[cnRow] {
+								data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+									cnRow,
+									[]byte(blockLocation),
+									false)
+								data.bats[BLKMetaInsertTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+									cnRow,
+									[]byte(blockLocation),
+									false)
+							}
+						}
+						if cnrs[cnRow] == false {
+							cnrs[cnRow] = true
+							for v, vec:= range data.bats[BLKCNMetaInsertIDX].Vecs {
+								val := vec.Get(cnRow)
+								if val == nil {
+									data.bats[BLKMetaInsertIDX].Vecs[v].Append(val, true)
+								} else {
+									data.bats[BLKMetaInsertIDX].Vecs[v].Append(val, false)
+								}
+							}
+							for v, vec:= range data.bats[BLKMetaDeleteTxnIDX].Vecs {
+								val := vec.Get(cnRow)
+								if val == nil {
+									data.bats[BLKMetaInsertTxnIDX].Vecs[v].Append(val, true)
+								} else {
+									data.bats[BLKMetaInsertTxnIDX].Vecs[v].Append(val, false)
+								}
 							}
 						}
 						/*if objectData.data[row].blockType == objectio.SchemaTombstone {
@@ -1394,7 +1429,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								false)
 						}*/
 					}
-					for  _, cnRow := range objectData.data[row].cnRow{
+					for cnRow  := range cnrs{
 						data.bats[BLKMetaDeleteTxnIDX].Delete(cnRow)
 						data.bats[BLKCNMetaInsertIDX].Delete(cnRow)
 						logutil.Infof("redata.bats[BLKMetaDeleteIDX] %d", data.bats[BLKMetaDeleteIDX].Length())
