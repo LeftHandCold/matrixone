@@ -939,6 +939,7 @@ func LoadCheckpointEntriesFromKey(
 type fileData struct {
 	data     map[uint16]*blockData
 	name     objectio.ObjectName
+	isCnBatch bool
 	isChange bool
 }
 
@@ -997,7 +998,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		deltaLoc := objectio.Location(blkCNMetaInsertDeltaLoc.Get(i).([]byte))
 		isAblk := blkCNMetaInsertEntryState.Get(i).(bool)
 		commits := blkCNMetaInsertCommitTs.Get(i).(types.TS)
-		if commits.Less(ts) {
+		if commits.Less(ts){
 			logutil.Infof("commits.Less(ts) %v less than ts %v", commits, ts)
 			continue
 		}
@@ -1008,6 +1009,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					name:     metaLoc.Name(),
 					data:     make(map[uint16]*blockData),
 					isChange: false,
+					isCnBatch: true,
 				}
 				objectsData[name] = object
 			}
@@ -1036,6 +1038,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					name:     deltaLoc.Name(),
 					data:     make(map[uint16]*blockData),
 					isChange: false,
+					isCnBatch: true,
 				}
 				objectsData[name] = object
 			}
@@ -1258,7 +1261,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 
 	if isCkpChange {
 		for fileName, objectData := range objectsData {
-			if objectData.isChange {
+			if objectData.isChange || objectData.isCnBatch{
 				writer, err := blockio.NewBlockWriter(dstFs, fileName)
 				if err != nil {
 					return nil, nil, nil, nil, err

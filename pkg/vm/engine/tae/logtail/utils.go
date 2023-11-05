@@ -2890,9 +2890,6 @@ func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (er
 			}
 		} else {
 			if metaNode.HasDropCommitted() {
-				if !metaNode.GetEnd().Greater(collector.start) {
-					continue
-				}
 				vector.AppendFixed(
 					blkMetaDelRowIDVec,
 					objectio.HackBlockid2Rowid(&entry.ID),
