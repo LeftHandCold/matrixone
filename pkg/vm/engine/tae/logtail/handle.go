@@ -1426,8 +1426,8 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								}
 							}
 							cnrs[cnRow] = &newRow{
-								insertRow: data.bats[BLKMetaInsertIDX].Length(),
-								insertTxnRow: data.bats[BLKMetaInsertTxnIDX].Length(),
+								insertRow: data.bats[BLKMetaInsertIDX].Length() - 1,
+								insertTxnRow: data.bats[BLKMetaInsertTxnIDX].Length() - 1,
 							}
 						}
 						/*if objectData.data[row].blockType == objectio.SchemaTombstone {
