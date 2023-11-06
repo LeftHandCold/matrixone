@@ -803,6 +803,7 @@ func (catalog *Catalog) onReplayCreateBlock(
 	blk.Insert(un)
 	blk.location = un.BaseNode.MetaLoc
 	blk.blkData = dataFactory.MakeBlockFactory()(blk)
+	logutil.Infof("blk.String() is %v", blk.String())
 }
 func (catalog *Catalog) onReplayDeleteBlock(
 	dbid, tid uint64,
