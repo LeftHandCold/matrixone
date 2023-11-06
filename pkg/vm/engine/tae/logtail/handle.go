@@ -822,16 +822,11 @@ func LoadCheckpointEntries(
 		bats[i] = bat
 	}
 	for i, b := range bats {
-		for j := range b {
-			if j > 0 {
-				break
-			}
-			ins := containers.ToTNBatch(b[j])
+		ins := containers.ToTNBatch(b[BLKMetaInsertIDX])
 
-			blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(i).(types.Blockid)
-			metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
-			logutil.Infof("blkID %s metaLoc %s", blkID.String(), objectio.Location(metaLoc).String())
-		}
+		blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(i).(types.Blockid)
+		metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
+		logutil.Infof("blkID %s metaLoc %s", blkID.String(), objectio.Location(metaLoc).String())
 	}
 	entries := make([]*api.Entry, 0)
 	for i := range objectLocations {
