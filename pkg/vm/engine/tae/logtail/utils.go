@@ -2558,10 +2558,7 @@ func (collector *BaseCollector) VisitSeg(entry *catalog.SegmentEntry) (err error
 func (collector *BaseCollector) VisitSegForBackup(entry *catalog.SegmentEntry) (err error) {
 	entry.RLock()
 	logutil.Infof("VisitSegForBackup: %v, %v-%v, entry.GetSegment().GetTable().String() %v", entry.ID.ToString(), collector.start.ToString(), collector.end.ToString(), entry.GetTable().String())
-	if entry.GetCreatedAtLocked().Greater(collector.start) ||
-		entry.ID.ToString() == "65000000-0000-0000-0000-000000000000-0-0" ||
-		entry.ID.ToString() == "66000000-0000-0000-0000-000000000000-0-0" ||
-		entry.ID.ToString() == "67000000-0000-0000-0000-000000000000-0-0" {
+	if entry.GetCreatedAtLocked().Greater(collector.start) {
 		entry.RUnlock()
 		return nil
 	}
@@ -2673,10 +2670,7 @@ func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (er
 			continue
 		}
 	}
-	if entry.GetCreatedAtLocked().Greater(collector.start) ||
-		entry.ID.String() == "65000000-0000-0000-0000-000000000000-0-0" ||
-		entry.ID.String() == "66000000-0000-0000-0000-000000000000-0-0" ||
-		entry.ID.String() == "67000000-0000-0000-0000-000000000000-0-0" {
+	if entry.GetCreatedAtLocked().Greater(collector.start) {
 		entry.RUnlock()
 		return nil
 	}
