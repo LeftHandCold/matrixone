@@ -123,6 +123,8 @@ func BlockRead(
 		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
 	}
 
+	logutil.Infof("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
+
 	var (
 		sels []int32
 		err  error
