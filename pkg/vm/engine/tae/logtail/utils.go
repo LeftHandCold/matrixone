@@ -2680,7 +2680,7 @@ func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (er
 		entry.RUnlock()
 		return nil
 	}
-	logutil.Infof("VisitBlkForBackup222: %v, %v-%v, %v", entry.ID.String(), collector.start.ToString(), collector.end.ToString(), len(mvccNodes))
+	logutil.Infof("VisitBlkForBackup222: %v, %v-%v, %v, %v", entry.ID.String(), entry.String(), entry.GetCreatedAtLocked().ToString(), collector.start.ToString(), collector.end.ToString(), len(mvccNodes))
 	entry.RUnlock()
 	if len(mvccNodes) == 0 {
 		return nil

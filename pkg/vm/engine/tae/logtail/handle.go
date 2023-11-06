@@ -1366,14 +1366,16 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					for _, cnRow := range datas[row].cnRow {
 						if datas[row].blockType == objectio.SchemaData {
 							logutil.Infof("rewrite BlockMeta_DataLoc %s, row is %d", blockLocation.String(), cnRow)
-							data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-								cnRow,
-								[]byte(blockLocation),
-								false)
-							data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-								cnRow,
-								[]byte(blockLocation),
-								false)
+							if datas[row].isAblk {
+								data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+									cnRow,
+									[]byte(blockLocation),
+									false)
+								data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+									cnRow,
+									[]byte(blockLocation),
+									false)
+							}
 							if cnrs[cnRow] != nil{
 								logutil.Infof("rewrite BlockMeta_DataLoc %s, row is %d", blockLocation.String(), cnrs[cnRow].insertRow)
 								data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
@@ -1448,8 +1450,8 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 				for cnRow  := range cnrs{
 					data.bats[BLKMetaDeleteTxnIDX].Delete(cnRow)
 					data.bats[BLKCNMetaInsertIDX].Delete(cnRow)
-					logutil.Infof("redata.bats[BLKMetaDeleteIDX] %d", data.bats[BLKMetaDeleteIDX].Length())
 					data.bats[BLKMetaDeleteIDX].Delete(cnRow)
+					logutil.Infof("redata.bats[BLKMetaDeleteIDX] %d, cnRow is %d", data.bats[BLKMetaDeleteIDX].Length(), cnRow)
 				}
 
 			}
