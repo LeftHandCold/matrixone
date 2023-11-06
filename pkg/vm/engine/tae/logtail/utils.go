@@ -1196,25 +1196,18 @@ func (data *CNCheckpointData) ReadFromData(
 					}
 				}
 				dataBats[uint32(i)] = cnBatch
-				if i == 0 {
-					ins := containers.ToTNBatch(cnBatch)
-
-					blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(i).(types.Blockid)
-					metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
-					logutil.Infof("blkID %s metaLoc %s", blkID.String(), objectio.Location(metaLoc).String())
-				}
 			} else {
-				if i == 0 {
-					ins := containers.ToTNBatch(bat)
-
-					blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(i).(types.Blockid)
-					metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
-					logutil.Infof("blkID %s metaLoc %s", blkID.String(), objectio.Location(metaLoc).String())
-				}
 				dataBats[uint32(i)], err = dataBats[uint32(i)].Append(ctx, m, bat)
 				if err != nil {
 					return
 				}
+			}
+			if i == 0 && BLKMetaInsertIDX == idx {
+				ins := containers.ToTNBatch(bat)
+
+				blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(i).(types.Blockid)
+				metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
+				logutil.Infof("blkID %s metaLoc %s", blkID.String(), objectio.Location(metaLoc).String())
 			}
 		}
 
