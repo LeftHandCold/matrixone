@@ -55,6 +55,7 @@ func NewObjectReader(
 	metaExt := key.Extent()
 	var reader *objectio.ObjectReader
 	var err error
+	logutil.Infof("NewObjectReader: key %s", key.String())
 	if opts == nil {
 		reader, err = objectio.NewObjectReader(
 			&name,
