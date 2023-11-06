@@ -1375,6 +1375,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								[]byte(blockLocation),
 								false)
 							if cnrs[cnRow] != nil{
+								logutil.Infof("rewrite BlockMeta_DataLoc %s, row is %d", blockLocation.String(), cnrs[cnRow].insertRow)
 								data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 									cnrs[cnRow].insertRow,
 									[]byte(blockLocation),
@@ -1396,6 +1397,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								[]byte(blockLocation),
 								false)
 							if cnrs[cnRow] != nil {
+								logutil.Infof("rewrite BlockMeta_DeltaLoc %s, row is %d", blockLocation.String(), cnrs[cnRow].insertRow)
 								data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
 									cnrs[cnRow].insertRow,
 									[]byte(blockLocation),
