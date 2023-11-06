@@ -940,6 +940,7 @@ type fileData struct {
 	data     map[uint16]*blockData
 	name     objectio.ObjectName
 	isCnBatch bool
+	isDnBatch bool
 	isChange bool
 }
 
@@ -959,6 +960,11 @@ type dataObject struct {
 	isChange bool
 	name objectio.ObjectName
 	data blockData
+}
+
+type newRow struct {
+	insertRow int
+	insertTxnRow int
 }
 
 func ReWriteCheckpointAndBlockFromKey(
@@ -1068,6 +1074,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					name:     metaLoc.Name(),
 					data:     make(map[uint16]*blockData),
 					isChange: false,
+					isDnBatch: true,
 				}
 				objectsData[name] = object
 			}
@@ -1279,6 +1286,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 				var blocks []objectio.BlockObject
 				var extent  objectio.Extent
 				for _, block := range objectData.data {
+					logutil.Infof("object %v, id is %d", fileName, block.num)
 					datas = append(datas, block)
 				}
 				sort.Slice(datas, func(i, j int) bool {
@@ -1323,8 +1331,9 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 						}
 					}
 				}
-				cnrs := make(map[int]bool)
+				cnrs := make(map[int]*newRow)
 				for i := range datas {
+					logutil.Infof("write11 object %v, id is %d", fileName, datas[i].num)
 					row := uint16(i)
 					blockLocation := datas[row].location
 					if objectData.isChange{
@@ -1365,13 +1374,13 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								cnRow,
 								[]byte(blockLocation),
 								false)
-							if cnrs[cnRow] && datas[row].isAblk{
+							if cnrs[cnRow] != nil{
 								data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-									cnRow,
+									cnrs[cnRow].insertRow,
 									[]byte(blockLocation),
 									false)
 								data.bats[BLKMetaInsertTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-									cnRow,
+									cnrs[cnRow].insertTxnRow,
 									[]byte(blockLocation),
 									false)
 							}
@@ -1386,19 +1395,18 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								cnRow,
 								[]byte(blockLocation),
 								false)
-							if cnrs[cnRow] {
+							if cnrs[cnRow] != nil {
 								data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
-									cnRow,
+									cnrs[cnRow].insertRow,
 									[]byte(blockLocation),
 									false)
 								data.bats[BLKMetaInsertTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
-									cnRow,
+									cnrs[cnRow].insertTxnRow,
 									[]byte(blockLocation),
 									false)
 							}
 						}
-						if cnrs[cnRow] == false && datas[row].isAblk{
-							cnrs[cnRow] = true
+						if cnrs[cnRow] == nil && datas[row].isAblk{
 							logutil.Infof("rewrite BLKCNMetaInsertIDX %s, row is %d", blockLocation.String(), cnRow)
 							for v, vec:= range data.bats[BLKCNMetaInsertIDX].Vecs {
 								val := vec.Get(cnRow)
@@ -1416,6 +1424,10 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								} else {
 									data.bats[BLKMetaInsertTxnIDX].Vecs[v].Append(val, false)
 								}
+							}
+							cnrs[cnRow] = &newRow{
+								insertRow: data.bats[BLKMetaInsertIDX].Length(),
+								insertTxnRow: data.bats[BLKMetaInsertTxnIDX].Length(),
 							}
 						}
 						/*if objectData.data[row].blockType == objectio.SchemaTombstone {
