@@ -310,6 +310,9 @@ func (blk *baseBlock) foreachPersistedDeletesCommittedInRange(
 	if deletes == nil || err != nil {
 		return
 	}
+	if blk.meta.ID.Segment().ToString() == "187c9475-7d18-11ee-8782-b07b25f84010" {
+		logutil.Infof("foreachPersistedDeletesCommittedInRange: blk %s, start %v, end %v, delete is %v", blk.meta.ID.String(), start.ToString(), end.ToString(), deletes.Deletes.ToArray())
+	}
 	if persistedByCN {
 		if deltalocCommitTS.Equal(txnif.UncommitTS) {
 			return

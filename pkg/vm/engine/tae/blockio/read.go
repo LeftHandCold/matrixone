@@ -361,7 +361,7 @@ func BlockReadInner(
 		}
 	}
 
-	if len(loaded.Vecs) > 0 {
+	if len(loaded.Vecs) > 0 && info.BlockID.String() == "187c9475-7d18-11ee-8782-b07b25f84010-0-0" {
 		logutil.Infof("read block %s, columns %v, types %v, del is %v, loaded.Vecs is %d, result is %d, delete is %v", info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), loaded.Vecs[0].Length(), result.Vecs[0].Length(), deletedRows)
 	}
 	// if any error happens, free the result batch allocated
