@@ -776,7 +776,7 @@ func (tbl *txnTable) RangeDelete(
 		chain := node.GetChain().(*updates.DeleteChain)
 		mvcc := chain.GetController()
 		mvcc.Lock()
-		logutil.Infof("start ts %v, start %d, end %d, id is %v", tbl.store.txn.GetStartTS(), start, end, id.String())
+		logutil.Infof("start ts %v, start %d, end %d, id is %v", tbl.store.txn.GetStartTS().ToString(), start, end, id.String())
 		if err = mvcc.CheckNotDeleted(start, end, tbl.store.txn.GetStartTS()); err == nil {
 			node.RangeDeleteLocked(start, end, pk)
 		}
