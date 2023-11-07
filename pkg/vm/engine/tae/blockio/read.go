@@ -16,6 +16,7 @@ package blockio
 
 import (
 	"context"
+	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"math"
 	"time"
@@ -285,6 +286,9 @@ func BlockReadInner(
 		}
 		if len(deletes.Vecs) > 0 && info.BlockID.String() == "aa8bb0e4-7d66-11ee-9e38-b07b25f84010-0-0" {
 			deletes.Attrs = make([]string, len(deletes.Vecs))
+			for i := range deletes.Attrs {
+				deletes.Attrs[i] = fmt.Sprintf("%d-del", i)
+			}
 			dd := containers.ToTNBatch(deletes)
 			logutil.Infof("blockread %s read delete %v: base %s\n", info.BlockID.String(), dd.String(), time.Since(now))
 		}
@@ -369,6 +373,9 @@ func BlockReadInner(
 
 	if len(loaded.Vecs) > 0 && info.BlockID.String() == "aa8bb0e4-7d66-11ee-9e38-b07b25f84010-0-0" {
 		loaded.Attrs = make([]string, len(loaded.Vecs))
+		for i := range loaded.Attrs {
+			loaded.Attrs[i] = fmt.Sprintf("%d-mo", i)
+		}
 		l := containers.ToTNBatch(loaded)
 		logutil.Infof("read block %s, columns %v, types %v, del is %v, loaded.Vecs is %d, result is %d, delete is%d- %v, inputDeleteRows is %v, data is %v ",
 			info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), loaded.Vecs[0].Length(), result.Vecs[0].Length(), len(deletedRows), deletedRows, inputDeleteRows, l.String())
