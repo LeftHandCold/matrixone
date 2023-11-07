@@ -350,6 +350,18 @@ func BlockReadInner(
 			return
 		}
 	}
+	if len(loaded.Vecs) > 0 && info.BlockID.String() == "d92bf9eb-7d75-11ee-bc28-b07b25f84010-0-0" {
+		loaded.Attrs = make([]string, len(loaded.Vecs))
+		for i := range loaded.Attrs {
+			loaded.Attrs[i] = fmt.Sprintf("%d-mo", i)
+		}
+		l := containers.ToTNBatch(loaded)
+		for i := 0; i < len(loaded.Vecs); i++ {
+			logutil.Infof("blockrrrr is %i, v is %v", i, l.Vecs[i].Get(119))
+		}
+		logutil.Infof("read block %s, columns %v, types %v, del is %v, loaded.Vecs is %d, result is %d, delete is%d- %v, inputDeleteRows is %v, data is %v ",
+			info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), loaded.Vecs[0].Length(), result.Vecs[0].Length(), len(deletedRows), deletedRows, inputDeleteRows, l.String())
+	}
 	// assemble result batch
 	for i, col := range loaded.Vecs {
 		typ := *col.GetType()
@@ -377,15 +389,6 @@ func BlockReadInner(
 		}
 	}
 
-	if len(loaded.Vecs) > 0 && info.BlockID.String() == "d92bf9eb-7d75-11ee-bc28-b07b25f84010-0-0" {
-		loaded.Attrs = make([]string, len(loaded.Vecs))
-		for i := range loaded.Attrs {
-			loaded.Attrs[i] = fmt.Sprintf("%d-mo", i)
-		}
-		l := containers.ToTNBatch(loaded)
-		logutil.Infof("read block %s, columns %v, types %v, del is %v, loaded.Vecs is %d, result is %d, delete is%d- %v, inputDeleteRows is %v, data is %v ",
-			info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), loaded.Vecs[0].Length(), result.Vecs[0].Length(), len(deletedRows), deletedRows, inputDeleteRows, l.String())
-	}
 	// if any error happens, free the result batch allocated
 	if err != nil {
 		for _, col := range result.Vecs {
