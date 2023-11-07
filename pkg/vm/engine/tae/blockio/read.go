@@ -17,6 +17,7 @@ package blockio
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"math"
 	"time"
@@ -290,7 +291,12 @@ func BlockReadInner(
 				deletes.Attrs[i] = fmt.Sprintf("%d-del", i)
 			}
 			dd := containers.ToTNBatch(deletes)
-			logutil.Infof("blockread %s read delete %v: base %s\n", info.BlockID.String(), dd.String(), time.Since(now))
+			var rowid string
+			for i := 0; i < dd.Length(); i++ {
+				rowid += "1:"
+				rowid += dd.GetVectorByName(catalog.AttrRowID).Get(i).(*objectio.Rowid).String()
+			}
+			logutil.Infof("blockread %s read delete %v: base %s\n", info.BlockID.String(), rowid, time.Since(now))
 		}
 		readcost := time.Since(now)
 
