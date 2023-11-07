@@ -1195,7 +1195,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					var rowid string
 					for i := 0; i < dd.Length(); i++ {
 						rowid += "1:"
-						rid := dd.GetVectorByName("0-del").Get(i).(objectio.Rowid)
+						rid := dd.Vecs[0].Get(i).(objectio.Rowid)
 						rowid += rid.String()
 					}
 					logutil.Infof("blockread11 %s read delete %v \n", block.location.String(), rowid)
@@ -1246,11 +1246,11 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								panic("commitTs.Greater(ts2)")
 							}
 						}
-						dd := containers.ToTNBatch(bat)
+						dd = containers.ToTNBatch(bat)
 						var rowid string
 						for i := 0; i < dd.Length(); i++ {
 							rowid += "1:"
-							rid := dd.GetVectorByName("0-del").Get(i).(objectio.Rowid)
+							rid := dd.Vecs[0].Get(i).(objectio.Rowid)
 							rowid += rid.String()
 						}
 						logutil.Infof("blockread %s read delete %v \n", block.location.String(), rowid)
