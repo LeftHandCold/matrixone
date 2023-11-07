@@ -283,6 +283,9 @@ func BlockReadInner(
 		if deletes, persistedByCN, err = ReadBlockDelete(ctx, info.DeltaLocation(), fs); err != nil {
 			return
 		}
+		if len(deletes.Vecs) > 0 && info.BlockID.String() == "aa8bb0e4-7d66-11ee-9e38-b07b25f84010-0-0" {
+			logutil.Infof("blockread %s read delete %v: base %s\n", info.BlockID.String(), deletes.String(), time.Since(now))
+		}
 		readcost := time.Since(now)
 
 		// eval delete rows by timestamp
@@ -362,10 +365,9 @@ func BlockReadInner(
 		}
 	}
 
-	if len(loaded.Vecs) > 0 && info.BlockID.String() == "d5b6fdd9-7d44-11ee-865a-b07b25f84010-0-0" {
-		logutil.Infof("read block %s, columns %v, types %v, del is %v, loaded.Vecs is %d, result is %d, delete is%d- %v, inputDeleteRows is %v",
-			info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), loaded.Vecs[0].Length(), result.Vecs[0].Length(), len(deletedRows), deletedRows, inputDeleteRows)
-		debug.PrintStack()
+	if len(loaded.Vecs) > 0 && info.BlockID.String() == "aa8bb0e4-7d66-11ee-9e38-b07b25f84010-0-0" {
+		logutil.Infof("read block %s, columns %v, types %v, del is %v, loaded.Vecs is %d, result is %d, delete is%d- %v, inputDeleteRows is %v, data is %v ",
+			info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), loaded.Vecs[0].Length(), result.Vecs[0].Length(), len(deletedRows), deletedRows, inputDeleteRows, loaded.String())
 	}
 	// if any error happens, free the result batch allocated
 	if err != nil {
