@@ -121,6 +121,7 @@ func (chain *DeleteChain) IsDeleted(row uint32, txn txnif.TxnReader, rwlocker *s
 
 func (chain *DeleteChain) PrepareRangeDelete(start, end uint32, ts types.TS) (err error) {
 	if chain.hasOverLap(uint64(start), uint64(end)) {
+		panic("fsdfsdfsdf")
 		err = txnif.ErrTxnWWConflict
 	}
 	return
