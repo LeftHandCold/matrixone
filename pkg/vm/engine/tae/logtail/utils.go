@@ -907,6 +907,9 @@ func (data *CNCheckpointData) GetTableMeta(tableID uint64, version uint32, loc o
 
 	data.meta[tid] = tableMeta
 	meta = data.meta[tableID]
+	if tableID == 272481 {
+		logutil.Infof("tableID %d, meta %v", tableID, meta.String())
+	}
 	return
 }
 func (data *CNCheckpointData) fillInMetaBatchWithLocation(location objectio.Location, m *mpool.MPool) (err error) {
