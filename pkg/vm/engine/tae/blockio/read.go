@@ -362,8 +362,6 @@ func BlockReadInner(
 			test += fmt.Sprintf("%v", l.Vecs[i].Get(119))
 		}
 		logutil.Infof("readb is %s, columns is %v, test %v", info.BlockID.String(), columns, test)
-		logutil.Infof("read block %s, columns %v, types %v, del is %v, loaded.Vecs is %d, delete is%d- %v, inputDeleteRows is %v, data is %v ",
-			info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), loaded.Vecs[0].Length(), len(deletedRows), deletedRows, inputDeleteRows, l.String())
 	}
 	// assemble result batch
 	for i, col := range loaded.Vecs {
@@ -391,6 +389,14 @@ func BlockReadInner(
 			result.Vecs[i].Shrink(deletedRows, true)
 		}
 	}
+
+	result.Attrs = make([]string, len(result.Vecs))
+	for i := range result.Attrs {
+		result.Attrs[i] = fmt.Sprintf("%d-mo", i)
+	}
+	l := containers.ToTNBatch(result)
+	logutil.Infof("read block %s, columns %v, types %v, del is %v, delete is%d- %v, inputDeleteRows is %v, data is %v ",
+		info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), len(deletedRows), deletedRows, inputDeleteRows, l.String())
 
 	// if any error happens, free the result batch allocated
 	if err != nil {
