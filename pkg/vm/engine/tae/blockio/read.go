@@ -123,8 +123,6 @@ func BlockRead(
 		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
 	}
 
-	//logutil.Infof("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
-
 	var (
 		sels []int32
 		err  error
@@ -336,7 +334,6 @@ func BlockReadInner(
 			return
 		}
 	}
-
 	// assemble result batch
 	for i, col := range loaded.Vecs {
 		typ := *col.GetType()
@@ -364,6 +361,9 @@ func BlockReadInner(
 		}
 	}
 
+	if len(loaded.Vecs) > 0 {
+		logutil.Infof("read block %s, columns %v, types %v, del is %v, loaded.Vecs is %d, result is %d", info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), loaded.Vecs[0].Length(), result.Vecs[0].Length())
+	}
 	// if any error happens, free the result batch allocated
 	if err != nil {
 		for _, col := range result.Vecs {
