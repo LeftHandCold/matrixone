@@ -547,8 +547,8 @@ func (blk *baseBlock) RangeDelete(
 	dt handle.DeleteType) (node txnif.DeleteNode, err error) {
 	blk.Lock()
 	defer blk.Unlock()
-	if blk.meta.GetSegment().ID.ToString() == "187c9475-7d18-11ee-8782-b07b25f84010" {
-		if start == 56 {
+	if blk.meta.GetSegment().ID.ToString() == "c8c5fe8d-7d44-11ee-865a-b07b25f84010" {
+		if start == 38 {
 			logutil.Infof("blk is %v: %v, start %d, end %d, delete is %v", blk.meta.String(), txn.GetStartTS().ToString(), start, end, blk.mvcc.GetDeleteChain().StringLocked())
 		}
 	}
