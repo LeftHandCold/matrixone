@@ -310,7 +310,7 @@ func (blk *baseBlock) foreachPersistedDeletesCommittedInRange(
 	if deletes == nil || err != nil {
 		return
 	}
-	logutil.Infof("foreachPersistedDeletesCommittedInRange: blk %s, start %v, end %v, delete is %v", blk.meta.ID.String(), start.ToString(), end.ToString(), deletes.Deletes.ToArray())
+	logutil.Infof("foreachPersistedDeletesCommittedInRange: blk %s, start %v, end %v, delete is %v", blk.meta.ID.String(), start.ToString(), end.ToString(), deletes.Length())
 	if persistedByCN {
 		if deltalocCommitTS.Equal(txnif.UncommitTS) {
 			return
