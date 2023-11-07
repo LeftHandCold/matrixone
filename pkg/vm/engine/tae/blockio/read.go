@@ -284,7 +284,7 @@ func BlockReadInner(
 		if deletes, persistedByCN, err = ReadBlockDelete(ctx, info.DeltaLocation(), fs); err != nil {
 			return
 		}
-		if len(deletes.Vecs) > 0 && info.BlockID.String() == "aa8bb0e4-7d66-11ee-9e38-b07b25f84010-0-0" {
+		if len(deletes.Vecs) > 0 && info.BlockID.String() == "d92bf9eb-7d75-11ee-bc28-b07b25f84010-0-0" {
 			deletes.Attrs = make([]string, len(deletes.Vecs))
 			for i := range deletes.Attrs {
 				deletes.Attrs[i] = fmt.Sprintf("%d-del", i)
@@ -377,7 +377,7 @@ func BlockReadInner(
 		}
 	}
 
-	if len(loaded.Vecs) > 0 && info.BlockID.String() == "aa8bb0e4-7d66-11ee-9e38-b07b25f84010-0-0" {
+	if len(loaded.Vecs) > 0 && info.BlockID.String() == "d92bf9eb-7d75-11ee-bc28-b07b25f84010-0-0" {
 		loaded.Attrs = make([]string, len(loaded.Vecs))
 		for i := range loaded.Attrs {
 			loaded.Attrs[i] = fmt.Sprintf("%d-mo", i)
