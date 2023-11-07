@@ -548,7 +548,7 @@ func (blk *baseBlock) RangeDelete(
 	blk.Lock()
 	defer blk.Unlock()
 	if err = blk.mvcc.CheckNotDeleted(start, end, txn.GetStartTS()); err != nil {
-		logutil.Infof("blk is %v: %v, start %d, end %d", blk.meta.String(), txn.GetStartTS().ToString(), start, end)
+		logutil.Infof("blk is %v: %v, start %d, end %d, delete is %v", blk.meta.String(), txn.GetStartTS().ToString(), start, end, blk.mvcc.GetDeleteChain().StringLocked())
 		panic("fsdfsdfsdf")
 		return
 	}
