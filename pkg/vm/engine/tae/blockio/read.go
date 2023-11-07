@@ -363,8 +363,8 @@ func BlockReadInner(
 	}
 
 	if len(loaded.Vecs) > 0 && info.BlockID.String() == "c8c5fe8d-7d44-11ee-865a-b07b25f84010-0-0" {
-		logutil.Infof("read block %s, columns %v, types %v, del is %v, loaded.Vecs is %d, result is %d, delete is%d- %v",
-			info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), loaded.Vecs[0].Length(), result.Vecs[0].Length(), len(deletedRows), deletedRows)
+		logutil.Infof("read block %s, columns %v, types %v, del is %v, loaded.Vecs is %d, result is %d, delete is%d- %v, inputDeleteRows is %v",
+			info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), loaded.Vecs[0].Length(), result.Vecs[0].Length(), len(deletedRows), deletedRows, inputDeleteRows)
 		debug.PrintStack()
 	}
 	// if any error happens, free the result batch allocated

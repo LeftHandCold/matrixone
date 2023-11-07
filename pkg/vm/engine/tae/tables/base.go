@@ -548,7 +548,7 @@ func (blk *baseBlock) RangeDelete(
 	blk.Lock()
 	defer blk.Unlock()
 	if blk.meta.GetSegment().ID.ToString() == "c8c5fe8d-7d44-11ee-865a-b07b25f84010" {
-		if start == 38 {
+		if start == 11 {
 			logutil.Infof("blk is %v: %v, start %d, end %d, delete is %v", blk.meta.String(), txn.GetStartTS().ToString(), start, end, blk.mvcc.GetDeleteChain().StringLocked())
 		}
 	}
