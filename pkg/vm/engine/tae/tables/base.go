@@ -310,7 +310,7 @@ func (blk *baseBlock) foreachPersistedDeletesCommittedInRange(
 	if deletes == nil || err != nil {
 		return
 	}
-	logutil.Infof("foreachPersistedDeletesCommittedInRange: blk %s, start %v, end %v, delete is %v", blk.meta.ID.String(), start.ToString(), end.ToString(), deletes.Length())
+	logutil.Infof("foreachPersistedDeletesCommittedInRange: blk %s, start %v, end %v, delete is %v, persistedByCN is %v", blk.meta.ID.String(), start.ToString(), end.ToString(), deletes.Length(), persistedByCN)
 	if persistedByCN {
 		if deltalocCommitTS.Equal(txnif.UncommitTS) {
 			return
@@ -326,6 +326,7 @@ func (blk *baseBlock) foreachPersistedDeletesCommittedInRange(
 		abortVec := containers.NewConstFixed[bool](types.T_bool.ToType(), false, deletes.Length())
 		deletes.AddVector(catalog.AttrCommitTs, commitTSVec)
 		deletes.AddVector(catalog.AttrAborted, abortVec)
+		logutil.Infof("foreachPersistedDeletesCommittedInRange1: blk %s, start %v, end %v, delete is %v, persistedByCN is %v, commitTS is %v", blk.meta.ID.String(), start.ToString(), end.ToString(), deletes.Length(), persistedByCN, deltalocCommitTS.ToString())
 	} else {
 		abortVec := deletes.Vecs[3].GetDownstreamVector()
 		commitTsVec := deletes.Vecs[1].GetDownstreamVector()
