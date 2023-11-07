@@ -1209,8 +1209,8 @@ func (data *CNCheckpointData) ReadFromData(
 				ins := containers.ToTNBatch(bat)
 				for z := 0; z < ins.Length(); z++ {
 
-					blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(i).(types.Blockid)
-					metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
+					blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(z).(types.Blockid)
+					metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(z).([]byte)
 					logutil.Infof("blkID %s metaLoc %s", blkID.String(), objectio.Location(metaLoc).String())
 				}
 			}
