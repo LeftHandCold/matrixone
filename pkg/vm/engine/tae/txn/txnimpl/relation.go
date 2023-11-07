@@ -17,6 +17,7 @@ package txnimpl
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -271,6 +272,7 @@ func (h *txnRelation) DeleteByPhyAddrKeys(keys containers.Vector, pkVec containe
 	err = containers.ForeachVectorWindow(
 		keys, 0, keys.Length(),
 		func(rid types.Rowid, _ bool, offset int) (err error) {
+			logutil.Infof("delete by phy addr key: %v", rid.String())
 			id.BlockID, row = rid.Decode()
 			if pkVec != nil && pkVec.Length() > 0 {
 				pk = pkVec.Window(offset, 1)

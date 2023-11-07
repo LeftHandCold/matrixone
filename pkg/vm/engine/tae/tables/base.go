@@ -550,7 +550,6 @@ func (blk *baseBlock) RangeDelete(
 	if blk.meta.GetSegment().ID.ToString() == "187c9475-7d18-11ee-8782-b07b25f84010" {
 		if start == 56 {
 			logutil.Infof("blk is %v: %v, start %d, end %d, delete is %v", blk.meta.String(), txn.GetStartTS().ToString(), start, end, blk.mvcc.GetDeleteChain().StringLocked())
-			panic("fsdfsdfsdf")
 		}
 	}
 	if err = blk.mvcc.CheckNotDeleted(start, end, txn.GetStartTS()); err != nil {
