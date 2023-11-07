@@ -1191,11 +1191,10 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					if err != nil {
 						return nil, nil, nil, nil, err
 					}
-					dd := containers.ToTNBatch(bat)
 					var rowid string
-					for i := 0; i < dd.Length(); i++ {
+					for i := 0; i < bat.Vecs[0].Length(); i++ {
 						rowid += "1:"
-						rid := dd.Vecs[0].Get(i).(objectio.Rowid)
+						rid := objectio.HackBytes2Rowid(bat.Vecs[0].GetRawBytesAt(i))
 						rowid += rid.String()
 					}
 					logutil.Infof("blockread11 %s read delete %v \n", block.location.String(), rowid)
@@ -1246,14 +1245,13 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								panic("commitTs.Greater(ts2)")
 							}
 						}
-						dd = containers.ToTNBatch(bat)
-						var rowid string
-						for i := 0; i < dd.Length(); i++ {
-							rowid += "1:"
-							rid := dd.Vecs[0].Get(i).(objectio.Rowid)
-							rowid += rid.String()
+						var rowid1 string
+						for i := 0; i < bat.Vecs[0].Length(); i++ {
+							rowid1 += "1:"
+							rid := objectio.HackBytes2Rowid(bat.Vecs[0].GetRawBytesAt(i))
+							rowid1 += rid.String()
 						}
-						logutil.Infof("blockread %s read delete %v \n", block.location.String(), rowid)
+						logutil.Infof("blockread %s read delete %v \n", block.location.String(), rowid1)
 					}
 				} else {
 					meta, err := objectio.FastLoadObjectMeta(ctx, &block.location, false, fs)
