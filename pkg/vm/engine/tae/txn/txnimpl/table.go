@@ -767,7 +767,7 @@ func (tbl *txnTable) RangeDelete(
 	}()
 	if tbl.localSegment != nil && id.SegmentID().Eq(tbl.localSegment.entry.ID) {
 		if id.BlockID.Segment().ToString() == "187c9475-7d18-11ee-8782-b07b25f84010" {
-			logutil.Infof("start is %d, end is %d, id is %v", start, end, id.String())
+			logutil.Infof("start is1 %d, end is %d, id is %v", start, end, id.String())
 		}
 		err = tbl.RangeDeleteLocalRows(start, end)
 		return

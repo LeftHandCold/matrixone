@@ -274,7 +274,7 @@ func (h *txnRelation) DeleteByPhyAddrKeys(keys containers.Vector, pkVec containe
 		func(rid types.Rowid, _ bool, offset int) (err error) {
 			id.BlockID, row = rid.Decode()
 			if id.BlockID.Segment().ToString() == "187c9475-7d18-11ee-8782-b07b25f84010" {
-				logutil.Infof("delete by phy addr key: %v", rid.String())
+				logutil.Infof("delete by phy addr key: %v, id is %v", rid.String(), id.String())
 			}
 			if pkVec != nil && pkVec.Length() > 0 {
 				pk = pkVec.Window(offset, 1)
