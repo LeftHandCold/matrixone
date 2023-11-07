@@ -390,13 +390,15 @@ func BlockReadInner(
 		}
 	}
 
-	result.Attrs = make([]string, len(result.Vecs))
-	for i := range result.Attrs {
-		result.Attrs[i] = fmt.Sprintf("%d-mo", i)
+	if len(result.Vecs) > 0 && info.BlockID.String() == "d92bf9eb-7d75-11ee-bc28-b07b25f84010-0-0" {
+		result.Attrs = make([]string, len(result.Vecs))
+		for i := range result.Attrs {
+			result.Attrs[i] = fmt.Sprintf("%d-mo", i)
+		}
+		l := containers.ToTNBatch(result)
+		logutil.Infof("read block %s, columns %v, types %v, del is %v, delete is%d- %v, inputDeleteRows is %v, data is %v ",
+			info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), len(deletedRows), deletedRows, inputDeleteRows, l.String())
 	}
-	l := containers.ToTNBatch(result)
-	logutil.Infof("read block %s, columns %v, types %v, del is %v, delete is%d- %v, inputDeleteRows is %v, data is %v ",
-		info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), len(deletedRows), deletedRows, inputDeleteRows, l.String())
 
 	// if any error happens, free the result batch allocated
 	if err != nil {
