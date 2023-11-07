@@ -1203,7 +1203,6 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 						if err != nil {
 							return nil, nil, nil, nil, err
 						}
-						deleteRow = append(deleteRow, int64(v))
 						if commitTs.Greater(ts) {
 							logutil.Infof("SchemaTombstone commitTs %v ts %v, block is %v", commitTs.ToString(), ts.ToString(), block.location.String())
 							for y := v; y < bat.Vecs[0].Length(); y++ {
