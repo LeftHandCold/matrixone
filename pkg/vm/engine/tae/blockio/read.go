@@ -17,7 +17,6 @@ package blockio
 import (
 	"context"
 	"math"
-	"runtime/debug"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
