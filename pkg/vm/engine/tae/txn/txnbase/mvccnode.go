@@ -16,6 +16,7 @@ package txnbase
 
 import (
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"io"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -78,6 +79,7 @@ func (un *TxnMVCCNode) CheckConflict(txn txnif.TxnReader) error {
 		if un.IsSameTxn(txn) {
 			return nil
 		}
+		panic("fsdfsdfsdfdsfsdfsErrCheckConflict")
 		return txnif.ErrTxnWWConflict
 	}
 
@@ -85,6 +87,8 @@ func (un *TxnMVCCNode) CheckConflict(txn txnif.TxnReader) error {
 	// -------+-------------+-------------------->
 	//        ts         CommitTs            time
 	if un.End.Greater(txn.GetStartTS()) {
+		logutil.Infof("txn %d, node %d, ts %d, commit %d", txn.GetStartTS().ToString(), un.End.ToString())
+		panic("fsdfsdfsdfdsfsdfsErrTxnWWConflict")
 		return txnif.ErrTxnWWConflict
 	}
 	return nil
