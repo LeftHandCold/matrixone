@@ -1207,10 +1207,12 @@ func (data *CNCheckpointData) ReadFromData(
 			}
 			if i == 0 && BLKMetaInsertIDX == idx {
 				ins := containers.ToTNBatch(bat)
+				for z := 0; z < ins.Length(); z++ {
 
-				blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(i).(types.Blockid)
-				metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
-				logutil.Infof("blkID %s metaLoc %s", blkID.String(), objectio.Location(metaLoc).String())
+					blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(i).(types.Blockid)
+					metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
+					logutil.Infof("blkID %s metaLoc %s", blkID.String(), objectio.Location(metaLoc).String())
+				}
 			}
 		}
 
