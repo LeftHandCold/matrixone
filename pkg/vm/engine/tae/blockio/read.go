@@ -294,7 +294,7 @@ func BlockReadInner(
 			var rowid string
 			for i := 0; i < dd.Length(); i++ {
 				rowid += "1:"
-				rowid += dd.GetVectorByName(catalog.AttrRowID).Get(i).(*objectio.Rowid).String()
+				rowid += dd.GetVectorByName("0-del").Get(i).(*objectio.Rowid).String()
 			}
 			logutil.Infof("blockread %s read delete %v: base %s\n", info.BlockID.String(), rowid, time.Since(now))
 		}
