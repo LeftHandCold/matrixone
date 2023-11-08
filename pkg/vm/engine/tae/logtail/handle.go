@@ -1005,7 +1005,10 @@ func ReWriteCheckpointAndBlockFromKey(
 		isAblk := blkCNMetaInsertEntryState.Get(i).(bool)
 		commits := blkCNMetaInsertCommitTs.Get(i).(types.TS)
 		if commits.Less(ts) {
-			logutil.Infof("commits.Less(ts) %v less than ts %v", commits, ts)
+			panic("commitTs less than ts")
+		}
+		if !isAblk {
+			logutil.Infof("cn metaLoc1 %v, row is %d", metaLoc.String(), i)
 			continue
 		}
 		if !metaLoc.IsEmpty() {
@@ -1066,6 +1069,10 @@ func ReWriteCheckpointAndBlockFromKey(
 		metaLoc := objectio.Location(blkMetaInsertMetaLoc.Get(i).([]byte))
 		deltaLoc := objectio.Location(blkMetaInsertDeltaLoc.Get(i).([]byte))
 		isAblk := blkMetaInsertEntryState.Get(i).(bool)
+		if !isAblk {
+			logutil.Infof("dn metaLoc1 %v, row is %d", metaLoc.String(), i)
+			panic("blkMetaInsertEntryState.Get(i).(bool) is false")
+		}
 		if !metaLoc.IsEmpty() {
 			name := metaLoc.Name().String()
 			if objectsData[name] == nil {
