@@ -505,7 +505,7 @@ func (r *blockMergeReader) loadDeletes(ctx context.Context) error {
 			r.buffer = append(r.buffer, int64(offset))
 		}
 		iter.Close()
-		logutil.Infof("load deletes from txn.writes --%v:%v,%v--", info.BlockID.String(), rows, r.buffer)
+		logutil.Infof("load1111 deletes from txn.writes %v--%v:%v,%v--", ts.ToString(), info.BlockID.String(), rows, r.buffer)
 	}
 
 	//TODO:: if r.table.writes is a map , the time complexity could be O(1)
