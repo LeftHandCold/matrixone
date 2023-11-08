@@ -225,6 +225,7 @@ func (b *deletedBlocks) getDeletedOffsetsByBlock(blockID *types.Blockid, offsets
 	defer b.RUnlock()
 	res := b.offsets[*blockID]
 	*offsets = append(*offsets, res...)
+	logutil.Infof("getDeletedOffsetsByBlock: %v, is %v", res, *offsets)
 }
 
 func (b *deletedBlocks) iter(fn func(*types.Blockid, []int64) bool) {
