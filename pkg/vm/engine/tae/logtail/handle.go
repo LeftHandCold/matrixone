@@ -1069,7 +1069,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		metaLoc := objectio.Location(blkMetaInsertMetaLoc.Get(i).([]byte))
 		deltaLoc := objectio.Location(blkMetaInsertDeltaLoc.Get(i).([]byte))
 		isAblk := blkMetaInsertEntryState.Get(i).(bool)
-		if !isAblk {
+		if isAblk {
 			logutil.Infof("dn metaLoc1 %v, row is %d", metaLoc.String(), i)
 			panic("blkMetaInsertEntryState.Get(i).(bool) is false")
 		}
