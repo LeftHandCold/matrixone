@@ -1367,8 +1367,10 @@ func ReWriteCheckpointAndBlockFromKey(
 
 				if objectData.isCnBatch {
 					if len(datas) > 1 {
+						logutil.Infof("datas len is %d", datas[0].data.Vecs[0].Length())
 						applyDelete(datas[0].data, datas[1].data)
 					}
+					logutil.Infof("datas2 len is %d", datas[0].data.Vecs[0].Length())
 					fileNum := uint16(0)
 					segment := datas[0].location.Name().SegmentId()
 					name := objectio.BuildObjectName(&segment, fileNum)
