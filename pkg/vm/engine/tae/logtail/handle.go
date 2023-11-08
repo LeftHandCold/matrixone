@@ -1046,6 +1046,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					isCnBatch: true,
 				}
 				objectsData[name] = object
+				isCkpChange = true
 			}
 			if objectsData[name].data[metaLoc.ID()] != nil {
 				logutil.Infof("cn metaLoc2 %v, row is %d", metaLoc.String(), i)
@@ -1218,7 +1219,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						rid := objectio.HackBytes2Rowid(bat.Vecs[0].GetRawBytesAt(i))
 						rowid += rid.String()
 					}
-					logutil.Infof("blockread11 %s read delete %v \n", block.location.String(), rowid)
+					//logutil.Infof("blockread11 %s read delete %v \n", block.location.String(), rowid)
 					for v := 0; v < bat.Vecs[0].Length(); v++ {
 						err = commitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(v))
 						if err != nil {
