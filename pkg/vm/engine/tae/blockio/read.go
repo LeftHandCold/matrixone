@@ -296,7 +296,7 @@ func BlockReadInner(
 				rid := dd.GetVectorByName("0-del").Get(i).(objectio.Rowid)
 				rowid += rid.String()
 			}
-			logutil.Infof("blockread %s read delete %v: base %s\n", info.BlockID.String(), rowid, time.Since(now))
+			logutil.Debugf("blockread %s read delete %v: base %s\n", info.BlockID.String(), rowid, time.Since(now))
 		}
 		readcost := time.Since(now)
 
@@ -396,7 +396,7 @@ func BlockReadInner(
 			result.Attrs[i] = fmt.Sprintf("%d-mo", i)
 		}
 		l := containers.ToTNBatch(result)
-		logutil.Infof("read block %s, columns %v, types %v, del is %v, delete is%d- %v, inputDeleteRows is %v, data is %v ",
+		logutil.Debugf("read block %s, columns %v, types %v, del is %v, delete is%d- %v, inputDeleteRows is %v, data is %v ",
 			info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), len(deletedRows), deletedRows, inputDeleteRows, l.String())
 	}
 

@@ -196,6 +196,7 @@ func (s *MergeTaskBuilder) PostExecute() error {
 }
 
 func (s *MergeTaskBuilder) onTable(tableEntry *catalog.TableEntry) (err error) {
+	return moerr.GetOkStopCurrRecur()
 	if s.suspend.Load() {
 		s.suspendCnt.Add(1)
 		return moerr.GetOkStopCurrRecur()
