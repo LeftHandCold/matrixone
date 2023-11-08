@@ -495,13 +495,17 @@ func (r *blockMergeReader) loadDeletes(ctx context.Context) error {
 			return err
 		}
 		ts := types.TimestampToTS(r.ts)
+		logutil.Infof("load deletes from partition state for block %v", info.BlockID)
 		iter := state.NewRowsIter(ts, &info.BlockID, true)
+		var rows string
 		for iter.Next() {
 			entry := iter.Entry()
 			_, offset := entry.RowID.Decode()
+			rows += fmt.Sprintf("%d:", offset)
 			r.buffer = append(r.buffer, int64(offset))
 		}
 		iter.Close()
+		logutil.Infof("load deletes from txn.writes --%v:%v,%v--", info.BlockID.String(), rows, r.buffer)
 	}
 
 	//TODO:: if r.table.writes is a map , the time complexity could be O(1)
