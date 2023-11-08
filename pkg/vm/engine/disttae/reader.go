@@ -16,6 +16,7 @@ package disttae
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -511,12 +512,18 @@ func (r *blockMergeReader) loadDeletes(ctx context.Context) error {
 		}
 		if entry.typ == DELETE && entry.fileName == "" {
 			vs := vector.MustFixedCol[types.Rowid](entry.bat.GetVector(0))
+			var rowid string
+			var rows string
 			for _, v := range vs {
 				id, offset := v.Decode()
+				ii := objectio.Blockid(id)
+				rowid += fmt.Sprintf("--%v:%v--,", ii.String(), offset)
 				if id == info.BlockID {
+					rows += fmt.Sprintf("--%v:%v--,", info.BlockID.String(), offset)
 					r.buffer = append(r.buffer, int64(offset))
 				}
 			}
+			logutil.Infof("load deletes from txn.writes for the specified block %v, rowid is %v, r.buffer is %v", entry.fileName, rowid, r.buffer)
 		}
 	}
 	//load deletes from txn.deletedBlocks.
