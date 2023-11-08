@@ -1467,15 +1467,15 @@ func ReWriteCheckpointAndBlockFromKey(
 			blkMetaTxn := makeRespBatchFromSchema(checkpointDataSchemas_Curr[BLKMetaInsertTxnIDX])
 			for i := 0; i < blkMetaInsert.Length(); i++ {
 				tid := data.bats[BLKMetaInsertTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
-				for v, vec := range data.bats[BLKCNMetaInsertIDX].Vecs {
-					val := vec.Get(i)
+				for v, vec := range data.bats[BLKMetaInsertIDX].Vecs {
+					val := vec.Get(1)
 					if val == nil {
 						blkMeta.Vecs[v].Append(val, true)
 					} else {
 						blkMeta.Vecs[v].Append(val, false)
 					}
 				}
-				for v, vec := range data.bats[BLKMetaDeleteTxnIDX].Vecs {
+				for v, vec := range data.bats[BLKMetaInsertTxnIDX].Vecs {
 					val := vec.Get(i)
 					if val == nil {
 						blkMetaTxn.Vecs[v].Append(val, true)
