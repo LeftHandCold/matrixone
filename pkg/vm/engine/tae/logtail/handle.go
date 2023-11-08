@@ -936,33 +936,33 @@ func LoadCheckpointEntriesFromKey(
 }
 
 type fileData struct {
-	data     map[uint16]*blockData
-	name     objectio.ObjectName
+	data      map[uint16]*blockData
+	name      objectio.ObjectName
 	isCnBatch bool
 	isDnBatch bool
-	isChange bool
+	isChange  bool
 }
 
 type blockData struct {
 	num       uint16
-	cnRow       []int
-	dnRow	   []int
+	cnRow     []int
+	dnRow     []int
 	blockType objectio.DataMetaType
 	location  objectio.Location
 	data      *batch.Batch
-	pk   int32
-	isAblk	bool
+	pk        int32
+	isAblk    bool
 	commitTs  types.TS
 }
 
 type dataObject struct {
 	isChange bool
-	name objectio.ObjectName
-	data blockData
+	name     objectio.ObjectName
+	data     blockData
 }
 
 type newRow struct {
-	insertRow int
+	insertRow    int
 	insertTxnRow int
 }
 
@@ -1004,7 +1004,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		deltaLoc := objectio.Location(blkCNMetaInsertDeltaLoc.Get(i).([]byte))
 		isAblk := blkCNMetaInsertEntryState.Get(i).(bool)
 		commits := blkCNMetaInsertCommitTs.Get(i).(types.TS)
-		if commits.Less(ts){
+		if commits.Less(ts) {
 			logutil.Infof("commits.Less(ts) %v less than ts %v", commits, ts)
 			continue
 		}
@@ -1012,49 +1012,49 @@ func ReWriteCheckpointAndBlockFromKey(
 			name := metaLoc.Name().String()
 			if objectsData[name] == nil {
 				object := &fileData{
-					name:     metaLoc.Name(),
-					data:     make(map[uint16]*blockData),
-					isChange: false,
+					name:      metaLoc.Name(),
+					data:      make(map[uint16]*blockData),
+					isChange:  false,
 					isCnBatch: true,
 				}
 				objectsData[name] = object
 			}
-if objectsData[name].data[metaLoc.ID()] != nil {
-	logutil.Infof("cn metaLoc2 %v, row is %d", metaLoc.String(), i)
-	if len(objectsData[name].data[metaLoc.ID()].cnRow) > 0 {
-		logutil.Infof("len(objectsData[name].data[metaLoc.ID()].cnRow) > 0 %v, row is %d", objectsData[name].data[metaLoc.ID()].cnRow, i)
-	}
-	objectsData[name].data[metaLoc.ID()].cnRow = append(objectsData[name].data[metaLoc.ID()].cnRow, i)
-} else {
-	objectsData[name].data[metaLoc.ID()] = &blockData{
-		num:       metaLoc.ID(),
-		location:  metaLoc,
-		blockType: objectio.SchemaData,
-		cnRow:  []int{i},
-		isAblk: isAblk,
-	}
-	logutil.Infof("cn metaLoc %v, row is %d", metaLoc.String(), i)
+			if objectsData[name].data[metaLoc.ID()] != nil {
+				logutil.Infof("cn metaLoc2 %v, row is %d", metaLoc.String(), i)
+				if len(objectsData[name].data[metaLoc.ID()].cnRow) > 0 {
+					logutil.Infof("len(objectsData[name].data[metaLoc.ID()].cnRow) > 0 %v, row is %d", objectsData[name].data[metaLoc.ID()].cnRow, i)
+				}
+				objectsData[name].data[metaLoc.ID()].cnRow = append(objectsData[name].data[metaLoc.ID()].cnRow, i)
+			} else {
+				objectsData[name].data[metaLoc.ID()] = &blockData{
+					num:       metaLoc.ID(),
+					location:  metaLoc,
+					blockType: objectio.SchemaData,
+					cnRow:     []int{i},
+					isAblk:    isAblk,
+				}
+				logutil.Infof("cn metaLoc %v, row is %d", metaLoc.String(), i)
 
-}
+			}
 		}
 		if !deltaLoc.IsEmpty() {
 			name := deltaLoc.Name().String()
 			if objectsData[name] == nil {
 				object := &fileData{
-					name:     deltaLoc.Name(),
-					data:     make(map[uint16]*blockData),
-					isChange: false,
+					name:      deltaLoc.Name(),
+					data:      make(map[uint16]*blockData),
+					isChange:  false,
 					isCnBatch: true,
 				}
 				objectsData[name] = object
 			}
 			if objectsData[name].data[deltaLoc.ID()] == nil {
 				objectsData[name].data[deltaLoc.ID()] = &blockData{
-					num:	   deltaLoc.ID(),
+					num:       deltaLoc.ID(),
 					location:  deltaLoc,
 					blockType: objectio.SchemaTombstone,
-					cnRow:  []int{i},
-					isAblk: isAblk,
+					cnRow:     []int{i},
+					isAblk:    isAblk,
 				}
 			} else {
 				objectsData[name].data[deltaLoc.ID()].cnRow = append(objectsData[name].data[deltaLoc.ID()].cnRow, i)
@@ -1070,26 +1070,26 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 			name := metaLoc.Name().String()
 			if objectsData[name] == nil {
 				object := &fileData{
-					name:     metaLoc.Name(),
-					data:     make(map[uint16]*blockData),
-					isChange: false,
+					name:      metaLoc.Name(),
+					data:      make(map[uint16]*blockData),
+					isChange:  false,
 					isDnBatch: true,
 				}
 				objectsData[name] = object
 			}
 			if objectsData[name].data[metaLoc.ID()] != nil {
 				logutil.Infof("dn metaLoc2 %v, row is %d", metaLoc.String(), i)
-				if len(objectsData[name].data[metaLoc.ID()].dnRow)> 0 {
+				if len(objectsData[name].data[metaLoc.ID()].dnRow) > 0 {
 					logutil.Infof("len(objectsData[name].data[metaLoc.ID()].dnRow) > 0 %v, row is %d", objectsData[name].data[metaLoc.ID()].dnRow, i)
 				}
 				objectsData[name].data[metaLoc.ID()].dnRow = append(objectsData[name].data[metaLoc.ID()].dnRow, i)
 			} else {
 				objectsData[name].data[metaLoc.ID()] = &blockData{
-					num: metaLoc.ID(),
+					num:       metaLoc.ID(),
 					location:  metaLoc,
 					blockType: objectio.SchemaData,
-					dnRow:  []int{i},
-					isAblk: isAblk,
+					dnRow:     []int{i},
+					isAblk:    isAblk,
 				}
 				logutil.Infof("dn metaLoc %v, row is %d", metaLoc.String(), i)
 			}
@@ -1107,11 +1107,11 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 			}
 			if objectsData[name].data[deltaLoc.ID()] == nil {
 				objectsData[name].data[deltaLoc.ID()] = &blockData{
-					num: deltaLoc.ID(),
+					num:       deltaLoc.ID(),
 					location:  deltaLoc,
 					blockType: objectio.SchemaTombstone,
-					dnRow:  []int{i},
-					isAblk: isAblk,
+					dnRow:     []int{i},
+					isAblk:    isAblk,
 				}
 			} else {
 				objectsData[name].data[deltaLoc.ID()].dnRow = append(objectsData[name].data[deltaLoc.ID()].dnRow, i)
@@ -1123,7 +1123,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 		isChange := false
 		for id, block := range objectData.data {
 			if !block.isAblk && block.blockType == objectio.SchemaData {
-				logutil.Infof("ec block is %v", block.location.String() )
+				logutil.Infof("ec block is %v", block.location.String())
 				continue
 			}
 			var bat *batch.Batch
@@ -1133,7 +1133,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					return nil, nil, nil, nil, err
 				}
 				commitTs := types.TS{}
-				deleteRow := make([]int64,0)
+				deleteRow := make([]int64, 0)
 				logutil.Infof("block length is %d", bat.Vecs[0].Length())
 				for v := 0; v < bat.Vecs[0].Length(); v++ {
 					err = commitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(v))
@@ -1141,17 +1141,6 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 						return nil, nil, nil, nil, err
 					}
 					if commitTs.Greater(ts) {
-						for y := v; y < bat.Vecs[0].Length(); y++ {
-							debugcommitTs := types.TS{}
-							err = debugcommitTs.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(y))
-							if err != nil {
-								return nil, nil, nil, nil, err
-							}
-							if debugcommitTs.LessEq(ts) {
-								//logutil.Infof("debugcommitTs is not sorted %v ts %v, block is %v", debugcommitTs.ToString(), ts.ToString(), block.location.String())
-								//panic("debugcommitTs is not sorted")
-							}
-						}
 						/*windowCNBatch(bat, 0, uint64(v))
 						c := types.TS{}
 						err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-3].GetRawBytesAt(bat.Vecs[0].Length() -1))
@@ -1183,9 +1172,9 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 
 			if block.isAblk {
 				commitTs := types.TS{}
-				deleteRow := make([]int64,0)
+				deleteRow := make([]int64, 0)
 				pk := int32(-1)
-				if block.blockType == objectio.SchemaTombstone{
+				if block.blockType == objectio.SchemaTombstone {
 					bat, err = blockio.LoadOneBlock(ctx, fs, block.location, objectio.SchemaTombstone)
 					logutil.Infof("sdfsdfsdfdsfsdfsss")
 					if err != nil {
@@ -1226,7 +1215,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 							deleteRow = append(deleteRow, int64(v))
 						}
 					}
-					if len(deleteRow) != bat.Vecs[0].Length()  {
+					if len(deleteRow) != bat.Vecs[0].Length() {
 						bat.Shrink(deleteRow)
 						logutil.Infof("deleteRow1 is %d, bat length %d", len(deleteRow), bat.Vecs[0].Length())
 						commitTs1 := types.TS{}
@@ -1271,7 +1260,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 						if commitTs.Greater(ts) {
 							windowCNBatch(bat, 0, uint64(v))
 							c := types.TS{}
-							err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(bat.Vecs[0].Length() -1))
+							err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(bat.Vecs[0].Length() - 1))
 							logutil.Infof("blkCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
 							isChange = true
 							isCkpChange = true
@@ -1291,13 +1280,12 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 		objectsData[name].isChange = isChange
 	}
 
-
 	if isCkpChange {
 		for fileName, objectData := range objectsData {
-			if objectData.isChange || objectData.isCnBatch{
-				datas := make([]*blockData,0)
+			if objectData.isChange || objectData.isCnBatch {
+				datas := make([]*blockData, 0)
 				var blocks []objectio.BlockObject
-				var extent  objectio.Extent
+				var extent objectio.Extent
 				for _, block := range objectData.data {
 					logutil.Infof("object %v, id is %d", fileName, block.num)
 					datas = append(datas, block)
@@ -1312,7 +1300,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					}
 					for _, block := range datas {
 						logutil.Infof("write object %v, id is %d", fileName, block.num)
-						if block.pk > -1{
+						if block.pk > -1 {
 							writer.SetPrimaryKey(uint16(block.pk))
 						}
 						if block.blockType == objectio.SchemaData {
@@ -1349,7 +1337,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 					logutil.Infof("write11 object %v, id is %d", fileName, datas[i].num)
 					row := uint16(i)
 					blockLocation := datas[row].location
-					if objectData.isChange{
+					if objectData.isChange {
 						blockLocation = objectio.BuildLocation(objectData.name, extent, blocks[row].GetRows(), datas[i].num)
 					}
 					for _, dnRow := range datas[i].dnRow {
@@ -1389,7 +1377,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 									[]byte(blockLocation),
 									false)
 							}
-							if cnrs[cnRow] != nil{
+							if cnrs[cnRow] != nil {
 								logutil.Infof("rewrite BlockMeta_DataLoc %s, row is %d", blockLocation.String(), cnrs[cnRow].insertRow)
 								data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 									cnrs[cnRow].insertRow,
@@ -1423,9 +1411,9 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 									false)
 							}
 						}
-						if cnrs[cnRow] == nil && datas[row].isAblk{
+						if cnrs[cnRow] == nil && datas[row].isAblk {
 							logutil.Infof("rewrite BLKCNMetaInsertIDX %s, row is %d", blockLocation.String(), cnRow)
-							for v, vec:= range data.bats[BLKCNMetaInsertIDX].Vecs {
+							for v, vec := range data.bats[BLKCNMetaInsertIDX].Vecs {
 								val := vec.Get(cnRow)
 								if val == nil {
 									data.bats[BLKMetaInsertIDX].Vecs[v].Append(val, true)
@@ -1434,7 +1422,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								}
 							}
 							logutil.Infof("rewrite BLKMetaDeleteTxnIDX %s, row is %d", blockLocation.String(), cnRow)
-							for v, vec:= range data.bats[BLKMetaDeleteTxnIDX].Vecs {
+							for v, vec := range data.bats[BLKMetaDeleteTxnIDX].Vecs {
 								val := vec.Get(cnRow)
 								if val == nil {
 									data.bats[BLKMetaInsertTxnIDX].Vecs[v].Append(val, true)
@@ -1443,7 +1431,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 								}
 							}
 							cnrs[cnRow] = &newRow{
-								insertRow: data.bats[BLKMetaInsertIDX].Length() - 1,
+								insertRow:    data.bats[BLKMetaInsertIDX].Length() - 1,
 								insertTxnRow: data.bats[BLKMetaInsertTxnIDX].Length() - 1,
 							}
 						}
@@ -1460,7 +1448,7 @@ if objectsData[name].data[metaLoc.ID()] != nil {
 						}*/
 					}
 				}
-				for cnRow  := range cnrs{
+				for cnRow := range cnrs {
 					data.bats[BLKMetaDeleteTxnIDX].Delete(cnRow)
 					data.bats[BLKCNMetaInsertIDX].Delete(cnRow)
 					data.bats[BLKMetaDeleteIDX].Delete(cnRow)

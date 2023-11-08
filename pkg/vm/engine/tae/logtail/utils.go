@@ -2897,7 +2897,7 @@ func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (er
 				metaNode.TxnMVCCNode.AppendTuple(blkTNMetaInsTxnBat)
 			}
 		} else {
-			if metaNode.HasDropCommitted() && !entry.IsAppendable() {
+			if metaNode.HasDropCommitted() {
 				vector.AppendFixed(
 					blkMetaDelRowIDVec,
 					objectio.HackBlockid2Rowid(&entry.ID),

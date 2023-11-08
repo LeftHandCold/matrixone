@@ -495,7 +495,7 @@ func (r *blockMergeReader) loadDeletes(ctx context.Context) error {
 			return err
 		}
 		ts := types.TimestampToTS(r.ts)
-		logutil.Infof("load deletes from partition state for block %v", info.BlockID)
+		//logutil.Infof("load deletes from partition state for block %v", info.BlockID)
 		iter := state.NewRowsIter(ts, &info.BlockID, true)
 		var rows string
 		for iter.Next() {
@@ -505,7 +505,7 @@ func (r *blockMergeReader) loadDeletes(ctx context.Context) error {
 			r.buffer = append(r.buffer, int64(offset))
 		}
 		iter.Close()
-		logutil.Infof("load1111 deletes from txn.writes %v--%v:%v,%v--", ts.ToString(), info.BlockID.String(), rows, r.buffer)
+		//logutil.Infof("load1111 deletes from txn.writes %v--%v:%v,%v--", ts.ToString(), info.BlockID.String(), rows, r.buffer)
 	}
 
 	//TODO:: if r.table.writes is a map , the time complexity could be O(1)
@@ -527,7 +527,7 @@ func (r *blockMergeReader) loadDeletes(ctx context.Context) error {
 					r.buffer = append(r.buffer, int64(offset))
 				}
 			}
-			logutil.Infof("load deletes from txn.writes for the specified block %v, rowid is %v, r.buffer is %v", entry.fileName, rowid, r.buffer)
+			//logutil.Infof("load deletes from txn.writes for the specified block %v, rowid is %v, r.buffer is %v", entry.fileName, rowid, r.buffer)
 		}
 	}
 	//load deletes from txn.deletedBlocks.
