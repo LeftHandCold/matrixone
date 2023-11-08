@@ -2571,8 +2571,8 @@ func (collector *BaseCollector) VisitSegForBackup(entry *catalog.SegmentEntry) (
 	entry.RLock()
 	logutil.Infof("VisitSegForBackup: %v, %v-%v, entry.GetSegment().GetTable().String() %v", entry.ID.ToString(), collector.start.ToString(), collector.end.ToString(), entry.GetTable().String())
 	if entry.GetCreatedAtLocked().Greater(collector.start) {
-		//entry.RUnlock()
-		//return nil
+		entry.RUnlock()
+		return nil
 	}
 	mvccNodes := entry.ClonePreparedInRange(collector.start, collector.end)
 	logutil.Infof("VisitSegForBackup222: %v, %v-%v, %v", entry.ID.ToString(), collector.start.ToString(), collector.end.ToString(), len(mvccNodes))
@@ -2685,8 +2685,8 @@ func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (er
 		}
 	}
 	if entry.GetCreatedAtLocked().Greater(collector.start) {
-		//entry.RUnlock()
-		//return nil
+		entry.RUnlock()
+		return nil
 	}
 	logutil.Infof("VisitBlkForBackup222: %v, %v-%v, %v, %v", entry.ID.String(), entry.String(), entry.GetCreatedAtLocked().ToString(), collector.start.ToString(), collector.end.ToString(), len(mvccNodes))
 	entry.RUnlock()
@@ -2897,7 +2897,7 @@ func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (er
 				metaNode.TxnMVCCNode.AppendTuple(blkTNMetaInsTxnBat)
 			}
 		} else {
-			if metaNode.HasDropCommitted() {
+			if metaNode.HasDropCommitted() && !entry.IsAppendable() {
 				vector.AppendFixed(
 					blkMetaDelRowIDVec,
 					objectio.HackBlockid2Rowid(&entry.ID),

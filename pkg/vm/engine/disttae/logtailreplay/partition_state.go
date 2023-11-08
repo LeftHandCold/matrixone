@@ -331,6 +331,9 @@ func (p *PartitionState) HandleRowsInsert(
 				entry.Offset = int64(i)
 			}
 			entry.PrimaryIndexBytes = primaryKeys[i]
+			if entry.BlockID.String() == "d92bf9eb-7d75-11ee-bc28-b07b25f84010-0-0" {
+				logutil.Infof("inserting row %v", entry)
+			}
 			p.rows.Set(entry)
 
 			{
@@ -410,6 +413,9 @@ func (p *PartitionState) HandleRowsDelete(
 			if !p.noData {
 				entry.Batch = batch
 				entry.Offset = int64(i)
+			}
+			if entry.BlockID.String() == "d92bf9eb-7d75-11ee-bc28-b07b25f84010-0-0" {
+				logutil.Infof("deleteing row %v", entry)
 			}
 			p.rows.Set(entry)
 
