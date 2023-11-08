@@ -1471,7 +1471,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			for i := 0; i < blkMetaInsert.Length(); i++ {
 				tid := data.bats[BLKMetaInsertTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
 				for v, vec := range data.bats[BLKMetaInsertIDX].Vecs {
-					val := vec.Get(1)
+					val := vec.Get(i)
 					if val == nil {
 						blkMeta.Vecs[v].Append(val, true)
 					} else {
