@@ -1406,6 +1406,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					if err != nil {
 						panic("sync error")
 					}
+					files = append(files, name.String())
 					blockLocation := objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
 					if insertBatch[datas[0].tid] == nil {
 						logutil.Infof("tid is %d, file is %v", datas[0].tid, blockLocation.String())
