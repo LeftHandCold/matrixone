@@ -1450,6 +1450,26 @@ func (data *CheckpointData) updateTableMeta(tid uint64, metaIdx int, start, end 
 		}
 	}
 }
+
+func (data *CheckpointData) resetTableMeta(tid uint64, metaIdx int, start, end int32) {
+	meta, ok := data.meta[tid]
+	if !ok {
+		meta = NewCheckpointMeta()
+		data.meta[tid] = meta
+	}
+	if end > start {
+		if meta.tables[metaIdx] == nil {
+			meta.tables[metaIdx] = NewTableMeta()
+			meta.tables[metaIdx].Start = uint64(start)
+			meta.tables[metaIdx].End = uint64(end)
+		} else {
+			meta.tables[metaIdx].Start = uint64(start)
+			meta.tables[metaIdx].End = uint64(end)
+			return
+		}
+	}
+}
+
 func (data *CheckpointData) updateMOCatalog(tid uint64, insStart, insEnd, delStart, delEnd int32) {
 	if delEnd <= delStart && insEnd <= insStart {
 		return
@@ -1469,7 +1489,7 @@ func (data *CheckpointData) UpdateBlockInsertBlkMeta(tid uint64, insStart, insEn
 	if insEnd <= insStart {
 		return
 	}
-	data.updateTableMeta(tid, BlockInsert, insStart, insEnd)
+	data.resetTableMeta(tid, BlockInsert, insStart, insEnd)
 }
 
 func (data *CheckpointData) UpdateSegMeta(tid uint64, delStart, delEnd int32) {

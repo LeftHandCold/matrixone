@@ -1650,9 +1650,23 @@ func ReWriteCheckpointAndBlockFromKey(
 							i,
 							nil,
 							true)
-						data.UpdateBlockInsertBlkMeta(tid, int32(i), int32(i+1))
 					}
 				}
+			}
+			tableOff := make(map[uint64]*tableoffset)
+			for i := 0 ; i < blkMetaTxn.Vecs[0].Length(); i++ {
+				tid := data.bats[BLKMetaInsertTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
+				if tableOff[tid] == nil {
+					tableOff[tid] = &tableoffset{
+						offset: i,
+						end:i,
+					}
+				}
+				tableOff[tid].end += 1
+			}
+
+			for tid, tabl := range tableOff {
+				data.UpdateBlockInsertBlkMeta(tid, int32(tabl.offset), int32(tabl.end))
 			}
 			data.bats[BLKMetaInsertIDX].Close()
 			data.bats[BLKMetaInsertTxnIDX].Close()
@@ -1670,4 +1684,9 @@ func ReWriteCheckpointAndBlockFromKey(
 		files = append(files, cnLocation.Name().String())
 	}
 	return loc, tnLocation, data, files, nil
+}
+
+type tableoffset struct {
+	offset int
+	end int
 }
