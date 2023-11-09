@@ -1485,22 +1485,6 @@ func ReWriteCheckpointAndBlockFromKey(
 			blkMetaTxn := makeRespBatchFromSchema(checkpointDataSchemas_Curr[BLKMetaInsertTxnIDX])
 			for i := 0; i < blkMetaInsert.Length(); i++ {
 				tid := data.bats[BLKMetaInsertTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
-				for v, vec := range data.bats[BLKMetaInsertIDX].Vecs {
-					val := vec.Get(i)
-					if val == nil {
-						blkMeta.Vecs[v].Append(val, true)
-					} else {
-						blkMeta.Vecs[v].Append(val, false)
-					}
-				}
-				for v, vec := range data.bats[BLKMetaInsertTxnIDX].Vecs {
-					val := vec.Get(i)
-					if val == nil {
-						blkMetaTxn.Vecs[v].Append(val, true)
-					} else {
-						blkMetaTxn.Vecs[v].Append(val, false)
-					}
-				}
 				if insertBatch[tid] != nil && !insertBatch[tid].apply {
 					cnRow := insertBatch[tid].cnRow
 					insertBatch[tid].apply = true
@@ -1559,7 +1543,22 @@ func ReWriteCheckpointAndBlockFromKey(
 						i + 1,
 						nil,
 						true)
-					continue
+				}
+				for v, vec := range data.bats[BLKMetaInsertIDX].Vecs {
+					val := vec.Get(i)
+					if val == nil {
+						blkMeta.Vecs[v].Append(val, true)
+					} else {
+						blkMeta.Vecs[v].Append(val, false)
+					}
+				}
+				for v, vec := range data.bats[BLKMetaInsertTxnIDX].Vecs {
+					val := vec.Get(i)
+					if val == nil {
+						blkMetaTxn.Vecs[v].Append(val, true)
+					} else {
+						blkMetaTxn.Vecs[v].Append(val, false)
+					}
 				}
 			}
 
