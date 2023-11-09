@@ -1399,7 +1399,6 @@ func ReWriteCheckpointAndBlockFromKey(
 							datas[0].data.Attrs = append(datas[0].data.Attrs, att)
 						}
 						sortData := containers.ToTNBatch(datas[0].data)
-						logutil.Infof("sortdata is %v", sortData.String())
 						if datas[0].pk > -1 {
 							_, err = mergesort.SortBlockColumns(sortData.Vecs, int(datas[0].pk), tpool)
 							if err != nil {
@@ -1407,7 +1406,7 @@ func ReWriteCheckpointAndBlockFromKey(
 							}
 						}
 						datas[0].data = containers.ToCNBatch(sortData)
-						logutil.Infof("sortdata is %v", sortData.String())
+						//logutil.Infof("sortdata is %v", sortData.String())
 						//task.transMappings.AddSortPhaseMapping(blkidx, rowCntBeforeApplyDelete, deletes, sortMapping)
 					}
 					logutil.Infof("datas2 len is %d, locatio %s", datas[0].data.Vecs[0].Length(), datas[0].location.String())
