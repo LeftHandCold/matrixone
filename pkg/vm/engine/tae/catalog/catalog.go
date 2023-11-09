@@ -754,7 +754,7 @@ func (catalog *Catalog) onReplayCreateBlock(
 		logutil.Info(catalog.SimplePPString(common.PPL3))
 		panic(err)
 	}
-	logutil.Infof("segid is %v", segid.ToString())
+	logutil.Infof("segid is %v, tablesi %d", segid.ToString(), rel.GetID())
 	seg, err := rel.GetSegmentByID(segid)
 	if err != nil {
 		logutil.Info(catalog.SimplePPString(common.PPL3))
