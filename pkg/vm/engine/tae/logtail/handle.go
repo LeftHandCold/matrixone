@@ -1387,7 +1387,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						applyDelete(datas[0].data, datas[1].data)
 					}
 					logutil.Infof("datas2 len is %d, locatio %s", datas[0].data.Vecs[0].Length(), datas[0].location.String())
-					fileNum := uint16(0)
+					fileNum := uint16(2)
 					segment := datas[0].location.Name().SegmentId()
 					name := objectio.BuildObjectName(&segment, fileNum)
 
