@@ -988,11 +988,17 @@ func applyDelete(dataBatch *batch.Batch, deleteBatch *batch.Batch) error {
 		return nil
 	}
 	deleteRow := make([]int64, 0)
+	rowss := make(map[int64]bool)
 	for i := 0; i < deleteBatch.Vecs[0].Length(); i++ {
 		row := deleteBatch.Vecs[0].GetRawBytesAt(i)
 		rowId := objectio.HackBytes2Rowid(row)
 		_, ro := rowId.Decode()
-		deleteRow = append(deleteRow, int64(ro))
+		rowss[int64(ro)] = true
+	}
+	for i:=0; i<dataBatch.Vecs[0].Length(); i++ {
+		if rowss[int64(i)] {
+			deleteRow = append(deleteRow, int64(i))
+		}
 	}
 	dataBatch.AntiShrink(deleteRow)
 	return nil
