@@ -70,6 +70,7 @@ Main workflow:
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 	"sort"
 	"strconv"
 	"strings"
@@ -1390,6 +1391,18 @@ func ReWriteCheckpointAndBlockFromKey(
 					if len(datas) > 1 {
 						logutil.Infof("datas len is %d", datas[0].data.Vecs[0].Length())
 						applyDelete(datas[0].data, datas[1].data)
+						sortData := containers.ToTNBatch(datas[0].data)
+						logutil.Infof("sortdata is %v", sortData.String())
+						if datas[0].pk > -1 {
+							_, err = mergesort.SortBlockColumns(sortData.Vecs, int(datas[0].pk), nil)
+							if err != nil {
+								return nil, nil, nil, nil, err
+							}
+						}
+						datas[0].data = containers.ToCNBatch(sortData)
+						logutil.Infof("sortdata is %v", sortData.String())
+						//task.transMappings.AddSortPhaseMapping(blkidx, rowCntBeforeApplyDelete, deletes, sortMapping)
+						}
 					}
 					logutil.Infof("datas2 len is %d, locatio %s", datas[0].data.Vecs[0].Length(), datas[0].location.String())
 					fileNum := uint16(1000) + datas[0].location.Name().Num()
