@@ -1552,6 +1552,74 @@ func ReWriteCheckpointAndBlockFromKey(
 					continue
 				}
 			}
+
+			for tid := range insertBatch {
+				if insertBatch[tid].apply {
+					continue
+				}
+				if insertBatch[tid] != nil && !insertBatch[tid].apply {
+					cnRow := insertBatch[tid].cnRow
+					insertBatch[tid].apply = true
+					logutil.Infof("rewrite1 BLKCNMetaInsertIDX %s, row is %d", insertBatch[tid].location.String(), cnRow)
+					for v, vec := range data.bats[BLKCNMetaInsertIDX].Vecs {
+						val := vec.Get(cnRow)
+						if val == nil {
+							blkMeta.Vecs[v].Append(val, true)
+						} else {
+							blkMeta.Vecs[v].Append(val, false)
+						}
+					}
+					logutil.Infof("rewrite1 BLKMetaDeleteTxnIDX %s, row is %d", insertBatch[tid].location.String(), cnRow)
+					for v, vec := range data.bats[BLKMetaDeleteTxnIDX].Vecs {
+						val := vec.Get(cnRow)
+						if val == nil {
+							blkMetaTxn.Vecs[v].Append(val, true)
+						} else {
+							blkMetaTxn.Vecs[v].Append(val, false)
+						}
+					}
+					i := blkMeta.Vecs[0].Length() - 2
+
+					blkMeta.GetVectorByName(catalog.AttrRowID).Update(
+						i + 1,
+						objectio.HackBlockid2Rowid(&insertBatch[tid].blockId),
+						false)
+					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_ID).Update(
+						i + 1,
+						insertBatch[tid].blockId,
+						false)
+					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_EntryState).Update(
+						i + 1,
+						false,
+						false)
+					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_Sorted).Update(
+						i + 1,
+						false,
+						false)
+					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
+						i + 1,
+						insertBatch[tid].location.Name().SegmentId(),
+						false)
+					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+						i + 1,
+						[]byte(insertBatch[tid].location),
+						false)
+					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+						i + 1,
+						nil,
+						true)
+					blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+						i + 1,
+						[]byte(insertBatch[tid].location),
+						false)
+					blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+						i + 1,
+						nil,
+						true)
+					data.UpdateBlockInsertBlkMeta(tid, int32(i), int32(i+1))
+					continue
+				}
+			}
 			data.bats[BLKMetaInsertIDX].Close()
 			data.bats[BLKMetaInsertTxnIDX].Close()
 			data.bats[BLKMetaInsertIDX] = blkMeta

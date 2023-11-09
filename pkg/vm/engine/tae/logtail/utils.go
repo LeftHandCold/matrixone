@@ -1460,6 +1460,12 @@ func (data *CheckpointData) UpdateBlkMeta(tid uint64, insStart, insEnd, delStart
 	data.updateTableMeta(tid, BlockDelete, delStart, delEnd)
 	data.updateTableMeta(tid, CNBlockInsert, delStart, delEnd)
 }
+func (data *CheckpointData) UpdateBlockInsertBlkMeta(tid uint64, insStart, insEnd int32) {
+	if insEnd <= insStart {
+		return
+	}
+	data.updateTableMeta(tid, BlockInsert, insStart, insEnd)
+}
 
 func (data *CheckpointData) UpdateSegMeta(tid uint64, delStart, delEnd int32) {
 	if delEnd <= delStart {
