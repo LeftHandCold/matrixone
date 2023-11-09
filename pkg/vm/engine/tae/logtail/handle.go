@@ -1655,7 +1655,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			}
 			tableOff := make(map[uint64]*tableoffset)
 			for i := 0 ; i < blkMetaTxn.Vecs[0].Length(); i++ {
-				tid := data.bats[BLKMetaInsertTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
+				tid := blkMetaTxn.GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
 				if tableOff[tid] == nil {
 					tableOff[tid] = &tableoffset{
 						offset: i,
