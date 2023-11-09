@@ -968,6 +968,11 @@ type newRow struct {
 	insertTxnRow int
 }
 
+type iBlocks struct {
+	filenum int
+	insertBlocks []*insertBlock
+}
+
 type insertBlock struct {
 	blockId  objectio.Blockid
 	location objectio.Location
@@ -1324,7 +1329,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		objectsData[name].isChange = isChange
 	}
 	if isCkpChange {
-		insertBatch := make(map[uint64]*insertBlock)
+		insertBatch := make(map[uint64]*iBlocks)
 		for fileName, objectData := range objectsData {
 			if objectData.isChange || objectData.isCnBatch {
 				datas := make([]*blockData, 0)
@@ -1387,7 +1392,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						applyDelete(datas[0].data, datas[1].data)
 					}
 					logutil.Infof("datas2 len is %d, locatio %s", datas[0].data.Vecs[0].Length(), datas[0].location.String())
-					fileNum := uint16(2)
+					fileNum := uint16(1000) + datas[0].location.Name().Num()
 					segment := datas[0].location.Name().SegmentId()
 					name := objectio.BuildObjectName(&segment, fileNum)
 
@@ -1410,13 +1415,17 @@ func ReWriteCheckpointAndBlockFromKey(
 					blockLocation := objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
 					if insertBatch[datas[0].tid] == nil {
 						logutil.Infof("tid is %d, file is %v", datas[0].tid, blockLocation.String())
-						insertBatch[datas[0].tid] = &insertBlock{
-							location: blockLocation,
-							blockId:  *objectio.BuildObjectBlockid(name, blocks[0].GetID()),
-							apply:    false,
-							cnRow: datas[0].cnRow[0],
+						insertBatch[datas[0].tid] = &iBlocks{
+							insertBlocks: make([]*insertBlock, 0),
 						}
 					}
+					ib := &insertBlock{
+						location: blockLocation,
+						blockId:  *objectio.BuildObjectBlockid(name, blocks[0].GetID()),
+						apply:    false,
+						cnRow: datas[0].cnRow[0],
+					}
+					insertBatch[datas[0].tid].insertBlocks = append(insertBatch[datas[0].tid].insertBlocks, ib)
 
 				} else {
 					for i := range datas {
@@ -1503,139 +1512,146 @@ func ReWriteCheckpointAndBlockFromKey(
 					}
 				}
 				if insertBatch[tid] != nil && !insertBatch[tid].apply {
-					cnRow := insertBatch[tid].cnRow
-					insertBatch[tid].apply = true
-					logutil.Infof("rewrite BLKCNMetaInsertIDX %s, row is %d", insertBatch[tid].location.String(), cnRow)
-					for v, vec := range data.bats[BLKCNMetaInsertIDX].Vecs {
-						val := vec.Get(cnRow)
-						if val == nil {
-							blkMeta.Vecs[v].Append(val, true)
-						} else {
-							blkMeta.Vecs[v].Append(val, false)
+					for b, blk := range insertBatch[tid].insertBlocks {
+						if blk.apply {
+							continue
 						}
-					}
-					logutil.Infof("rewrite BLKMetaDeleteTxnIDX %s, row is %d", insertBatch[tid].location.String(), cnRow)
-					for v, vec := range data.bats[BLKMetaDeleteTxnIDX].Vecs {
-						val := vec.Get(cnRow)
-						if val == nil {
-							blkMetaTxn.Vecs[v].Append(val, true)
-						} else {
-							blkMetaTxn.Vecs[v].Append(val, false)
+						cnRow := insertBatch[tid].insertBlocks[b].cnRow
+						insertBatch[tid].insertBlocks[b].apply = true
+						logutil.Infof("rewrite BLKCNMetaInsertIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
+						for v, vec := range data.bats[BLKCNMetaInsertIDX].Vecs {
+							val := vec.Get(cnRow)
+							if val == nil {
+								blkMeta.Vecs[v].Append(val, true)
+							} else {
+								blkMeta.Vecs[v].Append(val, false)
+							}
 						}
-					}
+						logutil.Infof("rewrite BLKMetaDeleteTxnIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
+						for v, vec := range data.bats[BLKMetaDeleteTxnIDX].Vecs {
+							val := vec.Get(cnRow)
+							if val == nil {
+								blkMetaTxn.Vecs[v].Append(val, true)
+							} else {
+								blkMetaTxn.Vecs[v].Append(val, false)
+							}
+						}
 
-					leng := blkMeta.Vecs[0].Length() - 1
-					ti := blkMetaTxn.GetVectorByName(SnapshotAttr_TID).Get(leng)
-					t2 := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(cnRow)
-					logutil.Infof("rewrite update  BLKMetaInsertIDX %s, row is %d, t2 is %d", insertBatch[tid].location.String(), ti, t2)
-					blkMeta.GetVectorByName(catalog.AttrRowID).Update(
-						leng,
-						objectio.HackBlockid2Rowid(&insertBatch[tid].blockId),
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_ID).Update(
-						leng,
-						insertBatch[tid].blockId,
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_EntryState).Update(
-						leng,
-						false,
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_Sorted).Update(
-						leng,
-						false,
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
-						leng,
-						insertBatch[tid].location.Name().SegmentId(),
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-						leng,
-						[]byte(insertBatch[tid].location),
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
-						leng,
-						nil,
-						true)
-					blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-						leng,
-						[]byte(insertBatch[tid].location),
-						false)
-					blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
-						leng,
-						nil,
-						true)
+						leng := blkMeta.Vecs[0].Length() - 1
+						ti := blkMetaTxn.GetVectorByName(SnapshotAttr_TID).Get(leng)
+						t2 := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(cnRow)
+						logutil.Infof("rewrite update  BLKMetaInsertIDX %s, row is %d, t2 is %d", insertBatch[tid].insertBlocks[b].location.String(), ti, t2)
+						blkMeta.GetVectorByName(catalog.AttrRowID).Update(
+							leng,
+							objectio.HackBlockid2Rowid(&insertBatch[tid].insertBlocks[b].blockId),
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_ID).Update(
+							leng,
+							insertBatch[tid].insertBlocks[b].blockId,
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_EntryState).Update(
+							leng,
+							false,
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_Sorted).Update(
+							leng,
+							false,
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
+							leng,
+							insertBatch[tid].insertBlocks[b].location.Name().SegmentId(),
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+							leng,
+							[]byte(insertBatch[tid].insertBlocks[b].location),
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+							leng,
+							nil,
+							true)
+						blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+							leng,
+							[]byte(insertBatch[tid].insertBlocks[b].location),
+							false)
+						blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+							leng,
+							nil,
+							true)
+					}
 				}
 			}
 
 			for tid := range insertBatch {
-				logutil.Infof("insertBatch is %d, apply is %v,file is %v", tid, insertBatch[tid].apply, insertBatch[tid].location.String())
-				if insertBatch[tid].apply {
-					continue
-				}
-				if insertBatch[tid] != nil && !insertBatch[tid].apply {
-					cnRow := insertBatch[tid].cnRow
-					insertBatch[tid].apply = true
-					logutil.Infof("rewrite1 BLKCNMetaInsertIDX %s, row is %d", insertBatch[tid].location.String(), cnRow)
-					for v, vec := range data.bats[BLKCNMetaInsertIDX].Vecs {
-						val := vec.Get(cnRow)
-						if val == nil {
-							blkMeta.Vecs[v].Append(val, true)
-						} else {
-							blkMeta.Vecs[v].Append(val, false)
-						}
+				for b:= range insertBatch[tid].insertBlocks {
+					logutil.Infof("insertBatch is %d, apply is %v,file is %v", tid, insertBatch[tid].insertBlocks[b].apply, insertBatch[tid].insertBlocks[b].location.String())
+					if insertBatch[tid].insertBlocks[b].apply {
+						continue
 					}
-					logutil.Infof("rewrite1 BLKMetaDeleteTxnIDX %s, row is %d", insertBatch[tid].location.String(), cnRow)
-					for v, vec := range data.bats[BLKMetaDeleteTxnIDX].Vecs {
-						val := vec.Get(cnRow)
-						if val == nil {
-							blkMetaTxn.Vecs[v].Append(val, true)
-						} else {
-							blkMetaTxn.Vecs[v].Append(val, false)
+					if insertBatch[tid] != nil && !insertBatch[tid].insertBlocks[b].apply {
+						cnRow := insertBatch[tid].insertBlocks[b].cnRow
+						insertBatch[tid].insertBlocks[b].apply = true
+						logutil.Infof("rewrite1 BLKCNMetaInsertIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
+						for v, vec := range data.bats[BLKCNMetaInsertIDX].Vecs {
+							val := vec.Get(cnRow)
+							if val == nil {
+								blkMeta.Vecs[v].Append(val, true)
+							} else {
+								blkMeta.Vecs[v].Append(val, false)
+							}
 						}
+						logutil.Infof("rewrite1 BLKMetaDeleteTxnIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
+						for v, vec := range data.bats[BLKMetaDeleteTxnIDX].Vecs {
+							val := vec.Get(cnRow)
+							if val == nil {
+								blkMetaTxn.Vecs[v].Append(val, true)
+							} else {
+								blkMetaTxn.Vecs[v].Append(val, false)
+							}
+						}
+						i := blkMeta.Vecs[0].Length() - 1
+
+						ti := blkMetaTxn.GetVectorByName(SnapshotAttr_TID).Get(i)
+						t2 := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(cnRow)
+						logutil.Infof("rewrite111 update  BLKMetaInsertIDX %s, row is %d, t2 is %d", insertBatch[tid].insertBlocks[b].location.String(), ti, t2)
+
+						blkMeta.GetVectorByName(catalog.AttrRowID).Update(
+							i,
+							objectio.HackBlockid2Rowid(&insertBatch[tid].insertBlocks[b].blockId),
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_ID).Update(
+							i,
+							insertBatch[tid].insertBlocks[b].blockId,
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_EntryState).Update(
+							i,
+							false,
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_Sorted).Update(
+							i,
+							false,
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
+							i,
+							insertBatch[tid].insertBlocks[b].location.Name().SegmentId(),
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+							i,
+							[]byte(insertBatch[tid].insertBlocks[b].location),
+							false)
+						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+							i,
+							nil,
+							true)
+						blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+							i,
+							[]byte(insertBatch[tid].insertBlocks[b].location),
+							false)
+						blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+							i,
+							nil,
+							true)
+						data.UpdateBlockInsertBlkMeta(tid, int32(i), int32(i+1))
 					}
-					i := blkMeta.Vecs[0].Length() - 1
-
-					ti := blkMetaTxn.GetVectorByName(SnapshotAttr_TID).Get(i)
-					t2 := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(cnRow)
-					logutil.Infof("rewrite111 update  BLKMetaInsertIDX %s, row is %d, t2 is %d", insertBatch[tid].location.String(), ti, t2)
-
-					blkMeta.GetVectorByName(catalog.AttrRowID).Update(
-						i,
-						objectio.HackBlockid2Rowid(&insertBatch[tid].blockId),
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_ID).Update(
-						i,
-						insertBatch[tid].blockId,
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_EntryState).Update(
-						i,
-						false,
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_Sorted).Update(
-						i,
-						false,
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
-						i,
-						insertBatch[tid].location.Name().SegmentId(),
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-						i,
-						[]byte(insertBatch[tid].location),
-						false)
-					blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
-						i,
-						nil,
-						true)
-					blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-						i,
-						[]byte(insertBatch[tid].location),
-						false)
-					blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
-						i,
-						nil,
-						true)
-					data.UpdateBlockInsertBlkMeta(tid, int32(i), int32(i+1))
 				}
 			}
 			data.bats[BLKMetaInsertIDX].Close()
