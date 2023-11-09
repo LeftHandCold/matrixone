@@ -1402,7 +1402,6 @@ func ReWriteCheckpointAndBlockFromKey(
 						datas[0].data = containers.ToCNBatch(sortData)
 						logutil.Infof("sortdata is %v", sortData.String())
 						//task.transMappings.AddSortPhaseMapping(blkidx, rowCntBeforeApplyDelete, deletes, sortMapping)
-						}
 					}
 					logutil.Infof("datas2 len is %d, locatio %s", datas[0].data.Vecs[0].Length(), datas[0].location.String())
 					fileNum := uint16(1000) + datas[0].location.Name().Num()
