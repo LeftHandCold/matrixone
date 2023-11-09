@@ -225,6 +225,7 @@ func (entry *TableEntry) deleteEntryLocked(segment *SegmentEntry) error {
 	if n, ok := entry.entries[segment.ID]; !ok {
 		return moerr.GetOkExpectedEOB()
 	} else {
+		logutil.Infof("deleteEntryLocked %v", segment.ID.ToString())
 		entry.link.Delete(n)
 		delete(entry.entries, segment.ID)
 	}
