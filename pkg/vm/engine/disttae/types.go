@@ -224,7 +224,7 @@ func (b *deletedBlocks) getDeletedOffsetsByBlock(blockID *types.Blockid, offsets
 	b.RLock()
 	defer b.RUnlock()
 	res := b.offsets[*blockID]
-	*offsets = append(*offsets, res...))
+	*offsets = append(*offsets, res...)
 }
 
 func (b *deletedBlocks) iter(fn func(*types.Blockid, []int64) bool) {
