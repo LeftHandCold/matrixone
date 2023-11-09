@@ -1540,7 +1540,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						leng := blkMeta.Vecs[0].Length() - 1
 						ti := blkMetaTxn.GetVectorByName(SnapshotAttr_TID).Get(leng)
 						t2 := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(cnRow)
-						logutil.Infof("rewrite update  BLKMetaInsertIDX %s, row is %d, t2 is %d", insertBatch[tid].insertBlocks[b].location.String(), ti, t2)
+						logutil.Infof("rewrite update  BLKMetaInsertIDX %s, row is %d, t2 is %d, leng %d", insertBatch[tid].insertBlocks[b].location.String(), ti, t2, leng)
 						blkMeta.GetVectorByName(catalog.AttrRowID).Update(
 							leng,
 							objectio.HackBlockid2Rowid(&insertBatch[tid].insertBlocks[b].blockId),
@@ -1569,6 +1569,8 @@ func ReWriteCheckpointAndBlockFromKey(
 							leng,
 							nil,
 							true)
+						test := blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(leng)
+						logutil.Infof("testfdsfs is %v", test)
 						blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 							leng,
 							[]byte(insertBatch[tid].insertBlocks[b].location),
@@ -1592,6 +1594,10 @@ func ReWriteCheckpointAndBlockFromKey(
 						insertBatch[tid].insertBlocks[b].apply = true
 						logutil.Infof("rewrite1 BLKCNMetaInsertIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
 						for v, vec := range data.bats[BLKCNMetaInsertIDX].Vecs {
+							if data.bats[BLKCNMetaInsertIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
+								blkMeta.Vecs[v].Append(nil, true)
+								continue
+							}
 							val := vec.Get(cnRow)
 							if val == nil {
 								blkMeta.Vecs[v].Append(val, true)
@@ -1601,6 +1607,10 @@ func ReWriteCheckpointAndBlockFromKey(
 						}
 						logutil.Infof("rewrite1 BLKMetaDeleteTxnIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
 						for v, vec := range data.bats[BLKMetaDeleteTxnIDX].Vecs {
+							if data.bats[BLKMetaDeleteTxnIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
+								blkMetaTxn.Vecs[v].Append(nil, true)
+								continue
+							}
 							val := vec.Get(cnRow)
 							if val == nil {
 								blkMetaTxn.Vecs[v].Append(val, true)
@@ -1665,7 +1675,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					}
 				}
 				tableOff[tid].end += 1
-				logutil.Infof("tableOff tid  %d, loc %v, del %v, start %d, end %d", tid, objectio.Location(loca).String(), objectio.Location(del).String(), tableOff[tid].offset, tableOff[tid].end)
+				logutil.Infof("tableOff tid  %d, loc %v, del %v, start %d, end %d, row is %d", tid, objectio.Location(loca).String(), objectio.Location(del).String(), tableOff[tid].offset, tableOff[tid].end, i)
 			}
 
 
