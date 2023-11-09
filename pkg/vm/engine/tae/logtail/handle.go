@@ -1391,6 +1391,11 @@ func ReWriteCheckpointAndBlockFromKey(
 					if len(datas) > 1 {
 						logutil.Infof("datas len is %d", datas[0].data.Vecs[0].Length())
 						applyDelete(datas[0].data, datas[1].data)
+						datas[0].data.Attrs = make([]string,0)
+						for i := range datas[0].data.Vecs {
+							att := fmt.Sprintf("col_%d", i)
+							datas[0].data.Attrs = append(datas[0].data.Attrs, att)
+						}
 						sortData := containers.ToTNBatch(datas[0].data)
 						logutil.Infof("sortdata is %v", sortData.String())
 						if datas[0].pk > -1 {
