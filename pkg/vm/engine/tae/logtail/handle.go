@@ -1650,7 +1650,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		logutil.Infof("checkpoint cnLocation %s, dnLocation %s, checkpointFiles %s", cnLocation.String(), dnLocation.String(), checkpointFiles)
 		loc = cnLocation
 		tnLocation = dnLocation
-		files = checkpointFiles
+		files = append(files, checkpointFiles...)
 		files = append(files, cnLocation.Name().String())
 	}
 	return loc, tnLocation, data, files, nil

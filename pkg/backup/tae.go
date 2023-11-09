@@ -198,6 +198,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		cnLocation, tnLocation, _, checkpointFiles, err = logtail.ReWriteCheckpointAndBlockFromKey(ctx, srcFs, dstFs,
 			cnLocation, tnLocation, uint32(version), start)
 		for _, name := range checkpointFiles {
+			logutil.Infof("checkpoint file: %s", name)
 			dentry, err := dstFs.StatFile(ctx, name)
 			if err != nil {
 				return err
