@@ -1211,7 +1211,7 @@ func (data *CNCheckpointData) ReadFromData(
 
 					blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(z).(types.Blockid)
 					metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(z).([]byte)
-					logutil.Infof("blkID %s metaLoc %s", blkID.String(), objectio.Location(metaLoc).String())
+					logutil.Infof("blkID %s metaLoc %s, tid is %d", blkID.String(), objectio.Location(metaLoc).String(), tableID)
 				}
 			}
 		}
