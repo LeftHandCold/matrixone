@@ -1368,6 +1368,10 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 
 				if objectData.isCnBatch {
+					if len(datas) > 2 {
+						logutil.Infof("datas len > 2 %v", datas[0].location.String())
+						panic("datas len > 2")
+					}
 					if len(datas) > 1 {
 						logutil.Infof("datas len is %d", datas[0].data.Vecs[0].Length())
 						applyDelete(datas[0].data, datas[1].data)
