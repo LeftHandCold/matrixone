@@ -1439,6 +1439,11 @@ func (data *CheckpointData) updateTableMeta(tid uint64, metaIdx int, start, end 
 			meta.tables[metaIdx].Start = uint64(start)
 			meta.tables[metaIdx].End = uint64(end)
 		} else {
+			if meta.tables[metaIdx].Start == 0 && meta.tables[metaIdx].End == 0 {
+				meta.tables[metaIdx].Start = uint64(start)
+				meta.tables[metaIdx].End = uint64(end)
+				return
+			}
 			if !meta.tables[metaIdx].TryMerge(common.ClosedInterval{Start: uint64(start), End: uint64(end)}) {
 				panic(fmt.Sprintf("logic error interval %v, start %d, end %d", meta.tables[metaIdx].ClosedInterval, start, end))
 			}
