@@ -1549,6 +1549,10 @@ func ReWriteCheckpointAndBlockFromKey(
 						insertBatch[tid].insertBlocks[b].apply = true
 						logutil.Infof("rewrite BLKCNMetaInsertIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
 						for v, vec := range data.bats[BLKCNMetaInsertIDX].Vecs {
+							if data.bats[BLKCNMetaInsertIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
+								blkMeta.Vecs[v].Append(nil, true)
+								continue
+							}
 							val := vec.Get(cnRow)
 							if val == nil {
 								blkMeta.Vecs[v].Append(val, true)
@@ -1558,6 +1562,10 @@ func ReWriteCheckpointAndBlockFromKey(
 						}
 						logutil.Infof("rewrite BLKMetaDeleteTxnIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
 						for v, vec := range data.bats[BLKMetaDeleteTxnIDX].Vecs {
+							if data.bats[BLKMetaDeleteTxnIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
+								blkMetaTxn.Vecs[v].Append(nil, true)
+								continue
+							}
 							val := vec.Get(cnRow)
 							if val == nil {
 								blkMetaTxn.Vecs[v].Append(val, true)
