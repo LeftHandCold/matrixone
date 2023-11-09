@@ -170,6 +170,9 @@ func (entry *TableEntry) GetSegmentByID(id *types.Segmentid) (seg *SegmentEntry,
 	entry.RLock()
 	defer entry.RUnlock()
 	node := entry.entries[*id]
+	if node != nil {
+		logutil.Infof("GetSegmentByID %v", id.ToString())
+	}
 	if node == nil {
 		return nil, moerr.GetOkExpectedEOB()
 	}
@@ -457,7 +460,7 @@ func (entry *TableEntry) DropSegmentEntry(id *types.Segmentid, txn txnif.AsyncTx
 }
 
 func (entry *TableEntry) RemoveEntry(segment *SegmentEntry) (err error) {
-	logutil.Debug("[Catalog]", common.OperationField("remove"),
+	logutil.Infof("[Catalog]", common.OperationField("remove"),
 		common.OperandField(segment.String()))
 	// segment.Close()
 	entry.Lock()
