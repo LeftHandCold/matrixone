@@ -1019,6 +1019,12 @@ func ReWriteCheckpointAndBlockFromKey(
 	blkCNMetaInsertDeltaLoc := data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc)
 	blkCNMetaInsertEntryState := data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_EntryState)
 
+	blkMetaDelTxnBat := data.bats[BLKMetaDeleteTxnIDX]
+	blkMetaDelTxnTid := blkMetaDelTxnBat.GetVectorByName(SnapshotAttr_TID)
+
+	blkMetaInsTxnBat := data.bats[BLKMetaInsertTxnIDX]
+	blkMetaInsTxnBatTid := blkMetaInsTxnBat.GetVectorByName(SnapshotAttr_TID)
+
 	blkMetaInsert := data.bats[BLKMetaInsertIDX]
 	blkMetaInsertMetaLoc := data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc)
 	blkMetaInsertDeltaLoc := data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc)
@@ -1061,8 +1067,9 @@ func ReWriteCheckpointAndBlockFromKey(
 					blockType: objectio.SchemaData,
 					cnRow:     []int{i},
 					isAblk:    isAblk,
+					tid: blkMetaDelTxnTid.Get(i).(uint64),
 				}
-				logutil.Infof("cn metaLoc %v, row is %d", metaLoc.String(), i)
+				logutil.Infof("cn metaLoc %v, row is %d, tid is %d", metaLoc.String(), i, blkMetaDelTxnTid.Get(i).(uint64))
 
 			}
 		}
@@ -1084,6 +1091,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					blockType: objectio.SchemaTombstone,
 					cnRow:     []int{i},
 					isAblk:    isAblk,
+					tid: blkMetaDelTxnTid.Get(i).(uint64),
 				}
 			} else {
 				objectsData[name].data[deltaLoc.ID()].cnRow = append(objectsData[name].data[deltaLoc.ID()].cnRow, i)
@@ -1123,8 +1131,9 @@ func ReWriteCheckpointAndBlockFromKey(
 					blockType: objectio.SchemaData,
 					dnRow:     []int{i},
 					isAblk:    isAblk,
+					tid: blkMetaInsTxnBatTid.Get(i).(uint64),
 				}
-				logutil.Infof("dn metaLoc %v, row is %d", metaLoc.String(), i)
+				logutil.Infof("dn metaLoc %v, row is %d, tid is %d", metaLoc.String(), i, blkMetaInsTxnBatTid.Get(i).(uint64))
 			}
 		}
 
@@ -1145,6 +1154,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					blockType: objectio.SchemaTombstone,
 					dnRow:     []int{i},
 					isAblk:    isAblk,
+					tid: blkMetaInsTxnBatTid.Get(i).(uint64),
 				}
 			} else {
 				objectsData[name].data[deltaLoc.ID()].dnRow = append(objectsData[name].data[deltaLoc.ID()].dnRow, i)
