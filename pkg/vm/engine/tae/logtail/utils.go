@@ -1017,11 +1017,6 @@ func (data *CNCheckpointData) ReadFromDataWithKey(
 	return
 }
 
-var debug1 int
-
-func init() {
-	debug1 = 0
-}
 func (data *CNCheckpointData) ReadFromData(
 	ctx context.Context,
 	tableID uint64,
@@ -1029,6 +1024,7 @@ func (data *CNCheckpointData) ReadFromData(
 	reader *blockio.BlockReader,
 	version uint32,
 	m *mpool.MPool,
+	isdebug bool,
 ) (dataBats []*batch.Batch, err error) {
 	// if err = data.InitMetaIdx(ctx, version, reader,location,m); err != nil {
 	// 	return
@@ -1216,7 +1212,7 @@ func (data *CNCheckpointData) ReadFromData(
 
 					blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(z).(types.Blockid)
 					metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(z).([]byte)
-					if debug1 == 1 {
+					if isdebug {
 						logutil.Infof("blkID %s metaLoc %s, tid is %d", blkID.String(), objectio.Location(metaLoc).String(), tableID)
 					}
 				}
@@ -1232,7 +1228,6 @@ func (data *CNCheckpointData) ReadFromData(
 			}
 		}
 	}
-	debug1 += 1
 
 	return
 }
