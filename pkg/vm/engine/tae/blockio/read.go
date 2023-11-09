@@ -350,7 +350,7 @@ func BlockReadInner(
 			return
 		}
 	}
-	if len(loaded.Vecs) > 0 && info.BlockID.String() == "d92bf9eb-7d75-11ee-bc28-b07b25f84010-0-0" {
+	if len(loaded.Vecs) > 0 && info.BlockID.String() == "1e52a4b5-7edf-11ee-b527-5254000adb85" {
 		loaded.Attrs = make([]string, len(loaded.Vecs))
 		for i := range loaded.Attrs {
 			loaded.Attrs[i] = fmt.Sprintf("%d-mo", i)
