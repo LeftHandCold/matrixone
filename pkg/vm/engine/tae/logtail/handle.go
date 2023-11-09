@@ -1511,7 +1511,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						blkMetaTxn.Vecs[v].Append(val, false)
 					}
 				}
-				if insertBatch[tid] != nil && !insertBatch[tid].apply {
+				if insertBatch[tid] != nil {
 					for b, blk := range insertBatch[tid].insertBlocks {
 						if blk.apply {
 							continue
