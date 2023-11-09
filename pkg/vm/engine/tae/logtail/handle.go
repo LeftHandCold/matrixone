@@ -70,6 +70,7 @@ Main workflow:
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 	"sort"
 	"strconv"
@@ -1329,6 +1330,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		}
 		objectsData[name].isChange = isChange
 	}
+	tpool := dbutils.MakeDefaultSmallPool("smal-vector-pool1")
 	if isCkpChange {
 		insertBatch := make(map[uint64]*iBlocks)
 		for fileName, objectData := range objectsData {
@@ -1399,7 +1401,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						sortData := containers.ToTNBatch(datas[0].data)
 						logutil.Infof("sortdata is %v", sortData.String())
 						if datas[0].pk > -1 {
-							_, err = mergesort.SortBlockColumns(sortData.Vecs, int(datas[0].pk), nil)
+							_, err = mergesort.SortBlockColumns(sortData.Vecs, int(datas[0].pk), tpool)
 							if err != nil {
 								return nil, nil, nil, nil, err
 							}
