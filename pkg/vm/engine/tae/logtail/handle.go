@@ -1406,6 +1406,11 @@ func ReWriteCheckpointAndBlockFromKey(
 							}
 						}
 						datas[0].data = containers.ToCNBatch(sortData)
+						result := batch.NewWithSize(len(datas[0].data.Vecs) - 3)
+						for i := range result.Vecs {
+							result.Vecs[i] = datas[0].data.Vecs[i]
+						}
+						datas[0].data = result
 						//logutil.Infof("sortdata is %v", sortData.String())
 						//task.transMappings.AddSortPhaseMapping(blkidx, rowCntBeforeApplyDelete, deletes, sortMapping)
 					}
