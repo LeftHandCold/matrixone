@@ -1176,6 +1176,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 			} else {
 				objectsData[name].data[deltaLoc.ID()].dnRow = append(objectsData[name].data[deltaLoc.ID()].dnRow, i)
+				logutil.Infof("dn deltaLoc11 %v, row is %d, tid is %d", deltaLoc.String(), i, blkMetaInsTxnBatTid.Get(i).(uint64))
 			}
 		}
 	}
@@ -1346,6 +1347,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		insertBatch := make(map[uint64]*iBlocks)
 		for fileName, objectData := range objectsData {
 			if objectData.isChange || objectData.isCnBatch {
+				logutil.Infof("object %v, isChange %v, isCnBatch %v", fileName, objectData.isChange, objectData.isCnBatch)
 				datas := make([]*blockData, 0)
 				var blocks []objectio.BlockObject
 				var extent objectio.Extent
@@ -1394,6 +1396,7 @@ func ReWriteCheckpointAndBlockFromKey(
 							return nil, nil, nil, nil, err
 						}
 					}
+					logutil.Infof("write object %v, blocks is %v", fileName, blocks)
 				}
 
 				if objectData.isCnBatch {
