@@ -982,6 +982,7 @@ type insertBlock struct {
 	commitTs types.TS
 	cnRow    int
 	apply    bool
+	data   *blockData
 }
 
 func applyDelete(dataBatch *batch.Batch, deleteBatch *batch.Batch) error {
@@ -1472,6 +1473,7 @@ func ReWriteCheckpointAndBlockFromKey(
 								blockId:  dt.blockId,
 								apply:    false,
 								cnRow: dt.cnRow[len(dt.cnRow) - 1],
+								data: dt,
 							}
 							insertBatch[datas[0].tid].insertBlocks = append(insertBatch[datas[0].tid].insertBlocks, ib)
 						}
@@ -1725,6 +1727,20 @@ func ReWriteCheckpointAndBlockFromKey(
 					}
 				}
 			}
+
+			for i := range insertBatch {
+				for _, block := range insertBatch[i].insertBlocks {
+					if block.data != nil {
+						for _, cnRow := range block.data.cnRow{
+							data.bats[BLKCNMetaInsertIDX].Delete(cnRow)
+							data.bats[BLKMetaDeleteTxnIDX].Delete(cnRow)
+						}
+					}
+				}
+			}
+
+			data.bats[BLKCNMetaInsertIDX].Compact()
+			data.bats[BLKMetaDeleteTxnIDX].Compact()
 			tableOff := make(map[uint64]*tableoffset)
 			for i := 0 ; i < blkMetaTxn.Vecs[0].Length(); i++ {
 				tid := blkMetaTxn.GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
