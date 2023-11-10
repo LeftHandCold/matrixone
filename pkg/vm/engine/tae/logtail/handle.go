@@ -1358,7 +1358,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				sort.Slice(datas, func(i, j int) bool {
 					return datas[i].num < datas[j].num
 				})
-				if objectData.isChange && !objectData.isCnBatch {
+				if objectData.isChange && (!objectData.isCnBatch || objectData.data[0].blockType == objectio.SchemaTombstone) {
 					writer, err := blockio.NewBlockWriter(dstFs, fileName)
 					if err != nil {
 						return nil, nil, nil, nil, err
