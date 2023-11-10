@@ -1358,7 +1358,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				sort.Slice(datas, func(i, j int) bool {
 					return datas[i].num < datas[j].num
 				})
-				if objectData.isChange && (!objectData.isCnBatch || objectData.data[0].blockType == objectio.SchemaTombstone) {
+				if objectData.isChange && (!objectData.isCnBatch || (objectData.data[0] != nil && objectData.data[0].blockType == objectio.SchemaTombstone)) {
 					objectData.isCnBatch = false
 					writer, err := blockio.NewBlockWriter(dstFs, fileName)
 					if err != nil {
@@ -1400,7 +1400,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					logutil.Infof("write object %v, blocks is %v", fileName, blocks)
 				}
 
-				if objectData.isCnBatch && objectData.data[0].blockType != objectio.SchemaTombstone {
+				if objectData.isCnBatch && objectData.data[0] != nil && objectData.data[0].blockType != objectio.SchemaTombstone {
 					if objectData.isAblk {
 						if len(datas) > 2 {
 							logutil.Infof("datas len > 2 %v", datas[0].location.String())
