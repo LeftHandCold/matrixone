@@ -1756,8 +1756,8 @@ func ReWriteCheckpointAndBlockFromKey(
 			tableOff1 := make(map[uint64]*tableoffset)
 			for i := 0 ; i < data.bats[BLKMetaDeleteTxnIDX].Vecs[0].Length(); i++ {
 				tid := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
-				loca := blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
-				del := blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte)
+				loca := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
+				del := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte)
 				if tableOff1[tid] == nil {
 					tableOff1[tid] = &tableoffset{
 						offset: i,
@@ -1765,7 +1765,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					}
 				}
 				tableOff1[tid].end += 1
-				logutil.Infof("tableOff11 tid  %d, loc %v, del %v, start %d, end %d, row is %d", tid, objectio.Location(loca).String(), objectio.Location(del).String(), tableOff[tid].offset, tableOff[tid].end, i)
+				logutil.Infof("tableOff11 tid  %d, loc %v, del %v, start %d, end %d, row is %d", tid, objectio.Location(loca).String(), objectio.Location(del).String(), tableOff1[tid].offset, tableOff1[tid].end, i)
 			}
 
 
