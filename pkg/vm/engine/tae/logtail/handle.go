@@ -1400,7 +1400,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					logutil.Infof("write object %v, blocks is %v", fileName, blocks)
 				}
 
-				if objectData.isCnBatch {
+				if objectData.isCnBatch && objectData.data[0].blockType != objectio.SchemaTombstone {
 					if objectData.isAblk {
 						if len(datas) > 2 {
 							logutil.Infof("datas len > 2 %v", datas[0].location.String())
