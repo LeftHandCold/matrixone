@@ -1470,7 +1470,6 @@ func ReWriteCheckpointAndBlockFromKey(
 								}
 							}
 							ib := &insertBlock{
-								blockId:  dt.blockId,
 								apply:    false,
 								cnRow: dt.cnRow[len(dt.cnRow) - 1],
 								data: dt,
@@ -1601,6 +1600,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						ti := blkMetaTxn.GetVectorByName(SnapshotAttr_TID).Get(leng)
 						t2 := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(cnRow)
 						logutil.Infof("rewrite update  BLKMetaInsertIDX %s, row is %d, t2 is %d, leng %d", insertBatch[tid].insertBlocks[b].location.String(), ti, t2, leng)
+						if !blk.location.IsEmpty() {
 						blkMeta.GetVectorByName(catalog.AttrRowID).Update(
 							leng,
 							objectio.HackBlockid2Rowid(&insertBatch[tid].insertBlocks[b].blockId),
@@ -1617,7 +1617,6 @@ func ReWriteCheckpointAndBlockFromKey(
 							leng,
 							true,
 							false)
-						if !blk.location.IsEmpty() {
 							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
 								leng,
 								insertBatch[tid].insertBlocks[b].location.Name().SegmentId(),
@@ -1685,7 +1684,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						ti := blkMetaTxn.GetVectorByName(SnapshotAttr_TID).Get(i)
 						t2 := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(cnRow)
 						logutil.Infof("rewrite111 update  BLKMetaInsertIDX %s, row is %d, t2 is %d", insertBatch[tid].insertBlocks[b].location.String(), ti, t2)
-
+						if !insertBatch[tid].insertBlocks[b].location.IsEmpty() {
 						blkMeta.GetVectorByName(catalog.AttrRowID).Update(
 							i,
 							objectio.HackBlockid2Rowid(&insertBatch[tid].insertBlocks[b].blockId),
@@ -1702,7 +1701,6 @@ func ReWriteCheckpointAndBlockFromKey(
 							i,
 							true,
 							false)
-						if !insertBatch[tid].insertBlocks[b].location.IsEmpty() {
 							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
 								i,
 								insertBatch[tid].insertBlocks[b].location.Name().SegmentId(),
