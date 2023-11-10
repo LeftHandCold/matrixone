@@ -1753,10 +1753,27 @@ func ReWriteCheckpointAndBlockFromKey(
 				tableOff[tid].end += 1
 				logutil.Infof("tableOff tid  %d, loc %v, del %v, start %d, end %d, row is %d", tid, objectio.Location(loca).String(), objectio.Location(del).String(), tableOff[tid].offset, tableOff[tid].end, i)
 			}
+			tableOff1 := make(map[uint64]*tableoffset)
+			for i := 0 ; i < data.bats[BLKMetaDeleteTxnIDX].Vecs[0].Length(); i++ {
+				tid := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
+				loca := blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
+				del := blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte)
+				if tableOff1[tid] == nil {
+					tableOff1[tid] = &tableoffset{
+						offset: i,
+						end:i,
+					}
+				}
+				tableOff1[tid].end += 1
+				logutil.Infof("tableOff11 tid  %d, loc %v, del %v, start %d, end %d, row is %d", tid, objectio.Location(loca).String(), objectio.Location(del).String(), tableOff[tid].offset, tableOff[tid].end, i)
+			}
 
 
 			for tid, tabl := range tableOff {
 				data.UpdateBlockInsertBlkMeta(tid, int32(tabl.offset), int32(tabl.end))
+			}
+			for tid, tabl := range tableOff1 {
+				data.UpdateBlockDeleteBlkMeta(tid, int32(tabl.offset), int32(tabl.end))
 			}
 			data.bats[BLKMetaInsertIDX].Close()
 			data.bats[BLKMetaInsertTxnIDX].Close()
