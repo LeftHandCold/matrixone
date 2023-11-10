@@ -379,7 +379,7 @@ func TestICKPSeekLT(t *testing.T) {
 func TestNewObjectReade1r(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "e5ed1ed5-7ef0-11ee-9931-5254000adb85_00000"
+	name := "3a5b00a9-7f1f-11ee-bcda-5254000adb85_00001"
 
 	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -393,27 +393,67 @@ func TestNewObjectReade1r(t *testing.T) {
 	if err != nil {
 		return
 	}
-	bats, err := reader.LoadAllColumns(ctx, []uint16{1, 19}, common.DefaultAllocator)
+	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
+	bats, err := reader.LoadAllDeleteColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
 	if err != nil {
 		logutil.Infof("load all columns failed: %v", err)
 		return
 	}
-	name1, err := EncodeNameFromString(reader.GetName())
+	/*name1, err := EncodeNameFromString(reader.GetName())
 	assert.Nil(t, err)
 	location := objectio.BuildLocation(name1, *reader.GetObjectReader().GetMetaExtent(), 51, 1)
-	bb, err := blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)
-	applyDelete(bats[0], bb)
+	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
+	//applyDelete(bats[0], bb)
 	ts := types.TS{}
 	for i := 0; i < bats[0].Vecs[0].Length(); i++ {
-		/*num := objectio.HackBytes2Rowid(bats[0].Vecs[0].GetRawBytesAt(i))
+		num := objectio.HackBytes2Rowid(bats[0].Vecs[0].GetRawBytesAt(i))
 		ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
-		_, ro := num.Decode()
-		logutil.Infof("num is %d, cmmit is %v,i is %d", ro, ts.ToString(), i)*/
-		ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
-		num := types.DecodeInt32(bats[0].Vecs[0].GetRawBytesAt(i))
-		logutil.Infof("num is %d, cmmit is %v,i is %d", num, ts.ToString(), i)
+		//_, ro := num.Decode()
+		//logutil.Infof("num is %d, cmmit is %v,i is %d", ro, ts.ToString(), i)
+		//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
+		//num := types.DecodeInt32(bats[0].Vecs[0].GetRawBytesAt(i))
+		logutil.Infof("num is %v, cmmit is %v,i is %d", num.String(), ts.ToString(), i)
 	}
-	logutil.Infof("bats[0].Vecs[1].String() is %v", bats[0].Vecs[0].String())
+	//logutil.Infof("bats[0].Vecs[1].String() is %v", bats[0].Vecs[0].String())
+}
+
+func TestNewObjectReader1(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+	name := "2cd63dc5-7f1f-11ee-bcda-5254000adb85_00000"
+
+	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
+	c := fileservice.Config{
+		Name:    defines.LocalFileServiceName,
+		Backend: "DISK",
+		DataDir: fsDir,
+	}
+	service, err := fileservice.NewFileService(ctx, c, nil)
+	assert.Nil(t, err)
+	reader, err := blockio.NewFileReader(service, name)
+	if err != nil {
+		return
+	}
+	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
+	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
+	if err != nil {
+		logutil.Infof("load all columns failed: %v", err)
+		return
+	}
+	/*name1, err := EncodeNameFromString(reader.GetName())
+	assert.Nil(t, err)
+	location := objectio.BuildLocation(name1, *reader.GetObjectReader().GetMetaExtent(), 51, 1)
+	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
+	//applyDelete(bats[0], bb)
+	ts := types.TS{}
+	for _, bat := range bats {
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
+			num := types.DecodeInt32(bat.Vecs[0].GetRawBytesAt(i))
+			logutil.Infof("num is %d, cmmit is %v,i is %d", num, ts.ToString(), i)
+		}
+		logutil.Infof("bats[0].Vecs[1].String() is %v", bat.Vecs[0].String())
+	}
 }
 
 // EncodeLocationFromString Generate a metaloc from an info string

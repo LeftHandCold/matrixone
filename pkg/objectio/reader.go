@@ -226,6 +226,19 @@ func (r *objectReaderV1) ReadAll(
 	return ReadAllBlocksWithMeta(ctx, &meta, r.name, idxs, r.dataCachePolicy, m, r.fs, constructorFactory)
 }
 
+func (r *objectReaderV1) ReadDeleteAll(
+	ctx context.Context,
+	idxs []uint16,
+	m *mpool.MPool,
+) (ioVec *fileservice.IOVector, err error) {
+	var metaHeader ObjectMeta
+	if metaHeader, err = r.ReadMeta(ctx, m); err != nil {
+		return
+	}
+	meta := metaHeader.MustTombstoneMeta()
+	return ReadAllBlocksWithMeta(ctx, &meta, r.name, idxs, r.dataCachePolicy, m, r.fs, constructorFactory)
+}
+
 // ReadOneBF read one bloom filter
 func (r *objectReaderV1) ReadOneBF(
 	ctx context.Context,

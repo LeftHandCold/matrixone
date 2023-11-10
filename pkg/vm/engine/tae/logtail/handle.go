@@ -943,6 +943,7 @@ type fileData struct {
 	isCnBatch bool
 	isDnBatch bool
 	isChange  bool
+	isAblk    bool
 }
 
 type blockData struct {
@@ -1053,7 +1054,6 @@ func ReWriteCheckpointAndBlockFromKey(
 		}
 		if !isAblk {
 			logutil.Infof("cn metaLoc1 %v, row is %d", metaLoc.String(), i)
-			continue
 		}
 		if !metaLoc.IsEmpty() {
 			name := metaLoc.Name().String()
@@ -1063,6 +1063,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					data:      make(map[uint16]*blockData),
 					isChange:  false,
 					isCnBatch: true,
+					isAblk: isAblk,
 				}
 				objectsData[name] = object
 				isCkpChange = true
@@ -1094,6 +1095,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					data:      make(map[uint16]*blockData),
 					isChange:  false,
 					isCnBatch: true,
+					isAblk: isAblk,
 				}
 				objectsData[name] = object
 			}
@@ -1128,6 +1130,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					data:      make(map[uint16]*blockData),
 					isChange:  false,
 					isDnBatch: true,
+					isAblk: isAblk,
 				}
 				objectsData[name] = object
 			}
@@ -1157,6 +1160,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					name:     deltaLoc.Name(),
 					data:     make(map[uint16]*blockData),
 					isChange: false,
+					isAblk: isAblk,
 				}
 				objectsData[name] = object
 			}
@@ -1392,69 +1396,86 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 
 				if objectData.isCnBatch {
-					if len(datas) > 2 {
-						logutil.Infof("datas len > 2 %v", datas[0].location.String())
-						panic("datas len > 2")
-					}
-					if len(datas) > 1 {
-						logutil.Infof("datas len is %d", datas[0].data.Vecs[0].Length())
-						applyDelete(datas[0].data, datas[1].data)
-						datas[0].data.Attrs = make([]string,0)
-						for i := range datas[0].data.Vecs {
-							att := fmt.Sprintf("col_%d", i)
-							datas[0].data.Attrs = append(datas[0].data.Attrs, att)
+					if objectData.isAblk {
+						if len(datas) > 2 {
+							logutil.Infof("datas len > 2 %v", datas[0].location.String())
+							panic("datas len > 2")
 						}
-						sortData := containers.ToTNBatch(datas[0].data)
+						if len(datas) > 1 {
+							logutil.Infof("datas len is %d", datas[0].data.Vecs[0].Length())
+							applyDelete(datas[0].data, datas[1].data)
+							datas[0].data.Attrs = make([]string,0)
+							for i := range datas[0].data.Vecs {
+								att := fmt.Sprintf("col_%d", i)
+								datas[0].data.Attrs = append(datas[0].data.Attrs, att)
+							}
+							sortData := containers.ToTNBatch(datas[0].data)
+							if datas[0].pk > -1 {
+								_, err = mergesort.SortBlockColumns(sortData.Vecs, int(datas[0].pk), tpool)
+								if err != nil {
+									return nil, nil, nil, nil, err
+								}
+							}
+							datas[0].data = containers.ToCNBatch(sortData)
+							result := batch.NewWithSize(len(datas[0].data.Vecs) - 3)
+							for i := range result.Vecs {
+								result.Vecs[i] = datas[0].data.Vecs[i]
+							}
+							datas[0].data = result
+							//logutil.Infof("sortdata is %v", sortData.String())
+							//task.transMappings.AddSortPhaseMapping(blkidx, rowCntBeforeApplyDelete, deletes, sortMapping)
+						}
+						logutil.Infof("datas2 len is %d, locatio %s", datas[0].data.Vecs[0].Length(), datas[0].location.String())
+						fileNum := uint16(1000) + datas[0].location.Name().Num()
+						segment := datas[0].location.Name().SegmentId()
+						name := objectio.BuildObjectName(&segment, fileNum)
+
+						writer, err := blockio.NewBlockWriter(dstFs, name.String())
+						if err != nil {
+							return nil, nil, nil, nil, err
+						}
 						if datas[0].pk > -1 {
-							_, err = mergesort.SortBlockColumns(sortData.Vecs, int(datas[0].pk), tpool)
-							if err != nil {
-								return nil, nil, nil, nil, err
+							writer.SetPrimaryKey(uint16(datas[0].pk))
+						}
+						_, err = writer.WriteBatch(datas[0].data)
+						if err != nil {
+							return nil, nil, nil, nil, err
+						}
+						blocks, extent, err = writer.Sync(ctx)
+						if err != nil {
+							panic("sync error")
+						}
+						files = append(files, name.String())
+						blockLocation := objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
+						if insertBatch[datas[0].tid] == nil {
+							logutil.Infof("tid is %d, file is %v", datas[0].tid, blockLocation.String())
+							insertBatch[datas[0].tid] = &iBlocks{
+								insertBlocks: make([]*insertBlock, 0),
 							}
 						}
-						datas[0].data = containers.ToCNBatch(sortData)
-						result := batch.NewWithSize(len(datas[0].data.Vecs) - 3)
-						for i := range result.Vecs {
-							result.Vecs[i] = datas[0].data.Vecs[i]
+						ib := &insertBlock{
+							location: blockLocation,
+							blockId:  *objectio.BuildObjectBlockid(name, blocks[0].GetID()),
+							apply:    false,
+							cnRow: datas[0].cnRow[0],
 						}
-						datas[0].data = result
-						//logutil.Infof("sortdata is %v", sortData.String())
-						//task.transMappings.AddSortPhaseMapping(blkidx, rowCntBeforeApplyDelete, deletes, sortMapping)
-					}
-					logutil.Infof("datas2 len is %d, locatio %s", datas[0].data.Vecs[0].Length(), datas[0].location.String())
-					fileNum := uint16(1000) + datas[0].location.Name().Num()
-					segment := datas[0].location.Name().SegmentId()
-					name := objectio.BuildObjectName(&segment, fileNum)
-
-					writer, err := blockio.NewBlockWriter(dstFs, name.String())
-					if err != nil {
-						return nil, nil, nil, nil, err
-					}
-					if datas[0].pk > -1 {
-						writer.SetPrimaryKey(uint16(datas[0].pk))
-					}
-					_, err = writer.WriteBatch(datas[0].data)
-					if err != nil {
-						return nil, nil, nil, nil, err
-					}
-					blocks, extent, err = writer.Sync(ctx)
-					if err != nil {
-						panic("sync error")
-					}
-					files = append(files, name.String())
-					blockLocation := objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
-					if insertBatch[datas[0].tid] == nil {
-						logutil.Infof("tid is %d, file is %v", datas[0].tid, blockLocation.String())
-						insertBatch[datas[0].tid] = &iBlocks{
-							insertBlocks: make([]*insertBlock, 0),
+						insertBatch[datas[0].tid].insertBlocks = append(insertBatch[datas[0].tid].insertBlocks, ib)
+					} else {
+						for _, dt := range datas {
+							if insertBatch[datas[0].tid] == nil {
+								logutil.Infof("tid is %d, file is %v", datas[0].location.String())
+								insertBatch[datas[0].tid] = &iBlocks{
+									insertBlocks: make([]*insertBlock, 0),
+								}
+							}
+							ib := &insertBlock{
+								blockId:  dt.blockId,
+								apply:    false,
+								cnRow: dt.cnRow[0],
+							}
+							insertBatch[datas[0].tid].insertBlocks = append(insertBatch[datas[0].tid].insertBlocks, ib)
 						}
 					}
-					ib := &insertBlock{
-						location: blockLocation,
-						blockId:  *objectio.BuildObjectBlockid(name, blocks[0].GetID()),
-						apply:    false,
-						cnRow: datas[0].cnRow[0],
-					}
-					insertBatch[datas[0].tid].insertBlocks = append(insertBatch[datas[0].tid].insertBlocks, ib)
 
 				} else {
 					for i := range datas {
@@ -1549,7 +1570,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						insertBatch[tid].insertBlocks[b].apply = true
 						logutil.Infof("rewrite BLKCNMetaInsertIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
 						for v, vec := range data.bats[BLKCNMetaInsertIDX].Vecs {
-							if data.bats[BLKCNMetaInsertIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
+							if !blk.location.IsEmpty() && data.bats[BLKCNMetaInsertIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
 								blkMeta.Vecs[v].Append(nil, true)
 								continue
 							}
@@ -1562,7 +1583,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						}
 						logutil.Infof("rewrite BLKMetaDeleteTxnIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
 						for v, vec := range data.bats[BLKMetaDeleteTxnIDX].Vecs {
-							if data.bats[BLKMetaDeleteTxnIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
+							if !blk.location.IsEmpty() && data.bats[BLKMetaDeleteTxnIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
 								blkMetaTxn.Vecs[v].Append(nil, true)
 								continue
 							}
@@ -1598,24 +1619,26 @@ func ReWriteCheckpointAndBlockFromKey(
 							leng,
 							insertBatch[tid].insertBlocks[b].location.Name().SegmentId(),
 							false)
-						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-							leng,
-							[]byte(insertBatch[tid].insertBlocks[b].location),
-							false)
-						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
-							leng,
-							nil,
-							true)
-						test := blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(leng)
-						logutil.Infof("testfdsfs is %v", test)
-						blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-							leng,
-							[]byte(insertBatch[tid].insertBlocks[b].location),
-							false)
-						blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
-							leng,
-							nil,
-							true)
+						if !blk.location.IsEmpty() {
+							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+								leng,
+								[]byte(insertBatch[tid].insertBlocks[b].location),
+								false)
+							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+								leng,
+								nil,
+								true)
+							test := blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(leng)
+							logutil.Infof("testfdsfs is %v", test)
+							blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+								leng,
+								[]byte(insertBatch[tid].insertBlocks[b].location),
+								false)
+							blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+								leng,
+								nil,
+								true)
+						}
 					}
 				}
 			}
@@ -1631,7 +1654,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						insertBatch[tid].insertBlocks[b].apply = true
 						logutil.Infof("rewrite1 BLKCNMetaInsertIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
 						for v, vec := range data.bats[BLKCNMetaInsertIDX].Vecs {
-							if data.bats[BLKCNMetaInsertIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
+							if !insertBatch[tid].insertBlocks[b].location.IsEmpty() && data.bats[BLKCNMetaInsertIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
 								blkMeta.Vecs[v].Append(nil, true)
 								continue
 							}
@@ -1644,7 +1667,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						}
 						logutil.Infof("rewrite1 BLKMetaDeleteTxnIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), cnRow)
 						for v, vec := range data.bats[BLKMetaDeleteTxnIDX].Vecs {
-							if data.bats[BLKMetaDeleteTxnIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
+							if !insertBatch[tid].insertBlocks[b].location.IsEmpty() && data.bats[BLKMetaDeleteTxnIDX].Attrs[v] == pkgcatalog.BlockMeta_DeltaLoc{
 								blkMetaTxn.Vecs[v].Append(nil, true)
 								continue
 							}
@@ -1681,22 +1704,24 @@ func ReWriteCheckpointAndBlockFromKey(
 							i,
 							insertBatch[tid].insertBlocks[b].location.Name().SegmentId(),
 							false)
-						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-							i,
-							[]byte(insertBatch[tid].insertBlocks[b].location),
-							false)
-						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
-							i,
-							nil,
-							true)
-						blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
-							i,
-							[]byte(insertBatch[tid].insertBlocks[b].location),
-							false)
-						blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
-							i,
-							nil,
-							true)
+						if !insertBatch[tid].insertBlocks[b].location.IsEmpty() {
+							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+								i,
+								[]byte(insertBatch[tid].insertBlocks[b].location),
+								false)
+							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+								i,
+								nil,
+								true)
+							blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
+								i,
+								[]byte(insertBatch[tid].insertBlocks[b].location),
+								false)
+							blkMetaTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Update(
+								i,
+								nil,
+								true)
+						}
 					}
 				}
 			}
