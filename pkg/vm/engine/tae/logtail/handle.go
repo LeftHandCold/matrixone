@@ -1471,7 +1471,7 @@ func ReWriteCheckpointAndBlockFromKey(
 							ib := &insertBlock{
 								blockId:  dt.blockId,
 								apply:    false,
-								cnRow: dt.cnRow[0],
+								cnRow: dt.cnRow[len(dt.cnRow) - 1],
 							}
 							insertBatch[datas[0].tid].insertBlocks = append(insertBatch[datas[0].tid].insertBlocks, ib)
 						}
