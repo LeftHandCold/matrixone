@@ -1615,11 +1615,11 @@ func ReWriteCheckpointAndBlockFromKey(
 							leng,
 							true,
 							false)
-						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
-							leng,
-							insertBatch[tid].insertBlocks[b].location.Name().SegmentId(),
-							false)
 						if !blk.location.IsEmpty() {
+							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
+								leng,
+								insertBatch[tid].insertBlocks[b].location.Name().SegmentId(),
+								false)
 							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 								leng,
 								[]byte(insertBatch[tid].insertBlocks[b].location),
@@ -1700,11 +1700,11 @@ func ReWriteCheckpointAndBlockFromKey(
 							i,
 							true,
 							false)
-						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
-							i,
-							insertBatch[tid].insertBlocks[b].location.Name().SegmentId(),
-							false)
 						if !insertBatch[tid].insertBlocks[b].location.IsEmpty() {
+							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
+								i,
+								insertBatch[tid].insertBlocks[b].location.Name().SegmentId(),
+								false)
 							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Update(
 								i,
 								[]byte(insertBatch[tid].insertBlocks[b].location),
