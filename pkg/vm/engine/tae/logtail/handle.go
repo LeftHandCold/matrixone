@@ -1619,7 +1619,7 @@ func ReWriteCheckpointAndBlockFromKey(
 							false)
 						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_EntryState).Update(
 							leng,
-							false,
+							true,
 							false)
 						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_Sorted).Update(
 							leng,
@@ -1703,7 +1703,7 @@ func ReWriteCheckpointAndBlockFromKey(
 							false)
 						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_EntryState).Update(
 							i,
-							false,
+							true,
 							false)
 						blkMeta.GetVectorByName(pkgcatalog.BlockMeta_Sorted).Update(
 							i,
