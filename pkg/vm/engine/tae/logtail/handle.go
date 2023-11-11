@@ -1323,6 +1323,10 @@ func ReWriteCheckpointAndBlockFromKey(
 							windowCNBatch(bat, 0, uint64(v))
 							c := types.TS{}
 							err = c.Unmarshal(bat.Vecs[len(bat.Vecs)-2].GetRawBytesAt(bat.Vecs[0].Length() - 1))
+							if err != nil {
+								logutil.Infof("blkCommitTs 1111%v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
+								return nil, nil, nil, nil, err
+							}
 							logutil.Infof("blkCommitTs %v ts %v, c %v , block is %v", commitTs.ToString(), ts.ToString(), c.ToString(), block.location.String())
 							isChange = true
 							isCkpChange = true
