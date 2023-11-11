@@ -130,9 +130,6 @@ func BlockRead(
 		err  error
 	)
 
-	if info.BlockID.String() == "63c1ba7d-8072-11ee-81e7-5254000adb85-1000-0" {
-		logutil.Infof("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
-	}
 	if filter != nil && info.Sorted {
 		if sels, err = ReadByFilter(
 			ctx, info, inputDeletes, filterSeqnums, filterColTypes,
