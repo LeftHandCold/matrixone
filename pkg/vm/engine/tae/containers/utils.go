@@ -739,6 +739,9 @@ func ForeachWindowVarlen(
 	if sels.IsEmpty() {
 		for i, v := range slice {
 			if op != nil {
+				if len(area) == 0 {
+					continue
+				}
 				if err = op(v.GetByteSlice(area), vec.IsNull(uint64(i+start)), i+start); err != nil {
 					break
 				}
