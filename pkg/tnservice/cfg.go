@@ -46,10 +46,10 @@ var (
 	defaultConnectTimeout        = time.Second * 30
 	defaultHeatbeatTimeout       = time.Second * 3
 
-	defaultFlushInterval         = time.Second * 60
-	defaultScanInterval          = time.Second * 5
-	defaultIncrementalInterval   = time.Minute
-	defaultGlobalMinCount        = int64(60)
+	defaultFlushInterval         = time.Second * 10
+	defaultScanInterval          = time.Second * 2
+	defaultIncrementalInterval   = time.Second * 20
+	defaultGlobalMinCount        = int64(6)
 	defaultMinCount              = int64(100)
 	defaultReservedWALEntryCount = uint64(5000)
 
