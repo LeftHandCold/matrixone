@@ -420,7 +420,7 @@ func TestNewObjectReade1r(t *testing.T) {
 func TestNewObjectReader1(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "db973cf4-7fa9-11ee-a22a-5254000adb85_00001"
+	name := "80ffae62-7fe8-11ee-8038-5254000adb85_00000"
 
 	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -435,7 +435,7 @@ func TestNewObjectReader1(t *testing.T) {
 		return
 	}
 	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
-	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 2}, common.DefaultAllocator)
+	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 3}, common.DefaultAllocator)
 	if err != nil {
 		logutil.Infof("load all columns failed: %v", err)
 		return
@@ -453,7 +453,58 @@ func TestNewObjectReader1(t *testing.T) {
 			num1 := types.DecodeInt32(bat.Vecs[1].GetRawBytesAt(i))
 			num2 := types.DecodeInt32(bat.Vecs[2].GetRawBytesAt(i))
 
-			if num == 1 && num1 == 5 && num2 == 1853 {
+			if num == 5 && num1 == 9 && num2 == 2110 {
+				logutil.Infof("num111 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			} else if num == 1 && num1 == 3 && num2 == 260 {
+				logutil.Infof("num11122 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			}
+			//logutil.Infof("num is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+		}
+		logutil.Infof("bats[0].Vecs[1].String() is %v", bat.Vecs[2].String())
+	}
+}
+
+func TestNewObjectReader2(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+	name := "80ffae62-7fe8-11ee-8038-5254000adb85_00000"
+
+	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
+	c := fileservice.Config{
+		Name:    defines.LocalFileServiceName,
+		Backend: "DISK",
+		DataDir: fsDir,
+	}
+	service, err := fileservice.NewFileService(ctx, c, nil)
+	assert.Nil(t, err)
+	reader, err := blockio.NewFileReader(service, name)
+	if err != nil {
+		return
+	}
+	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
+	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 3}, common.DefaultAllocator)
+	if err != nil {
+		logutil.Infof("load all columns failed: %v", err)
+		return
+	}
+	/*name1, err := EncodeNameFromString(reader.GetName())
+	assert.Nil(t, err)
+	location := objectio.BuildLocation(name1, *reader.GetObjectReader().GetMetaExtent(), 51, 1)
+	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
+	//applyDelete(bats[0], bb)
+	bf, w, err := reader.LoadOneBF(ctx, 0)
+	zm, err := reader.LoadZoneMaps(ctx, []uint16{0, 1, 3}, 0, nil)
+	logutil.Infof("zm is %v-%v", zm[0].GetMax(), zm[0].GetMin())
+	logutil.Infof("bf is %v, w is %v, err is %v", bf.String(), w, err)
+	ts := types.TS{}
+	for _, bat := range bats {
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
+			num := types.DecodeInt32(bat.Vecs[0].GetRawBytesAt(i))
+			num1 := types.DecodeInt32(bat.Vecs[1].GetRawBytesAt(i))
+			num2 := types.DecodeInt32(bat.Vecs[2].GetRawBytesAt(i))
+
+			if num == 5 && num1 == 9 && num2 == 2110 {
 				logutil.Infof("num111 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
 			} else if num == 1 && num1 == 3 && num2 == 260 {
 				logutil.Infof("num11122 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
