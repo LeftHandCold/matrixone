@@ -1433,6 +1433,25 @@ func ReWriteCheckpointAndBlockFromKey(
 							datas[0].data = result
 							//logutil.Infof("sortdata is %v", sortData.String())
 							//task.transMappings.AddSortPhaseMapping(blkidx, rowCntBeforeApplyDelete, deletes, sortMapping)
+						} else {
+							datas[0].data.Attrs = make([]string, 0)
+							for i := range datas[0].data.Vecs {
+								att := fmt.Sprintf("col_%d", i)
+								datas[0].data.Attrs = append(datas[0].data.Attrs, att)
+							}
+							sortData := containers.ToTNBatch(datas[0].data)
+							if datas[0].pk > -1 {
+								_, err = mergesort.SortBlockColumns(sortData.Vecs, int(datas[0].pk), tpool)
+								if err != nil {
+									return nil, nil, nil, nil, err
+								}
+							}
+							datas[0].data = containers.ToCNBatch(sortData)
+							result := batch.NewWithSize(len(datas[0].data.Vecs) - 3)
+							for i := range result.Vecs {
+								result.Vecs[i] = datas[0].data.Vecs[i]
+							}
+							datas[0].data = result
 						}
 						logutil.Infof("datas2 len is %d, locatio %s", datas[0].data.Vecs[0].Length(), datas[0].location.String())
 						fileNum := uint16(1000) + datas[0].location.Name().Num()
@@ -1623,7 +1642,7 @@ func ReWriteCheckpointAndBlockFromKey(
 								false)
 							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_Sorted).Update(
 								leng,
-								false,
+								true,
 								false)
 							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
 								leng,
@@ -1707,7 +1726,7 @@ func ReWriteCheckpointAndBlockFromKey(
 								false)
 							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_Sorted).Update(
 								i,
-								false,
+								true,
 								false)
 							blkMeta.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).Update(
 								i,
