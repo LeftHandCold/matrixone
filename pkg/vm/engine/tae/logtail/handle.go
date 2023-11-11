@@ -1332,7 +1332,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					}
 					if !isWindow {
 						logutil.Infof("blockread %s read delet \n", block.location.String())
-						windowCNBatch(bat, 0, uint64(bat.Vecs[0].Length()))
+						//windowCNBatch(bat, 0, uint64(bat.Vecs[0].Length()))
 					}
 				}
 
