@@ -467,7 +467,7 @@ func TestNewObjectReader1(t *testing.T) {
 func TestNewObjectReader2(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "80ffae62-7fe8-11ee-8038-5254000adb85_00000"
+	name := "63c1ba7d-8072-11ee-81e7-5254000adb85_01000"
 
 	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -504,7 +504,7 @@ func TestNewObjectReader2(t *testing.T) {
 			num1 := types.DecodeInt32(bat.Vecs[1].GetRawBytesAt(i))
 			num2 := types.DecodeInt32(bat.Vecs[2].GetRawBytesAt(i))
 
-			if num == 5 && num1 == 9 && num2 == 2110 {
+			if num == 9 && num1 == 4 && num2 == 778 {
 				logutil.Infof("num111 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
 			} else if num == 1 && num1 == 3 && num2 == 260 {
 				logutil.Infof("num11122 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
