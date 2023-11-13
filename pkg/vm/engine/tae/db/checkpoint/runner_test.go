@@ -423,7 +423,7 @@ func TestNewObjectReade1r(t *testing.T) {
 func TestNewObjectReader1(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "6036f19e-81ee-11ee-919c-5254000adb85_00000"
+	name := "4e4cf8de-8204-11ee-a78a-5254000adb85_00004"
 
 	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -459,7 +459,7 @@ func TestNewObjectReader1(t *testing.T) {
 			rid := objectio.HackBytes2Rowid(bat.Vecs[3].GetRawBytesAt(i))
 			ab := types.DecodeBool(bat.Vecs[5].GetRawBytesAt(i))
 
-			if num == 1 && num1 == 5 && num2 == 3004 {
+			if num == 3 && num1 == 9 && num2 == 3130 {
 				logutil.Infof("num111 is %d-%d-%d, cmmit is %v, rid is %v, i is %d, y is %d, ab %v", num, num1, num2, ts.ToString(), rid.String(), i, y, ab)
 			} else if num == 1 && num1 == 3 && num2 == 260 {
 				logutil.Infof("num11122 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
@@ -476,7 +476,7 @@ func TestNewObjectReader1(t *testing.T) {
 func TestNewObjectReader2(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "6587b518-81ee-11ee-919c-5254000adb85_01000"
+	name := "4c929822-8206-11ee-b131-5254000adb85_00000"
 
 	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -502,7 +502,7 @@ func TestNewObjectReader2(t *testing.T) {
 	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
 	//applyDelete(bats[0], bb)
 	bf, w, err := reader.LoadOneBF(ctx, 0)
-	zm, err := reader.LoadZoneMaps(ctx, []uint16{0, 1, 2, 8}, 0, nil)
+	zm, err := reader.LoadZoneMaps(ctx, []uint16{0, 1, 2, 3}, 0, nil)
 	logutil.Infof("zm is %v-%v", zm[0].GetMax(), zm[0].GetMin())
 	logutil.Infof("bf is %v, w is %v, err is %v", bf.String(), w, err)
 	ts := types.TS{}
@@ -520,7 +520,7 @@ func TestNewObjectReader2(t *testing.T) {
 			} else if num == 1 && num1 == 3 {
 				//logutil.Infof("num11122 is %d-%d-%v, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
 			}
-			if num2 == "3a15013a15053a160bbc" {
+			if num2 == "3a15033a15093a160c3a" {
 				t1, _, _ := types.DecodeTuple(bat.Vecs[3].GetRawBytesAt(i))
 				//t1.String()
 				logutil.Infof("bats[0].Vecs[1].String() is %v, %d, n %d-%d-%d, y %d, t1.String() is %v", num2, i, num, num1, num3, y, t1.String())
