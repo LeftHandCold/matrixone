@@ -1426,6 +1426,7 @@ func ReWriteCheckpointAndBlockFromKey(
 							if len(datas) > 1 {
 								deleteData = datas[1].data
 							} else {
+								logutil.Infof("objectData.data[0].delete is %v, len is %v, blk %v -%v ", objectData.data[0].delete.location.String(), objectData.data[0].delete.data.Vecs[0].Length(),datas[0].blockId.String(), datas[0].location.String())
 								deleteData = objectData.data[0].delete.data
 							}
 							applyDelete(datas[0].data, deleteData, datas[0].blockId.String())
