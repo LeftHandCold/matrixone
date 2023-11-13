@@ -1037,6 +1037,7 @@ func ReWriteCheckpointAndBlockFromKey(
 	blkCNMetaInsertMetaLoc := data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc)
 	blkCNMetaInsertDeltaLoc := data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc)
 	blkCNMetaInsertEntryState := data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_EntryState)
+	blkCNMetaInsertBlkID := data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_ID)
 
 	blkMetaDelTxnBat := data.bats[BLKMetaDeleteTxnIDX]
 	blkMetaDelTxnTid := blkMetaDelTxnBat.GetVectorByName(SnapshotAttr_TID)
@@ -1054,6 +1055,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		deltaLoc := objectio.Location(blkCNMetaInsertDeltaLoc.Get(i).([]byte))
 		isAblk := blkCNMetaInsertEntryState.Get(i).(bool)
 		commits := blkCNMetaInsertCommitTs.Get(i).(types.TS)
+		blkID := blkCNMetaInsertBlkID.Get(i).(types.Blockid)
 		if commits.Less(ts) {
 			panic("commitTs less than ts")
 		}
@@ -1080,6 +1082,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					cnRow:     []int{i},
 					isAblk:    isAblk,
 					tid:       blkMetaDelTxnTid.Get(i).(uint64),
+					blockId: blkID,
 				}
 			} else {
 				objectsData[name].data[deltaLoc.ID()].cnRow = append(objectsData[name].data[deltaLoc.ID()].cnRow, i)
@@ -1113,6 +1116,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					cnRow:     []int{i},
 					isAblk:    isAblk,
 					tid:       blkMetaDelTxnTid.Get(i).(uint64),
+					blockId: blkID,
 				}
 				logutil.Infof("cn metaLoc %v, row is %d, tid is %d", metaLoc.String(), i, blkMetaDelTxnTid.Get(i).(uint64))
 
