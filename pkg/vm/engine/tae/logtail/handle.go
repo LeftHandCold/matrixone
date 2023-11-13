@@ -1118,7 +1118,7 @@ func ReWriteCheckpointAndBlockFromKey(
 
 			}
 
-			if !isAblk && !deltaLoc.IsEmpty() && !deltaLoc.Name().Equal(metaLoc.Name()) {
+			if isAblk && !deltaLoc.IsEmpty() && !deltaLoc.Name().Equal(metaLoc.Name()) {
 				objectsData[name].data[metaLoc.ID()].delete = objectsData[deltaLoc.Name().String()].data[metaLoc.ID()]
 			}
 
