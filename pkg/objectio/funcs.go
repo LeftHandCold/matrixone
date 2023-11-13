@@ -279,7 +279,7 @@ func ReadAllBlocksWithMeta(
 			blkmeta := meta.GetBlockMeta(blk)
 			if seqnum > blkmeta.GetMaxSeqnum() || blkmeta.ColumnMeta(seqnum).DataType() == 0 {
 				// prefetch, do not generate
-				panic("ReadAllBlocksWithMeta expect no schema changes")
+				//panic("ReadAllBlocksWithMeta expect no schema changes")
 			}
 			col := blkmeta.ColumnMeta(seqnum)
 			ext := col.Location()

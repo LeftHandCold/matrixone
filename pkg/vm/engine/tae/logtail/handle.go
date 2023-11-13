@@ -958,6 +958,7 @@ type blockData struct {
 	commitTs  types.TS
 	blockId   types.Blockid
 	tid       uint64
+	delete    *blockData
 }
 
 type dataObject struct {
@@ -985,7 +986,7 @@ type insertBlock struct {
 	data     *blockData
 }
 
-func applyDelete(dataBatch *batch.Batch, deleteBatch *batch.Batch) error {
+func applyDelete(dataBatch *batch.Batch, deleteBatch *batch.Batch, id string) error {
 	if deleteBatch == nil {
 		return nil
 	}
@@ -994,7 +995,10 @@ func applyDelete(dataBatch *batch.Batch, deleteBatch *batch.Batch) error {
 	for i := 0; i < deleteBatch.Vecs[0].Length(); i++ {
 		row := deleteBatch.Vecs[0].GetRawBytesAt(i)
 		rowId := objectio.HackBytes2Rowid(row)
-		_, ro := rowId.Decode()
+		blockId, ro := rowId.Decode()
+		if blockId.String() != id {
+			continue
+		}
 		rowss[int64(ro)] = true
 	}
 	for i := 0; i < dataBatch.Vecs[0].Length(); i++ {
@@ -1056,6 +1060,32 @@ func ReWriteCheckpointAndBlockFromKey(
 		if !isAblk {
 			logutil.Infof("cn metaLoc1 %v, row is %d", metaLoc.String(), i)
 		}
+		if !deltaLoc.IsEmpty() {
+			name := deltaLoc.Name().String()
+			if objectsData[name] == nil {
+				object := &fileData{
+					name:      deltaLoc.Name(),
+					data:      make(map[uint16]*blockData),
+					isChange:  false,
+					isCnBatch: true,
+					isAblk:    isAblk,
+				}
+				objectsData[name] = object
+			}
+			if objectsData[name].data[deltaLoc.ID()] == nil {
+				objectsData[name].data[deltaLoc.ID()] = &blockData{
+					num:       deltaLoc.ID(),
+					location:  deltaLoc,
+					blockType: objectio.SchemaTombstone,
+					cnRow:     []int{i},
+					isAblk:    isAblk,
+					tid:       blkMetaDelTxnTid.Get(i).(uint64),
+				}
+			} else {
+				objectsData[name].data[deltaLoc.ID()].cnRow = append(objectsData[name].data[deltaLoc.ID()].cnRow, i)
+			}
+		}
+
 		if !metaLoc.IsEmpty() {
 			name := metaLoc.Name().String()
 			if objectsData[name] == nil {
@@ -1087,31 +1117,11 @@ func ReWriteCheckpointAndBlockFromKey(
 				logutil.Infof("cn metaLoc %v, row is %d, tid is %d", metaLoc.String(), i, blkMetaDelTxnTid.Get(i).(uint64))
 
 			}
-		}
-		if !deltaLoc.IsEmpty() {
-			name := deltaLoc.Name().String()
-			if objectsData[name] == nil {
-				object := &fileData{
-					name:      deltaLoc.Name(),
-					data:      make(map[uint16]*blockData),
-					isChange:  false,
-					isCnBatch: true,
-					isAblk:    isAblk,
-				}
-				objectsData[name] = object
+
+			if !isAblk && !deltaLoc.IsEmpty() && !deltaLoc.Name().Equal(metaLoc.Name()) {
+				objectsData[name].data[metaLoc.ID()].delete = objectsData[deltaLoc.Name().String()].data[metaLoc.ID()]
 			}
-			if objectsData[name].data[deltaLoc.ID()] == nil {
-				objectsData[name].data[deltaLoc.ID()] = &blockData{
-					num:       deltaLoc.ID(),
-					location:  deltaLoc,
-					blockType: objectio.SchemaTombstone,
-					cnRow:     []int{i},
-					isAblk:    isAblk,
-					tid:       blkMetaDelTxnTid.Get(i).(uint64),
-				}
-			} else {
-				objectsData[name].data[deltaLoc.ID()].cnRow = append(objectsData[name].data[deltaLoc.ID()].cnRow, i)
-			}
+
 		}
 	}
 
@@ -1410,9 +1420,15 @@ func ReWriteCheckpointAndBlockFromKey(
 							logutil.Infof("datas len > 2 %v", datas[0].location.String())
 							panic("datas len > 2")
 						}
-						if len(datas) > 1 {
+						if len(datas) > 1  || objectData.data[0].delete != nil {
 							logutil.Infof("datas len is %d", datas[0].data.Vecs[0].Length())
-							applyDelete(datas[0].data, datas[1].data)
+							var deleteData *batch.Batch
+							if len(datas) > 1 {
+								deleteData = datas[1].data
+							} else {
+								deleteData = objectData.data[0].delete.data
+							}
+							applyDelete(datas[0].data, deleteData, datas[0].blockId.String())
 							datas[0].data.Attrs = make([]string, 0)
 							for i := range datas[0].data.Vecs {
 								att := fmt.Sprintf("col_%d", i)

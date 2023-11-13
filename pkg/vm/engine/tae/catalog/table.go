@@ -170,9 +170,6 @@ func (entry *TableEntry) GetSegmentByID(id *types.Segmentid) (seg *SegmentEntry,
 	entry.RLock()
 	defer entry.RUnlock()
 	node := entry.entries[*id]
-	if node != nil {
-		logutil.Infof("GetSegmentByID %v", id.ToString())
-	}
 	if node == nil {
 		return nil, moerr.GetOkExpectedEOB()
 	}

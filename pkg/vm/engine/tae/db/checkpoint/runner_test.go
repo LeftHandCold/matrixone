@@ -379,7 +379,7 @@ func TestICKPSeekLT(t *testing.T) {
 func TestNewObjectReade1r(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "e67d32ad-7fa9-11ee-a22a-5254000adb85_00000"
+	name := "84b4fa30-81ee-11ee-919c-5254000adb85_00000"
 
 	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -412,6 +412,9 @@ func TestNewObjectReade1r(t *testing.T) {
 		//logutil.Infof("num is %d, cmmit is %v,i is %d", ro, ts.ToString(), i)
 		//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
 		//num := types.DecodeInt32(bats[0].Vecs[0].GetRawBytesAt(i))
+		if strings.Contains(num.String(), "baade41d-8110-11ee-94f8-5254000adb85") {
+			logutil.Infof("num is %v, cmmit is %v,i is %d", num.String(), ts.ToString(), i)
+		}
 		logutil.Infof("num is %v, cmmit is %v,i is %d", num.String(), ts.ToString(), i)
 	}
 	//logutil.Infof("bats[0].Vecs[1].String() is %v", bats[0].Vecs[0].String())
@@ -420,7 +423,7 @@ func TestNewObjectReade1r(t *testing.T) {
 func TestNewObjectReader1(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "80ffae62-7fe8-11ee-8038-5254000adb85_00000"
+	name := "6036f19e-81ee-11ee-919c-5254000adb85_00000"
 
 	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -435,7 +438,7 @@ func TestNewObjectReader1(t *testing.T) {
 		return
 	}
 	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
-	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 3}, common.DefaultAllocator)
+	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 4, 12, 13, 14}, common.DefaultAllocator)
 	if err != nil {
 		logutil.Infof("load all columns failed: %v", err)
 		return
@@ -446,19 +449,25 @@ func TestNewObjectReader1(t *testing.T) {
 	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
 	//applyDelete(bats[0], bb)
 	ts := types.TS{}
-	for _, bat := range bats {
+	for y, bat := range bats {
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
 			//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
 			num := types.DecodeInt32(bat.Vecs[0].GetRawBytesAt(i))
 			num1 := types.DecodeInt32(bat.Vecs[1].GetRawBytesAt(i))
 			num2 := types.DecodeInt32(bat.Vecs[2].GetRawBytesAt(i))
+			ts.Unmarshal(bat.Vecs[4].GetRawBytesAt(i))
+			rid := objectio.HackBytes2Rowid(bat.Vecs[3].GetRawBytesAt(i))
+			ab := types.DecodeBool(bat.Vecs[5].GetRawBytesAt(i))
 
-			if num == 5 && num1 == 9 && num2 == 2110 {
-				logutil.Infof("num111 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			if num == 1 && num1 == 5 && num2 == 3004 {
+				logutil.Infof("num111 is %d-%d-%d, cmmit is %v, rid is %v, i is %d, y is %d, ab %v", num, num1, num2, ts.ToString(), rid.String(), i, y, ab)
 			} else if num == 1 && num1 == 3 && num2 == 260 {
 				logutil.Infof("num11122 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
 			}
 			//logutil.Infof("num is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			if i == bat.Vecs[0].Length()-1 {
+				logutil.Infof("num11122 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			}
 		}
 		logutil.Infof("bats[0].Vecs[1].String() is %v", bat.Vecs[2].String())
 	}
@@ -467,7 +476,7 @@ func TestNewObjectReader1(t *testing.T) {
 func TestNewObjectReader2(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "63c1ba7d-8072-11ee-81e7-5254000adb85_01000"
+	name := "6587b518-81ee-11ee-919c-5254000adb85_01000"
 
 	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -482,7 +491,7 @@ func TestNewObjectReader2(t *testing.T) {
 		return
 	}
 	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
-	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 3}, common.DefaultAllocator)
+	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 2, 8}, common.DefaultAllocator)
 	if err != nil {
 		logutil.Infof("load all columns failed: %v", err)
 		return
@@ -493,25 +502,32 @@ func TestNewObjectReader2(t *testing.T) {
 	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
 	//applyDelete(bats[0], bb)
 	bf, w, err := reader.LoadOneBF(ctx, 0)
-	zm, err := reader.LoadZoneMaps(ctx, []uint16{0, 1, 3}, 0, nil)
+	zm, err := reader.LoadZoneMaps(ctx, []uint16{0, 1, 2, 8}, 0, nil)
 	logutil.Infof("zm is %v-%v", zm[0].GetMax(), zm[0].GetMin())
 	logutil.Infof("bf is %v, w is %v, err is %v", bf.String(), w, err)
 	ts := types.TS{}
-	for _, bat := range bats {
+	for y, bat := range bats {
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
 			//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
 			num := types.DecodeInt32(bat.Vecs[0].GetRawBytesAt(i))
 			num1 := types.DecodeInt32(bat.Vecs[1].GetRawBytesAt(i))
-			num2 := types.DecodeInt32(bat.Vecs[2].GetRawBytesAt(i))
+			num3 := types.DecodeInt32(bat.Vecs[2].GetRawBytesAt(i))
+			entry := common.TypeStringValue(*bat.Vecs[3].GetType(), any(bat.Vecs[3].GetRawBytesAt(i)), false)
+			num2 := entry
 
-			if num == 9 && num1 == 4 && num2 == 778 {
-				logutil.Infof("num111 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
-			} else if num == 1 && num1 == 3 && num2 == 260 {
-				logutil.Infof("num11122 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			if num == 9 && num1 == 4 {
+				logutil.Infof("num111 is %d-%d-%v, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			} else if num == 1 && num1 == 3 {
+				//logutil.Infof("num11122 is %d-%d-%v, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			}
+			if num2 == "3a15013a15053a160bbc" {
+				t1, _, _ := types.DecodeTuple(bat.Vecs[3].GetRawBytesAt(i))
+				//t1.String()
+				logutil.Infof("bats[0].Vecs[1].String() is %v, %d, n %d-%d-%d, y %d, t1.String() is %v", num2, i, num, num1, num3, y, t1.String())
 			}
 			//logutil.Infof("num is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
 		}
-		logutil.Infof("bats[0].Vecs[1].String() is %v", bat.Vecs[0].String())
+		//logutil.Infof("bats[0].Vecs[1].String() is %v", bat.Vecs[2].String())
 	}
 }
 
