@@ -98,6 +98,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	files := make(map[string]*fileservice.DirEntry, 0)
 	table := gc.NewGCTable()
 	gcFileMap := make(map[string]string)
+	var deleteFiles map[string]*logtail.DeleteID
 	for i, name := range names {
 		if len(name) == 0 {
 			continue
@@ -115,10 +116,11 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		if err != nil {
 			return err
 		}
-		locations, data, err := logtail.LoadCheckpointEntriesFromKey(ctx, srcFs, key, uint32(version))
+		locations, data, deletes, err := logtail.LoadCheckpointEntriesFromKey(ctx, srcFs, key, uint32(version))
 		if err != nil {
 			return err
 		}
+		deleteFiles = deletes
 		table.UpdateTable(data)
 		gcFiles := table.SoftGC()
 		mergeGCFile(gcFiles, gcFileMap)
@@ -196,7 +198,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		start := types.StringToTS(mergeStart)
 		var checkpointFiles []string
 		cnLocation, tnLocation, _, checkpointFiles, err = logtail.ReWriteCheckpointAndBlockFromKey(ctx, srcFs, dstFs,
-			cnLocation, tnLocation, uint32(version), start)
+			cnLocation, tnLocation, uint32(version), start, deleteFiles)
 		for _, name := range checkpointFiles {
 			logutil.Infof("checkpoint file: %s", name)
 			dentry, err := dstFs.StatFile(ctx, name)

@@ -893,23 +893,23 @@ func LoadCheckpointEntriesFromKey(
 	fs fileservice.FileService,
 	location objectio.Location,
 	version uint32,
-) ([]objectio.Location, *CheckpointData, error) {
+) ([]objectio.Location, *CheckpointData, map[string]*DeleteID, error) {
 	locations := make([]objectio.Location, 0)
 	locations = append(locations, location)
 	data := NewCheckpointData()
 	reader, err := blockio.NewObjectReader(fs, location)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	err = data.readMetaBatch(ctx, version, reader, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil,err
 	}
 	err = data.readAll(ctx, version, fs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil,err
 	}
-
+	deleteFiles := make(map[string]*DeleteID)
 	for _, location = range data.locations {
 		locations = append(locations, location)
 	}
@@ -927,6 +927,12 @@ func LoadCheckpointEntriesFromKey(
 		deltaLoc := objectio.Location(data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte))
 		metaLoc := objectio.Location(data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte))
 		if !metaLoc.IsEmpty() {
+			if deleteFiles[metaLoc.Name().String()] == nil{
+				deleteFiles[metaLoc.Name().String()] = &DeleteID{
+					num :  make(map[uint16]bool),
+				}
+			}
+			deleteFiles[metaLoc.Name().String()].num[metaLoc.ID()] = true
 			locations = append(locations, metaLoc)
 		}
 		if !deltaLoc.IsEmpty() {
@@ -934,7 +940,7 @@ func LoadCheckpointEntriesFromKey(
 		}
 
 	}
-	return locations, data, nil
+	return locations, data, deleteFiles,nil
 }
 
 type fileData struct {
@@ -986,6 +992,10 @@ type insertBlock struct {
 	data     *blockData
 }
 
+type DeleteID struct {
+	num    map[uint16]bool
+}
+
 func applyDelete(dataBatch *batch.Batch, deleteBatch *batch.Batch, id string) error {
 	if deleteBatch == nil {
 		return nil
@@ -1015,6 +1025,7 @@ func ReWriteCheckpointAndBlockFromKey(
 	fs, dstFs fileservice.FileService,
 	loc, tnLocation objectio.Location,
 	version uint32, ts types.TS,
+	deleteFiles map[string]*DeleteID,
 ) (objectio.Location, objectio.Location, *CheckpointData, []string, error) {
 	objectsData := make(map[string]*fileData, 0)
 	data := NewCheckpointData()
@@ -1062,6 +1073,10 @@ func ReWriteCheckpointAndBlockFromKey(
 		if !isAblk {
 			logutil.Infof("cn metaLoc1 %v, row is %d", metaLoc.String(), i)
 		}
+		if !metaLoc.IsEmpty() && deleteFiles[metaLoc.Name().String()] !=nil && deleteFiles[metaLoc.Name().String()].num[metaLoc.ID()] {
+			continue
+		}
+
 		if !deltaLoc.IsEmpty() {
 			name := deltaLoc.Name().String()
 			if objectsData[name] == nil {
