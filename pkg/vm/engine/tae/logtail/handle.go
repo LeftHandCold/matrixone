@@ -1375,6 +1375,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		}
 		objectsData[name].isChange = isChange
 	}
+
 	tpool := dbutils.MakeDefaultSmallPool("smal-vector-pool1")
 	if isCkpChange {
 		insertBatch := make(map[uint64]*iBlocks)
