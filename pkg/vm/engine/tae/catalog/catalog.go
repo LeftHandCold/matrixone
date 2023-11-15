@@ -719,6 +719,7 @@ func (catalog *Catalog) OnReplayBlockBatch(ins, insTxn, del, delTxn *containers.
 		sid := blkID.Segment()
 		metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
 		deltaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte)
+		logutil.Infof("OnReplayBlockBatch metaLoc %s deltaLoc %s, row is %d", objectio.Location(metaLoc).String(), objectio.Location(deltaLoc).String(), i)
 		txnNode := txnbase.ReadTuple(insTxn, i)
 		catalog.onReplayCreateBlock(dbid, tid, sid, &blkID, state, metaLoc, deltaLoc, txnNode, dataFactory)
 	}
@@ -731,6 +732,7 @@ func (catalog *Catalog) OnReplayBlockBatch(ins, insTxn, del, delTxn *containers.
 		un := txnbase.ReadTuple(delTxn, i)
 		metaLoc := delTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(i).([]byte)
 		deltaLoc := delTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte)
+		logutil.Infof("OnReplayBlockBatch delete metaLoc %s deltaLoc %s", objectio.Location(metaLoc).String(), objectio.Location(deltaLoc).String())
 		catalog.onReplayDeleteBlock(dbid, tid, sid, blkID, metaLoc, deltaLoc, un)
 	}
 }
@@ -753,6 +755,7 @@ func (catalog *Catalog) onReplayCreateBlock(
 		logutil.Info(catalog.SimplePPString(common.PPL3))
 		panic(err)
 	}
+	logutil.Infof("segid is %v, tablesi %d", segid.ToString(), rel.GetID())
 	seg, err := rel.GetSegmentByID(segid)
 	if err != nil {
 		logutil.Info(catalog.SimplePPString(common.PPL3))
@@ -828,6 +831,7 @@ func (catalog *Catalog) onReplayDeleteBlock(
 		logutil.Info(catalog.SimplePPString(common.PPL3))
 		panic(err)
 	}
+	logutil.Infof("segid delete is %v, tablesi %d", segid.ToString(), rel.GetID())
 	seg, err := rel.GetSegmentByID(segid)
 	if err != nil {
 		logutil.Info(catalog.SimplePPString(common.PPL3))

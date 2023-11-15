@@ -558,7 +558,7 @@ func logDebug(ses *Session, info string, msg string, fields ...zap.Field) {
 	}
 	fields = append(fields, zap.String("session_info", info))
 	fields = appendSessionField(fields, ses)
-	getLogger().Log(msg, log.DefaultLogOptions().WithLevel(zap.DebugLevel).AddCallerSkip(1), fields...)
+	getLogger().Log(msg, log.DefaultLogOptions().WithLevel(zap.InfoLevel).AddCallerSkip(1), fields...)
 }
 
 func logError(ses *Session, info string, msg string, fields ...zap.Field) {

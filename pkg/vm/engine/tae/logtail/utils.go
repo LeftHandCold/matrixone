@@ -386,6 +386,19 @@ func IncrementalCheckpointDataFactory(start, end types.TS,
 	}
 }
 
+func BackupCheckpointDataFactory(start, end types.TS) func(c *catalog.Catalog) (*CheckpointData, error) {
+	return func(c *catalog.Catalog) (data *CheckpointData, err error) {
+		collector := NewBackupCollector(start, end)
+		defer collector.Close()
+		err = c.RecurLoop(collector)
+		if moerr.IsMoErrCode(err, moerr.OkStopCurrRecur) {
+			err = nil
+		}
+		data = collector.OrphanData()
+		return
+	}
+}
+
 func GlobalCheckpointDataFactory(
 	end types.TS,
 	versionInterval time.Duration,
@@ -620,6 +633,20 @@ func NewIncrementalCollector(start, end types.TS) *IncrementalCollector {
 	return collector
 }
 
+func NewBackupCollector(start, end types.TS) *IncrementalCollector {
+	collector := &IncrementalCollector{
+		BaseCollector: &BaseCollector{
+			LoopProcessor: new(catalog.LoopProcessor),
+			data:          NewCheckpointData(common.DefaultAllocator),
+			start:         start,
+			end:           end,
+		},
+	}
+	collector.BlockFn = collector.VisitBlkForBackup
+	collector.SegmentFn = collector.VisitSegForBackup
+	return collector
+}
+
 type GlobalCollector struct {
 	*BaseCollector
 	versionThershold types.TS
@@ -669,8 +696,12 @@ func (data *CheckpointData) ApplyReplayTo(
 	ins, tnins, del, tndel = data.GetSegBatchs()
 	c.OnReplaySegmentBatch(ins, tnins, del, tndel, dataFactory)
 	ins, tnins, del, tndel = data.GetTNBlkBatchs()
+	logutil.Infof("ApplyReplayTo ins1, data.GetTNBlkBatchs()")
+	data.PrintData()
 	c.OnReplayBlockBatch(ins, tnins, del, tndel, dataFactory)
 	ins, tnins, del, tndel = data.GetBlkBatchs()
+	logutil.Infof("ApplyReplayTo ins2")
+	data.PrintData()
 	c.OnReplayBlockBatch(ins, tnins, del, tndel, dataFactory)
 	return
 }
@@ -962,6 +993,9 @@ func (data *CNCheckpointData) GetTableMeta(tableID uint64, version uint32, loc o
 
 	data.meta[tid] = tableMeta
 	meta = data.meta[tableID]
+	if tableID == 272481 {
+		logutil.Infof("tableID %d, meta %v", tableID, meta.String())
+	}
 	return
 }
 func (data *CNCheckpointData) fillInMetaBatchWithLocation(location objectio.Location, m *mpool.MPool) (err error) {
@@ -1076,6 +1110,7 @@ func (data *CNCheckpointData) ReadFromData(
 	reader *blockio.BlockReader,
 	version uint32,
 	m *mpool.MPool,
+	isdebug bool,
 ) (dataBats []*batch.Batch, err error) {
 	// if err = data.InitMetaIdx(ctx, version, reader,location,m); err != nil {
 	// 	return
@@ -1255,6 +1290,17 @@ func (data *CNCheckpointData) ReadFromData(
 				dataBats[uint32(i)], err = dataBats[uint32(i)].Append(ctx, m, bat)
 				if err != nil {
 					return
+				}
+			}
+			if i == 0 && BLKMetaInsertIDX == idx {
+				ins := containers.ToTNBatch(bat, common.DefaultAllocator)
+				for z := 0; z < ins.Length(); z++ {
+
+					blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(z).(types.Blockid)
+					metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(z).([]byte)
+					if isdebug {
+						logutil.Infof("blkID %s metaLoc %s, tid is %d", blkID.String(), objectio.Location(metaLoc).String(), tableID)
+					}
 				}
 			}
 		}
@@ -1484,12 +1530,37 @@ func (data *CheckpointData) updateTableMeta(tid uint64, metaIdx int, start, end 
 			meta.tables[metaIdx].Start = uint64(start)
 			meta.tables[metaIdx].End = uint64(end)
 		} else {
+			if meta.tables[metaIdx].Start == 0 && meta.tables[metaIdx].End == 0 {
+				meta.tables[metaIdx].Start = uint64(start)
+				meta.tables[metaIdx].End = uint64(end)
+				return
+			}
 			if !meta.tables[metaIdx].TryMerge(common.ClosedInterval{Start: uint64(start), End: uint64(end)}) {
-				panic(fmt.Sprintf("logic error interval %v, start %d, end %d", meta.tables[BlockDelete].ClosedInterval, start, end))
+				panic(fmt.Sprintf("logic error interval %v, start %d, end %d", meta.tables[metaIdx].ClosedInterval, start, end))
 			}
 		}
 	}
 }
+
+func (data *CheckpointData) resetTableMeta(tid uint64, metaIdx int, start, end int32) {
+	meta, ok := data.meta[tid]
+	if !ok {
+		meta = NewCheckpointMeta()
+		data.meta[tid] = meta
+	}
+	if end > start {
+		if meta.tables[metaIdx] == nil {
+			meta.tables[metaIdx] = NewTableMeta()
+			meta.tables[metaIdx].Start = uint64(start)
+			meta.tables[metaIdx].End = uint64(end)
+		} else {
+			meta.tables[metaIdx].Start = uint64(start)
+			meta.tables[metaIdx].End = uint64(end)
+			return
+		}
+	}
+}
+
 func (data *CheckpointData) updateMOCatalog(tid uint64, insStart, insEnd, delStart, delEnd int32) {
 	if delEnd <= delStart && insEnd <= insStart {
 		return
@@ -1504,6 +1575,20 @@ func (data *CheckpointData) UpdateBlkMeta(tid uint64, insStart, insEnd, delStart
 	data.updateTableMeta(tid, BlockInsert, insStart, insEnd)
 	data.updateTableMeta(tid, BlockDelete, delStart, delEnd)
 	data.updateTableMeta(tid, CNBlockInsert, delStart, delEnd)
+}
+func (data *CheckpointData) UpdateBlockInsertBlkMeta(tid uint64, insStart, insEnd int32) {
+	if insEnd <= insStart {
+		return
+	}
+	data.resetTableMeta(tid, BlockInsert, insStart, insEnd)
+}
+
+func (data *CheckpointData) UpdateBlockDeleteBlkMeta(tid uint64, insStart, insEnd int32) {
+	if insEnd <= insStart {
+		return
+	}
+	data.resetTableMeta(tid, BlockDelete, insStart, insEnd)
+	data.resetTableMeta(tid, CNBlockInsert, insStart, insEnd)
 }
 
 func (data *CheckpointData) UpdateSegMeta(tid uint64, delStart, delEnd int32) {
@@ -1548,6 +1633,7 @@ func (data *CheckpointData) prepareTNMetaBatch(
 			location := objectio.BuildLocation(checkpointNames[i], blk.GetExtent(), 0, blk.GetID())
 			data.bats[TNMetaIDX].GetVectorByName(CheckpointMetaAttr_BlockLocation).Append([]byte(location), false)
 			data.bats[TNMetaIDX].GetVectorByName(CheckpointMetaAttr_SchemaType).Append(schemaTypes[i][y], false)
+			logutil.Infof("prepareTNMetaBatch %s %s %d schemaTypes[i][y] is %s", checkpointNames[i], location.String(), blk.GetID(), schemaTypes[i][y])
 		}
 	}
 }
@@ -1557,11 +1643,41 @@ type blockIndexes struct {
 	indexes *BlockLocation
 }
 
+func (data *CheckpointData) FormatData(mp *mpool.MPool) (err error) {
+	for idx := range data.bats {
+		for i, col := range data.bats[idx].Vecs {
+			vec := col.CloneWindow(0, col.Length(), mp)
+			data.bats[idx].Vecs[i] = vec
+		}
+	}
+	data.bats[MetaIDX] = makeRespBatchFromSchema(checkpointDataSchemas_Curr[MetaIDX], common.DefaultAllocator)
+	data.bats[TNMetaIDX] = makeRespBatchFromSchema(checkpointDataSchemas_Curr[TNMetaIDX], common.DefaultAllocator)
+	for tid := range data.meta {
+		for idx := range data.meta[tid].tables {
+			if data.meta[tid].tables[idx] != nil {
+				location := data.meta[tid].tables[idx].locations.MakeIterator()
+				if location.HasNext() {
+					loc := location.Next()
+					logutil.Infof("FormatData tid %d idx %d loc %s", tid, idx, loc.String())
+					if data.meta[tid].tables[idx].Start == 0 && data.meta[tid].tables[idx].End == 0 {
+						data.meta[tid].tables[idx].Start = loc.GetStartOffset()
+						data.meta[tid].tables[idx].End = loc.GetEndOffset()
+					} else {
+						data.meta[tid].tables[idx].TryMerge(common.ClosedInterval{Start: loc.GetStartOffset(), End: loc.GetEndOffset()})
+					}
+				}
+				data.meta[tid].tables[idx].locations = make([]byte, 0)
+			}
+		}
+	}
+	return
+}
+
 func (data *CheckpointData) WriteTo(
 	fs fileservice.FileService,
 	blockRows int,
 	checkpointSize int,
-) (CNLocation, TNLocation objectio.Location, err error) {
+) (CNLocation, TNLocation objectio.Location, checkpointFiles []string, err error) {
 	checkpointNames := make([]objectio.ObjectName, 1)
 	segmentid := objectio.NewSegmentid()
 	fileNum := uint16(0)
@@ -1575,6 +1691,7 @@ func (data *CheckpointData) WriteTo(
 	indexes := make([][]blockIndexes, MaxIDX)
 	schemas := make([][]uint16, 0)
 	schemaTypes := make([]uint16, 0)
+	checkpointFiles = make([]string, 0)
 	var objectSize int
 	for i := range checkpointDataSchemas_Curr {
 		if i == int(MetaIDX) || i == int(TNMetaIDX) {
@@ -1592,6 +1709,7 @@ func (data *CheckpointData) WriteTo(
 			if err != nil {
 				return
 			}
+			checkpointFiles = append(checkpointFiles, name.String())
 			name = objectio.BuildObjectName(segmentid, fileNum)
 			writer, err = blockio.NewBlockWriterNew(fs, name, 0, nil)
 			if err != nil {
@@ -1607,6 +1725,7 @@ func (data *CheckpointData) WriteTo(
 			if block, size, err = writer.WriteSubBatch(containers.ToCNBatch(data.bats[i]), objectio.ConvertToSchemaType(uint16(i))); err != nil {
 				return
 			}
+			logutil.Infof("batch %d is empty, id is %d", i, block.GetID())
 			blockLoc := BuildBlockLoaction(block.GetID(), uint64(offset), uint64(0))
 			indexes[i] = append(indexes[i], blockIndexes{
 				fileNum: fileNum,
@@ -1625,6 +1744,7 @@ func (data *CheckpointData) WriteTo(
 				if block, size, err = writer.WriteSubBatch(containers.ToCNBatch(bat), objectio.ConvertToSchemaType(uint16(i))); err != nil {
 					return
 				}
+				logutil.Infof("batch %d isnot empty, id is %d", i, block.GetID())
 				Endoffset := offset + bat.Length()
 				blockLoc := BuildBlockLoaction(block.GetID(), uint64(offset), uint64(Endoffset))
 				indexes[i] = append(indexes[i], blockIndexes{
@@ -1641,6 +1761,8 @@ func (data *CheckpointData) WriteTo(
 	if err != nil {
 		return
 	}
+	checkpointFiles = append(checkpointFiles, name.String())
+	logutil.Infof("checkpointFiles: %v", checkpointFiles)
 	schemas = append(schemas, schemaTypes)
 	objectBlocks = append(objectBlocks, blks)
 
@@ -1710,7 +1832,6 @@ func (data *CheckpointData) WriteTo(
 	if err != nil {
 		return
 	}
-
 	segmentid2 := objectio.NewSegmentid()
 	name2 := objectio.BuildObjectName(segmentid2, 0)
 	writer2, err := blockio.NewBlockWriterNew(fs, name2, 0, nil)
@@ -1736,6 +1857,7 @@ func (data *CheckpointData) WriteTo(
 	blks2, _, err := writer2.Sync(context.Background())
 	CNLocation = objectio.BuildLocation(name2, blks2[0].GetExtent(), 0, blks2[0].GetID())
 	TNLocation = objectio.BuildLocation(name2, blks2[1].GetExtent(), 0, blks2[1].GetID())
+	logutil.Infof("write meta to %v, %v", CNLocation.String(), TNLocation.String())
 	return
 }
 
@@ -1781,6 +1903,10 @@ func LoadBlkColumnsByMeta(
 		bats = append(bats, bat)
 	}
 	return bats, nil
+}
+
+func (data *CheckpointData) GetLocations() map[string]objectio.Location {
+	return data.locations
 }
 
 func LoadCNSubBlkColumnsByMeta(
@@ -2057,6 +2183,7 @@ func (data *CheckpointData) readMetaBatch(
 ) (err error) {
 	if data.bats[MetaIDX].Length() == 0 {
 		var bats []*containers.Batch
+		logutil.Infof("readMetaBatch name is %v", reader.GetName())
 		item := checkpointDataReferVersions[version][MetaIDX]
 		if bats, err = LoadBlkColumnsByMeta(
 			version, ctx, item.types, item.attrs, uint16(0), reader, data.allocator,
@@ -2102,6 +2229,9 @@ func (data *CheckpointData) replayMetaBatch() {
 
 	for _, meta := range data.meta {
 		for _, table := range meta.tables {
+			if table == nil || table.locations == nil {
+				continue
+			}
 			it := table.locations.MakeIterator()
 			for it.HasNext() {
 				block := it.Next()
@@ -2648,6 +2778,101 @@ func (collector *BaseCollector) VisitSeg(entry *catalog.SegmentEntry) (err error
 	return nil
 }
 
+func (collector *BaseCollector) VisitSegForBackup(entry *catalog.SegmentEntry) (err error) {
+	entry.RLock()
+	logutil.Infof("VisitSegForBackup: %v, %v-%v, entry.GetSegment().GetTable().String() %v", entry.ID.ToString(), collector.start.ToString(), collector.end.ToString(), entry.GetTable().String())
+	if entry.GetCreatedAtLocked().Greater(collector.start) {
+		entry.RUnlock()
+		return nil
+	}
+	mvccNodes := entry.ClonePreparedInRange(collector.start, collector.end)
+	logutil.Infof("VisitSegForBackup222: %v, %v-%v, %v", entry.ID.ToString(), collector.start.ToString(), collector.end.ToString(), len(mvccNodes))
+	entry.RUnlock()
+	if len(mvccNodes) == 0 {
+		return nil
+	}
+	delStart := collector.data.bats[SEGDeleteIDX].GetVectorByName(catalog.AttrRowID).Length()
+	segDelBat := collector.data.bats[SEGDeleteIDX]
+	segDelTxn := collector.data.bats[SEGDeleteTxnIDX]
+	segInsBat := collector.data.bats[SEGInsertIDX]
+	segInsTxn := collector.data.bats[SEGInsertTxnIDX]
+
+	for _, node := range mvccNodes {
+		if node.IsAborted() {
+			continue
+		}
+		segNode := node
+		if segNode.HasDropCommitted() {
+			vector.AppendFixed(
+				segDelBat.GetVectorByName(catalog.AttrRowID).GetDownstreamVector(),
+				objectio.HackSegid2Rowid(&entry.ID),
+				false,
+				common.DefaultAllocator,
+			)
+			vector.AppendFixed(
+				segDelBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector(),
+				segNode.GetEnd(),
+				false,
+				common.DefaultAllocator,
+			)
+			vector.AppendFixed(
+				segDelTxn.GetVectorByName(SnapshotAttr_DBID).GetDownstreamVector(),
+				entry.GetTable().GetDB().GetID(),
+				false,
+				common.DefaultAllocator,
+			)
+			vector.AppendFixed(
+				segDelTxn.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
+				entry.GetTable().GetID(),
+				false,
+				common.DefaultAllocator,
+			)
+			logutil.Infof("VisitSegForBackup333: %v, %v-%v, %v", entry.ID.ToString(), collector.start.ToString(), collector.end.ToString(), segNode.GetEnd().ToString())
+			segNode.TxnMVCCNode.AppendTuple(segDelTxn)
+		} else {
+			vector.AppendFixed(
+				segInsBat.GetVectorByName(SegmentAttr_ID).GetDownstreamVector(),
+				entry.ID,
+				false,
+				common.DefaultAllocator,
+			)
+			vector.AppendFixed(
+				segInsBat.GetVectorByName(SegmentAttr_CreateAt).GetDownstreamVector(),
+				segNode.GetEnd(),
+				false,
+				common.DefaultAllocator,
+			)
+			buf := &bytes.Buffer{}
+			if _, err := entry.SegmentNode.WriteTo(buf); err != nil {
+				return err
+			}
+			vector.AppendBytes(
+				segInsBat.GetVectorByName(SegmentAttr_SegNode).GetDownstreamVector(),
+				buf.Bytes(),
+				false,
+				common.DefaultAllocator,
+			)
+			vector.AppendFixed(
+				segInsTxn.GetVectorByName(SnapshotAttr_DBID).GetDownstreamVector(),
+				entry.GetTable().GetDB().GetID(),
+				false,
+				common.DefaultAllocator,
+			)
+			vector.AppendFixed(
+				segInsTxn.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
+				entry.GetTable().GetID(),
+				false,
+				common.DefaultAllocator,
+			)
+			logutil.Infof("VisitSegForBackup444: %v, %v-%v, %v", entry.ID.ToString(), collector.start.ToString(), collector.end.ToString(), segNode.GetEnd().ToString())
+			segNode.TxnMVCCNode.AppendTuple(segInsTxn)
+		}
+	}
+	delEnd := segDelBat.GetVectorByName(catalog.AttrRowID).Length()
+	collector.data.UpdateSegMeta(entry.GetTable().ID, int32(delStart), int32(delEnd))
+	return nil
+}
+
 func (collector *GlobalCollector) VisitSeg(entry *catalog.SegmentEntry) error {
 	if collector.isEntryDeletedBeforeThreshold(entry.BaseEntryImpl) {
 		collector.deletes[UsageObjID][entry.ID] = struct{}{}
@@ -2662,6 +2887,432 @@ func (collector *GlobalCollector) VisitSeg(entry *catalog.SegmentEntry) error {
 	return collector.BaseCollector.VisitSeg(entry)
 }
 
+func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (err error) {
+	entry.RLock()
+	logutil.Infof("VisitBlkForBackup: %v, %v-%v, entry.GetSegment().GetTable().String() %v", entry.ID.String(), collector.start.ToString(), collector.end.ToString(), entry.GetSegment().GetTable().String())
+	mvccNodes := entry.ClonePreparedInRange(collector.start, collector.end)
+	for _, node := range mvccNodes {
+		if node.IsAborted() {
+			continue
+		}
+	}
+	if entry.GetCreatedAtLocked().Greater(collector.start) {
+		entry.RUnlock()
+		return nil
+	}
+	logutil.Infof("VisitBlkForBackup222: %v, %v-%v, %v, %v", entry.ID.String(), entry.String(), entry.GetCreatedAtLocked().ToString(), collector.start.ToString(), collector.end.ToString(), len(mvccNodes))
+	entry.RUnlock()
+	if len(mvccNodes) == 0 {
+		return nil
+	}
+	insStart := collector.data.bats[BLKMetaInsertIDX].GetVectorByName(catalog.AttrRowID).Length()
+	delStart := collector.data.bats[BLKMetaDeleteIDX].GetVectorByName(catalog.AttrRowID).Length()
+	blkTNMetaDelBat := collector.data.bats[BLKTNMetaDeleteIDX]
+	blkTNMetaDelTxnBat := collector.data.bats[BLKTNMetaDeleteTxnIDX]
+	blkTNMetaInsBat := collector.data.bats[BLKTNMetaInsertIDX]
+	blkTNMetaInsTxnBat := collector.data.bats[BLKTNMetaInsertTxnIDX]
+	blkMetaDelBat := collector.data.bats[BLKMetaDeleteIDX]
+	blkMetaDelTxnBat := collector.data.bats[BLKMetaDeleteTxnIDX]
+	blkCNMetaInsBat := collector.data.bats[BLKCNMetaInsertIDX]
+	blkMetaInsBat := collector.data.bats[BLKMetaInsertIDX]
+	blkMetaInsTxnBat := collector.data.bats[BLKMetaInsertTxnIDX]
+
+	blkTNMetaDelRowIDVec := blkTNMetaDelBat.GetVectorByName(catalog.AttrRowID).GetDownstreamVector()
+	blkTNMetaDelCommitTsVec := blkTNMetaDelBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector()
+	blkTNMetaDelTxnDBIDVec := blkTNMetaDelTxnBat.GetVectorByName(SnapshotAttr_DBID).GetDownstreamVector()
+	blkTNMetaDelTxnTIDVec := blkTNMetaDelTxnBat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector()
+	blkTNMetaDelTxnMetaLocVec := blkTNMetaDelTxnBat.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).GetDownstreamVector()
+	blkTNMetaDelTxnDeltaLocVec := blkTNMetaDelTxnBat.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).GetDownstreamVector()
+
+	blkTNMetaInsRowIDVec := blkTNMetaInsBat.GetVectorByName(catalog.AttrRowID).GetDownstreamVector()
+	blkTNMetaInsCommitTimeVec := blkTNMetaInsBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector()
+	blkTNMetaInsIDVec := blkTNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_ID).GetDownstreamVector()
+	blkTNMetaInsStateVec := blkTNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_EntryState).GetDownstreamVector()
+	blkTNMetaInsMetaLocVec := blkTNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).GetDownstreamVector()
+	blkTNMetaInsDelLocVec := blkTNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).GetDownstreamVector()
+	blkTNMetaInsSortedVec := blkTNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_Sorted).GetDownstreamVector()
+	blkTNMetaInsSegIDVec := blkTNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).GetDownstreamVector()
+	blkTNMetaInsCommitTsVec := blkTNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_CommitTs).GetDownstreamVector()
+	blkTNMetaInsMemTruncVec := blkTNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_MemTruncPoint).GetDownstreamVector()
+
+	blkTNMetaInsTxnDBIDVec := blkTNMetaInsTxnBat.GetVectorByName(SnapshotAttr_DBID).GetDownstreamVector()
+	blkTNMetaInsTxnTIDVec := blkTNMetaInsTxnBat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector()
+	blkTNMetaInsTxnMetaLocVec := blkTNMetaInsTxnBat.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).GetDownstreamVector()
+	blkTNMetaInsTxnDeltaLocVec := blkTNMetaInsTxnBat.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).GetDownstreamVector()
+
+	blkMetaDelRowIDVec := blkMetaDelBat.GetVectorByName(catalog.AttrRowID).GetDownstreamVector()
+	blkMetaDelCommitTsVec := blkMetaDelBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector()
+
+	blkMetaDelTxnDBIDVec := blkMetaDelTxnBat.GetVectorByName(SnapshotAttr_DBID).GetDownstreamVector()
+	blkMetaDelTxnTIDVec := blkMetaDelTxnBat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector()
+	blkMetaDelTxnMetaLocVec := blkMetaDelTxnBat.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).GetDownstreamVector()
+	blkMetaDelTxnDeltaLocVec := blkMetaDelTxnBat.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).GetDownstreamVector()
+
+	blkCNMetaInsRowIDVec := blkCNMetaInsBat.GetVectorByName(catalog.AttrRowID).GetDownstreamVector()
+	blkCNMetaInsCommitTimeVec := blkCNMetaInsBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector()
+	blkCNMetaInsIDVec := blkCNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_ID).GetDownstreamVector()
+	blkCNMetaInsStateVec := blkCNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_EntryState).GetDownstreamVector()
+	blkCNMetaInsMetaLocVec := blkCNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).GetDownstreamVector()
+	blkCNMetaInsDelLocVec := blkCNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).GetDownstreamVector()
+	blkCNMetaInsSortedVec := blkCNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_Sorted).GetDownstreamVector()
+	blkCNMetaInsSegIDVec := blkCNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).GetDownstreamVector()
+	blkCNMetaInsCommitTsVec := blkCNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_CommitTs).GetDownstreamVector()
+	blkCNMetaInsMemTruncVec := blkCNMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_MemTruncPoint).GetDownstreamVector()
+
+	blkMetaInsRowIDVec := blkMetaInsBat.GetVectorByName(catalog.AttrRowID).GetDownstreamVector()
+	blkMetaInsCommitTimeVec := blkMetaInsBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector()
+	blkMetaInsIDVec := blkMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_ID).GetDownstreamVector()
+	blkMetaInsStateVec := blkMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_EntryState).GetDownstreamVector()
+	blkMetaInsMetaLocVec := blkMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).GetDownstreamVector()
+	blkMetaInsDelLocVec := blkMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).GetDownstreamVector()
+	blkMetaInsSortedVec := blkMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_Sorted).GetDownstreamVector()
+	blkMetaInsSegIDVec := blkMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_SegmentID).GetDownstreamVector()
+	blkMetaInsCommitTsVec := blkMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_CommitTs).GetDownstreamVector()
+	blkMetaInsMemTruncVec := blkMetaInsBat.GetVectorByName(pkgcatalog.BlockMeta_MemTruncPoint).GetDownstreamVector()
+
+	blkMetaInsTxnDBIDVec := blkMetaInsTxnBat.GetVectorByName(SnapshotAttr_DBID).GetDownstreamVector()
+	blkMetaInsTxnTIDVec := blkMetaInsTxnBat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector()
+	blkMetaInsTxnMetaLocVec := blkMetaInsTxnBat.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).GetDownstreamVector()
+	blkMetaInsTxnDeltaLocVec := blkMetaInsTxnBat.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).GetDownstreamVector()
+
+	for _, node := range mvccNodes {
+		if node.IsAborted() {
+			continue
+		}
+		metaNode := node
+		if metaNode.BaseNode.MetaLoc.IsEmpty() || metaNode.Aborted {
+			if metaNode.HasDropCommitted() {
+				logutil.Infof("sdfsdfdsfdsfsfds")
+				vector.AppendFixed(
+					blkTNMetaDelRowIDVec,
+					objectio.HackBlockid2Rowid(&entry.ID),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkTNMetaDelCommitTsVec,
+					metaNode.GetEnd(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkTNMetaDelTxnDBIDVec,
+					entry.GetSegment().GetTable().GetDB().GetID(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkTNMetaDelTxnTIDVec,
+					entry.GetSegment().GetTable().GetID(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendBytes(
+					blkTNMetaDelTxnMetaLocVec,
+					[]byte(metaNode.BaseNode.MetaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendBytes(
+					blkTNMetaDelTxnDeltaLocVec,
+					[]byte(metaNode.BaseNode.DeltaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				metaNode.TxnMVCCNode.AppendTuple(blkTNMetaDelTxnBat)
+			} else {
+				vector.AppendFixed(
+					blkTNMetaInsIDVec,
+					entry.ID,
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkTNMetaInsStateVec,
+					entry.IsAppendable(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkTNMetaInsCommitTsVec,
+					metaNode.GetEnd(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendBytes(
+					blkTNMetaInsMetaLocVec,
+					[]byte(metaNode.BaseNode.MetaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				logutil.Infof("metaNode.BaseNode.DeltaLoc1111 is null : %v, metaNode.BaseNode.MetaLoc is :%v, stat is  %v, entry.ID is : %v : %v-%v ...%v",
+					metaNode.BaseNode.DeltaLoc.String(), metaNode.BaseNode.MetaLoc.String(), entry.IsAppendable(), entry.ID.String(), metaNode.GetStart().ToString(), metaNode.GetEnd().ToString(), entry.GetSegment().GetTable().String())
+				vector.AppendBytes(
+					blkTNMetaInsDelLocVec,
+					[]byte(metaNode.BaseNode.DeltaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				is_sorted := false
+				if !entry.IsAppendable() && entry.GetSchema().HasSortKey() {
+					is_sorted = true
+				}
+				vector.AppendFixed(
+					blkTNMetaInsSortedVec,
+					is_sorted,
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkTNMetaInsSegIDVec,
+					entry.GetSegment().ID,
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkTNMetaInsCommitTimeVec,
+					metaNode.CreatedAt,
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(blkTNMetaInsMemTruncVec, metaNode.Start, false, common.DefaultAllocator)
+				vector.AppendFixed(
+					blkTNMetaInsRowIDVec,
+					objectio.HackBlockid2Rowid(&entry.ID),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkTNMetaInsTxnDBIDVec,
+					entry.GetSegment().GetTable().GetDB().GetID(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkTNMetaInsTxnTIDVec,
+					entry.GetSegment().GetTable().GetID(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendBytes(
+					blkTNMetaInsTxnMetaLocVec,
+					[]byte(metaNode.BaseNode.MetaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendBytes(
+					blkTNMetaInsTxnDeltaLocVec,
+					[]byte(metaNode.BaseNode.DeltaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				metaNode.TxnMVCCNode.AppendTuple(blkTNMetaInsTxnBat)
+			}
+		} else {
+			if metaNode.HasDropCommitted() {
+				vector.AppendFixed(
+					blkMetaDelRowIDVec,
+					objectio.HackBlockid2Rowid(&entry.ID),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkMetaDelCommitTsVec,
+					metaNode.GetEnd(),
+					false,
+					common.DefaultAllocator,
+				)
+
+				vector.AppendFixed(
+					blkMetaDelTxnDBIDVec,
+					entry.GetSegment().GetTable().GetDB().GetID(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkMetaDelTxnTIDVec,
+					entry.GetSegment().GetTable().GetID(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendBytes(
+					blkMetaDelTxnMetaLocVec,
+					[]byte(metaNode.BaseNode.MetaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendBytes(
+					blkMetaDelTxnDeltaLocVec,
+					[]byte(metaNode.BaseNode.DeltaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				metaNode.TxnMVCCNode.AppendTuple(blkMetaDelTxnBat)
+				is_sorted := false
+				if !entry.IsAppendable() && entry.GetSchema().HasSortKey() {
+					is_sorted = true
+				}
+				vector.AppendFixed(
+					blkCNMetaInsIDVec,
+					entry.ID,
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkCNMetaInsStateVec,
+					entry.IsAppendable(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendBytes(
+					blkCNMetaInsMetaLocVec,
+					[]byte(metaNode.BaseNode.MetaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				logutil.Infof("metaNode.BaseNode.DeltaLoc not null : %v ,metaNode.BaseNode.MetaLoc: %v ，stat is %v, entry.ID is %v: %v-%v... %v",
+					metaNode.BaseNode.DeltaLoc.String(), metaNode.BaseNode.MetaLoc.String(), entry.IsAppendable(), entry.ID.String(), metaNode.GetStart().ToString(), metaNode.GetEnd().ToString(), entry.GetSegment().GetTable().String())
+				vector.AppendBytes(
+					blkCNMetaInsDelLocVec,
+					[]byte(metaNode.BaseNode.DeltaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkCNMetaInsSortedVec,
+					is_sorted,
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkCNMetaInsSegIDVec,
+					entry.GetSegment().ID,
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkCNMetaInsCommitTsVec,
+					metaNode.GetEnd(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkCNMetaInsRowIDVec,
+					objectio.HackBlockid2Rowid(&entry.ID),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkCNMetaInsCommitTimeVec,
+					metaNode.CreatedAt,
+					false,
+					common.DefaultAllocator,
+				)
+				memTrucate := metaNode.Start
+				if !entry.IsAppendable() && metaNode.DeletedAt.Equal(metaNode.GetEnd()) {
+					memTrucate = types.TS{}
+				}
+				vector.AppendFixed(blkCNMetaInsMemTruncVec, memTrucate, false, common.DefaultAllocator)
+
+			} else {
+				is_sorted := false
+				if !entry.IsAppendable() && entry.GetSchema().HasSortKey() {
+					is_sorted = true
+				}
+				vector.AppendFixed(
+					blkMetaInsIDVec,
+					entry.ID,
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkMetaInsStateVec,
+					entry.IsAppendable(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendBytes(
+					blkMetaInsMetaLocVec,
+					[]byte(metaNode.BaseNode.MetaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				logutil.Infof("metaNode.BaseNode.DeltaLoc null : %v, metaNode.BaseNode.MetaLoc: %v, stat is %v, entry.ID is %v: %v-%v...%v",
+					metaNode.BaseNode.DeltaLoc.String(), metaNode.BaseNode.MetaLoc.String(), entry.IsAppendable(), entry.ID.String(), metaNode.GetStart().ToString(), metaNode.GetEnd().ToString(), entry.GetSegment().GetTable().String())
+				vector.AppendBytes(
+					blkMetaInsDelLocVec,
+					[]byte(metaNode.BaseNode.DeltaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkMetaInsCommitTsVec,
+					metaNode.GetEnd(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkMetaInsSortedVec,
+					is_sorted,
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkMetaInsSegIDVec,
+					entry.GetSegment().ID,
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkMetaInsCommitTimeVec,
+					metaNode.CreatedAt,
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkMetaInsRowIDVec,
+					objectio.HackBlockid2Rowid(&entry.ID),
+					false,
+					common.DefaultAllocator,
+				)
+
+				vector.AppendFixed(blkMetaInsMemTruncVec, metaNode.Start, false, common.DefaultAllocator)
+
+				vector.AppendFixed(
+					blkMetaInsTxnDBIDVec,
+					entry.GetSegment().GetTable().GetDB().GetID(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendFixed(
+					blkMetaInsTxnTIDVec,
+					entry.GetSegment().GetTable().GetID(),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendBytes(
+					blkMetaInsTxnMetaLocVec,
+					[]byte(metaNode.BaseNode.MetaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+				vector.AppendBytes(
+					blkMetaInsTxnDeltaLocVec,
+					[]byte(metaNode.BaseNode.DeltaLoc),
+					false,
+					common.DefaultAllocator,
+				)
+
+				metaNode.TxnMVCCNode.AppendTuple(blkMetaInsTxnBat)
+			}
+		}
+	}
+	insEnd := collector.data.bats[BLKMetaInsertIDX].GetVectorByName(catalog.AttrRowID).Length()
+	delEnd := collector.data.bats[BLKMetaDeleteIDX].GetVectorByName(catalog.AttrRowID).Length()
+	logutil.Infof("insEnd is %d", insEnd)
+	collector.data.UpdateBlkMeta(entry.GetSegment().GetTable().ID, int32(insStart), int32(insEnd), int32(delStart), int32(delEnd))
+	return nil
+}
 func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) {
 	entry.RLock()
 	mvccNodes := entry.ClonePreparedInRange(collector.start, collector.end)
@@ -2746,6 +3397,7 @@ func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) 
 		metaNode := node
 		if metaNode.BaseNode.MetaLoc.IsEmpty() || metaNode.Aborted {
 			if metaNode.HasDropCommitted() {
+				logutil.Infof("sdfsdfdsfdsfsfds")
 				vector.AppendFixed(
 					blkTNMetaDelRowIDVec,
 					objectio.HackBlockid2Rowid(&entry.ID),
@@ -2808,6 +3460,8 @@ func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) 
 					false,
 					collector.data.allocator,
 				)
+				logutil.Infof("metaNode.BaseNode.DeltaLoc1111 is null : %v, metaNode.BaseNode.MetaLoc is :%v, stat is :%v, entry.ID is : %v : %v-%v",
+					metaNode.BaseNode.DeltaLoc.String(), metaNode.BaseNode.MetaLoc.String(), entry.IsAppendable(), entry.ID.String(), metaNode.GetStart().ToString(), metaNode.GetEnd().ToString())
 				vector.AppendBytes(
 					blkTNMetaInsDelLocVec,
 					[]byte(metaNode.BaseNode.DeltaLoc),
@@ -2931,6 +3585,8 @@ func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) 
 					false,
 					collector.data.allocator,
 				)
+				logutil.Infof("metaNode.BaseNode.DeltaLoc not null : %v ,metaNode.BaseNode.MetaLoc: %v ，stat is %v, entry.ID is %v: %v-%v",
+					metaNode.BaseNode.DeltaLoc.String(), metaNode.BaseNode.MetaLoc.String(), entry.IsAppendable(), entry.ID.String(), metaNode.GetStart().ToString(), metaNode.GetEnd().ToString())
 				vector.AppendBytes(
 					blkCNMetaInsDelLocVec,
 					[]byte(metaNode.BaseNode.DeltaLoc),
@@ -2996,6 +3652,8 @@ func (collector *BaseCollector) VisitBlk(entry *catalog.BlockEntry) (err error) 
 					false,
 					collector.data.allocator,
 				)
+				logutil.Infof("metaNode.BaseNode.DeltaLoc null : %v, metaNode.BaseNode.MetaLoc: %v, stat is %v, entry.ID is %v: %v-%v",
+					metaNode.BaseNode.DeltaLoc.String(), metaNode.BaseNode.MetaLoc.String(), entry.IsAppendable(), entry.ID.String(), metaNode.GetStart().ToString(), metaNode.GetEnd().ToString())
 				vector.AppendBytes(
 					blkMetaInsDelLocVec,
 					[]byte(metaNode.BaseNode.DeltaLoc),

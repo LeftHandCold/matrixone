@@ -766,6 +766,9 @@ func (tbl *txnTable) RangeDelete(
 		}
 	}()
 	if tbl.localSegment != nil && id.SegmentID().Eq(tbl.localSegment.entry.ID) {
+		if id.BlockID.Segment().ToString() == "c8c5fe8d-7d44-11ee-865a-b07b25f84010" {
+			logutil.Infof("start is1 %d, end is %d, id is %v", start, end, id.String())
+		}
 		err = tbl.RangeDeleteLocalRows(start, end)
 		return
 	}
@@ -776,6 +779,7 @@ func (tbl *txnTable) RangeDelete(
 		chain := node.GetChain().(*updates.DeleteChain)
 		mvcc := chain.GetController()
 		mvcc.Lock()
+		logutil.Infof("start ts %v, start %d, end %d, id is %v", tbl.store.txn.GetStartTS().ToString(), start, end, id.String())
 		if err = mvcc.CheckNotDeleted(start, end, tbl.store.txn.GetStartTS()); err == nil {
 			node.RangeDeleteLocked(start, end, pk, common.WorkspaceAllocator)
 		}

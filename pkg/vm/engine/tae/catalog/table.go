@@ -222,6 +222,7 @@ func (entry *TableEntry) deleteEntryLocked(segment *SegmentEntry) error {
 	if n, ok := entry.entries[segment.ID]; !ok {
 		return moerr.GetOkExpectedEOB()
 	} else {
+		logutil.Infof("deleteEntryLocked %v", segment.ID.ToString())
 		entry.link.Delete(n)
 		delete(entry.entries, segment.ID)
 	}
@@ -457,7 +458,7 @@ func (entry *TableEntry) DropSegmentEntry(id *types.Segmentid, txn txnif.AsyncTx
 }
 
 func (entry *TableEntry) RemoveEntry(segment *SegmentEntry) (err error) {
-	logutil.Debug("[Catalog]", common.OperationField("remove"),
+	logutil.Infof("[Catalog]", common.OperationField("remove"),
 		common.OperandField(segment.String()))
 	// segment.Close()
 	entry.Lock()

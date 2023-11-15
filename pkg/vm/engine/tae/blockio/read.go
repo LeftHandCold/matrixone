@@ -16,6 +16,9 @@ package blockio
 
 import (
 	"context"
+	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"math"
 	"time"
 
@@ -129,6 +132,9 @@ func BlockRead(
 		err  error
 	)
 
+	if info.BlockID.String() == "63c1ba7d-8072-11ee-81e7-5254000adb85-1000-0" {
+		logutil.Infof("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
+	}
 	if filter != nil && info.Sorted {
 		if sels, err = ReadByFilter(
 			ctx, info, inputDeletes, filterSeqnums, filterColTypes,
@@ -285,6 +291,20 @@ func BlockReadInner(
 		if deletes, persistedByCN, err = ReadBlockDelete(ctx, info.DeltaLocation(), fs); err != nil {
 			return
 		}
+		if len(deletes.Vecs) > 0 && info.BlockID.String() == "d92bf9eb-7d75-11ee-bc28-b07b25f84010-0-0" {
+			deletes.Attrs = make([]string, len(deletes.Vecs))
+			for i := range deletes.Attrs {
+				deletes.Attrs[i] = fmt.Sprintf("%d-del", i)
+			}
+			dd := containers.ToTNBatch(deletes, common.DefaultAllocator)
+			var rowid string
+			for i := 0; i < dd.Length(); i++ {
+				rowid += "1:"
+				rid := dd.GetVectorByName("0-del").Get(i).(objectio.Rowid)
+				rowid += rid.String()
+			}
+			logutil.Debugf("blockread %s read delete %v: base %s\n", info.BlockID.String(), rowid, time.Since(now))
+		}
 		readcost := time.Since(now)
 
 		// eval delete rows by timestamp
@@ -337,7 +357,19 @@ func BlockReadInner(
 			return
 		}
 	}
-
+	if len(loaded.Vecs) > 0 && info.BlockID.String() == "1e52a4b5-7edf-11ee-b527-5254000adb85-1000-0" {
+		loaded.Attrs = make([]string, len(loaded.Vecs))
+		for i := range loaded.Attrs {
+			loaded.Attrs[i] = fmt.Sprintf("%d-mo", i)
+		}
+		l := containers.ToTNBatch(loaded, common.DefaultAllocator)
+		var test string
+		for i := 0; i < len(loaded.Vecs); i++ {
+			test += fmt.Sprintf("%d:", i)
+			test += fmt.Sprintf("%v", l.Vecs[i].Get(119))
+		}
+		logutil.Infof("readb is %s, columns is %v, test %v", info.BlockID.String(), columns, test)
+	}
 	// assemble result batch
 	for i, col := range loaded.Vecs {
 		typ := *col.GetType()
@@ -363,6 +395,16 @@ func BlockReadInner(
 		if len(deletedRows) > 0 {
 			result.Vecs[i].Shrink(deletedRows, true)
 		}
+	}
+
+	if len(result.Vecs) > 0 && info.BlockID.String() == "d92bf9eb-7d75-11ee-bc28-b07b25f84010-0-0" {
+		result.Attrs = make([]string, len(result.Vecs))
+		for i := range result.Attrs {
+			result.Attrs[i] = fmt.Sprintf("%d-mo", i)
+		}
+		l := containers.ToTNBatch(result, common.DefaultAllocator)
+		logutil.Debugf("read block %s, columns %v, types %v, del is %v, delete is%d- %v, inputDeleteRows is %v, data is %v ",
+			info.BlockID.String(), columns, colTypes, info.DeltaLocation().String(), len(deletedRows), deletedRows, inputDeleteRows, l.String())
 	}
 
 	// if any error happens, free the result batch allocated

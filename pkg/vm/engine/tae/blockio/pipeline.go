@@ -152,9 +152,11 @@ func prefetchJob(ctx context.Context, params PrefetchParams) *tasks.Job {
 		func(_ context.Context) (res *tasks.JobResult) {
 			// TODO
 			res = &tasks.JobResult{}
+			//logutil.Infof("prefetchJob11name is %v,  params.key is %v", params.key.Name().String(), params.key.Extent().String())
 			ioVectors, err := reader.ReadMultiBlocks(ctx,
 				params.ids, nil)
 			if err != nil {
+				logutil.Infof("prefetchJob: %v, params.key is %v", err, params.key.Extent().String())
 				res.Err = err
 				return
 			}
@@ -180,6 +182,7 @@ func prefetchMetaJob(ctx context.Context, params PrefetchParams) *tasks.Job {
 			res = &tasks.JobResult{}
 			objectMeta, err := objectio.FastLoadObjectMeta(ctx, &params.key, true, params.fs)
 			if err != nil {
+				logutil.Infof("prefetchMetaJob: %v, params.key is %v", err, params.key.Extent().String())
 				res.Err = err
 				return
 			}

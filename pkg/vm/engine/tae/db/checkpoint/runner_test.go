@@ -17,6 +17,14 @@ package checkpoint
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -366,4 +374,196 @@ func TestICKPSeekLT(t *testing.T) {
 		t.Log(e.String())
 	}
 	assert.Equal(t, 0, len(ckps))
+}
+
+func TestNewObjectReade1r(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+	name := "84b4fa30-81ee-11ee-919c-5254000adb85_00000"
+
+	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
+	c := fileservice.Config{
+		Name:    defines.LocalFileServiceName,
+		Backend: "DISK",
+		DataDir: fsDir,
+	}
+	service, err := fileservice.NewFileService(ctx, c, nil)
+	assert.Nil(t, err)
+	reader, err := blockio.NewFileReader(service, name)
+	if err != nil {
+		return
+	}
+	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
+	bats, err := reader.LoadAllDeleteColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
+	if err != nil {
+		logutil.Infof("load all columns failed: %v", err)
+		return
+	}
+	/*name1, err := EncodeNameFromString(reader.GetName())
+	assert.Nil(t, err)
+	location := objectio.BuildLocation(name1, *reader.GetObjectReader().GetMetaExtent(), 51, 1)
+	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
+	//applyDelete(bats[0], bb)
+	ts := types.TS{}
+	for i := 0; i < bats[0].Vecs[0].Length(); i++ {
+		num := objectio.HackBytes2Rowid(bats[0].Vecs[0].GetRawBytesAt(i))
+		ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
+		//_, ro := num.Decode()
+		//logutil.Infof("num is %d, cmmit is %v,i is %d", ro, ts.ToString(), i)
+		//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
+		//num := types.DecodeInt32(bats[0].Vecs[0].GetRawBytesAt(i))
+		if strings.Contains(num.String(), "baade41d-8110-11ee-94f8-5254000adb85") {
+			logutil.Infof("num is %v, cmmit is %v,i is %d", num.String(), ts.ToString(), i)
+		}
+		logutil.Infof("num is %v, cmmit is %v,i is %d", num.String(), ts.ToString(), i)
+	}
+	//logutil.Infof("bats[0].Vecs[1].String() is %v", bats[0].Vecs[0].String())
+}
+
+func TestNewObjectReader1(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+	name := "073deb5b-822c-11ee-ae27-5254000adb85_00000"
+
+	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
+	c := fileservice.Config{
+		Name:    defines.LocalFileServiceName,
+		Backend: "DISK",
+		DataDir: fsDir,
+	}
+	service, err := fileservice.NewFileService(ctx, c, nil)
+	assert.Nil(t, err)
+	reader, err := blockio.NewFileReader(service, name)
+	if err != nil {
+		return
+	}
+	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
+	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 4}, common.DefaultAllocator)
+	if err != nil {
+		logutil.Infof("load all columns failed: %v", err)
+		return
+	}
+	/*name1, err := EncodeNameFromString(reader.GetName())
+	assert.Nil(t, err)
+	location := objectio.BuildLocation(name1, *reader.GetObjectReader().GetMetaExtent(), 51, 1)
+	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
+	//applyDelete(bats[0], bb)
+	ts := types.TS{}
+	for y, bat := range bats {
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
+			num := types.DecodeInt32(bat.Vecs[0].GetRawBytesAt(i))
+			num1 := types.DecodeInt32(bat.Vecs[1].GetRawBytesAt(i))
+			num2 := types.DecodeInt32(bat.Vecs[2].GetRawBytesAt(i))
+			//ts.Unmarshal(bat.Vecs[4].GetRawBytesAt(i))
+			//rid := objectio.HackBytes2Rowid(bat.Vecs[3].GetRawBytesAt(i))
+			//ab := types.DecodeBool(bat.Vecs[5].GetRawBytesAt(i))
+
+			if num == 1 && num1 == 1 && num2 == 3591 {
+				logutil.Infof("num111 is %d-%d-%d, cmmit is %v, i is %d, y is %dv", num, num1, num2, ts.ToString(), i, y)
+			} else if num == 1 && num1 == 3 && num2 == 260 {
+				logutil.Infof("num11122 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			}
+			//logutil.Infof("num is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			if i == bat.Vecs[0].Length()-1 {
+				logutil.Infof("num11122 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			}
+		}
+		logutil.Infof("bats[0].Vecs[1].String() is %v", bat.Vecs[2].String())
+	}
+}
+
+func TestNewObjectReader2(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+	name := "55d07f0f-822b-11ee-ae27-5254000adb85_00002"
+
+	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
+	c := fileservice.Config{
+		Name:    defines.LocalFileServiceName,
+		Backend: "DISK",
+		DataDir: fsDir,
+	}
+	service, err := fileservice.NewFileService(ctx, c, nil)
+	assert.Nil(t, err)
+	reader, err := blockio.NewFileReader(service, name)
+	if err != nil {
+		return
+	}
+	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
+	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 2, 3, 5}, common.DefaultAllocator)
+	if err != nil {
+		logutil.Infof("load all columns failed: %v", err)
+		return
+	}
+	/*name1, err := EncodeNameFromString(reader.GetName())
+	assert.Nil(t, err)
+	location := objectio.BuildLocation(name1, *reader.GetObjectReader().GetMetaExtent(), 51, 1)
+	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
+	//applyDelete(bats[0], bb)
+	bf, w, err := reader.LoadOneBF(ctx, 0)
+	zm, err := reader.LoadZoneMaps(ctx, []uint16{0, 1, 2, 3, 5}, 0, nil)
+	logutil.Infof("zm is %v-%v", zm[0].GetMax(), zm[0].GetMin())
+	logutil.Infof("bf is %v, w is %v, err is %v", bf.String(), w, err)
+	ts := types.TS{}
+	for y, bat := range bats {
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
+			num := types.DecodeInt32(bat.Vecs[0].GetRawBytesAt(i))
+			num1 := types.DecodeInt32(bat.Vecs[1].GetRawBytesAt(i))
+			num3 := types.DecodeInt32(bat.Vecs[2].GetRawBytesAt(i))
+			entry := common.TypeStringValue(*bat.Vecs[3].GetType(), any(bat.Vecs[3].GetRawBytesAt(i)), false)
+			num2 := entry
+			ts.Unmarshal(bat.Vecs[4].GetRawBytesAt(i))
+
+			if num == 9 && num1 == 4 {
+				logutil.Infof("num111 is %d-%d-%v, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			} else if num == 1 && num1 == 3 {
+				//logutil.Infof("num11122 is %d-%d-%v, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+			}
+			if num2 == "3a15013a15013a160e07" {
+				t1, _, _ := types.DecodeTuple(bat.Vecs[3].GetRawBytesAt(i))
+				//t1.String()
+				logutil.Infof("bats[0].Vecs[1].String() is %v, %d, n %d-%d-%d, y %d, t1.String() is %v, ts is %v", num2, i, num, num1, num3, y, t1.String(), ts.ToString())
+			}
+			//logutil.Infof("num is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
+		}
+		//logutil.Infof("bats[0].Vecs[1].String() is %v", bat.Vecs[2].String())
+	}
+}
+
+// EncodeLocationFromString Generate a metaloc from an info string
+func EncodeNameFromString(info string) (objectio.ObjectName, error) {
+	location := strings.Split(info, "_")
+	num, err := strconv.ParseUint(location[1], 10, 32)
+	if err != nil {
+		return nil, err
+	}
+	uid, err := types.ParseUuid(location[0])
+	if err != nil {
+		return nil, err
+	}
+	name := objectio.BuildObjectName(&uid, uint16(num))
+	return name, nil
+}
+
+func applyDelete(dataBatch *batch.Batch, deleteBatch *batch.Batch) error {
+	if deleteBatch == nil {
+		return nil
+	}
+	deleteRow := make([]int64, 0)
+	rowss := make(map[int64]bool)
+	for i := 0; i < deleteBatch.Vecs[0].Length(); i++ {
+		row := deleteBatch.Vecs[0].GetRawBytesAt(i)
+		rowId := objectio.HackBytes2Rowid(row)
+		_, ro := rowId.Decode()
+		rowss[int64(ro)] = true
+	}
+	for i := 0; i < dataBatch.Vecs[0].Length(); i++ {
+		if rowss[int64(i)] {
+			deleteRow = append(deleteRow, int64(i))
+		}
+	}
+	dataBatch.AntiShrink(deleteRow)
+	return nil
 }

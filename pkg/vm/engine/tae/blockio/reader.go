@@ -21,6 +21,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 )
@@ -54,6 +55,7 @@ func NewObjectReader(
 	metaExt := key.Extent()
 	var reader *objectio.ObjectReader
 	var err error
+	logutil.Infof("NewObjectReader: key %s", key.String())
 	if opts == nil {
 		reader, err = objectio.NewObjectReader(
 			&name,
@@ -193,6 +195,7 @@ func (r *BlockReader) LoadOneSubColumns(
 		return
 	}
 	var ioVector *fileservice.IOVector
+	logutil.Infof("LoadOneSubColumns blk %d, key is %v, dataType is %d", blk, r.reader.GetName(), dataType)
 	ioVector, err = r.reader.ReadOneSubBlock(ctx, cols, typs, dataType, blk, m)
 	if err != nil {
 		return
@@ -234,6 +237,49 @@ func (r *BlockReader) LoadAllColumns(
 	bats := make([]*batch.Batch, 0)
 
 	ioVectors, err := r.reader.ReadAll(ctx, idxs, nil)
+	if err != nil {
+		return nil, err
+	}
+	for y := 0; y < int(dataMeta.BlockCount()); y++ {
+		bat := batch.NewWithSize(len(idxs))
+		var obj any
+		for i := range idxs {
+			obj, err = objectio.Decode(ioVectors.Entries[y*len(idxs)+i].CachedData.Bytes())
+			if err != nil {
+				return nil, err
+			}
+			bat.Vecs[i] = obj.(*vector.Vector)
+			bat.SetRowCount(bat.Vecs[i].Length())
+		}
+		bats = append(bats, bat)
+	}
+	return bats, nil
+}
+
+func (r *BlockReader) LoadAllDeleteColumns(
+	ctx context.Context,
+	idxs []uint16,
+	m *mpool.MPool,
+) ([]*batch.Batch, error) {
+	meta, err := r.reader.ReadAllMeta(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+	dataMeta := meta.MustTombstoneMeta()
+	if dataMeta.BlockHeader().MetaLocation().End() == 0 {
+		return nil, nil
+	}
+	block := dataMeta.GetBlockMeta(0)
+	if len(idxs) == 0 {
+		idxs = make([]uint16, block.GetColumnCount())
+		for i := range idxs {
+			idxs[i] = uint16(i)
+		}
+	}
+
+	bats := make([]*batch.Batch, 0)
+
+	ioVectors, err := r.reader.ReadDeleteAll(ctx, idxs, nil)
 	if err != nil {
 		return nil, err
 	}

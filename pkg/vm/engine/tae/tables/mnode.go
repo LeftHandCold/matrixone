@@ -401,6 +401,7 @@ func (node *memoryNode) BatchDedup(
 	def := node.writeSchema.GetSingleSortKey()
 	v, isNull := node.GetValueByRow(node.writeSchema, int(dupRow), def.Idx)
 	entry := common.TypeStringValue(*keys.GetType(), v, isNull)
+	logutil.Infof("duplicate entry: %v, sc %v", node.block.meta.String(), node.block.GetID())
 	return moerr.NewDuplicateEntryNoCtx(entry, def.Name)
 }
 

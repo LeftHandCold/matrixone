@@ -16,6 +16,7 @@ package objectio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
@@ -205,6 +206,7 @@ func (r *objectReaderV1) ReadOneSubBlock(
 		return
 	}
 	meta, _ := metaHeader.SubMeta(dataType)
+	logutil.Infof("start id is %d, typs is %d, blk is %d", meta.BlockHeader().StartID(), typs, blk)
 	ioVec, err = ReadOneBlockWithMeta(ctx, &meta, r.name, blk, idxs, typs, m, r.fs, constructorFactory)
 	if err != nil {
 		return
@@ -222,6 +224,19 @@ func (r *objectReaderV1) ReadAll(
 		return
 	}
 	meta := metaHeader.MustDataMeta()
+	return ReadAllBlocksWithMeta(ctx, &meta, r.name, idxs, r.dataReadPolicy, m, r.fs, constructorFactory)
+}
+
+func (r *objectReaderV1) ReadDeleteAll(
+	ctx context.Context,
+	idxs []uint16,
+	m *mpool.MPool,
+) (ioVec *fileservice.IOVector, err error) {
+	var metaHeader ObjectMeta
+	if metaHeader, err = r.ReadMeta(ctx, m); err != nil {
+		return
+	}
+	meta := metaHeader.MustTombstoneMeta()
 	return ReadAllBlocksWithMeta(ctx, &meta, r.name, idxs, r.dataReadPolicy, m, r.fs, constructorFactory)
 }
 

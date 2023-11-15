@@ -293,6 +293,10 @@ func (node *DeleteNode) setPersistedRows() {
 		node.mask.Add(offset)
 		return nil
 	}, nil)
+	if node.deltaloc.String() == "c8c5fe8d-7d44-11ee-865a-b07b25f84010_00000_1_22932_1127_5490_146_1" {
+		logutil.Infof("masksss: %s", node.mask.String())
+	}
+	logutil.Infof("")
 	if err != nil {
 		panic(err)
 	}

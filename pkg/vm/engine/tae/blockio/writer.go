@@ -91,6 +91,7 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		}
 		columnData := containers.ToTNVector(vec, common.DefaultAllocator)
 		// update null count and distinct value
+		logutil.Infof("pk is %d, i is %d, w.pk is %d, is null is%v, name %v", isPK, i, w.pk, columnData.IsConstNull(), w.nameStr)
 		w.objMetaBuilder.InspectVector(i, columnData, isPK)
 
 		// Build ZM

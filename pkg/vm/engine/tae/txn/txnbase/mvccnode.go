@@ -16,6 +16,7 @@ package txnbase
 
 import (
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"io"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -78,6 +79,7 @@ func (un *TxnMVCCNode) CheckConflict(txn txnif.TxnReader) error {
 		if un.IsSameTxn(txn) {
 			return nil
 		}
+		panic("fsdfsdfsdfdsfsdfsErrCheckConflict")
 		return txnif.ErrTxnWWConflict
 	}
 
@@ -85,6 +87,8 @@ func (un *TxnMVCCNode) CheckConflict(txn txnif.TxnReader) error {
 	// -------+-------------+-------------------->
 	//        ts         CommitTs            time
 	if un.End.Greater(txn.GetStartTS()) {
+		logutil.Infof("txn %d, node %d, ts %d, commit %d", txn.GetStartTS().ToString(), un.End.ToString())
+		panic("fsdfsdfsdfdsfsdfsErrTxnWWConflict")
 		return txnif.ErrTxnWWConflict
 	}
 	return nil
@@ -166,6 +170,46 @@ func (un *TxnMVCCNode) PreparedIn(minTS, maxTS types.TS) (in, before bool) {
 	// false: not prepared before minTs
 	if un.Prepare.GreaterEq(minTS) && un.Prepare.LessEq(maxTS) {
 		return true, false
+	}
+
+	// -------+--------------+------------+--------------->
+	//        |              |            |             Time
+	//       MinTs          MaxTs     PrepareTs
+	// Created by other committed txn
+	// false: not prepared in range
+	// false: not prepared before minTs
+	return false, false
+}
+
+func (un *TxnMVCCNode) PreparedLess(minTS, maxTS types.TS) (in, before bool) {
+	// -------+----------+----------------+--------------->
+	//        |          |                |             Time
+	//       MinTS     MaxTs       Prepare In future
+	// Created by other active txn
+	// false: not prepared in range
+	// false: not prepared before minTs
+	if un.Prepare.IsEmpty() {
+		return false, false
+	}
+
+	// -------+--------------+------------+--------------->
+	//        |              |            |             Time
+	//       MinTs       PrepareTs       MaxTs
+	// Created by other committed txn
+	// true: prepared in range
+	// false: not prepared before minTs
+	if un.Prepare.Less(maxTS) {
+		return false, true
+	}
+
+	// -------+--------------+------------+--------------->
+	//        |              |            |             Time
+	//    PrepareTs        MinTs         MaxTs
+	// Created by other committed txn
+	// false: not prepared in range
+	// true: prepared before minTs
+	if un.Prepare.GreaterEq(minTS) && un.Prepare.LessEq(maxTS) {
+		return true, true
 	}
 
 	// -------+--------------+------------+--------------->

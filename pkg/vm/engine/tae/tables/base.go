@@ -17,6 +17,7 @@ package tables
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -337,6 +338,7 @@ func (blk *baseBlock) foreachPersistedDeletesCommittedInRange(
 	if deletes == nil || err != nil {
 		return
 	}
+	logutil.Infof("foreachPersistedDeletesCommittedInRange: blk %s, start %v, end %v, delete is %v, persistedByCN is %v", blk.meta.ID.String(), start.ToString(), end.ToString(), deletes.Length(), persistedByCN)
 	if persistedByCN {
 		if deltalocCommitTS.Equal(txnif.UncommitTS) {
 			return
@@ -352,6 +354,7 @@ func (blk *baseBlock) foreachPersistedDeletesCommittedInRange(
 		abortVec := containers.NewConstFixed[bool](types.T_bool.ToType(), false, deletes.Length())
 		deletes.AddVector(catalog.AttrCommitTs, commitTSVec)
 		deletes.AddVector(catalog.AttrAborted, abortVec)
+		logutil.Infof("foreachPersistedDeletesCommittedInRange1: blk %s, start %v, end %v, delete is %v, persistedByCN is %v, commitTS is %v", blk.meta.ID.String(), start.ToString(), end.ToString(), deletes.Length(), persistedByCN, deltalocCommitTS.ToString())
 	} else {
 		abortVec := deletes.Vecs[3].GetDownstreamVector()
 		commitTsVec := deletes.Vecs[1].GetDownstreamVector()
@@ -585,7 +588,14 @@ func (blk *baseBlock) RangeDelete(
 	dt handle.DeleteType) (node txnif.DeleteNode, err error) {
 	blk.Lock()
 	defer blk.Unlock()
+	if blk.meta.GetSegment().ID.ToString() == "c8c5fe8d-7d44-11ee-865a-b07b25f84010" {
+		if start == 11 {
+			logutil.Infof("blk is %v: %v, start %d, end %d, delete is %v", blk.meta.String(), txn.GetStartTS().ToString(), start, end, blk.mvcc.GetDeleteChain().StringLocked())
+		}
+	}
 	if err = blk.mvcc.CheckNotDeleted(start, end, txn.GetStartTS()); err != nil {
+		logutil.Infof("blk is %v: %v, start %d, end %d, delete is %v", blk.meta.String(), txn.GetStartTS().ToString(), start, end, blk.mvcc.GetDeleteChain().StringLocked())
+		panic("fsdfsdfsdf")
 		return
 	}
 	node = blk.mvcc.CreateDeleteNode(txn, dt)
@@ -692,6 +702,21 @@ func (blk *baseBlock) inMemoryCollectDeleteInRange(
 	schema := blk.meta.GetSchema()
 	pkDef := schema.GetPrimaryKey()
 	rowID, ts, pk, abort, abortedMap, deletes, minTS := blk.mvcc.CollectDeleteLocked(start.Next(), end, pkDef.Type, mp)
+	if ts != nil {
+		for i := 0; i < ts.Length(); i++ {
+			tss := types.TS{}
+			tp := types.TS{}
+			if i == 0 {
+				continue
+			}
+			tss = ts.Get(i).(types.TS)
+			tp = ts.Get(i - 1).(types.TS)
+			if tss.Less(tp) {
+				logutil.Infof("ts %v less than %v", tss, tp)
+				//panic(fmt.Sprintf("ts %v less than %v", tss, tp))
+			}
+		}
+	}
 	blk.RUnlock()
 	if rowID == nil {
 		return
