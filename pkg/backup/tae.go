@@ -99,6 +99,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	table := gc.NewGCTable()
 	gcFileMap := make(map[string]string)
 	var deleteFiles map[string]*logtail.DeleteID
+	logutil.Infof("backup names: %v", names)
 	for i, name := range names {
 		if len(name) == 0 {
 			continue
