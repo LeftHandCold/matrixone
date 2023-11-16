@@ -605,6 +605,7 @@ func (task *flushTableTailTask) flushAblksForSnapshot(ctx context.Context) (subt
 			blk,
 			data,
 			deletes,
+			true,
 		)
 		if err = task.rt.Scheduler.Schedule(ablockTask); err != nil {
 			return
