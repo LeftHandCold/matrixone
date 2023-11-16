@@ -230,6 +230,7 @@ func ReadMultiBlocksWithMeta(
 	ioVec = &fileservice.IOVector{
 		FilePath: name,
 		Entries:  make([]fileservice.IOEntry, 0),
+		Policy:   fileservice.SkipMemoryCache,
 	}
 	var dataMeta ObjectDataMeta
 	for _, opt := range options {
