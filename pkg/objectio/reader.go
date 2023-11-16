@@ -295,6 +295,7 @@ func (r *objectReaderV1) ReadMultiBlocks(
 	opts map[uint16]*ReadBlockOptions,
 	m *mpool.MPool,
 ) (ioVec *fileservice.IOVector, err error) {
+	return
 	var objectMeta ObjectMeta
 	if objectMeta, err = r.ReadMeta(ctx, m); err != nil {
 		return
