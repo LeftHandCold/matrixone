@@ -385,7 +385,7 @@ func writeIncrementalCheckpoint(
 	data, err := factory(c)
 	assert.NoError(t, err)
 	defer data.Close()
-	cnLocation, tnLocation, err := data.WriteTo(fs, checkpointBlockRows, checkpointSize)
+	cnLocation, tnLocation, _, err := data.WriteTo(fs, checkpointBlockRows, checkpointSize)
 	assert.NoError(t, err)
 	return cnLocation, tnLocation
 }
