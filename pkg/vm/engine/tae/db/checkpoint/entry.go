@@ -158,6 +158,10 @@ func (e *CheckpointEntry) IsIncremental() bool {
 	return e.entryType == ET_Incremental
 }
 
+func (e *CheckpointEntry) GetType() EntryType {
+	return e.entryType
+}
+
 func (e *CheckpointEntry) String() string {
 	t := "I"
 	if !e.IsIncremental() {
