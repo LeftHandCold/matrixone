@@ -954,6 +954,7 @@ func (data *CNCheckpointData) GetTableMeta(tableID uint64, version uint32, loc o
 		}
 	}
 	tid := tidVec[i]
+	logutil.Infof("GetTableMeta tid %d", tid)
 	blkInsStr := blkIns.GetBytesAt(i)
 	blkCNInsStr := blkCNIns.GetBytesAt(i)
 	blkDelStr := blkDel.GetBytesAt(i)
@@ -962,6 +963,7 @@ func (data *CNCheckpointData) GetTableMeta(tableID uint64, version uint32, loc o
 	if len(blkInsStr) > 0 {
 		blkInsertTableMeta := NewTableMeta()
 		blkInsertTableMeta.locations = blkInsStr
+		logutil.Infof("GetTableMeta blkInsStr %s", blkInsStr)
 		// blkInsertOffset
 		tableMeta.tables[BlockInsert] = blkInsertTableMeta
 	}
@@ -1222,6 +1224,7 @@ func (data *CNCheckpointData) ReadFromData(
 			}
 		}
 		idx := switchCheckpointIdx(uint16(i), tableID)
+		logutil.Infof("load table %v: %d-%d, tableID is %v", table.locations.String(), table.Start, table.End, tableID)
 		it := table.locations.MakeIterator()
 		for it.HasNext() {
 			block := it.Next()
