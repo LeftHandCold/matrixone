@@ -441,6 +441,7 @@ func ReWriteCheckpointAndBlockFromKey(
 	phaseNumber = 4
 	// Rewrite object file
 	for fileName, objectData := range objectsData {
+		logutil.Infof("[ReWrite Checkpoint] fileName: %v, isChange: %v, isDeleteBatch: %v", fileName, objectData.isChange, objectData.isDeleteBatch)
 		if !objectData.isChange && !objectData.isDeleteBatch {
 			continue
 		}
@@ -523,6 +524,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				if objectData.data[0].tombstone != nil {
 					applyDelete(dataBlocks[0].data, objectData.data[0].tombstone.data, dataBlocks[0].blockId.String())
 				}
+				logutil.Infof("[ReWrite Checkpoint] fileName: %v, dataBlocks: %v, locatiot: %v", fileName, dataBlocks[0].isABlock, dataBlocks[0].location.String())
 				sortData := containers.ToTNBatch(dataBlocks[0].data, common.CheckpointAllocator)
 				if dataBlocks[0].sortKey != math.MaxUint16 {
 					_, err = mergesort.SortBlockColumns(sortData.Vecs, int(dataBlocks[0].sortKey), backupPool)
