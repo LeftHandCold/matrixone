@@ -696,8 +696,10 @@ func (data *CheckpointData) ApplyReplayTo(
 	ins, tnins, del, tndel = data.GetSegBatchs()
 	c.OnReplaySegmentBatch(ins, tnins, del, tndel, dataFactory)
 	ins, tnins, del, tndel = data.GetTNBlkBatchs()
+	logutil.Infof("ApplyReplayTo ins1, data.GetTNBlkBatchs()")
 	c.OnReplayBlockBatch(ins, tnins, del, tndel, dataFactory)
 	ins, tnins, del, tndel = data.GetBlkBatchs()
+	logutil.Infof("ApplyReplayTo ins2")
 	c.OnReplayBlockBatch(ins, tnins, del, tndel, dataFactory)
 	return
 }
@@ -2922,6 +2924,8 @@ func (collector *BaseCollector) visitBlockEntry(entry *catalog.BlockEntry) {
 					false,
 					collector.data.allocator,
 				)
+				logutil.Infof("metaNode.BaseNode.DeltaLoc1111 is null : %v, metaNode.BaseNode.MetaLoc is :%v, stat is :%v, entry.ID is : %v : %v-%v",
+					metaNode.BaseNode.DeltaLoc.String(), metaNode.BaseNode.MetaLoc.String(), entry.IsAppendable(), entry.ID.String(), metaNode.GetStart().ToString(), metaNode.GetEnd().ToString())
 				vector.AppendFixed(
 					blkTNMetaInsTxnDBIDVec,
 					entry.GetSegment().GetTable().GetDB().GetID(),
@@ -2992,6 +2996,8 @@ func (collector *BaseCollector) visitBlockEntry(entry *catalog.BlockEntry) {
 				if !entry.IsAppendable() && entry.GetSchema().HasSortKey() {
 					is_sorted = true
 				}
+				logutil.Infof("metaNode.BaseNode.DeltaLoc not null : %v ,metaNode.BaseNode.MetaLoc: %v ，stat is %v, entry.ID is %v: %v-%v... %v",
+					metaNode.BaseNode.DeltaLoc.String(), metaNode.BaseNode.MetaLoc.String(), entry.IsAppendable(), entry.ID.String(), metaNode.GetStart().ToString(), metaNode.GetEnd().ToString(), entry.GetSegment().GetTable().String())
 				vector.AppendFixed(
 					blkCNMetaInsIDVec,
 					entry.ID,
@@ -3105,6 +3111,8 @@ func (collector *BaseCollector) visitBlockEntry(entry *catalog.BlockEntry) {
 					false,
 					collector.data.allocator,
 				)
+				logutil.Infof("metaNode.BaseNode.DeltaLoc null : %v, metaNode.BaseNode.MetaLoc: %v, stat is %v, entry.ID is %v: %v-%v...%v",
+					metaNode.BaseNode.DeltaLoc.String(), metaNode.BaseNode.MetaLoc.String(), entry.IsAppendable(), entry.ID.String(), metaNode.GetStart().ToString(), metaNode.GetEnd().ToString(), entry.GetSegment().GetTable().String())
 				vector.AppendFixed(
 					blkMetaInsRowIDVec,
 					objectio.HackBlockid2Rowid(&entry.ID),
@@ -3155,6 +3163,7 @@ func (collector *BaseCollector) VisitBlkForBackup(entry *catalog.BlockEntry) (er
 		return nil
 	}
 	entry.RUnlock()
+	logutil.Infof("VisitBlkForBackup blk %v", entry.ID.String())
 	collector.visitBlockEntry(entry)
 	return nil
 }

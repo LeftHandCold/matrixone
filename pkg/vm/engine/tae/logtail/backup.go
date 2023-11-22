@@ -642,7 +642,9 @@ func ReWriteCheckpointAndBlockFromKey(
 					}
 					deleteRow := insertBatch[tid].insertBlocks[b].deleteRow
 					insertBatch[tid].insertBlocks[b].apply = true
+					logutil.Infof("rewrite BLKCNMetaInsertIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), deleteRow)
 					appendValToBatch(data.bats[BLKCNMetaInsertIDX], blkMeta, deleteRow)
+					logutil.Infof("rewrite BLKMetaDeleteTxnIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), deleteRow)
 					appendValToBatch(data.bats[BLKMetaDeleteTxnIDX], blkMetaTxn, deleteRow)
 
 					row := blkMeta.Vecs[0].Length() - 1
@@ -664,11 +666,13 @@ func ReWriteCheckpointAndBlockFromKey(
 
 		for tid := range insertBatch {
 			for b := range insertBatch[tid].insertBlocks {
+				logutil.Infof("insertBatch is %d, apply is %v,file is %v", tid, insertBatch[tid].insertBlocks[b].apply, insertBatch[tid].insertBlocks[b].location.String())
 				if insertBatch[tid].insertBlocks[b].apply {
 					continue
 				}
 				if insertBatch[tid] != nil && !insertBatch[tid].insertBlocks[b].apply {
 					deleteRow := insertBatch[tid].insertBlocks[b].deleteRow
+					logutil.Infof("rewrite1 BLKCNMetaInsertIDX %s, row is %d", insertBatch[tid].insertBlocks[b].location.String(), deleteRow)
 					insertBatch[tid].insertBlocks[b].apply = true
 					appendValToBatch(data.bats[BLKCNMetaInsertIDX], blkMeta, deleteRow)
 					appendValToBatch(data.bats[BLKMetaDeleteTxnIDX], blkMetaTxn, deleteRow)
@@ -707,6 +711,8 @@ func ReWriteCheckpointAndBlockFromKey(
 		tableInsertOff := make(map[uint64]*tableOffset)
 		for i := 0; i < blkMetaTxn.Vecs[0].Length(); i++ {
 			tid := blkMetaTxn.GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
+			loca := blkMeta.GetVectorByName(catalog.BlockMeta_MetaLoc).Get(i).([]byte)
+			del := blkMeta.GetVectorByName(catalog.BlockMeta_DeltaLoc).Get(i).([]byte)
 			if tableInsertOff[tid] == nil {
 				tableInsertOff[tid] = &tableOffset{
 					offset: i,
@@ -714,10 +720,14 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 			}
 			tableInsertOff[tid].end += 1
+			logutil.Infof("tableOff tid  %d, loc %v, del %v, start %d, end %d, row is %d", tid, objectio.Location(loca).String(), objectio.Location(del).String(), tableInsertOff[tid].offset, tableInsertOff[tid].end, i)
 		}
 		tableDeleteOff := make(map[uint64]*tableOffset)
 		for i := 0; i < data.bats[BLKMetaDeleteTxnIDX].Vecs[0].Length(); i++ {
+			rid := data.bats[BLKCNMetaInsertIDX].GetVectorByName(catalog2.AttrRowID)
 			tid := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
+			loca := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(catalog.BlockMeta_MetaLoc).Get(i).([]byte)
+			del := data.bats[BLKMetaDeleteTxnIDX].GetVectorByName(catalog.BlockMeta_DeltaLoc).Get(i).([]byte)
 			if tableDeleteOff[tid] == nil {
 				tableDeleteOff[tid] = &tableOffset{
 					offset: i,
@@ -725,6 +735,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 			}
 			tableDeleteOff[tid].end += 1
+			logutil.Infof("tableOff11 tid  %d, loc %v, del %v, start %d, end %d, row is %d, rid is %v", tid, objectio.Location(loca).String(), objectio.Location(del).String(), tableDeleteOff[tid].offset, tableDeleteOff[tid].end, i, rid.String())
 		}
 
 		for tid, table := range tableInsertOff {
