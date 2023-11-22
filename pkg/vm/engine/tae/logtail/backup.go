@@ -381,13 +381,13 @@ func ReWriteCheckpointAndBlockFromKey(
 		if commits.Less(ts) {
 			panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commits.ToString(), ts.ToString())))
 		}
-
+		logutil.Infof("[ReWrite Checkpoint] blkCNMetaInsert: %v", metaLoc.String())
 		if !metaLoc.IsEmpty() && softDeletes[metaLoc.Name().String()] != nil &&
 			softDeletes[metaLoc.Name().String()][metaLoc.ID()] {
 			// It has been soft deleted by the previous checkpoint, so it will be skipped and not collected.
 			continue
 		}
-
+		logutil.Infof("[ReWrite Checkpoint] blkCNMetaInsert2: %v", metaLoc.String())
 		if !deltaLoc.IsEmpty() {
 			addBlockToObjectData(deltaLoc, isABlk, true, i,
 				blkMetaDelTxnTid.Get(i).(uint64), blkID, objectio.SchemaTombstone, &objectsData)

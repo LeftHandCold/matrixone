@@ -24,6 +24,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/function/ctl"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
@@ -119,6 +120,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		}
 		var locations []objectio.Location
 		var data *logtail.CheckpointData
+		logutil.Infof("backup: %v,i: %d", name, i)
 		if i == 0 {
 			locations, data, err = logtail.LoadCheckpointEntriesFromKey(ctx, srcFs, key, uint32(version), nil)
 		} else {
