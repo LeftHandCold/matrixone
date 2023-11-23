@@ -1260,15 +1260,27 @@ func (data *CNCheckpointData) ReadFromData(
 					return
 				}
 			}
-			//if i == 0 && BLKMetaInsertIDX == idx {
-			ins := containers.ToTNBatch(bat, common.CheckpointAllocator)
-			for z := 0; z < ins.Length(); z++ {
+			if i == 0 && BLKMetaInsertIDX == idx {
+				ins := containers.ToTNBatch(bat, common.CheckpointAllocator)
+				for z := 0; z < ins.Length(); z++ {
 
-				blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(z).(types.Blockid)
-				metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(z).([]byte)
-				logutil.Infof("blkID %s metaLoc %s, tid is %d", blkID.String(), objectio.Location(metaLoc).String(), tableID)
+					blkID := ins.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(z).(types.Blockid)
+					metaLoc := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).Get(z).([]byte)
+					logutil.Infof("blkID %s metaLoc %s, tid is %d", blkID.String(), objectio.Location(metaLoc).String(), tableID)
+				}
 			}
-			//}
+
+			if i == 0 && TBLInsertIDX == idx {
+				ins := containers.ToTNBatch(bat, common.CheckpointAllocator)
+				for z := 0; z < ins.Length(); z++ {
+
+					blkID := ins.GetVectorByName(pkgcatalog.SystemRelAttr_ID).Get(z).(uint64)
+					metaLoc := ins.GetVectorByName(pkgcatalog.SystemRelAttr_Name).Get(z).([]byte)
+					dbid := ins.GetVectorByName(pkgcatalog.SystemRelAttr_DBID).Get(z).(uint64)
+					dbname := ins.GetVectorByName(pkgcatalog.SystemRelAttr_DBName).Get(z).([]byte)
+					logutil.Infof("tidd %d tname %s, tid is %d, dbid %d, dnname %s", blkID, string(metaLoc), tableID, dbid, string(dbname))
+				}
+			}
 		}
 
 		if version <= CheckpointVersion5 {
