@@ -851,6 +851,7 @@ func LoadCheckpointEntries(
 				DatabaseName: dbName,
 				Bat:          ins,
 			}
+			logutil.Infof("load checkpoint entry: %v", entry.String())
 			entries = append(entries, entry)
 		}
 		if cnIns != nil {
