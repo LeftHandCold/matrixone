@@ -15,7 +15,10 @@
 package gc2
 
 import (
+	"context"
+	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
 )
 
 const (
@@ -80,3 +83,18 @@ var (
 		types.New(types.T_varchar, 5000, 0),
 	}
 )
+
+type GCEntry interface {
+	collectData(
+		ctx context.Context,
+		fs fileservice.FileService,
+	) ([]*batch.Batch, error)
+	GetStartTS() types.TS
+	GetEndTS() types.TS
+	String() string
+}
+
+type GCEntryFactory interface {
+	GetEntries(ts types.TS, num int) ([]GCEntry, error)
+	GetCompareEntry() (GCEntry, error)
+}

@@ -18,17 +18,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"sync"
 
-	pkgcatalog "github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 )
 
 type ObjectEntry struct {
@@ -97,11 +95,10 @@ func (t *GCTable) SoftGC(table *GCTable, ts types.TS) []string {
 	return gc
 }
 
-func (t *GCTable) UpdateTable(data *logtail.CheckpointData) {
-	ins, _, del, delTxn := data.GetBlkBatchs()
-	insMetaObjectVec := ins.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).GetDownstreamVector()
-	insDeltaObjectVec := ins.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).GetDownstreamVector()
-	insCommitTSVec := ins.GetVectorByName(pkgcatalog.BlockMeta_CommitTs).GetDownstreamVector()
+func (t *GCTable) UpdateTable(bats []*batch.Batch) {
+	insMetaObjectVec := bats[0].Vecs[3]
+	insDeltaObjectVec := bats[0].Vecs[4]
+	insCommitTSVec := bats[0].Vecs[5]
 	for i := 0; i < insMetaObjectVec.Length(); i++ {
 		metaLoc := objectio.Location(insMetaObjectVec.GetBytesAt(i))
 		deltaLoc := objectio.Location(insDeltaObjectVec.GetBytesAt(i))
@@ -114,13 +111,13 @@ func (t *GCTable) UpdateTable(data *logtail.CheckpointData) {
 		}
 	}
 
-	if del.Length() == 0 {
+	if bats[1].Vecs[0].Length() == 0 {
 		return
 	}
-	delMetaObjectVec := delTxn.GetVectorByName(pkgcatalog.BlockMeta_MetaLoc).GetDownstreamVector()
-	delDeltaObjectVec := delTxn.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).GetDownstreamVector()
-	delCommitTSVec := del.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector()
-	for i := 0; i < del.Length(); i++ {
+	delMetaObjectVec := bats[2].Vecs[8]
+	delDeltaObjectVec := bats[2].Vecs[9]
+	delCommitTSVec := bats[1].Vecs[1]
+	for i := 0; i < bats[1].Vecs[0].Length(); i++ {
 		metaLoc := objectio.Location(delMetaObjectVec.GetBytesAt(i))
 		deltaLoc := objectio.Location(delDeltaObjectVec.GetBytesAt(i))
 		commitTS := vector.GetFixedAt[types.TS](delCommitTSVec, i)

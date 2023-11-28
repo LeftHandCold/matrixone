@@ -162,7 +162,6 @@ func (cleaner *DiskCleaner) replay() error {
 	if !minMergedStart.IsEmpty() {
 		readDirs = append(readDirs, fullGCFile)
 	}
-	logutil.Infof("minMergedEnd is %v, maxConsumedEnd is %v, minMergedStart is %v", minMergedEnd.ToString(), maxConsumedEnd.ToString(), minMergedStart.ToString())
 	for _, dir := range dirs {
 		start, end, ext := blockio.DecodeGCMetadataFileName(dir.Name)
 		if ext == blockio.GCFullExt {
@@ -186,7 +185,6 @@ func (cleaner *DiskCleaner) replay() error {
 		}
 		cleaner.updateInputs(table)
 	}
-	logutil.Infof("replay gc metadata success, maxConsumedStart is %v, maxConsumedEnd is %v", maxConsumedStart.ToString(), maxConsumedEnd.ToString())
 	ckp := checkpoint.NewCheckpointEntry(maxConsumedStart, maxConsumedEnd, checkpoint.ET_Incremental)
 	cleaner.updateMaxConsumed(ckp)
 	ckp = checkpoint.NewCheckpointEntry(minMergedStart, minMergedEnd, checkpoint.ET_Incremental)
@@ -203,7 +201,6 @@ func (cleaner *DiskCleaner) process(items ...any) {
 		// TODO:
 		maxGlobalCKP := cleaner.ckpClient.MaxGlobalCheckpoint()
 		if maxGlobalCKP != nil {
-			logutil.Infof("maxGlobalCKP is %v", maxGlobalCKP.String())
 			data, err := cleaner.collectGlobalCkpData(maxGlobalCKP)
 			if err != nil {
 				return
@@ -319,23 +316,21 @@ func (cleaner *DiskCleaner) collectGlobalCkpData(
 }
 
 func (cleaner *DiskCleaner) createNewInput(
-	ckps []*checkpoint.CheckpointEntry) (input *GCTable, err error) {
+	ckps []GCEntry) (input *GCTable, err error) {
 	input = NewGCTable()
-	var data *logtail.CheckpointData
 	for _, candidate := range ckps {
-		data, err = cleaner.collectCkpData(candidate)
+		data, err := candidate.collectData(cleaner.ctx, cleaner.fs.Service)
 		if err != nil {
 			logutil.Errorf("processing clean %s: %v", candidate.String(), err)
 			// TODO
 			return
 		}
-		defer data.Close()
 		input.UpdateTable(data)
 	}
 	files := cleaner.GetAndClearOutputs()
 	_, err = input.SaveTable(
-		ckps[0].GetStart(),
-		ckps[len(ckps)-1].GetEnd(),
+		ckps[0].GetStartTS(),
+		ckps[len(ckps)-1].GetEndTS(),
 		cleaner.fs,
 		files,
 	)
@@ -346,11 +341,10 @@ func (cleaner *DiskCleaner) createNewInput(
 }
 
 func (cleaner *DiskCleaner) createDebugInput(
-	ckps []*checkpoint.CheckpointEntry) (input *GCTable, err error) {
+	ckps []GCEntry) (input *GCTable, err error) {
 	input = NewGCTable()
-	var data *logtail.CheckpointData
 	for _, candidate := range ckps {
-		data, err = cleaner.collectCkpData(candidate)
+		data, err := candidate.collectData(cleaner.ctx, cleaner.fs.Service)
 		if err != nil {
 			logutil.Errorf("processing clean %s: %v", candidate.String(), err)
 			// TODO
