@@ -803,6 +803,7 @@ func (tbl *txnTable) RangeDelete(
 func (tbl *txnTable) TryDeleteByDeltaloc(id *common.ID, deltaloc objectio.Location) (ok bool, err error) {
 	node := tbl.deleteNodes[*id]
 	if node != nil {
+		logutil.Infof("deleteNodes: table-%s blk-%s try delete by deltaloc %s", tbl.entry.GetFullName(), id.BlockID.String(), deltaloc.String())
 		return
 	}
 
@@ -818,6 +819,7 @@ func (tbl *txnTable) TryDeleteByDeltaloc(id *common.ID, deltaloc objectio.Locati
 	if err == nil && ok {
 		if err = tbl.UpdateDeltaLoc(id, deltaloc); err != nil {
 			err = node2.PrepareRollback()
+			logutil.Infof("PrepareRollback: table-%s blk-%s try delete by deltaloc %s", tbl.entry.GetFullName(), id.BlockID.String(), deltaloc.String())
 			return false, err
 		}
 		if err = tbl.AddDeleteNode(id, node2); err != nil {

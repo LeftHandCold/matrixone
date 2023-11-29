@@ -17,6 +17,7 @@ package tables
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 	"sync/atomic"
 
@@ -575,6 +576,7 @@ func (blk *baseBlock) TryDeleteByDeltaloc(
 	txn txnif.AsyncTxn,
 	deltaLoc objectio.Location) (node txnif.DeleteNode, ok bool, err error) {
 	if blk.meta.IsAppendable() {
+		logutil.Infof("TryDeleteByDeltaloc called on appendable block %s", deltaLoc.String())
 		return
 	}
 	err2 := blk.meta.CheckConflict(txn)
@@ -584,6 +586,7 @@ func (blk *baseBlock) TryDeleteByDeltaloc(
 	blk.Lock()
 	defer blk.Unlock()
 	if !blk.mvcc.GetDeleteChain().IsEmpty() {
+		logutil.Infof("not IsEmpty called on appendable block %s", deltaLoc.String())
 		return
 	}
 	node = blk.mvcc.CreatePersistedDeleteNode(txn, deltaLoc)
