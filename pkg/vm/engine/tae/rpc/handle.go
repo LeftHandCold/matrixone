@@ -1062,7 +1062,6 @@ func (h *Handle) HandleWrite(
 		}
 		rowidIdx := 0
 		pkIdx := 1
-		logutil.Infof("delete relationssss: %d txn: %s", len(req.DeltaLocs), txn.String())
 		for _, key := range req.DeltaLocs {
 			var location objectio.Location
 			location, err = blockio.EncodeLocationFromString(key)
