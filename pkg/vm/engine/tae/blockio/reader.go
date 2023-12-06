@@ -308,6 +308,7 @@ func (r *BlockReader) LoadAllColumns(
 ) ([]*batch.Batch, error) {
 	meta, err := r.reader.ReadAllMeta(ctx, m)
 	if err != nil {
+		logutil.Infof("read all meta error: %v", err)
 		return nil, err
 	}
 	dataMeta := meta.MustDataMeta()

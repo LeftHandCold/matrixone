@@ -2080,9 +2080,9 @@ func (data *CheckpointData) PrintMetaBatch() {
 		return
 	}
 	maxTable := tables[len(tables)-1]
-	for i := range tables {
+	/*for i := range tables {
 		logutil.Infof("sss table %d, length is %d", tables[i].tid, tables[i].length)
-	}
+	}*/
 	logutil.Infof("lalala max table %d, length is %d", maxTable.tid, maxTable.length)
 	ml := data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc)
 	files := make(map[string]uint64)

@@ -455,7 +455,6 @@ func TestBlockWriter_GetName(t *testing.T) {
 		typ := ET_Global
 		if isIncremental {
 			typ = ET_Incremental
-			//return
 		}
 		var version uint32
 		if isCheckpointVersion1 {
@@ -550,6 +549,31 @@ func TestBlockWriter_GetName(t *testing.T) {
 	/*meta, extent, err := blockio.GetLocationWithFilename(ctx, service, "7e625e16-6740-11ee-83ce-16a5e7607fd0_00000")
 	assert.Nil(t, err)
 	logutil.Infof("meta: %d, extent: %v", meta.SubMetaCount(), extent.String())*/
+}
+
+func TestNewObjectReade1r(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+	name := "e5ed1ed5-7ef0-11ee-9931-5254000adb85_01000"
+
+	fsDir := "/Users/shenjiangwei/Work/code/view/matrixone/mo-data/shared"
+	c := fileservice.Config{
+		Name:    defines.LocalFileServiceName,
+		Backend: "DISK",
+		DataDir: fsDir,
+	}
+	service, err := fileservice.NewFileService(ctx, c, nil)
+	assert.Nil(t, err)
+	reader, err := blockio.NewFileReader(service, name)
+	if err != nil {
+		return
+	}
+	bats, err := reader.LoadAllColumns(ctx, nil, common.DefaultAllocator)
+	if err != nil {
+		logutil.Infof("load all columns failed: %v", err)
+		return
+	}
+	logutil.Infof("bats[0].Vecs[1].String() is %v", bats[0].Vecs[1].String())
 }
 
 func TestLoadCheckpoint(t *testing.T) {
