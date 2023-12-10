@@ -957,9 +957,14 @@ func (h *Handle) HandleDropOrTruncateRelation(
 
 // TODO: debug for #13342, remove me later
 var districtMatchRegexp = regexp.MustCompile(`.*bmsql_district.*`)
+var incrementMatchRegexp = regexp.MustCompile(`.*mo_increment_columns.*`)
 
 func IsDistrictTable(name string) bool {
 	return districtMatchRegexp.MatchString(name)
+}
+
+func IsIncrementTable(name string) bool {
+	return incrementMatchRegexp.MatchString(name)
 }
 
 func PrintTuple(tuple types.Tuple) string {
@@ -967,6 +972,8 @@ func PrintTuple(tuple types.Tuple) string {
 	for i, t := range tuple {
 		switch t := t.(type) {
 		case int32:
+			res += fmt.Sprintf("%v", t)
+		case []byte:
 			res += fmt.Sprintf("%v", t)
 		}
 		if i != len(tuple)-1 {
@@ -1062,7 +1069,14 @@ func (h *Handle) HandleWrite(
 		if IsDistrictTable(tb.Schema().(*catalog2.Schema).Name) {
 			for i := 0; i < req.Batch.Vecs[0].Length(); i++ {
 				pk, _, _ := types.DecodeTuple(req.Batch.Vecs[11].GetRawBytesAt(i))
-				logutil.Infof("op1 %v %v", txn.GetStartTS().ToString(), PrintTuple(pk))
+				logutil.Infof("op1 %v %v %d", txn.GetStartTS().ToString(), PrintTuple(pk), tb.ID())
+			}
+		}
+
+		if IsIncrementTable(tb.Schema().(*catalog2.Schema).Name) {
+			for i := 0; i < req.Batch.Vecs[0].Length(); i++ {
+				pk, _, _ := types.DecodeTuple(req.Batch.Vecs[5].GetRawBytesAt(i))
+				logutil.Infof("op1 %v %v %d", txn.GetStartTS().ToString(), PrintTuple(pk), tb.ID())
 			}
 		}
 		//Appends a batch of data into table.
@@ -1133,12 +1147,12 @@ func (h *Handle) HandleWrite(
 	pkVec := containers.ToTNVector(req.Batch.GetVector(1))
 	//defer pkVec.Close()
 	// TODO: debug for #13342, remove me later
-	if IsDistrictTable(tb.Schema().(*catalog2.Schema).Name) {
+	if IsDistrictTable(tb.Schema().(*catalog2.Schema).Name) || IsIncrementTable(tb.Schema().(*catalog2.Schema).Name) {
 		for i := 0; i < rowIDVec.Length(); i++ {
 
 			rowID := objectio.HackBytes2Rowid(req.Batch.Vecs[0].GetRawBytesAt(i))
 			pk, _, _ := types.DecodeTuple(req.Batch.Vecs[1].GetRawBytesAt(i))
-			logutil.Infof("op2 %v %v %v", txn.GetStartTS().ToString(), PrintTuple(pk), rowID.String())
+			logutil.Infof("op2 %v %v %d %v", txn.GetStartTS().ToString(), PrintTuple(pk), tb.ID(), rowID.String())
 		}
 	}
 	err = tb.DeleteByPhyAddrKeys(rowIDVec, pkVec)
