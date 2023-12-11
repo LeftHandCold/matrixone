@@ -126,6 +126,11 @@ func (b *TxnLogtailRespBuilder) visitObject(iobj any) {
 	if b.batches[objectInfoBatch] == nil {
 		b.batches[objectInfoBatch] = makeRespBatchFromSchema(ObjectInfoSchema, common.LogtailAllocator)
 	}
+	logutil.Infof("delete object table %v.%v, ts %v, obj %v",
+		obj.GetTable().GetDB().GetName(),
+		obj.GetTable().GetLastestSchema().Name,
+		b.txn.GetStartTS().ToString(),
+		node.BaseNode.ObjectName().String())
 	visitObject(b.batches[objectInfoBatch], obj, node, true, b.txn.GetPrepareTS())
 }
 
