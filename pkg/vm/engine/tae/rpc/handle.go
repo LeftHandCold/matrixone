@@ -973,8 +973,10 @@ func PrintTuple(tuple types.Tuple) string {
 		switch t := t.(type) {
 		case int32:
 			res += fmt.Sprintf("%v", t)
-		case []byte:
+		case uint64:
 			res += fmt.Sprintf("%v", t)
+		case []byte:
+			res += fmt.Sprintf("%v", string(t))
 		}
 		if i != len(tuple)-1 {
 			res += ","
