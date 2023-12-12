@@ -1045,6 +1045,7 @@ func (h *Handle) HandleWrite(
 			statsVec := containers.ToTNVector(statsCNVec, common.WorkspaceAllocator)
 			for i := 0; i < statsVec.Length(); i++ {
 				s := objectio.ObjectStats(statsVec.Get(i).([]byte))
+				logutil.Infof("load table %v.%v, ts %v, obj %v", req.DatabaseName,req.TableName, txn.GetStartTS().ToString(), s.ObjectName().String())
 				delete(metalocations, s.ObjectName().String())
 			}
 			if len(metalocations) != 0 {
