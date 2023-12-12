@@ -348,13 +348,15 @@ func (p *PartitionState) HandleLogtailEntry(
 	entry *api.Entry,
 	primarySeqnum int,
 	packer *types.Packer,
+	isSSB bool,
+	isCkp bool,
 ) {
 	switch entry.EntryType {
 	case api.Entry_Insert:
 		if IsBlkTable(entry.TableName) {
 			p.HandleMetadataInsert(ctx, fs, entry.Bat)
 		} else if IsObjTable(entry.TableName) {
-			p.HandleObjectInsert(entry.Bat)
+			p.HandleObjectInsert(entry.Bat, isSSB, isCkp)
 		} else {
 			p.HandleRowsInsert(ctx, entry.Bat, primarySeqnum, packer)
 		}
@@ -362,7 +364,7 @@ func (p *PartitionState) HandleLogtailEntry(
 		if IsBlkTable(entry.TableName) {
 			p.HandleMetadataDelete(ctx, entry.Bat)
 		} else if IsObjTable(entry.TableName) {
-			p.HandleObjectDelete(entry.Bat)
+			p.HandleObjectDelete(entry.Bat, isSSB, isCkp)
 		} else {
 			p.HandleRowsDelete(ctx, entry.Bat, packer)
 		}
@@ -371,7 +373,7 @@ func (p *PartitionState) HandleLogtailEntry(
 	}
 }
 
-func (p *PartitionState) HandleObjectDelete(bat *api.Batch) {
+func (p *PartitionState) HandleObjectDelete(bat *api.Batch, isSSB, isCkp bool) {
 	statsVec := mustVectorFromProto(bat.Vecs[2])
 	stateCol := vector.MustFixedCol[bool](mustVectorFromProto(bat.Vecs[3]))
 	sortedCol := vector.MustFixedCol[bool](mustVectorFromProto(bat.Vecs[4]))
@@ -383,6 +385,14 @@ func (p *PartitionState) HandleObjectDelete(bat *api.Batch) {
 		var objEntry ObjectEntry
 
 		objEntry.ObjectStats = objectio.ObjectStats(statsVec.GetBytesAt(idx))
+
+		if isSSB {
+			logutil.Info(fmt.Sprintf("HandleObjectDelete: [from ckp = %v] "+
+				"object name = %s; state = %v; sorted = %v; create ts = %s, delete ts = %s; commit ts = %s",
+				isCkp, objEntry.ObjectStats.ObjectName().String(), stateCol[idx], sortedCol[idx],
+				createTSCol[idx].ToString(), deleteTSCol[idx].ToString(), commitTSCol[idx].ToString(),
+			))
+		}
 
 		if objEntry.ObjectStats.BlkCnt() == 0 || objEntry.ObjectStats.Rows() == 0 {
 			continue
@@ -398,7 +408,7 @@ func (p *PartitionState) HandleObjectDelete(bat *api.Batch) {
 	}
 }
 
-func (p *PartitionState) HandleObjectInsert(bat *api.Batch) {
+func (p *PartitionState) HandleObjectInsert(bat *api.Batch, isSSB, isCkp bool) {
 	statsVec := mustVectorFromProto(bat.Vecs[2])
 	stateCol := vector.MustFixedCol[bool](mustVectorFromProto(bat.Vecs[3]))
 	sortedCol := vector.MustFixedCol[bool](mustVectorFromProto(bat.Vecs[4]))
@@ -410,6 +420,15 @@ func (p *PartitionState) HandleObjectInsert(bat *api.Batch) {
 		var objEntry ObjectEntry
 
 		objEntry.ObjectStats = objectio.ObjectStats(statsVec.GetBytesAt(idx))
+
+		if isSSB {
+			logutil.Info(fmt.Sprintf("HandleObjectInsert: [from ckp = %v] "+
+				"object name = %s; state = %v; sorted = %v; create ts = %s, delete ts = %s; commit ts = %s",
+				isCkp, objEntry.ObjectStats.ObjectName().String(), stateCol[idx], sortedCol[idx],
+				createTSCol[idx].ToString(), deleteTSCol[idx].ToString(), commitTSCol[idx].ToString(),
+			))
+		}
+
 		if objEntry.ObjectStats.BlkCnt() == 0 || objEntry.ObjectStats.Rows() == 0 {
 			continue
 		}

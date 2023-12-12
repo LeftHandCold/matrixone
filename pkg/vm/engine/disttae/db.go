@@ -291,7 +291,11 @@ func (e *Engine) lazyLoad(ctx context.Context, tbl *txnTable) (*logtailreplay.Pa
 				}
 			}()
 			for _, entry := range entries {
-				if err = consumeEntry(ctx, tbl.primarySeqnum, e, state, entry); err != nil {
+				isSSB := false
+				if IsSSBDatabase(entry.DatabaseName) {
+					isSSB = true
+				}
+				if err = consumeEntry(ctx, tbl.primarySeqnum, e, state, entry, isSSB, true); err != nil {
 					return err
 				}
 			}
