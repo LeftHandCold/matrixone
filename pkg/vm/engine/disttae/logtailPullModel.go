@@ -114,15 +114,23 @@ func consumeLogTailOfPull(
 	}()
 
 	for _, e := range entries {
+		isSSB := false
+		if IsSSBDatabase(e.DatabaseName) {
+			isSSB = true
+		}
 		if err = consumeEntry(ctx, primarySeqnum,
-			engine, state, e); err != nil {
+			engine, state, e, isSSB, true); err != nil {
 			return
 		}
 	}
 
 	for i := 0; i < len(logTail.Commands); i++ {
+		isSSB := false
+		if IsSSBDatabase(logTail.Commands[i].DatabaseName) {
+			isSSB = true
+		}
 		if err = consumeEntry(ctx, primarySeqnum,
-			engine, state, logTail.Commands[i]); err != nil {
+			engine, state, logTail.Commands[i], isSSB, false); err != nil {
 			return
 		}
 	}

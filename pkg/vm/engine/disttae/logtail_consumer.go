@@ -17,6 +17,7 @@ package disttae
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -329,6 +330,12 @@ func (c *pushClient) resume() {
 	default:
 		logutil.Infof("%s not in pause state", logTag)
 	}
+}
+
+//var ssbMatchRegexp = regexp.MustCompile(`.*ssb_.*`)
+
+func IsSSBDatabase(name string) bool {
+	return strings.Contains(name, "ssb")
 }
 
 func (c *pushClient) receiveOneLogtail(ctx context.Context, e *Engine) error {
@@ -1323,8 +1330,12 @@ func consumeLogTailOfPushWithoutLazyLoad(
 		}
 	}()
 	for _, entry := range entries {
+		isSSB := false
+		if IsSSBDatabase(entry.DatabaseName) {
+			isSSB = true
+		}
 		if err = consumeEntry(ctx, primarySeqnum,
-			engine, state, entry); err != nil {
+			engine, state, entry, isSSB, true); err != nil {
 			return
 		}
 	}
@@ -1370,8 +1381,12 @@ func hackConsumeLogtail(
 			if lt.Commands[i].EntryType == api.Entry_SpecialDelete {
 				lt.Commands[i].EntryType = api.Entry_Delete
 			}
+			isSSB := false
+			if IsSSBDatabase(lt.Commands[i].DatabaseName) {
+				isSSB = true
+			}
 			if err := consumeEntry(ctx, primarySeqnum,
-				engine, state, &lt.Commands[i]); err != nil {
+				engine, state, &lt.Commands[i], isSSB, false); err != nil {
 				return err
 			}
 		}
@@ -1402,16 +1417,25 @@ func hackConsumeLogtail(
 			if lt.Commands[i].EntryType == api.Entry_SpecialDelete {
 				lt.Commands[i].EntryType = api.Entry_Delete
 			}
+
+			isSSB := false
+			if IsSSBDatabase(lt.Commands[i].DatabaseName) {
+				isSSB = true
+			}
 			if err := consumeEntry(ctx, primarySeqnum,
-				engine, state, &lt.Commands[i]); err != nil {
+				engine, state, &lt.Commands[i], isSSB, false); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 	for i := 0; i < len(lt.Commands); i++ {
+		isSSB := false
+		if IsSSBDatabase(lt.Commands[i].DatabaseName) {
+			isSSB = true
+		}
 		if err := consumeEntry(ctx, primarySeqnum,
-			engine, state, &lt.Commands[i]); err != nil {
+			engine, state, &lt.Commands[i], isSSB, false); err != nil {
 			return err
 		}
 	}
