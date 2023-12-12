@@ -1078,7 +1078,8 @@ func (h *Handle) HandleWrite(
 		if IsIncrementTable(tb.Schema().(*catalog2.Schema).Name) {
 			for i := 0; i < req.Batch.Vecs[0].Length(); i++ {
 				pk, _, _ := types.DecodeTuple(req.Batch.Vecs[5].GetRawBytesAt(i))
-				logutil.Infof("op1 %v %v %d", txn.GetStartTS().ToString(), PrintTuple(pk), tb.ID())
+				Offset := types.DecodeUint64(req.Batch.Vecs[3].GetRawBytesAt(i))
+				logutil.Infof("op1 %v %v %d %d", txn.GetStartTS().ToString(), PrintTuple(pk), tb.ID(), Offset)
 			}
 		}
 		//Appends a batch of data into table.
