@@ -2016,10 +2016,13 @@ func (tbl *txnTable) readNewRowid(vec *vector.Vector, row int,
 			continue
 		}
 		// rowid + pk
+		if tbl.tableDef.Name == "panicleak" {
+			logutil.Infof("readNewRowid %v", types.TimestampToTS(tbl.db.txn.op.SnapshotTS()).ToString())
+		}
 		bat, err := blockio.BlockRead(
 			tbl.proc.Load().Ctx, &blk, nil, columns, colTypes, tbl.db.txn.op.SnapshotTS(),
 			nil, nil, nil,
-			tbl.db.txn.engine.fs, tbl.proc.Load().Mp(), tbl.proc.Load(),
+			tbl.db.txn.engine.fs, tbl.proc.Load().Mp(), tbl.proc.Load(), tbl.tableDef.Name,
 		)
 		if err != nil {
 			return rowid, false, err

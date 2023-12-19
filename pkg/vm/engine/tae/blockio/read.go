@@ -118,11 +118,12 @@ func BlockRead(
 	fs fileservice.FileService,
 	mp *mpool.MPool,
 	vp engine.VectorPool,
+	table string,
 ) (*batch.Batch, error) {
 	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
-		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
+		//logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
 	}
-
+	logutil.Infof("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
 	var (
 		sels []int32
 		err  error
@@ -156,7 +157,7 @@ func BlockRead(
 
 	columnBatch, err := BlockReadInner(
 		ctx, info, inputDeletes, columns, colTypes,
-		types.TimestampToTS(ts), sels, fs, mp, vp,
+		types.TimestampToTS(ts), sels, fs, mp, vp, table,
 	)
 	if err != nil {
 		return nil, err
@@ -216,6 +217,7 @@ func BlockReadInner(
 	fs fileservice.FileService,
 	mp *mpool.MPool,
 	vp engine.VectorPool,
+	table string,
 ) (result *batch.Batch, err error) {
 	var (
 		rowidPos    int
@@ -223,6 +225,24 @@ func BlockReadInner(
 		deleteMask  nulls.Bitmap
 		loaded      *batch.Batch
 	)
+
+	defer func() {
+		if table == "panicleak" {
+			if rowidPos >= 0 {
+				for i, col := range result.Vecs {
+					typ := *col.GetType()
+					if typ.Oid == types.T_Rowid {
+						result.Vecs[i] = col
+						for y := 0; y < col.Length(); y++ {
+							rowID := objectio.HackBytes2Rowid(col.GetRawBytesAt(y))
+							logutil.Infof("br2 %v %v %v，%v", ts.ToString(), info.BlockID.String(), rowID.String(), inputDeleteRows)
+						}
+						break
+					}
+				}
+			}
+		}
+	}()
 
 	// read block data from storage specified by meta location
 	if loaded, rowidPos, deleteMask, err = readBlockData(

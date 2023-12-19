@@ -365,7 +365,7 @@ func (r *blockReader) Read(
 		r.filterState.seqnums,
 		r.filterState.colTypes,
 		filter,
-		r.fs, mp, vp,
+		r.fs, mp, vp, r.tableDef.Name,
 	)
 	if err != nil {
 		return nil, err
