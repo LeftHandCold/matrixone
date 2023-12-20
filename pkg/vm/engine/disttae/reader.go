@@ -509,7 +509,9 @@ func (r *blockMergeReader) loadDeletes(ctx context.Context, table ...string) err
 		if err != nil {
 			return err
 		}
+		id, stateTs := state.GetDebugFlags()
 		ts := types.TimestampToTS(r.ts)
+		logutil.Infof("load deletes  %d %v %v", id, stateTs.ToString(), ts.ToString())
 		iter := state.NewRowsIter(ts, &info.BlockID, true, r.table.tableName)
 		for iter.Next() {
 			entry := iter.Entry()

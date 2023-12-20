@@ -82,7 +82,7 @@ func (p *rowsIter) Next() bool {
 
 		entry := p.iter.Item()
 		if p.table == "panicleak" {
-			logutil.Infof("rowsIter: %v %v %v %v %v %v", p.blockID.String(), p.lastRowID.String(), entry.RowID.String(), p.ts.ToString(), entry.Time.ToString(), entry.Deleted)
+			//logutil.Infof("rowsIter: %v %v %v %v %v %v", p.blockID.String(), p.lastRowID.String(), entry.RowID.String(), p.ts.ToString(), entry.Time.ToString(), entry.Deleted)
 		}
 		if p.checkBlockID && entry.BlockID != p.blockID {
 			// no more
