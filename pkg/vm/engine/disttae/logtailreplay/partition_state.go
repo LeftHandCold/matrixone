@@ -75,9 +75,38 @@ type PartitionState struct {
 	// so just put it here.
 	shared *sharedStates
 
+	id        int64
+	waterLine types.TS
+
 	// blocks deleted before minTS is hard deleted.
 	// partition state can't serve txn with snapshotTS less than minTS
 	minTS types.TS
+}
+
+type idAllocator struct {
+	sync.Mutex
+	id int64
+}
+
+var allocator idAllocator
+
+func stateIdAllocator() int64 {
+	allocator.Lock()
+	defer allocator.Unlock()
+
+	id := allocator.id
+	allocator.id++
+
+	return id
+}
+
+func (p *PartitionState) GetDebugFlags() (id int64, ts types.TS) {
+	return p.id, p.waterLine
+}
+
+func (p *PartitionState) SetDebugFlags(ts types.TS) {
+	p.id = stateIdAllocator()
+	p.waterLine = ts
 }
 
 // sharedStates is shared among all PartitionStates

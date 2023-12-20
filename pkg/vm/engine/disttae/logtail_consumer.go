@@ -1282,6 +1282,7 @@ func updatePartitionOfPush(
 
 	partition.TS = *tl.Ts
 
+	state.SetDebugFlags(types.BuildTS(tl.Ts.PhysicalTime, tl.Ts.LogicalTime))
 	doneMutate()
 
 	return nil
