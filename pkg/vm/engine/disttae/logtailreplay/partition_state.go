@@ -496,7 +496,7 @@ func (p *PartitionState) HandleRowsDelete(
 			}
 
 			if len(table) > 0 && table[0] == "panicleak" {
-				logutil.Infof("HandleRowsDelete row %v %v %v %v", pivot.Time.ToString(), entry.Time.ToString(), rowID.String(), entry.RowID.String())
+				logutil.Infof("HandleRowsDelete row %v %v %v %v set dirtyBlocks is %v", pivot.Time.ToString(), entry.Time.ToString(), rowID.String(), entry.RowID.String(), blockID.String())
 			}
 			entry.Deleted = true
 			if i < len(primaryKeys) {
@@ -634,7 +634,7 @@ func (p *PartitionState) HandleMetadataInsert(
 							}
 							iter1 := p.rows.Copy().Iter()
 							isnext = iter1.Seek(pivot1)
-							logutil.Infof("delete row %v %v %v %v", entry.Time.ToString(), trunctPoint.ToString(), entry.RowID.String(), isnext)
+							logutil.Infof("delete row %v %v %v %v %d", entry.Time.ToString(), trunctPoint.ToString(), entry.RowID.String(), isnext, numDeleted)
 							iter1.Release()
 							// delete the row's primary index
 							if isAppendable && len(entry.PrimaryIndexBytes) > 0 {
@@ -653,6 +653,7 @@ func (p *PartitionState) HandleMetadataInsert(
 
 				// if there are no rows for the block, delete the block from the dirty
 				if scanCnt == numDeleted && p.dirtyBlocks.Len() > 0 {
+					logutil.Infof("delete block %v", blockID.String())
 					p.dirtyBlocks.Delete(blockID)
 				}
 			}
