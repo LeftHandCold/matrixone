@@ -350,9 +350,9 @@ func (p *PartitionState) HandleLogtailEntry(
 	switch entry.EntryType {
 	case api.Entry_Insert:
 		if IsBlkTable(entry.TableName) {
-			p.HandleMetadataInsert(ctx, fs, entry.Bat)
+			p.HandleMetadataInsert(ctx, fs, entry.Bat, entry.TableName)
 		} else {
-			p.HandleRowsInsert(ctx, entry.Bat, primarySeqnum, packer)
+			p.HandleRowsInsert(ctx, entry.Bat, primarySeqnum, packer, entry.TableName)
 		}
 	case api.Entry_Delete:
 		if IsBlkTable(entry.TableName) {
@@ -360,7 +360,7 @@ func (p *PartitionState) HandleLogtailEntry(
 		} else if IsSegTable(entry.TableName) {
 			// TODO p.HandleSegDelete(ctx, entry.Bat)
 		} else {
-			p.HandleRowsDelete(ctx, entry.Bat, packer)
+			p.HandleRowsDelete(ctx, entry.Bat, packer, entry.TableName)
 		}
 	default:
 		panic("unknown entry type")
@@ -374,6 +374,7 @@ func (p *PartitionState) HandleRowsInsert(
 	input *api.Batch,
 	primarySeqnum int,
 	packer *types.Packer,
+	table ...string,
 ) (
 	primaryKeys [][]byte,
 ) {
@@ -418,6 +419,9 @@ func (p *PartitionState) HandleRowsInsert(
 				entry.Offset = int64(i)
 			}
 			entry.PrimaryIndexBytes = primaryKeys[i]
+			if len(table) > 0 && table[0] == "panicleak" {
+				logutil.Infof("HandleRowsInsert row %v %v %v %v", pivot.Time.ToString(), entry.Time.ToString(), rowID.String(), entry.RowID.String())
+			}
 			p.rows.Set(entry)
 
 			{
@@ -448,6 +452,7 @@ func (p *PartitionState) HandleRowsDelete(
 	ctx context.Context,
 	input *api.Batch,
 	packer *types.Packer,
+	table ...string,
 ) {
 	ctx, task := trace.NewTask(ctx, "PartitionState.HandleRowsDelete")
 	defer task.End()
@@ -490,6 +495,9 @@ func (p *PartitionState) HandleRowsDelete(
 				numDeletes++
 			}
 
+			if len(table) > 0 && table[0] == "panicleak" {
+				logutil.Infof("HandleRowsDelete row %v %v %v %v", pivot.Time.ToString(), entry.Time.ToString(), rowID.String(), entry.RowID.String())
+			}
 			entry.Deleted = true
 			if i < len(primaryKeys) {
 				entry.PrimaryIndexBytes = primaryKeys[i]
@@ -528,7 +536,8 @@ func (p *PartitionState) HandleRowsDelete(
 func (p *PartitionState) HandleMetadataInsert(
 	ctx context.Context,
 	fs fileservice.FileService,
-	input *api.Batch) {
+	input *api.Batch,
+	table string) {
 	ctx, task := trace.NewTask(ctx, "PartitionState.HandleMetadataInsert")
 	defer task.End()
 
@@ -619,7 +628,14 @@ func (p *PartitionState) HandleMetadataInsert(
 						if entry.Time.LessEq(trunctPoint) {
 							// delete the row
 							p.rows.Delete(entry)
-
+							isnext := false
+							pivot1 := RowEntry{
+								BlockID: blockID,
+							}
+							iter1 := p.rows.Copy().Iter()
+							isnext = iter1.Seek(pivot1)
+							logutil.Infof("delete row %v %v %v %v", entry.Time.ToString(), trunctPoint.ToString(), entry.RowID.String(), isnext)
+							iter1.Release()
 							// delete the row's primary index
 							if isAppendable && len(entry.PrimaryIndexBytes) > 0 {
 								p.primaryIndex.Delete(&PrimaryIndexEntry{
@@ -628,6 +644,8 @@ func (p *PartitionState) HandleMetadataInsert(
 								})
 							}
 							numDeleted++
+						} else {
+							logutil.Infof("nodelete row %v %v %v", entry.Time.ToString(), trunctPoint.ToString(), entry.RowID.String())
 						}
 					}
 				}

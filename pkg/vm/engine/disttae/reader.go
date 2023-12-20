@@ -493,7 +493,7 @@ func (r *blockMergeReader) prefetchDeletes() error {
 	return nil
 }
 
-func (r *blockMergeReader) loadDeletes(ctx context.Context) error {
+func (r *blockMergeReader) loadDeletes(ctx context.Context, table ...string) error {
 	if len(r.blks) == 0 {
 		return nil
 	}
@@ -510,7 +510,7 @@ func (r *blockMergeReader) loadDeletes(ctx context.Context) error {
 			return err
 		}
 		ts := types.TimestampToTS(r.ts)
-		iter := state.NewRowsIter(ts, &info.BlockID, true)
+		iter := state.NewRowsIter(ts, &info.BlockID, true, r.table.tableName)
 		for iter.Next() {
 			entry := iter.Entry()
 			_, offset := entry.RowID.Decode()

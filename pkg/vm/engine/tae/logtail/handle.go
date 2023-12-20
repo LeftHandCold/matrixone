@@ -555,11 +555,6 @@ func (b *TableLogtailRespBuilder) appendBlkMeta(e *catalog.BlockEntry, metaNode 
 }
 
 func visitBlkMeta(e *catalog.BlockEntry, node *catalog.MVCCNode[*catalog.MetadataMVCCNode], insBatch, delBatch *containers.Batch, delete bool, committs, createts, deletets types.TS) {
-	common.DoIfDebugEnabled(func() {
-		logutil.Debugf("[Logtail] record block meta row %s, %v, %s, %s, %s, %s",
-			e.AsCommonID().String(), e.IsAppendable(),
-			createts.ToString(), node.DeletedAt.ToString(), node.BaseNode.MetaLoc, node.BaseNode.DeltaLoc)
-	})
 	is_sorted := false
 	if !e.IsAppendable() && e.GetSchema().HasSortKey() {
 		is_sorted = true
@@ -579,7 +574,11 @@ func visitBlkMeta(e *catalog.BlockEntry, node *catalog.MVCCNode[*catalog.Metadat
 		// do not truncate any data in CN, because merging blocks didn't flush deletes to disk.
 		memTruncTs = types.TS{}
 	}
-
+	common.DoIfDebugEnabled(func() {
+		logutil.Debugf("[Logtail] record block meta row %s, %v, %s, %s, %s, %s, delete %v, memTruncTs %v",
+			e.AsCommonID().String(), e.IsAppendable(),
+			createts.ToString(), node.DeletedAt.ToString(), node.BaseNode.MetaLoc, node.BaseNode.DeltaLoc, delete, memTruncTs.ToString())
+	})
 	insBatch.GetVectorByName(pkgcatalog.BlockMeta_MemTruncPoint).Append(memTruncTs, false)
 	insBatch.GetVectorByName(catalog.AttrCommitTs).Append(createts, false)
 	insBatch.GetVectorByName(catalog.AttrRowID).Append(objectio.HackBlockid2Rowid(&e.ID), false)

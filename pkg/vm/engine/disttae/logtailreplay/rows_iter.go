@@ -16,6 +16,7 @@ package logtailreplay
 
 import (
 	"bytes"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/tidwall/btree"
@@ -35,9 +36,10 @@ type rowsIter struct {
 	checkBlockID bool
 	blockID      types.Blockid
 	iterDeleted  bool
+	table        string
 }
 
-func (p *PartitionState) NewRowsIter(ts types.TS, blockID *types.Blockid, iterDeleted bool) *rowsIter {
+func (p *PartitionState) NewRowsIter(ts types.TS, blockID *types.Blockid, iterDeleted bool, table ...string) *rowsIter {
 	iter := p.rows.Copy().Iter()
 	ret := &rowsIter{
 		ts:          ts,
@@ -47,6 +49,9 @@ func (p *PartitionState) NewRowsIter(ts types.TS, blockID *types.Blockid, iterDe
 	if blockID != nil {
 		ret.checkBlockID = true
 		ret.blockID = *blockID
+	}
+	if len(table) == 1 && table[0] == "panicleak" {
+		ret.table = table[0]
 	}
 	return ret
 }
@@ -76,7 +81,9 @@ func (p *rowsIter) Next() bool {
 		}
 
 		entry := p.iter.Item()
-
+		if p.table == "panicleak" {
+			logutil.Infof("rowsIter: %v %v %v %v %v %v", p.blockID.String(), p.lastRowID.String(), entry.RowID.String(), p.ts.ToString(), entry.Time.ToString(), entry.Deleted)
+		}
 		if p.checkBlockID && entry.BlockID != p.blockID {
 			// no more
 			return false

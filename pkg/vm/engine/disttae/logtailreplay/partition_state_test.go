@@ -15,6 +15,7 @@
 package logtailreplay
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -89,5 +90,59 @@ func addObject(p *PartitionState, create, delete types.TS) {
 			IsDelete:     true,
 		}
 		p.objectIndexByTS.Set(objIndex2)
+	}
+}
+
+func TestBTree(t *testing.T) {
+	p := NewPartitionState(true)
+	for i := 0; i < 100; i++ {
+		row := RowEntry{
+			BlockID: *objectio.NewBlockid(objectio.NewSegmentid(), 0, 0),
+			ID:      int64(i), // a unique version id, for primary index building and validating
+			Time:    types.BuildTS(1, 0),
+		}
+		row.RowID = *objectio.NewRowid(&row.BlockID, 0)
+		p.rows.Set(row)
+
+	}
+	row1 := RowEntry{
+		BlockID: *objectio.NewBlockid(objectio.NewSegmentid(), 0, 0),
+		ID:      int64(100), // a unique version id, for primary index building and validating
+		Time:    types.BuildTS(1, 0),
+	}
+	row1.RowID = *objectio.NewRowid(&row1.BlockID, 0)
+	p.rows.Set(row1)
+	logutil.Infof("row1 is %v", row1.BlockID.String())
+	row2 := row1
+	row2.RowID = *objectio.NewRowid(&row1.BlockID, 1)
+	p.rows.Set(row2)
+	for i := 102; i < 200; i++ {
+		row := RowEntry{
+			BlockID: *objectio.NewBlockid(objectio.NewSegmentid(), 0, 0),
+			ID:      int64(i), // a unique version id, for primary index building and validating
+			Time:    types.BuildTS(1, 0),
+		}
+		row.RowID = *objectio.NewRowid(&row.BlockID, 0)
+		p.rows.Set(row)
+
+	}
+	iter := p.rows.Copy().Iter()
+	pivot := RowEntry{
+		BlockID: row1.BlockID,
+	}
+	i := 0
+	for ok := iter.Seek(pivot); ok; ok = iter.Next() {
+		entry := iter.Item()
+		if i == 1 {
+			p.rows.Delete(entry)
+		}
+		i++
+		logutil.Infof("delete row %v %v", entry.Time.ToString(), entry.RowID.String())
+	}
+	iter.Release()
+	iter2 := p.rows.Copy().Iter()
+	for ok := iter2.Seek(pivot); ok; ok = iter2.Next() {
+		entry := iter2.Item()
+		logutil.Infof("delete1 row %v %v", entry.Time.ToString(), entry.RowID.String())
 	}
 }
