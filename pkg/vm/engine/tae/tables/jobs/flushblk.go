@@ -95,5 +95,6 @@ func (task *flushBlkTask) Execute(ctx context.Context) error {
 	perfcounter.Update(ctx, func(counter *perfcounter.CounterSet) {
 		counter.TAE.Block.Flush.Add(1)
 	})
+
 	return err
 }
