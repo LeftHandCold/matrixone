@@ -16,13 +16,16 @@ package blockio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/model"
+	"math/rand"
 )
 
 func LoadColumnsData(
@@ -41,6 +44,10 @@ func LoadColumnsData(
 		return
 	}
 	dataMeta := meta.MustGetMeta(metaType)
+	iarg, sarg, flush := fault.TriggerFault("load_columns_timeout")
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+		return nil, moerr.NewInternalError(ctx, sarg)
+	}
 	if ioVectors, err = objectio.ReadOneBlock(ctx, &dataMeta, name.String(), location.ID(), cols, typs, m, fs); err != nil {
 		return
 	}

@@ -72,7 +72,7 @@ func ReadBloomFilter(
 	}
 
 	var obj any
-	obj, err = Decode(v)
+	obj, err = Decode(v, name)
 	if err != nil {
 		return
 	}

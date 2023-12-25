@@ -93,10 +93,13 @@ func RegisterIOEnrtyCodec(h IOEntryHeader, encFn IOEncodeFunc, decFn IODecodeFun
 	}
 }
 
-func GetIOEntryCodec(h IOEntryHeader) (codec ioEntryCodec) {
+func GetIOEntryCodec(h IOEntryHeader, name ...string) (codec ioEntryCodec) {
 	var ok bool
 	codec, ok = ioEntryCodecs[h]
 	if !ok {
+		if len(name) > 0 {
+			panic(fmt.Sprintf("no codec found for: %s, %s", h.String(), name[0]))
+		}
 		panic(fmt.Sprintf("no codec found for: %s", h.String()))
 	}
 	return

@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	"math/rand"
 	"sort"
 	"time"
 
@@ -1722,6 +1724,17 @@ func (data *CheckpointData) WriteTo(
 	blks2, _, err := writer2.Sync(context.Background())
 	CNLocation = objectio.BuildLocation(name2, blks2[0].GetExtent(), 0, blks2[0].GetID())
 	TNLocation = objectio.BuildLocation(name2, blks2[1].GetExtent(), 0, blks2[1].GetID())
+	ctx := context.Background()
+	iarg, sarg, flush := fault.TriggerFault("save_ckp_fault")
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+		err = moerr.NewInternalError(ctx, sarg)
+		return
+	}
+	iarg, sarg, flush = fault.TriggerFault("save_ckp_timeout")
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+		err = moerr.NewInternalError(ctx, sarg)
+		return
+	}
 	return
 }
 

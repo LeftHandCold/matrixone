@@ -498,6 +498,10 @@ func (r *runner) saveCheckpoint(start, end types.TS, ckpLSN, truncateLSN uint64)
 
 	// TODO: checkpoint entry should maintain the location
 	_, err = writer.WriteEnd(r.ctx)
+	iarg, sarg, flush := fault.TriggerFault("save_ckp_meta_fault")
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+		return moerr.NewInternalError(r.ctx, sarg)
+	}
 	return
 }
 

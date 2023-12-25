@@ -52,9 +52,9 @@ func constructorFactory(size int64, algo uint8) CacheConstructor {
 	}
 }
 
-func Decode(buf []byte) (any, error) {
+func Decode(buf []byte, name ...string) (any, error) {
 	header := DecodeIOEntryHeader(buf)
-	codec := GetIOEntryCodec(*header)
+	codec := GetIOEntryCodec(*header, name...)
 	if codec.NoUnmarshal() {
 		return buf[IOEntryHeaderSize:], nil
 	}

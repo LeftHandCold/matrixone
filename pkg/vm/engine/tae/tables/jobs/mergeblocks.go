@@ -17,6 +17,9 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	"math/rand"
 	"time"
 	"unsafe"
 
@@ -382,6 +385,10 @@ func (task *mergeBlocksTask) Execute(ctx context.Context) (err error) {
 		if err != nil {
 			return err
 		}
+	}
+	iarg, sarg, flush := fault.TriggerFault("flush_merge_timeout")
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+		return moerr.NewInternalError(ctx, sarg)
 	}
 	blocks, _, err := writer.Sync(ctx)
 	if err != nil {

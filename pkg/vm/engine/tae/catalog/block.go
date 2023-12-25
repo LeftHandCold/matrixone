@@ -17,6 +17,9 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	"math/rand"
 	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -427,6 +430,10 @@ func (entry *BlockEntry) UpdateMetaLoc(txn txnif.TxnReader, metaLoc objectio.Loc
 		txnToWait.GetTxnState(true)
 		entry.Lock()
 	}
+	iarg, sarg, flush := fault.TriggerFault("update_metaloc_conflict")
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+		return false, moerr.NewInternalError(txn.GetContext(), sarg)
+	}
 	err = entry.CheckConflict(txn)
 	if err != nil {
 		return
@@ -451,6 +458,10 @@ func (entry *BlockEntry) UpdateDeltaLoc(txn txnif.TxnReader, deltaloc objectio.L
 		entry.Unlock()
 		txnToWait.GetTxnState(true)
 		entry.Lock()
+	}
+	iarg, sarg, flush := fault.TriggerFault("update_deltaloc_conflict")
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+		return false, moerr.NewInternalError(txn.GetContext(), sarg)
 	}
 	err = entry.CheckConflict(txn)
 	if err != nil {

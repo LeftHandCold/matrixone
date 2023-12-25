@@ -16,6 +16,8 @@ package jobs
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"math/rand"
 	"time"
 
@@ -89,6 +91,10 @@ func (task *flushBlkTask) Execute(ctx context.Context) (err error) {
 		if err != nil {
 			return err
 		}
+	}
+	iarg, sarg, flush := fault.TriggerFault("flush_block_timeout")
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+		return moerr.NewInternalError(ctx, sarg)
 	}
 	task.blocks, _, err = writer.Sync(ctx)
 

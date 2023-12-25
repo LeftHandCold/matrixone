@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"regexp"
 	"strings"
@@ -307,6 +308,17 @@ func (h *Handle) handleRequests(
 				}))
 		}
 	}()
+	iarg, sarg, flush := fault.TriggerFault("handle_requests_sleep")
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+		time.Sleep(60 * time.Second)
+		logutil.Warnf("handle_requests_sleep triggered: %v", sarg)
+	}
+
+	iarg, sarg, flush = fault.TriggerFault("handle_requests_timeout")
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+		err = moerr.NewInternalError(ctx, sarg)
+		return
+	}
 	for _, e := range txnCtx.reqs {
 		switch req := e.(type) {
 		case *db.CreateDatabaseReq:
