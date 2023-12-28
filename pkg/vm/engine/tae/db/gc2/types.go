@@ -19,6 +19,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/objectio"
 )
 
 const (
@@ -89,12 +90,24 @@ type GCEntry interface {
 		ctx context.Context,
 		fs fileservice.FileService,
 	) ([]*batch.Batch, error)
-	GetStartTS() types.TS
-	GetEndTS() types.TS
+	compareGC(entry GCEntry) bool
 	String() string
 }
 
 type GCEntryFactory interface {
-	GetEntries(ts types.TS, num int) ([]GCEntry, error)
+	GetEntries(entry GCEntry) []GCEntry
 	GetCompareEntry() (GCEntry, error)
+}
+
+type GCTableFactory interface {
+	NewGCTable() GCTable
+}
+
+type GCTable interface {
+	SoftGC(table GCTable, entry GCEntry) []string
+	UpdateTable(bats []*batch.Batch)
+	SaveTable(name string, fs *objectio.ObjectFS, files []string) error
+	SaveFullTable(name string, fs *objectio.ObjectFS, files []string) error
+	Merge(GCTable GCTable)
+	ReadTable(ctx context.Context, name string, size int64, fs *objectio.ObjectFS) error
 }

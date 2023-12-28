@@ -44,12 +44,30 @@ func (e *checkpointGCEntry) String() string {
 	return e.String()
 }
 
+func (e *checkpointGCEntry) compareGC(entry GCEntry) bool {
+	return false
+}
+
 type checkpointGCEntryFactory struct {
 	ckpClient checkpoint.RunnerReader
 }
 
+type checkpointGCTableFactory struct {
+}
+
+func (f *checkpointGCTableFactory) NewGCTable() GCTable {
+	return NewCheckpointGCTable()
+}
+
 func NewCheckpointGCEntryFactory(ckpClient checkpoint.RunnerReader) GCEntryFactory {
 	return &checkpointGCEntryFactory{ckpClient: ckpClient}
+}
+
+func NewCheckpointGCTable() GCTable {
+	table := checkpointGCTable{
+		objects: make(map[string]*ObjectEntry),
+	}
+	return &table
 }
 
 func (e *checkpointGCEntry) collectData(
@@ -70,17 +88,17 @@ func (e *checkpointGCEntry) collectData(
 	return nil, nil
 }
 
-func (e *checkpointGCEntryFactory) GetEntries(ts types.TS, num int) ([]GCEntry, error) {
-	checkpoints := e.ckpClient.ICKPSeekLT(ts, 10)
+func (e *checkpointGCEntryFactory) GetEntries(entry GCEntry) []GCEntry {
+	checkpoints := e.ckpClient.ICKPSeekLT(entry.(*checkpointGCEntry).GetEndTS(), 10)
 
 	if len(checkpoints) == 0 {
-		return nil, nil
+		return nil
 	}
 	candidates := make([]GCEntry, 0)
 	for _, ckp := range checkpoints {
 		candidates = append(candidates, NewCheckpointGCEntry(ckp))
 	}
-	return candidates, nil
+	return candidates
 }
 
 func (e *checkpointGCEntryFactory) GetCompareEntry() (GCEntry, error) {

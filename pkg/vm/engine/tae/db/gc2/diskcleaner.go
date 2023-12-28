@@ -16,6 +16,7 @@ package gc2
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"sync"
 	"sync/atomic"
 
@@ -49,19 +50,22 @@ type DiskCleaner struct {
 	// ckpClient is used to get the instance of the specified checkpoint
 	ckpClient checkpoint.RunnerReader
 
+	entryFactory GCEntryFactory
+	tableFactory GCTableFactory
+
 	// Parsing checkpoint needs to use catalog instance
 	catalog *catalog.Catalog
 
 	// maxConsumed is to mark which checkpoint the current DiskCleaner has processed,
 	// through which you can get the next checkpoint to be processed
-	maxConsumed atomic.Pointer[checkpoint.CheckpointEntry]
+	maxConsumed atomic.Pointer[GCEntry]
 
 	// minMerged is to mark at which checkpoint the full
 	// GCTable in the current DiskCleaner is generated，
 	// UT case needs to use
-	minMerged atomic.Pointer[checkpoint.CheckpointEntry]
+	minMerged atomic.Pointer[GCEntry]
 
-	maxCompared atomic.Pointer[checkpoint.CheckpointEntry]
+	maxCompared atomic.Pointer[GCEntry]
 
 	// minMergeCount is the configuration of the merge GC metadata file.
 	// When the GC file is greater than or equal to minMergeCount,
@@ -74,7 +78,7 @@ type DiskCleaner struct {
 	// inputs is to record the currently valid GCTable
 	inputs struct {
 		sync.RWMutex
-		tables []*GCTable
+		tables []GCTable
 	}
 
 	// outputs is a list of files that have been deleted
@@ -143,7 +147,6 @@ func (cleaner *DiskCleaner) replay() error {
 	minMergedStart := types.TS{}
 	minMergedEnd := types.TS{}
 	maxConsumedStart := types.TS{}
-	maxConsumedEnd := types.TS{}
 	var fullGCFile fileservice.DirEntry
 	// Get effective minMerged
 	for _, dir := range dirs {
@@ -153,7 +156,6 @@ func (cleaner *DiskCleaner) replay() error {
 				minMergedStart = start
 				minMergedEnd = end
 				maxConsumedStart = start
-				maxConsumedEnd = end
 				fullGCFile = dir
 			}
 		}
@@ -170,7 +172,6 @@ func (cleaner *DiskCleaner) replay() error {
 		if (maxConsumedStart.IsEmpty() || maxConsumedStart.Less(end)) &&
 			minMergedEnd.Less(end) {
 			maxConsumedStart = start
-			maxConsumedEnd = end
 			readDirs = append(readDirs, dir)
 		}
 	}
@@ -178,17 +179,13 @@ func (cleaner *DiskCleaner) replay() error {
 		return nil
 	}
 	for _, dir := range readDirs {
-		table := NewGCTable()
+		table := cleaner.tableFactory.NewGCTable()
 		err = table.ReadTable(cleaner.ctx, GCMetaDir+dir.Name, dir.Size, cleaner.fs)
 		if err != nil {
 			return err
 		}
 		cleaner.updateInputs(table)
 	}
-	ckp := checkpoint.NewCheckpointEntry(maxConsumedStart, maxConsumedEnd, checkpoint.ET_Incremental)
-	cleaner.updateMaxConsumed(ckp)
-	ckp = checkpoint.NewCheckpointEntry(minMergedStart, minMergedEnd, checkpoint.ET_Incremental)
-	cleaner.updateMinMerged(ckp)
 	return nil
 }
 
@@ -215,18 +212,14 @@ func (cleaner *DiskCleaner) process(items ...any) {
 		}
 	}
 
-	var ts types.TS
 	maxConsumed := cleaner.maxConsumed.Load()
-	if maxConsumed != nil {
-		ts = maxConsumed.GetEnd()
-	}
 
-	checkpoints := cleaner.ckpClient.ICKPSeekLT(ts, 10)
+	checkpoints := cleaner.entryFactory.GetEntries(*maxConsumed)
 
 	if len(checkpoints) == 0 {
 		return
 	}
-	candidates := make([]*checkpoint.CheckpointEntry, 0)
+	candidates := make([]GCEntry, 0)
 	for _, ckp := range checkpoints {
 		if !cleaner.checkExtras(ckp) {
 			break
@@ -247,18 +240,18 @@ func (cleaner *DiskCleaner) process(items ...any) {
 	cleaner.updateInputs(input)
 	cleaner.updateMaxConsumed(candidates[len(candidates)-1])
 
-	var compareTS types.TS
 	minMerged := cleaner.minMerged.Load()
-	if minMerged != nil {
-		compareTS = minMerged.GetEnd()
+	compareEntry, err := cleaner.entryFactory.GetCompareEntry()
+	if err != nil {
+		return
 	}
-	maxGlobalCKP := cleaner.ckpClient.MaxGlobalCheckpoint()
-	if maxGlobalCKP != nil && compareTS.Less(maxGlobalCKP.GetEnd()) {
-		data, err := cleaner.collectGlobalCkpData(maxGlobalCKP)
+
+	if compareEntry.compareGC(*minMerged) {
+		data, err := compareEntry.collectData(cleaner.ctx, cleaner.fs.Service)
 		if err != nil {
 			return
 		}
-		err = cleaner.tryGC(data, maxGlobalCKP.GetEnd())
+		err = cleaner.tryGC(data, compareEntry)
 		if err != nil {
 			return
 		}
@@ -316,8 +309,8 @@ func (cleaner *DiskCleaner) collectGlobalCkpData(
 }
 
 func (cleaner *DiskCleaner) createNewInput(
-	ckps []GCEntry) (input *GCTable, err error) {
-	input = NewGCTable()
+	ckps []GCEntry) (input GCTable, err error) {
+	input = cleaner.tableFactory.NewGCTable()
 	for _, candidate := range ckps {
 		data, err := candidate.collectData(cleaner.ctx, cleaner.fs.Service)
 		if err != nil {
@@ -329,8 +322,7 @@ func (cleaner *DiskCleaner) createNewInput(
 	}
 	files := cleaner.GetAndClearOutputs()
 	_, err = input.SaveTable(
-		ckps[0].GetStartTS(),
-		ckps[len(ckps)-1].GetEndTS(),
+		"",
 		cleaner.fs,
 		files,
 	)
@@ -341,8 +333,8 @@ func (cleaner *DiskCleaner) createNewInput(
 }
 
 func (cleaner *DiskCleaner) createDebugInput(
-	ckps []GCEntry) (input *GCTable, err error) {
-	input = NewGCTable()
+	ckps []GCEntry) (input GCTable, err error) {
+	input = cleaner.tableFactory.NewGCTable()
 	for _, candidate := range ckps {
 		data, err := candidate.collectData(cleaner.ctx, cleaner.fs.Service)
 		if err != nil {
@@ -350,18 +342,17 @@ func (cleaner *DiskCleaner) createDebugInput(
 			// TODO
 			return
 		}
-		defer data.Close()
 		input.UpdateTable(data)
 	}
 
 	return
 }
 
-func (cleaner *DiskCleaner) tryGC(data *logtail.CheckpointData, ts types.TS) error {
+func (cleaner *DiskCleaner) tryGC(data []*batch.Batch, ts types.TS) error {
 	if !cleaner.delWorker.Start() {
 		return nil
 	}
-	gcTable := NewGCTable()
+	gcTable := cleaner.tableFactory.NewGCTable()
 	gcTable.UpdateTable(data)
 	gc := cleaner.softGC(gcTable, ts)
 	// Delete files after softGC
@@ -373,28 +364,28 @@ func (cleaner *DiskCleaner) tryGC(data *logtail.CheckpointData, ts types.TS) err
 	return nil
 }
 
-func (cleaner *DiskCleaner) softGC(t *GCTable, ts types.TS) []string {
+func (cleaner *DiskCleaner) softGC(t GCTable, ts types.TS) []string {
 	cleaner.inputs.Lock()
 	defer cleaner.inputs.Unlock()
 	if len(cleaner.inputs.tables) == 0 {
 		return nil
 	}
-	mergeTable := NewGCTable()
+	mergeTable := cleaner.tableFactory.NewGCTable()
 	for _, table := range cleaner.inputs.tables {
 		mergeTable.Merge(table)
 	}
 	gc := mergeTable.SoftGC(t, ts)
-	cleaner.inputs.tables = make([]*GCTable, 0)
+	cleaner.inputs.tables = make([]GCTable, 0)
 	cleaner.inputs.tables = append(cleaner.inputs.tables, mergeTable)
 	//logutil.Infof("SoftGC is %v, merge table: %v", gc, mergeTable.String())
 	return gc
 }
 
-func (cleaner *DiskCleaner) updateMaxConsumed(e *checkpoint.CheckpointEntry) {
+func (cleaner *DiskCleaner) updateMaxConsumed(e GCEntry) {
 	cleaner.maxConsumed.Store(e)
 }
 
-func (cleaner *DiskCleaner) updateMinMerged(e *checkpoint.CheckpointEntry) {
+func (cleaner *DiskCleaner) updateMinMerged(e GCEntry) {
 	cleaner.minMerged.Store(e)
 }
 
@@ -410,11 +401,11 @@ func (cleaner *DiskCleaner) updateOutputs(files []string) {
 	cleaner.outputs.files = append(cleaner.outputs.files, files...)
 }
 
-func (cleaner *DiskCleaner) GetMaxConsumed() *checkpoint.CheckpointEntry {
+func (cleaner *DiskCleaner) GetMaxConsumed() GCEntry {
 	return cleaner.maxConsumed.Load()
 }
 
-func (cleaner *DiskCleaner) GetMinMerged() *checkpoint.CheckpointEntry {
+func (cleaner *DiskCleaner) GetMinMerged() GCEntry {
 	return cleaner.minMerged.Load()
 }
 
@@ -452,7 +443,7 @@ func (cleaner *DiskCleaner) mergeGCFile() error {
 	if len(deleteFiles) < cleaner.getMinMergeCount() {
 		return nil
 	}
-	var mergeTable *GCTable
+	var mergeTable GCTable
 	cleaner.inputs.RLock()
 	if len(cleaner.inputs.tables) == 0 {
 		cleaner.inputs.RUnlock()
@@ -464,7 +455,7 @@ func (cleaner *DiskCleaner) mergeGCFile() error {
 	logutil.Info("[DiskCleaner]",
 		common.OperationField("MergeGCFile start"),
 		common.OperandField(maxConsumed.String()))
-	_, err = mergeTable.SaveFullTable(maxConsumed.GetStart(), maxConsumed.GetEnd(), cleaner.fs, nil)
+	_, err = mergeTable.SaveFullTable("", cleaner.fs, nil)
 	if err != nil {
 		logutil.Errorf("SaveTable failed: %v", err.Error())
 		return err
@@ -490,7 +481,7 @@ func (cleaner *DiskCleaner) CheckGC() error {
 	if err != nil {
 		return err
 	}
-	gcTable := NewGCTable()
+	gcTable := cleaner.tableFactory.NewGCTable()
 	gcTable.UpdateTable(data)
 	maxConsumed := cleaner.GetMaxConsumed()
 	if maxConsumed == nil {

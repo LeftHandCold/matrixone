@@ -34,19 +34,12 @@ type ObjectEntry struct {
 }
 
 // GCTable is a data structure in memory after consuming checkpoint
-type GCTable struct {
+type checkpointGCTable struct {
 	sync.Mutex
 	objects map[string]*ObjectEntry
 }
 
-func NewGCTable() *GCTable {
-	table := GCTable{
-		objects: make(map[string]*ObjectEntry),
-	}
-	return &table
-}
-
-func (t *GCTable) addObject(name string, commitTS types.TS) {
+func (t *checkpointGCTable) addObject(name string, commitTS types.TS) {
 	t.Lock()
 	defer t.Unlock()
 	object := t.objects[name]
@@ -62,32 +55,32 @@ func (t *GCTable) addObject(name string, commitTS types.TS) {
 	}
 }
 
-func (t *GCTable) deleteObject(name string) {
+func (t *checkpointGCTable) deleteObject(name string) {
 	t.Lock()
 	defer t.Unlock()
 	delete(t.objects, name)
 }
 
 // Merge can merge two GCTables
-func (t *GCTable) Merge(GCTable *GCTable) {
-	for name, entry := range GCTable.objects {
+func (t *checkpointGCTable) Merge(GCTable GCTable) {
+	for name, entry := range GCTable.(*checkpointGCTable).objects {
 		t.addObject(name, entry.commitTS)
 	}
 }
 
-func (t *GCTable) getObjects() map[string]*ObjectEntry {
+func (t *checkpointGCTable) getObjects() map[string]*ObjectEntry {
 	t.Lock()
 	defer t.Unlock()
 	return t.objects
 }
 
 // SoftGC is to remove objectentry that can be deleted from GCTable
-func (t *GCTable) SoftGC(table *GCTable, ts types.TS) []string {
+func (t *checkpointGCTable) SoftGC(table GCTable, entry GCEntry) []string {
 	gc := make([]string, 0)
 	objects := t.getObjects()
-	for name, entry := range objects {
-		objectEntry := table.objects[name]
-		if objectEntry == nil && entry.commitTS.Less(ts) {
+	for name, object := range objects {
+		objectEntry := table.(*checkpointGCTable).objects[name]
+		if objectEntry == nil && object.commitTS.Less(entry.(*checkpointGCEntry).checkpoint.GetEnd()) {
 			gc = append(gc, name)
 			t.deleteObject(name)
 		}
@@ -95,7 +88,7 @@ func (t *GCTable) SoftGC(table *GCTable, ts types.TS) []string {
 	return gc
 }
 
-func (t *GCTable) UpdateTable(bats []*batch.Batch) {
+func (t *checkpointGCTable) UpdateTable(bats []*batch.Batch) {
 	insMetaObjectVec := bats[0].Vecs[3]
 	insDeltaObjectVec := bats[0].Vecs[4]
 	insCommitTSVec := bats[0].Vecs[5]
@@ -130,20 +123,20 @@ func (t *GCTable) UpdateTable(bats []*batch.Batch) {
 	}
 }
 
-func (t *GCTable) makeBatchWithGCTable() []*containers.Batch {
+func (t *checkpointGCTable) makeBatchWithGCTable() []*containers.Batch {
 	bats := make([]*containers.Batch, 1)
 	bats[CreateBlock] = containers.NewBatch()
 	return bats
 }
 
-func (t *GCTable) closeBatch(bs []*containers.Batch) {
+func (t *checkpointGCTable) closeBatch(bs []*containers.Batch) {
 	for i := range bs {
 		bs[i].Close()
 	}
 }
 
 // collectData collects data from memory that can be written to s3
-func (t *GCTable) collectData(files []string) []*containers.Batch {
+func (t *checkpointGCTable) collectData(files []string) []*containers.Batch {
 	bats := t.makeBatchWithGCTable()
 	for i, attr := range BlockSchemaAttr {
 		bats[CreateBlock].AddVector(attr, containers.MakeVector(BlockSchemaTypes[i], common.CheckpointAllocator))
@@ -156,10 +149,10 @@ func (t *GCTable) collectData(files []string) []*containers.Batch {
 }
 
 // SaveTable is to write data to s3
-func (t *GCTable) SaveTable(start, end types.TS, fs *objectio.ObjectFS, files []string) ([]objectio.BlockObject, error) {
+func (t *checkpointGCTable) SaveTable(name string, fs *objectio.ObjectFS, files []string) ([]objectio.BlockObject, error) {
 	bats := t.collectData(files)
 	defer t.closeBatch(bats)
-	name := blockio.EncodeCheckpointMetadataFileName(GCMetaDir, PrefixGCMeta, start, end)
+	//name := blockio.EncodeCheckpointMetadataFileName(GCMetaDir, PrefixGCMeta, start, end)
 	writer, err := objectio.NewObjectWriterSpecial(objectio.WriterGC, name, fs.Service)
 	if err != nil {
 		return nil, err
@@ -175,10 +168,10 @@ func (t *GCTable) SaveTable(start, end types.TS, fs *objectio.ObjectFS, files []
 }
 
 // SaveFullTable is to write data to s3
-func (t *GCTable) SaveFullTable(start, end types.TS, fs *objectio.ObjectFS, files []string) ([]objectio.BlockObject, error) {
+func (t *checkpointGCTable) SaveFullTable(name string, fs *objectio.ObjectFS, files []string) ([]objectio.BlockObject, error) {
 	bats := t.collectData(files)
 	defer t.closeBatch(bats)
-	name := blockio.EncodeGCMetadataFileName(GCMetaDir, PrefixGCMeta, start, end)
+	//name := blockio.EncodeGCMetadataFileName(GCMetaDir, PrefixGCMeta, start, end)
 	writer, err := objectio.NewObjectWriterSpecial(objectio.WriterGC, name, fs.Service)
 	if err != nil {
 		return nil, err
@@ -193,7 +186,7 @@ func (t *GCTable) SaveFullTable(start, end types.TS, fs *objectio.ObjectFS, file
 	return blocks, err
 }
 
-func (t *GCTable) rebuildTable(bats []*containers.Batch) {
+func (t *checkpointGCTable) rebuildTable(bats []*containers.Batch) {
 	for i := 0; i < bats[CreateBlock].Length(); i++ {
 		name := string(bats[CreateBlock].GetVectorByName(GCAttrObjectName).Get(i).([]byte))
 		commitTS := bats[CreateBlock].GetVectorByName(GCAttrCommitTS).Get(i).(types.TS)
@@ -204,7 +197,7 @@ func (t *GCTable) rebuildTable(bats []*containers.Batch) {
 	}
 }
 
-func (t *GCTable) replayData(ctx context.Context,
+func (t *checkpointGCTable) replayData(ctx context.Context,
 	typ BatchType,
 	attrs []string,
 	types []types.Type,
@@ -233,7 +226,7 @@ func (t *GCTable) replayData(ctx context.Context,
 }
 
 // ReadTable reads an s3 file and replays a GCTable in memory
-func (t *GCTable) ReadTable(ctx context.Context, name string, size int64, fs *objectio.ObjectFS) error {
+func (t *checkpointGCTable) ReadTable(ctx context.Context, name string, size int64, fs *objectio.ObjectFS) error {
 	reader, err := blockio.NewFileReaderNoCache(fs.Service, name)
 	if err != nil {
 		return err
@@ -254,12 +247,12 @@ func (t *GCTable) ReadTable(ctx context.Context, name string, size int64, fs *ob
 }
 
 // For test
-func (t *GCTable) Compare(table *GCTable) bool {
-	if len(t.objects) != len(table.objects) {
+func (t *checkpointGCTable) Compare(table GCTable) bool {
+	if len(t.objects) != len(table.(*checkpointGCTable).objects) {
 		return false
 	}
 	for name, entry := range t.objects {
-		object := table.objects[name]
+		object := table.(*checkpointGCTable).objects[name]
 		if object == nil {
 			return false
 		}
@@ -270,7 +263,7 @@ func (t *GCTable) Compare(table *GCTable) bool {
 	return true
 }
 
-func (t *GCTable) String() string {
+func (t *checkpointGCTable) String() string {
 	if len(t.objects) == 0 {
 		return ""
 	}
