@@ -868,9 +868,14 @@ func (data *CheckpointData) ApplyReplayTo(
 	return
 }
 
+type CNCheckpointBatch struct {
+	bat      *batch.Batch
+	ioVector *fileservice.IOVector
+}
+
 type CNCheckpointData struct {
 	meta map[uint64]*CheckpointMeta
-	bats [MaxIDX]*batch.Batch
+	bats [MaxIDX]*CNCheckpointBatch
 }
 
 func NewCNCheckpointData() *CNCheckpointData {
@@ -1265,44 +1270,49 @@ func (data *CNCheckpointData) ReadFromData(
 	reader *blockio.BlockReader,
 	version uint32,
 	m *mpool.MPool,
-) (dataBats []*batch.Batch, err error) {
+) (dataBats []*batch.Batch, ioVector *fileservice.IOVector, err error) {
 	// if err = data.InitMetaIdx(ctx, version, reader,location,m); err != nil {
 	// 	return
 	// }
+	defer func() {
+		if err != nil && ioVector != nil {
+			ioVector.Release()
+		}
+	}()
 	if version <= CheckpointVersion4 {
 		if tableID == pkgcatalog.MO_DATABASE_ID || tableID == pkgcatalog.MO_TABLES_ID || tableID == pkgcatalog.MO_COLUMNS_ID {
 			dataBats = make([]*batch.Batch, MetaMaxIdx)
 			switch tableID {
 			case pkgcatalog.MO_DATABASE_ID:
 				item := checkpointDataReferVersions[version][DBInsertIDX]
-				dataBats[BlockInsert], err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(DBInsertIDX), version, reader, m)
+				dataBats[BlockInsert], ioVector, err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(DBInsertIDX), version, reader, m)
 				if err != nil {
 					return
 				}
 				item = checkpointDataReferVersions[version][DBDeleteIDX]
-				dataBats[BlockDelete], err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(DBDeleteIDX), version, reader, m)
+				dataBats[BlockDelete], ioVector, err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(DBDeleteIDX), version, reader, m)
 				if err != nil {
 					return
 				}
 			case pkgcatalog.MO_TABLES_ID:
 				item := checkpointDataReferVersions[version][TBLInsertIDX]
-				dataBats[BlockInsert], err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(TBLInsertIDX), version, reader, m)
+				dataBats[BlockInsert], ioVector, err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(TBLInsertIDX), version, reader, m)
 				if err != nil {
 					return
 				}
 				item = checkpointDataReferVersions[version][TBLDeleteIDX]
-				dataBats[BlockDelete], err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(TBLDeleteIDX), version, reader, m)
+				dataBats[BlockDelete], ioVector, err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(TBLDeleteIDX), version, reader, m)
 				if err != nil {
 					return
 				}
 			case pkgcatalog.MO_COLUMNS_ID:
 				item := checkpointDataReferVersions[version][TBLColInsertIDX]
-				dataBats[BlockInsert], err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(TBLColInsertIDX), version, reader, m)
+				dataBats[BlockInsert], ioVector, err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(TBLColInsertIDX), version, reader, m)
 				if err != nil {
 					return
 				}
 				item = checkpointDataReferVersions[version][TBLColDeleteIDX]
-				dataBats[BlockDelete], err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(TBLColDeleteIDX), version, reader, m)
+				dataBats[BlockDelete], ioVector, err = LoadCNSubBlkColumnsByMetaWithId(ctx, item.types, item.attrs, 0, uint16(TBLColDeleteIDX), version, reader, m)
 				if err != nil {
 					return
 				}
@@ -1423,7 +1433,7 @@ func (data *CNCheckpointData) ReadFromData(
 			if err != nil {
 				return
 			}
-			bat, err = LoadCNSubBlkColumnsByMetaWithId(ctx, schema.types, schema.attrs, uint16(idx), block.GetID(), version, reader, m)
+			bat, ioVector, err = LoadCNSubBlkColumnsByMetaWithId(ctx, schema.types, schema.attrs, uint16(idx), block.GetID(), version, reader, m)
 			if err != nil {
 				return
 			}
@@ -1518,7 +1528,7 @@ func (data *CNCheckpointData) GetTableDataFromBats(tid uint64, bats []*batch.Bat
 	return
 }
 
-func (data *CNCheckpointData) GetCloseCB(version uint32, m *mpool.MPool) func() {
+func (data *CNCheckpointData) GetCloseCB(version uint32, ioVector *fileservice.IOVector, m *mpool.MPool) func() {
 	return func() {
 		if version == CheckpointVersion1 {
 			data.closeVector(TBLInsertIDX, pkgcatalog.MO_TABLES_CATALOG_VERSION_IDX+2, m) // 2 for rowid and committs
@@ -2110,7 +2120,7 @@ func LoadCNSubBlkColumnsByMetaWithId(
 	version uint32,
 	reader *blockio.BlockReader,
 	m *mpool.MPool,
-) (ioResult *batch.Batch, err error) {
+) (ioResult *batch.Batch, ioVector *fileservice.IOVector, err error) {
 	idxs := make([]uint16, len(colNames))
 	for i := range colNames {
 		idxs[i] = uint16(i)
@@ -2119,14 +2129,17 @@ func LoadCNSubBlkColumnsByMetaWithId(
 		ioResult, err = reader.LoadColumns(cxt, idxs, nil, id, nil)
 	} else {
 		idxs = validateBeforeLoadBlkCol(version, idxs, colNames)
-		ioResult, err = reader.LoadOneSubColumns(cxt, idxs, nil, dataType, id, m)
+		ioResult, ioVector, err = reader.LoadOneSubColumns(cxt, idxs, nil, dataType, id, m)
 	}
 	if err != nil {
-		return nil, err
+		if ioVector != nil {
+			ioVector.Release()
+		}
+		return nil, nil, err
 	}
 	ioResult.Attrs = make([]string, len(colNames))
 	copy(ioResult.Attrs, colNames)
-	return ioResult, nil
+	return ioResult, ioVector, nil
 }
 func (data *CheckpointData) ReadTNMetaBatch(
 	ctx context.Context,

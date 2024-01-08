@@ -846,7 +846,8 @@ func LoadCheckpointEntries(
 	var err error
 	for i, data := range datas {
 		var bat []*batch.Batch
-		bat, err = data.ReadFromData(ctx, tableID, locations[i], readers[i], versions[i], mp)
+		var ioVector *fileservice.IOVector
+		bat, ioVector, err = data.ReadFromData(ctx, tableID, locations[i], readers[i], versions[i], mp)
 		closeCBs = append(closeCBs, data.GetCloseCB(versions[i], mp))
 		if err != nil {
 			for j := range closeCBs {

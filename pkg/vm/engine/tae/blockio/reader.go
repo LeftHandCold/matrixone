@@ -152,12 +152,11 @@ func (r *BlockReader) LoadSubColumns(
 	typs []types.Type,
 	blk uint16,
 	m *mpool.MPool,
-) (bats []*batch.Batch, err error) {
+) (bats []*batch.Batch, ioVectors []*fileservice.IOVector, err error) {
 	metaExt := r.reader.GetMetaExtent()
 	if metaExt == nil || metaExt.End() == 0 {
 		return
 	}
-	var ioVectors []*fileservice.IOVector
 	ioVectors, err = r.reader.ReadSubBlock(ctx, cols, typs, blk, m)
 	if err != nil {
 		return
@@ -187,16 +186,17 @@ func (r *BlockReader) LoadOneSubColumns(
 	dataType uint16,
 	blk uint16,
 	m *mpool.MPool,
-) (bat *batch.Batch, err error) {
+) (bat *batch.Batch, ioVector *fileservice.IOVector, err error) {
 	metaExt := r.reader.GetMetaExtent()
 	if metaExt == nil || metaExt.End() == 0 {
 		return
 	}
-	var ioVector *fileservice.IOVector
 	ioVector, err = r.reader.ReadOneSubBlock(ctx, cols, typs, dataType, blk, m)
 	if err != nil {
 		return
 	}
+	ioVector.Entries[0].CachedData.Release()
+	ioVector.Release()
 	bat = batch.NewWithSize(len(cols))
 	var obj any
 	for i := range cols {
