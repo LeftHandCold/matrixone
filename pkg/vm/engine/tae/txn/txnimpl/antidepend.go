@@ -84,7 +84,7 @@ func (checker *warChecker) CacheGet(
 	}
 	Object, err := table.GetObjectByID(ObjectID)
 	if err != nil {
-		logutil.Infof("cannot get Object %s", ObjectID.String())
+		logutil.Infof("cannot get Object %s table is %d", ObjectID.String(), tableID)
 		return
 	}
 	block, err = Object.GetBlockEntryByID(blockID)

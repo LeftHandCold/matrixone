@@ -17,6 +17,7 @@ package txnimpl
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -289,6 +290,9 @@ func (h *txnRelation) DeleteByPhyAddrKeys(keys containers.Vector, pkVec containe
 			)
 			return
 		}, nil, nil)
+	if err != nil {
+		logutil.Infof("DeleteByPhyAddrKeys failed: %v, %v", err, h.table.schema.Name)
+	}
 	return
 }
 

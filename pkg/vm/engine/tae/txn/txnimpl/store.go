@@ -205,7 +205,7 @@ func (store *txnStore) RangeDelete(
 	}
 	err = db.RangeDelete(id, start, end, pkVec, dt)
 	if err != nil {
-		logutil.Infof("RangeDelete is %v", err.Error())
+		logutil.Infof("RangeDelete is %v, id is %v", err.Error(), id.String())
 	}
 	return err
 }

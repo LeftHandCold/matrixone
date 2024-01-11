@@ -1064,6 +1064,9 @@ func (h *Handle) HandleWrite(
 		}
 	}
 	err = tb.DeleteByPhyAddrKeys(rowIDVec, pkVec)
+	if err != nil {
+		logutil.Infof("delete by phy addr keys failed: %v, %v, %v", err, req.TableID, req.FileName)
+	}
 	return
 }
 
