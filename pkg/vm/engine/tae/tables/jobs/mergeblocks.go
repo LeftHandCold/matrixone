@@ -161,13 +161,13 @@ func mergeColumnWithOutSort(
 func (task *mergeBlocksTask) MarshalLogObject(enc zapcore.ObjectEncoder) (err error) {
 	objs := ""
 	for _, obj := range task.mergedObjs {
-		objs = fmt.Sprintf("%s%s,", objs, common.ShortObjId(obj.ID))
+		objs = fmt.Sprintf("%s%s,", objs, obj.ID.String())
 	}
 	enc.AddString("from-objs", objs)
 
 	toblks := ""
 	for _, blk := range task.createdBlks {
-		toblks = fmt.Sprintf("%s%s,", toblks, blk.ID.ShortStringEx())
+		toblks = fmt.Sprintf("%s%s,", toblks, blk.ID.String())
 	}
 	if toblks != "" {
 		enc.AddString("to-blks", toblks)
