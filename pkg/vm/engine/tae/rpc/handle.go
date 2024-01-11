@@ -867,7 +867,7 @@ func (h *Handle) HandleDropOrTruncateRelation(
 }
 
 // TODO: debug for #13342, remove me later
-var districtMatchRegexp = regexp.MustCompile(`.*bmsql_district.*`)
+var districtMatchRegexp = regexp.MustCompile(`.*news_detail.*`)
 
 func IsDistrictTable(name string) bool {
 	return districtMatchRegexp.MatchString(name)
