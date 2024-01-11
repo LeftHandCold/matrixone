@@ -16,8 +16,6 @@ package deletion
 
 import (
 	"bytes"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
-	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
