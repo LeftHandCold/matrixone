@@ -981,12 +981,12 @@ func (h *Handle) HandleWrite(
 			}
 		}
 		// TODO: debug for #13342, remove me later
-		if IsDistrictTable(tb.Schema().(*catalog2.Schema).Name) {
+		/*if IsDistrictTable(tb.Schema().(*catalog2.Schema).Name) {
 			for i := 0; i < req.Batch.Vecs[0].Length(); i++ {
 				pk, _, _ := types.DecodeTuple(req.Batch.Vecs[11].GetRawBytesAt(i))
 				logutil.Infof("op1 %v %v", txn.GetStartTS().ToString(), PrintTuple(pk))
 			}
-		}
+		}*/
 		//Appends a batch of data into table.
 		err = AppendDataToTable(ctx, tb, req.Batch)
 		return
