@@ -16,6 +16,7 @@ package txnimpl
 
 import (
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -78,14 +79,17 @@ func (checker *warChecker) CacheGet(
 	}
 	table, err := db.GetTableEntryByID(tableID)
 	if err != nil {
+		logutil.Infof("cannot get table %d", tableID)
 		return
 	}
 	Object, err := table.GetObjectByID(ObjectID)
 	if err != nil {
+		logutil.Infof("cannot get Object %s", ObjectID.String())
 		return
 	}
 	block, err = Object.GetBlockEntryByID(blockID)
 	if err != nil {
+		logutil.Infof("cannot get block %s", blockID.String())
 		return
 	}
 	checker.Cache(block)
