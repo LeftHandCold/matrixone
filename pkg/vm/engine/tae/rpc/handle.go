@@ -1066,6 +1066,12 @@ func (h *Handle) HandleWrite(
 	err = tb.DeleteByPhyAddrKeys(rowIDVec, pkVec)
 	if err != nil {
 		logutil.Infof("delete by phy addr keys failed: %v, %v, %v", err, req.TableID, req.FileName)
+		for i := 0; i < rowIDVec.Length(); i++ {
+
+			rowID := objectio.HackBytes2Rowid(req.Batch.Vecs[0].GetRawBytesAt(i))
+			//pk, _, _ := types.DecodeTuple(req.Batch.Vecs[1].GetRawBytesAt(i))
+			logutil.Infof("error2 %v %v %d", txn.String(), rowID.String(), req.TableID)
+		}
 	}
 	return
 }
