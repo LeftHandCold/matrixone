@@ -16,6 +16,8 @@ package deletion
 
 import (
 	"bytes"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
@@ -219,6 +221,14 @@ func (arg *Argument) normal_delete(proc *process.Process) (vm.CallResult, error)
 		}
 		affectedRows = uint64(delBatch.RowCount())
 		if affectedRows > 0 {
+			tidd := delCtx.Source.GetTableID(proc.Ctx)
+			if tidd == 272479 {
+				for i := 0; i < delBatch.Vecs[0].Length(); i++ {
+					rowID := objectio.HackBytes2Rowid(delBatch.Vecs[0].GetRawBytesAt(i))
+					tx := proc.TxnOperator.Txn()
+					logutil.Infof("deleteBatchdeleteBatch %v %v %d -- %v, %d", tx.String(), rowID.String(), delCtx.Source.GetTableID(proc.Ctx), delBatch.Vecs[0].Length())
+				}
+			}
 			err = delCtx.Source.Delete(proc.Ctx, delBatch, catalog.Row_ID)
 			if err != nil {
 				delBatch.Clean(proc.GetMPool())
