@@ -1358,6 +1358,16 @@ func (tbl *txnTable) EnhanceDelete(bat *batch.Batch, name string) error {
 		tbl.db.txn.PutCnBlockDeletes(blkId, vs)
 	case deletion.RawRowIdBatch:
 		logutil.Infof("data return by remote pipeline\n")
+		if tbl.tableId == 272479 {
+			for i := 0; i < bat.Vecs[0].Length(); i++ {
+				rowID := objectio.HackBytes2Rowid(bat.Vecs[0].GetRawBytesAt(i))
+				tx := tbl.db.txn.proc.TxnOperator.Txn()
+				logutil.Infof("deleteBatchdeleteBatch11 %v %v %d -- %v, %d", tx.String(), rowID.String(), tbl.GetTableID(ctx), bat.Vecs[0].Length())
+				trace := debug.Stack()
+				logutil.Infof(string(trace))
+				break
+			}
+		}
 		bat = tbl.db.txn.deleteBatch(bat, tbl.db.databaseId, tbl.tableId)
 		if bat.RowCount() == 0 {
 			return nil
