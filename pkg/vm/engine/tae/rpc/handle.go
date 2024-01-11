@@ -1059,8 +1059,8 @@ func (h *Handle) HandleWrite(
 		for i := 0; i < rowIDVec.Length(); i++ {
 
 			rowID := objectio.HackBytes2Rowid(req.Batch.Vecs[0].GetRawBytesAt(i))
-			pk, _, _ := types.DecodeTuple(req.Batch.Vecs[1].GetRawBytesAt(i))
-			logutil.Infof("op2 %v %v %v", txn.GetStartTS().ToString(), PrintTuple(pk), rowID.String())
+			//pk, _, _ := types.DecodeTuple(req.Batch.Vecs[1].GetRawBytesAt(i))
+			logutil.Infof("op2 %v %v", txn.GetStartTS().ToString(), rowID.String())
 		}
 	}
 	err = tb.DeleteByPhyAddrKeys(rowIDVec, pkVec)
