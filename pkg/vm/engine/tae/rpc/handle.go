@@ -1064,9 +1064,6 @@ func (h *Handle) HandleWrite(
 		}
 	}
 	err = tb.DeleteByPhyAddrKeys(rowIDVec, pkVec)
-	if err != nil {
-		logutil.Infof("DeleteByPhyAddrKeys is %v", err.Error())
-	}
 	return
 }
 

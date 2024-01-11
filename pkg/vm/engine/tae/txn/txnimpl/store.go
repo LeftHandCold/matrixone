@@ -203,7 +203,11 @@ func (store *txnStore) RangeDelete(
 	if err != nil {
 		return err
 	}
-	return db.RangeDelete(id, start, end, pkVec, dt)
+	err = db.RangeDelete(id, start, end, pkVec, dt)
+	if err != nil {
+		logutil.Infof("RangeDelete is %v", err.Error())
+	}
+	return err
 }
 
 func (store *txnStore) TryDeleteByDeltaloc(
