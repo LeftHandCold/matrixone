@@ -16,6 +16,8 @@ package disttae
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/util/stack"
+	"runtime/debug"
 	"strconv"
 	"time"
 	"unsafe"
@@ -1424,6 +1426,16 @@ func (tbl *txnTable) Delete(ctx context.Context, bat *batch.Batch, name string) 
 	//for S3 delete
 	if name != catalog.Row_ID {
 		return tbl.EnhanceDelete(bat, name)
+	}
+	if tbl.tableId == 272479 {
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			rowID := objectio.HackBytes2Rowid(bat.Vecs[0].GetRawBytesAt(i))
+			tx := tbl.db.txn.proc.TxnOperator.Txn()
+			logutil.Infof("deleteBatchdeleteBatch %v %v %d -- %v, %d", tx.String(), rowID.String(), tbl.GetTableID(ctx), bat.Vecs[0].Length())
+			trace := debug.Stack()
+			logutil.Infof(string(trace))
+			break
+		}
 	}
 	bat = tbl.db.txn.deleteBatch(bat, tbl.db.databaseId, tbl.tableId)
 	if bat.RowCount() == 0 {
