@@ -790,6 +790,9 @@ func (tbl *txnTable) RangeDelete(
 	}()
 	if tbl.tableSpace != nil && id.ObjectID().Eq(tbl.tableSpace.entry.ID) {
 		err = tbl.RangeDeleteLocalRows(start, end)
+		if err != nil {
+			logutil.Infof("[ts2=%s]: table-%d blk-%s delete rows from %d to %d %v", tbl.store.txn.GetStartTS().ToString(), id.TableID, id.BlockID.String(), start, end, err)
+		}
 		return
 	}
 	node := tbl.getNormalDeleteNode(*id)
@@ -805,6 +808,9 @@ func (tbl *txnTable) RangeDelete(
 		mvcc.Unlock()
 		if err != nil {
 			tbl.store.warChecker.Insert(mvcc.GetEntry())
+			if err != nil {
+				logutil.Infof("[ts3=%s]: table-%d blk-%s delete rows from %d to %d %v", tbl.store.txn.GetStartTS().ToString(), id.TableID, id.BlockID.String(), start, end, err)
+			}
 		}
 		return
 	}
@@ -814,12 +820,18 @@ func (tbl *txnTable) RangeDelete(
 		id.TableID, id.ObjectID(),
 		&id.BlockID)
 	if err != nil {
+		if err != nil {
+			logutil.Infof("[CacheGet=%s]: table-%d blk-%s delete rows from %d to %d %v", tbl.store.txn.GetStartTS().ToString(), id.TableID, id.BlockID.String(), start, end, err)
+		}
 		return
 	}
 	blkData := blk.GetBlockData()
 	node2, err := blkData.RangeDelete(tbl.store.txn, start, end, pk, dt)
 	if err == nil {
 		if err = tbl.AddDeleteNode(id, node2); err != nil {
+			if err != nil {
+				logutil.Infof("[AddDeleteNode=%s]: table-%d blk-%s delete rows from %d to %d %v", tbl.store.txn.GetStartTS().ToString(), id.TableID, id.BlockID.String(), start, end, err)
+			}
 			return
 		}
 		tbl.store.warChecker.Insert(blk)
