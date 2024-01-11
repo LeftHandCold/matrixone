@@ -88,12 +88,12 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 		// If the target table is a general table
 		for i := 0; i < bat.RowCount(); i++ {
 			name = fmt.Sprintf("%s|%d", blkIds[i], typs[i])
-			bat := &batch.Batch{}
-			if err := bat.UnmarshalBinary(deltaLocs[i]); err != nil {
+			bat1 := &batch.Batch{}
+			if err := bat1.UnmarshalBinary(deltaLocs[i]); err != nil {
 				return result, err
 			}
-			bat.Cnt = 1
-			err = ap.DelSource.Delete(proc.Ctx, bat, name)
+			bat1.Cnt = 1
+			err = ap.DelSource.Delete(proc.Ctx, bat1, name)
 			if err != nil {
 				return result, err
 			}
