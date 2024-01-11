@@ -588,6 +588,9 @@ func (txn *Transaction) deleteBatch(bat *batch.Batch,
 	min1 := uint32(math.MaxUint32)
 	max1 := uint32(0)
 	cnRowIdOffsets := make([]int64, 0, len(rowids))
+	if tableId == 272479 {
+		logutil.Infof("deleteBatchdeleteBatch: %d", bat.Vecs[0].Length())
+	}
 	for i, rowid := range rowids {
 		// process cn block deletes
 		uid := rowid.BorrowSegmentID()
