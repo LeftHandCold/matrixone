@@ -1362,7 +1362,7 @@ func (tbl *txnTable) EnhanceDelete(bat *batch.Batch, name string) error {
 			for i := 0; i < bat.Vecs[0].Length(); i++ {
 				rowID := objectio.HackBytes2Rowid(bat.Vecs[0].GetRawBytesAt(i))
 				tx := tbl.db.txn.proc.TxnOperator.Txn()
-				logutil.Infof("deleteBatchdeleteBatch11 %v %v %d -- %v, %d", tx.String(), rowID.String(), tbl.GetTableID(ctx), bat.Vecs[0].Length())
+				logutil.Infof("deleteBatchdeleteBatch11 %v %v %d -- %v, %d", tx.String(), rowID.String(), tbl.GetTableID(tbl.db.txn.proc.Ctx), bat.Vecs[0].Length())
 				trace := debug.Stack()
 				logutil.Infof(string(trace))
 				break
