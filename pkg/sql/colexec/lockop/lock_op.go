@@ -247,16 +247,6 @@ func performLock(
 			continue
 		}
 
-		iarg, _, flush = fault.TriggerFault("performLock_retry")
-		if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
-			logutil.Infof("fault-trigger: performLock_retry ")
-			needRetry = true
-			if !arg.rt.defChanged {
-				arg.rt.defChanged = defChanged
-			}
-			continue
-		}
-
 		// refreshTS is last commit ts + 1, because we need see the committed data.
 		if proc.TxnClient.RefreshExpressionEnabled() &&
 			target.refreshTimestampIndexInBatch != -1 {
@@ -486,6 +476,14 @@ func doLock(
 		changed, err := fn(proc, tableID, eng, vec, snapshotTS, newSnapshotTS)
 		if err != nil {
 			return false, false, timestamp.Timestamp{}, err
+		}
+		iarg, _, flush := fault.TriggerFault("performLock_retry")
+		if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+			logutil.Infof("fault-trigger: performLock_retry ")
+			if err := txnOp.UpdateSnapshot(ctx, newSnapshotTS); err != nil {
+				return false, false, timestamp.Timestamp{}, err
+			}
+			return true, false, newSnapshotTS, nil
 		}
 		if changed {
 			if err := txnOp.UpdateSnapshot(ctx, newSnapshotTS); err != nil {
