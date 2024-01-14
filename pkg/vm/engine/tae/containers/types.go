@@ -15,6 +15,7 @@
 package containers
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"io"
 
 	"github.com/RoaringBitmap/roaring"
@@ -93,11 +94,12 @@ type Vector interface {
 }
 
 type Batch struct {
-	Attrs   []string
-	Vecs    []Vector
-	Deletes *nulls.Bitmap
-	Nameidx map[string]int
-	Pool    *VectorPool
+	Attrs    []string
+	Vecs     []Vector
+	Deletes  *nulls.Bitmap
+	Nameidx  map[string]int
+	Pool     *VectorPool
+	IoVector *fileservice.IOVector
 	// refidx  map[int]int
 }
 

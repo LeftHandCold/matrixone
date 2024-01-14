@@ -1188,18 +1188,18 @@ func (data *CNCheckpointData) GetTableMeta(tableID uint64, version uint32, loc o
 	return
 }
 func (data *CNCheckpointData) fillInMetaBatchWithLocation(location objectio.Location, m *mpool.MPool) (err error) {
-	length := data.bats[MetaIDX].Vecs[2].Length()
+	length := data.bats[MetaIDX].bat.Vecs[2].Length()
 	insVec := vector.NewVec(types.T_varchar.ToType())
 	cnInsVec := vector.NewVec(types.T_varchar.ToType())
 	delVec := vector.NewVec(types.T_varchar.ToType())
 	segVec := vector.NewVec(types.T_varchar.ToType())
 
-	blkInsStart := data.bats[MetaIDX].Vecs[Checkpoint_Meta_Insert_Block_Start_IDX]
-	blkInsEnd := data.bats[MetaIDX].Vecs[Checkpoint_Meta_Insert_Block_End_IDX]
-	blkDelStart := data.bats[MetaIDX].Vecs[Checkpoint_Meta_Delete_Block_Start_IDX]
-	blkDelEnd := data.bats[MetaIDX].Vecs[Checkpoint_Meta_Delete_Block_End_IDX]
-	segDelStart := data.bats[MetaIDX].Vecs[Checkpoint_Meta_Object_Start_IDX]
-	segDelEnd := data.bats[MetaIDX].Vecs[Checkpoint_Meta_Object_End_IDX]
+	blkInsStart := data.bats[MetaIDX].bat.Vecs[Checkpoint_Meta_Insert_Block_Start_IDX]
+	blkInsEnd := data.bats[MetaIDX].bat.Vecs[Checkpoint_Meta_Insert_Block_End_IDX]
+	blkDelStart := data.bats[MetaIDX].bat.Vecs[Checkpoint_Meta_Delete_Block_Start_IDX]
+	blkDelEnd := data.bats[MetaIDX].bat.Vecs[Checkpoint_Meta_Delete_Block_End_IDX]
+	segDelStart := data.bats[MetaIDX].bat.Vecs[Checkpoint_Meta_Object_Start_IDX]
+	segDelEnd := data.bats[MetaIDX].bat.Vecs[Checkpoint_Meta_Object_End_IDX]
 	for i := 0; i < length; i++ {
 		insStart := vector.GetFixedAt[int32](blkInsStart, i)
 		insEnd := vector.GetFixedAt[int32](blkInsEnd, i)
@@ -1256,10 +1256,10 @@ func (data *CNCheckpointData) fillInMetaBatchWithLocation(location objectio.Loca
 		}
 	}
 
-	data.bats[MetaIDX].Vecs[Checkpoint_Meta_Insert_Block_LOC_IDX] = insVec
-	data.bats[MetaIDX].Vecs[Checkpoint_Meta_CN_Delete_Block_LOC_IDX] = cnInsVec
-	data.bats[MetaIDX].Vecs[Checkpoint_Meta_Delete_Block_LOC_IDX] = delVec
-	data.bats[MetaIDX].Vecs[Checkpoint_Meta_Object_LOC_IDX] = segVec
+	data.bats[MetaIDX].bat.Vecs[Checkpoint_Meta_Insert_Block_LOC_IDX] = insVec
+	data.bats[MetaIDX].bat.Vecs[Checkpoint_Meta_CN_Delete_Block_LOC_IDX] = cnInsVec
+	data.bats[MetaIDX].bat.Vecs[Checkpoint_Meta_Delete_Block_LOC_IDX] = delVec
+	data.bats[MetaIDX].bat.Vecs[Checkpoint_Meta_Object_LOC_IDX] = segVec
 	return
 }
 
@@ -1528,7 +1528,7 @@ func (data *CNCheckpointData) GetTableDataFromBats(tid uint64, bats []*batch.Bat
 	return
 }
 
-func (data *CNCheckpointData) GetCloseCB(version uint32, ioVector *fileservice.IOVector, m *mpool.MPool) func() {
+func (data *CNCheckpointData) GetCloseCB(version uint32, m *mpool.MPool) func() {
 	return func() {
 		if version == CheckpointVersion1 {
 			data.closeVector(TBLInsertIDX, pkgcatalog.MO_TABLES_CATALOG_VERSION_IDX+2, m) // 2 for rowid and committs
@@ -1555,11 +1555,12 @@ func (data *CNCheckpointData) closeVector(batIdx uint16, colIdx int, m *mpool.MP
 	if bat == nil {
 		return
 	}
-	if len(bat.Vecs) <= colIdx {
+	if len(bat.bat.Vecs) <= colIdx {
 		return
 	}
-	vec := data.bats[batIdx].Vecs[colIdx]
+	vec := data.bats[batIdx].bat.Vecs[colIdx]
 	vec.Free(m)
+	data.bats[batIdx].ioVector.Entries[colIdx].CachedData.Release()
 
 }
 
@@ -2049,18 +2050,20 @@ func LoadBlkColumnsByMeta(
 	}
 	var err error
 	var ioResults []*batch.Batch
+	var ioVectors []*fileservice.IOVector
 	if version <= CheckpointVersion4 {
 		ioResults = make([]*batch.Batch, 1)
-		ioResults[0], err = reader.LoadColumns(cxt, idxs, nil, id, nil)
+		ioVectors = make([]*fileservice.IOVector, 1)
+		ioResults[0], ioVectors[0], err = reader.LoadColumns(cxt, idxs, nil, id, nil)
 	} else {
 		idxs = validateBeforeLoadBlkCol(version, idxs, colNames)
-		ioResults, err = reader.LoadSubColumns(cxt, idxs, nil, id, nil)
+		ioResults, ioVectors, err = reader.LoadSubColumns(cxt, idxs, nil, id, nil)
 	}
 	if err != nil {
 		return nil, err
 	}
 	bats := make([]*containers.Batch, 0)
-	for _, ioResult := range ioResults {
+	for ioIdx, ioResult := range ioResults {
 		bat := containers.NewBatch()
 		for i, idx := range idxs {
 			pkgVec := ioResult.Vecs[i]
@@ -2072,6 +2075,7 @@ func LoadBlkColumnsByMeta(
 			}
 			bat.AddVector(colNames[idx], vec)
 			bat.Vecs[i] = vec
+			bat.IoVector = ioVectors[ioIdx]
 
 		}
 		bats = append(bats, bat)
@@ -2087,28 +2091,30 @@ func LoadCNSubBlkColumnsByMeta(
 	id uint16,
 	reader *blockio.BlockReader,
 	m *mpool.MPool,
-) ([]*batch.Batch, error) {
+) ([]*batch.Batch, []*fileservice.IOVector, error) {
 	idxs := make([]uint16, len(colNames))
 	for i := range colNames {
 		idxs[i] = uint16(i)
 	}
 	var err error
 	var ioResults []*batch.Batch
+	var ioVectors []*fileservice.IOVector
 	if version <= CheckpointVersion4 {
 		ioResults = make([]*batch.Batch, 1)
-		ioResults[0], err = reader.LoadColumns(cxt, idxs, nil, id, nil)
+		ioVectors = make([]*fileservice.IOVector, 1)
+		ioResults[0], ioVectors[0], err = reader.LoadColumns(cxt, idxs, nil, id, nil)
 	} else {
 		idxs = validateBeforeLoadBlkCol(version, idxs, colNames)
-		ioResults, err = reader.LoadSubColumns(cxt, idxs, nil, id, m)
+		ioResults, ioVectors, err = reader.LoadSubColumns(cxt, idxs, nil, id, m)
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for i := range ioResults {
 		ioResults[i].Attrs = make([]string, len(colNames))
 		copy(ioResults[i].Attrs, colNames)
 	}
-	return ioResults, nil
+	return ioResults, ioVectors, nil
 }
 
 func LoadCNSubBlkColumnsByMetaWithId(
@@ -2126,7 +2132,7 @@ func LoadCNSubBlkColumnsByMetaWithId(
 		idxs[i] = uint16(i)
 	}
 	if version <= CheckpointVersion3 {
-		ioResult, err = reader.LoadColumns(cxt, idxs, nil, id, nil)
+		ioResult, ioVector, err = reader.LoadColumns(cxt, idxs, nil, id, nil)
 	} else {
 		idxs = validateBeforeLoadBlkCol(version, idxs, colNames)
 		ioResult, ioVector, err = reader.LoadOneSubColumns(cxt, idxs, nil, dataType, id, m)
@@ -2595,6 +2601,10 @@ func (data *CheckpointData) Close() {
 	for idx := range data.bats {
 		if data.bats[idx] != nil {
 			data.bats[idx].Close()
+			if data.bats[idx].IoVector != nil {
+				data.bats[idx].IoVector.Release()
+				data.bats[idx].IoVector = nil
+			}
 			data.bats[idx] = nil
 		}
 	}

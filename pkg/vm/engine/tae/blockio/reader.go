@@ -107,12 +107,11 @@ func (r *BlockReader) LoadColumns(
 	typs []types.Type,
 	blk uint16,
 	m *mpool.MPool,
-) (bat *batch.Batch, err error) {
+) (bat *batch.Batch, ioVectors *fileservice.IOVector, err error) {
 	metaExt := r.reader.GetMetaExtent()
 	if metaExt == nil || metaExt.End() == 0 {
 		return
 	}
-	var ioVectors *fileservice.IOVector
 	if IoModel == AsyncIo {
 		proc := fetchParams{
 			idxes:  cols,
@@ -137,6 +136,9 @@ func (r *BlockReader) LoadColumns(
 	for i := range cols {
 		obj, err = objectio.Decode(ioVectors.Entries[i].CachedData.Bytes())
 		if err != nil {
+			if ioVectors != nil {
+				ioVectors.Release()
+			}
 			return
 		}
 		bat.Vecs[i] = obj.(*vector.Vector)
@@ -158,6 +160,13 @@ func (r *BlockReader) LoadSubColumns(
 		return
 	}
 	ioVectors, err = r.reader.ReadSubBlock(ctx, cols, typs, blk, m)
+	defer func() {
+		if err != nil {
+			for _, ioVector := range ioVectors {
+				ioVector.Release()
+			}
+		}
+	}()
 	if err != nil {
 		return
 	}
@@ -195,8 +204,6 @@ func (r *BlockReader) LoadOneSubColumns(
 	if err != nil {
 		return
 	}
-	ioVector.Entries[0].CachedData.Release()
-	ioVector.Release()
 	bat = batch.NewWithSize(len(cols))
 	var obj any
 	for i := range cols {
