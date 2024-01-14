@@ -18,6 +18,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	"math/rand"
 	"strings"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -269,6 +272,13 @@ func performLock(
 	}
 	if arg.rt.defChanged {
 		arg.rt.retryError = retryWithDefChangedError
+	}
+	iarg, _, flush := fault.TriggerFault("performLock_retry")
+	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+		logutil.Infof("fault-trigger: performLock_retry ")
+		arg.rt.retryError = retryError
+		needRetry = true
+		return nil
 	}
 	return nil
 }
