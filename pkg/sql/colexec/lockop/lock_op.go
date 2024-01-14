@@ -247,6 +247,16 @@ func performLock(
 			continue
 		}
 
+		iarg, _, flush = fault.TriggerFault("performLock_retry")
+		if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+			logutil.Infof("fault-trigger: performLock_retry ")
+			needRetry = true
+			if !arg.rt.defChanged {
+				arg.rt.defChanged = defChanged
+			}
+			continue
+		}
+
 		// refreshTS is last commit ts + 1, because we need see the committed data.
 		if proc.TxnClient.RefreshExpressionEnabled() &&
 			target.refreshTimestampIndexInBatch != -1 {
@@ -267,6 +277,7 @@ func performLock(
 		if !arg.rt.defChanged {
 			arg.rt.defChanged = defChanged
 		}
+
 	}
 	// when a transaction needs to operate on many data, there may be multiple conflicts on the
 	// data, and if you go to retry every time a conflict occurs, you will also encounter conflicts
@@ -277,13 +288,6 @@ func performLock(
 	}
 	if arg.rt.defChanged {
 		arg.rt.retryError = retryWithDefChangedError
-	}
-	iarg, _, flush := fault.TriggerFault("performLock_retry")
-	if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
-		logutil.Infof("fault-trigger: performLock_retry ")
-		arg.rt.retryError = retryError
-		needRetry = true
-		return nil
 	}
 	return nil
 }
