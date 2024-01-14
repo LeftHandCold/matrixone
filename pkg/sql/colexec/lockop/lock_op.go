@@ -211,6 +211,11 @@ func performLock(
 		if target.filter != nil {
 			filterCols = vector.MustFixedCol[int32](bat.GetVector(target.filterColIndexInBatch))
 		}
+		iarg, _, flush := fault.TriggerFault("performLock_error")
+		if flush && (iarg == 0 || rand.Int63n(iarg) == 0) {
+			logutil.Infof("fault-trigger: performLock_error ")
+			return moerr.NewLockTableNotFoundNoCtx()
+		}
 		locked, defChanged, refreshTS, err := doLock(
 			proc.Ctx,
 			arg.block,
