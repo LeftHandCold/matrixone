@@ -132,6 +132,7 @@ func (r *BlockReader) LoadColumns(
 			return
 		}
 	}
+	defer objectio.FreeIOVector(ioVectors)
 	bat = batch.NewWithSize(len(cols))
 	var obj any
 	for i := range cols {
@@ -139,8 +140,19 @@ func (r *BlockReader) LoadColumns(
 		if err != nil {
 			return
 		}
-		bat.Vecs[i] = obj.(*vector.Vector)
+		typ := *obj.(*vector.Vector).GetType()
+		if err = vector.GetUnionAllFunction(typ, m)(bat.Vecs[i], obj.(*vector.Vector)); err != nil {
+			break
+		}
 		bat.SetRowCount(bat.Vecs[i].Length())
+	}
+	if err != nil {
+		for _, col := range bat.Vecs {
+			if col != nil {
+				col.Free(m)
+			}
+		}
+		return nil, err
 	}
 	return
 }
@@ -160,8 +172,20 @@ func (r *BlockReader) LoadSubColumns(
 	var ioVectors []*fileservice.IOVector
 	ioVectors, err = r.reader.ReadSubBlock(ctx, cols, typs, blk, m)
 	if err != nil {
+		for i := range ioVectors {
+			if ioVectors[i] != nil {
+				objectio.FreeIOVector(ioVectors[i])
+			}
+		}
 		return
 	}
+	defer func() {
+		for i := range ioVectors {
+			if ioVectors[i] != nil {
+				objectio.FreeIOVector(ioVectors[i])
+			}
+		}
+	}()
 	bats = make([]*batch.Batch, 0)
 	for idx := range ioVectors {
 		bat := batch.NewWithSize(len(cols))
@@ -171,10 +195,23 @@ func (r *BlockReader) LoadSubColumns(
 			if err != nil {
 				return
 			}
-			bat.Vecs[i] = obj.(*vector.Vector)
+			typ := *obj.(*vector.Vector).GetType()
+			if err = vector.GetUnionAllFunction(typ, m)(bat.Vecs[i], obj.(*vector.Vector)); err != nil {
+				break
+			}
 			bat.SetRowCount(bat.Vecs[i].Length())
 		}
 		bats = append(bats, bat)
+	}
+	if err != nil {
+		for _, bat := range bats {
+			for _, col := range bat.Vecs {
+				if col != nil {
+					col.Free(m)
+				}
+			}
+		}
+		return nil, err
 	}
 	return
 }
@@ -197,6 +234,7 @@ func (r *BlockReader) LoadOneSubColumns(
 	if err != nil {
 		return
 	}
+	defer objectio.FreeIOVector(ioVector)
 	bat = batch.NewWithSize(len(cols))
 	var obj any
 	for i := range cols {
@@ -204,8 +242,19 @@ func (r *BlockReader) LoadOneSubColumns(
 		if err != nil {
 			return
 		}
-		bat.Vecs[i] = obj.(*vector.Vector)
+		typ := *obj.(*vector.Vector).GetType()
+		if err = vector.GetUnionAllFunction(typ, m)(bat.Vecs[i], obj.(*vector.Vector)); err != nil {
+			break
+		}
 		bat.SetRowCount(bat.Vecs[i].Length())
+	}
+	if err != nil {
+		for _, col := range bat.Vecs {
+			if col != nil {
+				col.Free(m)
+			}
+		}
+		return nil, err
 	}
 	return
 }
@@ -237,6 +286,7 @@ func (r *BlockReader) LoadAllColumns(
 	if err != nil {
 		return nil, err
 	}
+	defer objectio.FreeIOVector(ioVectors)
 	for y := 0; y < int(dataMeta.BlockCount()); y++ {
 		bat := batch.NewWithSize(len(idxs))
 		var obj any
@@ -245,10 +295,23 @@ func (r *BlockReader) LoadAllColumns(
 			if err != nil {
 				return nil, err
 			}
-			bat.Vecs[i] = obj.(*vector.Vector)
+			typ := *obj.(*vector.Vector).GetType()
+			if err = vector.GetUnionAllFunction(typ, m)(bat.Vecs[i], obj.(*vector.Vector)); err != nil {
+				break
+			}
 			bat.SetRowCount(bat.Vecs[i].Length())
 		}
 		bats = append(bats, bat)
+	}
+	if err != nil {
+		for _, bat := range bats {
+			for _, col := range bat.Vecs {
+				if col != nil {
+					col.Free(m)
+				}
+			}
+		}
+		return nil, err
 	}
 	return bats, nil
 }

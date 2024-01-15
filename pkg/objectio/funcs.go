@@ -28,6 +28,12 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 )
 
+func FreeIOEntry(entry *fileservice.IOEntry) {
+}
+
+func FreeIOVector(vector *fileservice.IOVector) {
+}
+
 func ReadExtent(
 	ctx context.Context,
 	name string,
@@ -35,7 +41,7 @@ func ReadExtent(
 	policy fileservice.Policy,
 	fs fileservice.FileService,
 	factory CacheConstructorFactory,
-) (v []byte, err error) {
+) (buf []byte, err error) {
 	ioVec := &fileservice.IOVector{
 		FilePath: name,
 		Entries:  make([]fileservice.IOEntry, 1),
@@ -51,7 +57,10 @@ func ReadExtent(
 		return
 	}
 	//TODO when to call ioVec.Release?
-	v = ioVec.Entries[0].CachedData.Bytes()
+	v := ioVec.Entries[0].CachedData.Bytes()
+	buf = make([]byte, len(v))
+	copy(buf, v)
+	FreeIOEntry(&ioVec.Entries[0])
 	return
 }
 
