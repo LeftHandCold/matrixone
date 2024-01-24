@@ -33,12 +33,14 @@ import (
 // GCTable is a data structure in memory after consuming checkpoint
 type GCTable struct {
 	sync.Mutex
-	dbs map[uint64]*dropDB
+	dbs    map[uint64]*dropDB
+	delete map[string]bool
 }
 
 func NewGCTable() *GCTable {
 	table := GCTable{
-		dbs: make(map[uint64]*dropDB),
+		dbs:    make(map[uint64]*dropDB),
+		delete: make(map[string]bool),
 	}
 	return &table
 }
@@ -161,6 +163,27 @@ func (t *GCTable) UpdateTable(data *logtail.CheckpointData) {
 		}
 		t.dropDB(id)
 	}
+}
+
+func (t *GCTable) UpdateTableForObject(data *logtail.CheckpointData) {
+	ins := data.GetObjectBatchs()
+	for i := 0; i < ins.Length(); i++ {
+		var objectStats objectio.ObjectStats
+		buf := ins.GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
+		objectStats.UnMarshal(buf)
+		deleteAt := ins.GetVectorByName(catalog.EntryNode_DeleteAt).Get(i).(types.TS)
+		if !deleteAt.IsEmpty() && !t.delete[objectStats.ObjectName().String()] {
+			t.delete[objectStats.ObjectName().String()] = true
+		}
+	}
+}
+
+func (t *GCTable) GetDeleteObject() []string {
+	objects := make([]string, 0)
+	for name, _ := range t.delete {
+		objects = append(objects, name)
+	}
+	return objects
 }
 
 func (t *GCTable) rebuildTable(bats []*containers.Batch) {

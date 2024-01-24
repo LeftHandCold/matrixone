@@ -128,8 +128,8 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 			return err
 		}
 		defer data.Close()
-		table.UpdateTable(data)
-		gcFiles := table.SoftGC()
+		table.UpdateTableForObject(data)
+		gcFiles := table.GetDeleteObject()
 		mergeGCFile(gcFiles, gcFileMap)
 		for _, oName := range oNames {
 			if files[oName.String()] == nil {

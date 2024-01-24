@@ -41,10 +41,10 @@ const (
 	DefaultGlobalVersionInterval        = time.Hour
 	DefaultGCCheckpointInterval         = time.Minute
 
-	DefaultScanGCInterval = time.Minute * 30
-	DefaultGCTTL          = time.Hour
+	DefaultScanGCInterval = time.Minute * 5
+	DefaultGCTTL          = time.Minute * 10
 
-	DefaultCatalogGCInterval = time.Minute * 30
+	DefaultCatalogGCInterval = time.Minute * 5
 
 	DefaultIOWorkers    = int(16)
 	DefaultAsyncWorkers = int(16)
