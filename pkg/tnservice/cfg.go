@@ -44,12 +44,12 @@ var (
 	defaultConnectTimeout        = time.Second * 30
 	defaultHeatbeatTimeout       = time.Second * 3
 
-	defaultFlushInterval         = time.Second * 60
+	defaultFlushInterval         = time.Second * 30
 	defaultScanInterval          = time.Second * 5
 	defaultIncrementalInterval   = time.Minute
-	defaultGlobalMinCount        = int64(40)
-	defaultMinCount              = int64(100)
-	defaultReservedWALEntryCount = uint64(5000)
+	defaultGlobalMinCount        = int64(10)
+	defaultMinCount              = int64(10)
+	defaultReservedWALEntryCount = uint64(500)
 
 	defaultRpcMaxMsgSize              = 1024 * mpool.KB
 	defaultLogtailCollectInterval     = 2 * time.Millisecond
