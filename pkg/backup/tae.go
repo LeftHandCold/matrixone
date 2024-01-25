@@ -142,7 +142,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 					} else {
 						// FIXME: if file not found, it may be gc file, but we can't sure
 						if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
-							logutil.Warnf("backup file not found, it may have been: %v, ", dentry.Name)
+							logutil.Warnf("backup file not found, it may have been: %v, ", oName.String())
 							continue
 						}
 						return err
