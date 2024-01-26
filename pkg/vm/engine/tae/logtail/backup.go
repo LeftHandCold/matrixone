@@ -103,7 +103,7 @@ func getCheckpointData(
 	location objectio.Location,
 	version uint32,
 ) (*CheckpointData, error) {
-	data := NewCheckpointData(common.CheckpointAllocator)
+	data := NewCheckpointData(common.DebugAllocator)
 	reader, err := blockio.NewObjectReader(fs, location)
 	if err != nil {
 		return nil, err
@@ -418,7 +418,7 @@ func formatData(data *batch.Batch) *batch.Batch {
 			att := fmt.Sprintf("col_%d", i)
 			data.Attrs = append(data.Attrs, att)
 		}
-		tmp := containers.ToTNBatch(data, common.CheckpointAllocator)
+		tmp := containers.ToTNBatch(data, common.DebugAllocator)
 		data = containers.ToCNBatch(tmp)
 	}
 	return data
@@ -543,7 +543,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					continue
 				}
 				for z := range objectsData[i].data[j].data.Vecs {
-					objectsData[i].data[j].data.Vecs[z].Free(common.CheckpointAllocator)
+					objectsData[i].data[j].data.Vecs[z].Free(common.DebugAllocator)
 				}
 			}
 		}
@@ -554,7 +554,7 @@ func ReWriteCheckpointAndBlockFromKey(
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	data.FormatData(common.CheckpointAllocator)
+	data.FormatData(common.DebugAllocator)
 	defer data.Close()
 
 	phaseNumber = 2
@@ -778,7 +778,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				if objectData.data[0].tombstone != nil {
 					applyDelete(dataBlocks[0].data, objectData.data[0].tombstone.data, dataBlocks[0].blockId.String())
 				}
-				sortData := containers.ToTNBatch(dataBlocks[0].data, common.CheckpointAllocator)
+				sortData := containers.ToTNBatch(dataBlocks[0].data, common.DebugAllocator)
 				if dataBlocks[0].sortKey != math.MaxUint16 {
 					_, err = mergesort.SortBlockColumns(sortData.Vecs, int(dataBlocks[0].sortKey), backupPool)
 					if err != nil {
@@ -858,7 +858,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					}
 					insertObjBatch[objectData.obj.tid].rowObjects = append(insertObjBatch[objectData.obj.tid].rowObjects, io)
 				} else {
-					sortData := containers.ToTNBatch(objectData.obj.data[0], common.CheckpointAllocator)
+					sortData := containers.ToTNBatch(objectData.obj.data[0], common.DebugAllocator)
 					if objectData.obj.sortKey != math.MaxUint16 {
 						_, err = mergesort.SortBlockColumns(sortData.Vecs, int(objectData.obj.sortKey), backupPool)
 						if err != nil {
@@ -967,8 +967,8 @@ func ReWriteCheckpointAndBlockFromKey(
 	phaseNumber = 5
 	// Transfer the object file that needs to be deleted to insert
 	if len(insertBatch) > 0 {
-		blkMeta := makeRespBatchFromSchema(checkpointDataSchemas_Curr[BLKMetaInsertIDX], common.CheckpointAllocator)
-		blkMetaTxn := makeRespBatchFromSchema(checkpointDataSchemas_Curr[BLKMetaInsertTxnIDX], common.CheckpointAllocator)
+		blkMeta := makeRespBatchFromSchema(checkpointDataSchemas_Curr[BLKMetaInsertIDX], common.DebugAllocator)
+		blkMetaTxn := makeRespBatchFromSchema(checkpointDataSchemas_Curr[BLKMetaInsertTxnIDX], common.DebugAllocator)
 		for i := 0; i < blkMetaInsert.Length(); i++ {
 			tid := data.bats[BLKMetaInsertTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
 			appendValToBatch(data.bats[BLKMetaInsertIDX], blkMeta, i)
@@ -1088,7 +1088,7 @@ func ReWriteCheckpointAndBlockFromKey(
 	phaseNumber = 6
 	if len(insertObjBatch) > 0 {
 		deleteRow := make([]int, 0)
-		objectInfoMeta := makeRespBatchFromSchema(checkpointDataSchemas_Curr[ObjectInfoIDX], common.CheckpointAllocator)
+		objectInfoMeta := makeRespBatchFromSchema(checkpointDataSchemas_Curr[ObjectInfoIDX], common.DebugAllocator)
 		infoInsert := make(map[int]*objData, 0)
 		infoDelete := make(map[int]bool, 0)
 		for tid := range insertObjBatch {
