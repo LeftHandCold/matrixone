@@ -165,7 +165,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	}
 	// record files
 	taeFileList := make([]*taeFile, 0, len(files))
-	jobScheduler := tasks.NewParallelJobScheduler(runtime2.NumCPU() * 4)
+	jobScheduler := tasks.NewParallelJobScheduler(runtime2.NumCPU() * 2)
 	defer jobScheduler.Stop()
 	var wg sync.WaitGroup
 	var fileMutex sync.RWMutex
