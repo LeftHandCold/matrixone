@@ -164,7 +164,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	}
 	// record files
 	taeFileList := make([]*taeFile, 0, len(files))
-	jobScheduler := tasks.NewParallelJobScheduler(200)
+	jobScheduler := tasks.NewParallelJobScheduler(100)
 	defer jobScheduler.Stop()
 	var wg sync.WaitGroup
 	var fileMutex sync.RWMutex
@@ -177,6 +177,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 				isGC(gcFileMap, dentry.Name) {
 				return nil
 			} else {
+				logutil.Infof("copy11 file %v failed", dentry.Name)
 				retErr = err
 				return err
 			}
@@ -196,6 +197,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 			panic("not support dir")
 		}
 		wg.Add(1)
+		logutil.Infof("copy file is %v", dentry.Name)
 		go copyFileFn(ctx, srcFs, dstFs, dentry, "")
 	}
 	wg.Wait()
