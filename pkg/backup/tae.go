@@ -36,6 +36,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
 	"os"
 	"path"
+	runtime2 "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -164,7 +165,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	}
 	// record files
 	taeFileList := make([]*taeFile, 0, len(files))
-	jobScheduler := tasks.NewParallelJobScheduler(100)
+	jobScheduler := tasks.NewParallelJobScheduler(runtime2.NumCPU() * 4)
 	defer jobScheduler.Stop()
 	var wg sync.WaitGroup
 	var fileMutex sync.RWMutex
