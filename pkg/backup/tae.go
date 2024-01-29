@@ -197,6 +197,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		if dentry.IsDir {
 			panic("not support dir")
 		}
+		wg.Add(1)
 		if i == 0 {
 			i++
 			retErr = copyFileFn(ctx, srcFs, dstFs, dentry, "")
@@ -205,7 +206,6 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 			}
 			continue
 		}
-		wg.Add(1)
 		logutil.Infof("copy file is %v", dentry.Name)
 		go copyFileFn(ctx, srcFs, dstFs, dentry, "")
 	}
