@@ -177,7 +177,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 				isGC(gcFileMap, dentry.Name) {
 				return nil
 			} else {
-				logutil.Infof("copy11 file %v failed", dentry.Name)
+				logutil.Infof("copy11 file %v failed, err is %v, srcFs %v, dstFs is %v", dentry.Name, err.Error(), srcFs.Name(), dstFs.Name())
 				retErr = err
 				return err
 			}
