@@ -100,6 +100,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	table := gc.NewGCTable()
 	gcFileMap := make(map[string]string)
 	softDeletes := make(map[string]map[uint16]bool)
+	var locations []objectio.Location
 	for i, name := range names {
 		if len(name) == 0 {
 			continue
@@ -117,12 +118,12 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		if err != nil {
 			return err
 		}
-		var locations []objectio.Location
 		var data *logtail.CheckpointData
+		var loadLocations []objectio.Location
 		if i == 0 {
-			locations, data, err = logtail.LoadCheckpointEntriesFromKey(ctx, srcFs, key, uint32(version), nil)
+			loadLocations, data, err = logtail.LoadCheckpointEntriesFromKey(ctx, srcFs, key, uint32(version), nil)
 		} else {
-			locations, data, err = logtail.LoadCheckpointEntriesFromKey(ctx, srcFs, key, uint32(version), &softDeletes)
+			loadLocations, data, err = logtail.LoadCheckpointEntriesFromKey(ctx, srcFs, key, uint32(version), &softDeletes)
 		}
 		if err != nil {
 			return err
@@ -131,19 +132,21 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		table.UpdateTable(data)
 		gcFiles := table.SoftGC()
 		mergeGCFile(gcFiles, gcFileMap)
-		for _, location := range locations {
-			if files[location.Name().String()] == nil {
-				dentry, err := srcFs.StatFile(ctx, location.Name().String())
-				if err != nil {
-					if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
-						isGC(gcFileMap, location.Name().String()) {
-						continue
-					} else {
-						return err
-					}
+		locations = append(locations, loadLocations...)
+	}
+
+	for _, location := range locations {
+		if files[location.Name().String()] == nil {
+			dentry, err := srcFs.StatFile(ctx, location.Name().String())
+			if err != nil {
+				if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
+					isGC(gcFileMap, location.Name().String()) {
+					continue
+				} else {
+					return err
 				}
-				files[location.Name().String()] = dentry
 			}
+			files[location.Name().String()] = dentry
 		}
 	}
 
