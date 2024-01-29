@@ -177,7 +177,6 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 				isGC(gcFileMap, dentry.Name) {
 				return nil
 			} else {
-				logutil.Infof("copy11 file %v failed, err is %v, srcFs %v, dstFs is %v", dentry.Name, err.Error(), srcFs.Name(), dstFs.Name())
 				retErr = err
 				return err
 			}
@@ -199,6 +198,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		}
 		wg.Add(1)
 		if i == 0 {
+			// init tae dir
 			i++
 			retErr = copyFileFn(ctx, srcFs, dstFs, dentry, "")
 			if retErr != nil {
@@ -206,7 +206,6 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 			}
 			continue
 		}
-		logutil.Infof("copy file is %v", dentry.Name)
 		go copyFileFn(ctx, srcFs, dstFs, dentry, "")
 	}
 	wg.Wait()
