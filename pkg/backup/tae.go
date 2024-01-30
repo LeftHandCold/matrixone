@@ -206,12 +206,12 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	}
 
 	time.Sleep(400 * time.Second)
-	sizeList, err := CopyDir(ctx, srcFs, dstFs, "ckp", end)
+	sizeList, err := CopyDir(ctx, srcFs, dstFs, "ckp", start)
 	if err != nil {
 		return err
 	}
 	taeFileList = append(taeFileList, sizeList...)
-	sizeList, err = CopyDir(ctx, srcFs, dstFs, "gc", end)
+	sizeList, err = CopyDir(ctx, srcFs, dstFs, "gc", start)
 	if err != nil {
 		return err
 	}
