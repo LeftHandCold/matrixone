@@ -205,6 +205,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		}
 	}
 
+	time.Sleep(400 * time.Second)
 	sizeList, err := CopyDir(ctx, srcFs, dstFs, "ckp", end)
 	if err != nil {
 		return err
