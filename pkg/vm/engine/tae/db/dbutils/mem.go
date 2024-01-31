@@ -56,6 +56,37 @@ func MakeDefaultSmallPool(name string) *containers.VectorPool {
 	)
 }
 
+func MakeDefaultPool(name string) *containers.VectorPool {
+	var (
+		limit            int
+		memtableCapacity int
+	)
+	memStats, err := mem.VirtualMemory()
+	if err != nil {
+		panic(err)
+	}
+	if memStats.Total > mpool.GB*20 {
+		limit = mpool.KB * 64
+		memtableCapacity = 10240
+	} else if memStats.Total > mpool.GB*10 {
+		limit = mpool.KB * 32
+		memtableCapacity = 10240
+	} else if memStats.Total > mpool.GB*5 {
+		limit = mpool.KB * 16
+		memtableCapacity = 10240
+	} else {
+		limit = mpool.KB * 8
+		memtableCapacity = 10240
+	}
+
+	return containers.NewVectorPool(
+		name,
+		memtableCapacity,
+		containers.WithAllocationLimit(limit),
+		containers.WithMPool(common.DefaultAllocator),
+	)
+}
+
 func MakeDefaultTransientPool(name string) *containers.VectorPool {
 	var (
 		limit            int

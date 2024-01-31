@@ -434,7 +434,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		return loc, tnLocation, files, nil
 	}
 
-	backupPool := dbutils.MakeDefaultSmallPool("backup-vector-pool")
+	backupPool := dbutils.MakeDefaultPool("backup-vector-pool")
 	defer backupPool.Destory()
 
 	insertBatch := make(map[uint64]*iBlocks)
