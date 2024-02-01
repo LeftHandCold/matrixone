@@ -332,6 +332,7 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, name st
 		return nil, err
 	}
 	checksum := sha256.Sum256(ioVec.Entries[0].Data)
+	ioVec.Entries[0].Data = nil
 	return checksum[:], err
 }
 
