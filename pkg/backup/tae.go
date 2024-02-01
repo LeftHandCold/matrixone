@@ -105,7 +105,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	copyTs := types.BuildTS(time.Now().UTC().UnixNano(), 0)
 	backupTime := names[0]
 	names = names[1:]
-	files := make(map[string]*objectio.Location, 0)
+	files := make(map[string]objectio.Location, 0)
 	table := gc.NewGCTable()
 	gcFileMap := make(map[string]string)
 	stopPrint := false
@@ -174,7 +174,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 					return err
 				}
 			}*/
-			files[location.Name().String()] = &location
+			files[location.Name().String()] = location
 		}
 	}
 
@@ -200,7 +200,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 			time.Sleep(time.Second * 5)
 		}
 	}()
-	copyFileFn := func(ctx context.Context, srcFs, dstFs fileservice.FileService, loc *objectio.Location, dir string) error {
+	copyFileFn := func(ctx context.Context, srcFs, dstFs fileservice.FileService, loc objectio.Location, dir string) error {
 		defer wg.Done()
 		name := loc.Name().String()
 		size := loc.Extent().End() + objectio.FooterSize
