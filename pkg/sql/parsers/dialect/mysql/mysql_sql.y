@@ -730,7 +730,7 @@ import (
 
 %token <str> KILL
 %type <killOption> kill_opt
-%token <str> BACKUP FILESYSTEM PARALLELLISM
+%token <str> BACKUP FILESYSTEM PARALLELISM
 %type <statementOption> statement_id_opt
 %token <str> QUERY_RESULT
 %start start_command
@@ -855,13 +855,13 @@ normal_stmt:
 |   backup_stmt
 
 backup_stmt:
-    BACKUP STRING FILESYSTEM STRING PARALLELLISM STRING
+    BACKUP STRING FILESYSTEM STRING PARALLELISM STRING
 	{
 		$$ = &tree.BackupStart{
 		    Timestamp: $2,
 		    IsS3 : false,
 		    Dir: $4,
-            Parallellism: $6,
+            Parallelism: $6,
 		}
 	}
     | BACKUP STRING S3OPTION '{' infile_or_s3_params '}'
@@ -10314,7 +10314,7 @@ non_reserved_keyword:
 |   STAGES
 |   BACKUP
 |   FILESYSTEM
-|   PARALLELLISM
+|   PARALLELISM
 
 func_not_keyword:
     DATE_ADD

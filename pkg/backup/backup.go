@@ -55,7 +55,7 @@ func Backup(ctx context.Context, bs *tree.BackupStart, cfg *Config) error {
 			return err
 		}
 		// for parallel backup
-		parallel, err := strconv.ParseUint(bs.Parallellism, 10, 16)
+		parallel, err := strconv.ParseUint(bs.Parallelism, 10, 16)
 		if err != nil {
 			return err
 		}

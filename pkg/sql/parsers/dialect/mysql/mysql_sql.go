@@ -594,7 +594,7 @@ const SERVERS = 57916
 const KILL = 57917
 const BACKUP = 57918
 const FILESYSTEM = 57919
-const PARALLELLISM = 57920
+const PARALLELISM = 57920
 const QUERY_RESULT = 57921
 
 var yyToknames = [...]string{
@@ -1192,7 +1192,7 @@ var yyToknames = [...]string{
 	"KILL",
 	"BACKUP",
 	"FILESYSTEM",
-	"PARALLELLISM",
+	"PARALLELISM",
 	"QUERY_RESULT",
 	"';'",
 	"'{'",
@@ -8356,10 +8356,10 @@ yydefault:
 //line mysql_sql.y:859
 		{
 			yyLOCAL = &tree.BackupStart{
-				Timestamp:    yyDollar[2].str,
-				IsS3:         false,
-				Dir:          yyDollar[4].str,
-				Parallellism: yyDollar[6].str,
+				Timestamp:   yyDollar[2].str,
+				IsS3:        false,
+				Dir:         yyDollar[4].str,
+				Parallelism: yyDollar[6].str,
 			}
 		}
 		yyVAL.union = yyLOCAL
