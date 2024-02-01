@@ -110,6 +110,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	gcFileMap := make(map[string]string)
 	stopPrint := false
 	copyCount := 0
+	copySize := 0
 	var locations []objectio.Location
 	var loadDuration, copyDuration, reWriteDuration time.Duration
 	cupNum := uint16(runtime2.NumCPU())
@@ -195,6 +196,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 			}
 			printMutex.Unlock()
 			logutil.Info("backup", common.OperationField("copy file"),
+				common.AnyField("copy file size", copySize),
 				common.AnyField("copy file num", copyCount),
 				common.AnyField("total file num", len(files)))
 			time.Sleep(time.Second * 5)
@@ -209,6 +211,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 			if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
 				isGC(gcFileMap, name) {
 				copyCount++
+				copySize += int(size)
 				return nil
 			} else {
 				retErr = err
@@ -217,6 +220,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		}
 		fileMutex.Lock()
 		copyCount++
+		copySize += int(size)
 		taeFileList = append(taeFileList, &taeFile{
 			path:     name,
 			size:     int64(size),
