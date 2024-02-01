@@ -74,6 +74,7 @@ func Backup(ctx context.Context, bs *tree.BackupStart, cfg *Config) error {
 		if err != nil {
 			return err
 		}
+		cfg.Parallelism = s3Conf.parallelism
 	}
 
 	// step 2 : backup mo

@@ -119,8 +119,8 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	if num < 32 {
 		num = 32
 	}
-	if num > 256 {
-		num = 256
+	if num > 512 {
+		num = 512
 	}
 	logutil.Info("backup", common.OperationField("start backup"),
 		common.AnyField("backup time", backupTime),
