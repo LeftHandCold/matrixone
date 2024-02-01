@@ -105,7 +105,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	copyTs := types.BuildTS(time.Now().UTC().UnixNano(), 0)
 	backupTime := names[0]
 	names = names[1:]
-	files := make(map[string]*fileservice.DirEntry, 0)
+	files := make(map[string]*objectio.Location, 0)
 	table := gc.NewGCTable()
 	gcFileMap := make(map[string]string)
 	stopPrint := false
@@ -164,8 +164,8 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	loadDuration += time.Since(now)
 	now = time.Now()
 	for _, location := range locations {
-		if files[location.Name().String()] == nil {
-			dentry, err := srcFs.StatFile(ctx, location.Name().String())
+		if files[location.Name().String()].IsEmpty() {
+			/*dentry, err := srcFs.StatFile(ctx, location.Name().String())
 			if err != nil {
 				if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
 					isGC(gcFileMap, location.Name().String()) {
@@ -173,8 +173,8 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 				} else {
 					return err
 				}
-			}
-			files[location.Name().String()] = dentry
+			}*/
+			files[location.Name().String()] = &location
 		}
 	}
 
@@ -200,12 +200,14 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 			time.Sleep(time.Second * 5)
 		}
 	}()
-	copyFileFn := func(ctx context.Context, srcFs, dstFs fileservice.FileService, dentry *fileservice.DirEntry, dir string) error {
+	copyFileFn := func(ctx context.Context, srcFs, dstFs fileservice.FileService, loc *objectio.Location, dir string) error {
 		defer wg.Done()
-		checksum, err := CopyFile(ctx, srcFs, dstFs, dentry, dir)
+		name := loc.Name().String()
+		size := loc.Extent().End() + objectio.FooterSize
+		checksum, err := CopyFile(ctx, srcFs, dstFs, name, int64(size), dir)
 		if err != nil {
 			if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
-				isGC(gcFileMap, dentry.Name) {
+				isGC(gcFileMap, name) {
 				return nil
 			} else {
 				retErr = err
@@ -215,8 +217,8 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		fileMutex.Lock()
 		copyCount++
 		taeFileList = append(taeFileList, &taeFile{
-			path:     dentry.Name,
-			size:     dentry.Size,
+			path:     name,
+			size:     int64(size),
 			checksum: checksum,
 		})
 		fileMutex.Unlock()
@@ -225,9 +227,6 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	now = time.Now()
 	i := 0
 	for _, dentry := range files {
-		if dentry.IsDir {
-			panic("not support dir")
-		}
 		wg.Add(1)
 		if i == 0 {
 			// init tae dir
@@ -285,7 +284,7 @@ func CopyDir(ctx context.Context, srcFs, dstFs fileservice.FileService, dir stri
 			logutil.Infof("[Backup] skip file %v", file.Name)
 			continue
 		}
-		checksum, err = CopyFile(ctx, srcFs, dstFs, &file, dir)
+		checksum, err = CopyFile(ctx, srcFs, dstFs, file.Name, file.Size, dir)
 		if err != nil {
 			return nil, err
 		}
@@ -299,8 +298,7 @@ func CopyDir(ctx context.Context, srcFs, dstFs fileservice.FileService, dir stri
 }
 
 // CopyFile copy file from srcFs to dstFs and return checksum of the written file.
-func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, dentry *fileservice.DirEntry, dstDir string) ([]byte, error) {
-	name := dentry.Name
+func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, name string, size int64, dstDir string) ([]byte, error) {
 	if dstDir != "" {
 		name = path.Join(dstDir, name)
 	}
@@ -311,7 +309,7 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, dentry 
 	}
 	ioVec.Entries[0] = fileservice.IOEntry{
 		Offset: 0,
-		Size:   dentry.Size,
+		Size:   size,
 	}
 	err := srcFs.Read(ctx, ioVec)
 	if err != nil {
@@ -325,7 +323,7 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, dentry 
 	dstIoVec.Entries[0] = fileservice.IOEntry{
 		Offset: 0,
 		Data:   ioVec.Entries[0].Data,
-		Size:   dentry.Size,
+		Size:   size,
 	}
 	err = dstFs.Write(ctx, dstIoVec)
 	if err != nil {
