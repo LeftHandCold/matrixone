@@ -164,7 +164,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	loadDuration += time.Since(now)
 	now = time.Now()
 	for _, location := range locations {
-		if files[location.Name().String()].IsEmpty() {
+		if files[location.Name().String()] == nil {
 			/*dentry, err := srcFs.StatFile(ctx, location.Name().String())
 			if err != nil {
 				if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
@@ -208,6 +208,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		if err != nil {
 			if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
 				isGC(gcFileMap, name) {
+				copyCount++
 				return nil
 			} else {
 				retErr = err
