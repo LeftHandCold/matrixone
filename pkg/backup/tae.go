@@ -333,7 +333,9 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, name st
 	}
 	checksum := sha256.Sum256(ioVec.Entries[0].Data)
 	ioVec.Entries[0].Data = nil
-	return checksum[:], err
+	check := make([]byte, len(checksum))
+	copy(check, checksum[:])
+	return check, err
 }
 
 func mergeGCFile(gcFiles []string, gcFileMap map[string]string) {
