@@ -32,6 +32,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/gc"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
+	"io"
 	"os"
 	"path"
 	runtime2 "runtime"
@@ -304,41 +305,44 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, name st
 	if dstDir != "" {
 		name = path.Join(dstDir, name)
 	}
+	var reader io.ReadCloser
 	ioVec := &fileservice.IOVector{
 		FilePath: name,
-		Entries:  make([]fileservice.IOEntry, 1),
-		Policy:   fileservice.SkipAllCache,
+		Entries: []fileservice.IOEntry{
+			{
+				ReadCloserForRead: &reader,
+				Offset:            0,
+				Size:              -1,
+			},
+		},
+		Policy: fileservice.SkipAllCache,
 	}
-	ioVec.Entries[0] = fileservice.IOEntry{
-		Offset: 0,
-		Size:   size,
-	}
+
 	err := srcFs.Read(ctx, ioVec)
 	if err != nil {
 		return nil, err
 	}
+	defer reader.Close()
+	// hash
+	hasher := sha256.New()
+	hashingReader := io.TeeReader(reader, hasher)
 	dstIoVec := fileservice.IOVector{
 		FilePath: name,
-		Entries:  make([]fileservice.IOEntry, 1),
-		Policy:   fileservice.SkipAllCache,
+		Entries: []fileservice.IOEntry{
+			{
+				ReaderForWrite: hashingReader,
+				Offset:         0,
+				Size:           -1,
+			},
+		},
+		Policy: fileservice.SkipAllCache,
 	}
-	dstIoVec.Entries[0] = fileservice.IOEntry{
-		Offset: 0,
-		Data:   ioVec.Entries[0].Data,
-		Size:   size,
-	}
+
 	err = dstFs.Write(ctx, dstIoVec)
 	if err != nil {
 		return nil, err
 	}
-	checksum := sha256.Sum256(ioVec.Entries[0].Data)
-	check := make([]byte, len(checksum))
-	copy(check, checksum[:])
-	ioVec.Entries[0].Data = nil
-	dstIoVec.Entries[0].Data = nil
-	ioVec.Entries = nil
-	dstIoVec.Entries = nil
-	return check, err
+	return hasher.Sum(nil), nil
 }
 
 func mergeGCFile(gcFiles []string, gcFileMap map[string]string) {
