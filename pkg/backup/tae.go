@@ -114,11 +114,8 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	var locations []objectio.Location
 	var loadDuration, copyDuration, reWriteDuration time.Duration
 	cupNum := uint16(runtime2.NumCPU())
-	if num < 5 {
-		num = cupNum * 5
-	}
-	if num < 32 {
-		num = 32
+	if num < 1 {
+		num = 1
 	}
 	if num > 512 {
 		num = 512
