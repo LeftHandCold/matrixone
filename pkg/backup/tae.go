@@ -228,18 +228,8 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		return nil
 	}
 	now = time.Now()
-	i := 0
 	for _, dentry := range files {
 		wg.Add(1)
-		if i == 0 {
-			// init tae dir
-			i++
-			retErr = copyFileFn(ctx, srcFs, dstFs, dentry, "")
-			if retErr != nil {
-				return retErr
-			}
-			continue
-		}
 		go copyFileFn(ctx, srcFs, dstFs, dentry, "")
 	}
 	wg.Wait()
