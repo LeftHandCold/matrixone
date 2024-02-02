@@ -207,14 +207,14 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		}
 	}()
 	now = time.Now()
-	backupJobs := make(map[string]*tasks.Job, len(files))
-	for n := range files {
-		backupJobs[n] = &tasks.Job{}
-		backupJobs[n].Init(context.Background(), files[n].String(), tasks.JTAny,
+	backupJobs := make([]*tasks.Job, len(files))
+	getJob := func(srcFs, dstFs fileservice.FileService, location objectio.Location) *tasks.Job {
+		job := &tasks.Job{}
+		job.Init(context.Background(), location.Name().String(), tasks.JTAny,
 			func(_ context.Context) *tasks.JobResult {
 
-				name := files[n].Name().String()
-				size := files[n].Extent().End() + objectio.FooterSize
+				name := location.Name().String()
+				size := location.Extent().End() + objectio.FooterSize
 				checksum, err := CopyFile(context.Background(), srcFs, dstFs, name, int64(size), "")
 				if err != nil {
 					if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
@@ -244,11 +244,20 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 					Res: nil,
 				}
 			})
+		return job
+	}
+	idx := 0
+	for n := range files {
+		backupJobs[idx] = getJob(srcFs, dstFs, files[n])
+	}
+
+	for n := range backupJobs {
 		err := jobScheduler.Schedule(backupJobs[n])
 		if err != nil {
 			logutil.Infof("schedule job failed %v", err.Error())
 			return err
 		}
+
 	}
 
 	for n := range backupJobs {
