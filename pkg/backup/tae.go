@@ -207,11 +207,10 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 		}
 	}()
 	now = time.Now()
-	backupJobs := make([]*tasks.Job, len(files))
-	jobIdx := 0
+	backupJobs := make(map[string]*tasks.Job, len(files))
 	for n := range files {
-		backupJob := &tasks.Job{}
-		backupJob.Init(context.Background(), files[n].String(), tasks.JTAny,
+		backupJobs[n] = &tasks.Job{}
+		backupJobs[n].Init(context.Background(), files[n].String(), tasks.JTAny,
 			func(_ context.Context) *tasks.JobResult {
 
 				name := files[n].Name().String()
@@ -245,17 +244,16 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 					Res: nil,
 				}
 			})
-		backupJobs[jobIdx] = backupJob
-		jobIdx++
-		err := jobScheduler.Schedule(backupJob)
+		err := jobScheduler.Schedule(backupJobs[n])
 		if err != nil {
 			logutil.Infof("schedule job failed %v", err.Error())
 			return err
 		}
 	}
 
-	for y := 0; y < len(backupJobs); y++ {
-		ret := backupJobs[y].WaitDone()
+	for n := range backupJobs {
+
+		ret := backupJobs[n].WaitDone()
 		if ret.Err != nil {
 			logutil.Infof("wait job done failed %v", ret.Err.Error())
 			return ret.Err
