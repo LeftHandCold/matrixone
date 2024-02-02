@@ -209,13 +209,13 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	now = time.Now()
 	backupJobs := make([]*tasks.Job, len(files))
 	jobIdx := 0
-	for _, dentry := range files {
+	for n := range files {
 		backupJob := &tasks.Job{}
-		backupJob.Init(context.Background(), dentry.String(), tasks.JTAny,
+		backupJob.Init(context.Background(), files[n].String(), tasks.JTAny,
 			func(_ context.Context) *tasks.JobResult {
 
-				name := dentry.Name().String()
-				size := dentry.Extent().End() + objectio.FooterSize
+				name := files[n].Name().String()
+				size := files[n].Extent().End() + objectio.FooterSize
 				checksum, err := CopyFile(context.Background(), srcFs, dstFs, name, int64(size), "")
 				if err != nil {
 					if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
