@@ -295,6 +295,9 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, name st
 	if dstDir != "" {
 		name = path.Join(dstDir, name)
 	}
+	if size > 1024*1024*1024 {
+		logutil.Infof("[Backup] copy big size file %v, %d", name, size)
+	}
 	var reader io.ReadCloser
 	ioVec := &fileservice.IOVector{
 		FilePath: name,
