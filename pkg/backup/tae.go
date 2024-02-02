@@ -208,7 +208,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	}()
 	now = time.Now()
 	backupJobs := make([]*tasks.Job, len(files))
-	i := 0
+	jobIdx := 0
 	for _, dentry := range files {
 		backupJob := &tasks.Job{}
 		backupJob.Init(context.Background(), dentry.String(), tasks.JTAny,
@@ -245,8 +245,8 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 					Res: nil,
 				}
 			})
-		backupJobs[i] = backupJob
-		i++
+		backupJobs[jobIdx] = backupJob
+		jobIdx++
 		err := jobScheduler.Schedule(backupJob)
 		if err != nil {
 			logutil.Infof("schedule job failed %v", err.Error())
@@ -261,6 +261,10 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 			return ret.Err
 		}
 	}
+	logutil.Info("backup", common.OperationField("copy file"),
+		common.AnyField("copy file size", copySize),
+		common.AnyField("copy file num", copyCount),
+		common.AnyField("total file num", len(files)))
 	printMutex.Lock()
 	stopPrint = true
 	printMutex.Unlock()
