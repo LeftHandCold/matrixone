@@ -42,6 +42,14 @@ import (
 	"time"
 )
 
+var (
+	_backupJobPool = sync.Pool{
+		New: func() any {
+			return new(tasks.Job)
+		},
+	}
+)
+
 func getFileNames(ctx context.Context, retBytes [][][]byte) ([]string, error) {
 	var err error
 	cr := pb.CtlResult{}
@@ -181,10 +189,8 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	taeFileList := make([]*taeFile, 0, len(files))
 	jobScheduler := tasks.NewParallelJobScheduler(int(num))
 	defer jobScheduler.Stop()
-	var wg sync.WaitGroup
 	var fileMutex sync.RWMutex
 	var printMutex sync.Mutex
-	var retErr error
 	go func() {
 		for {
 			printMutex.Lock()
@@ -200,41 +206,60 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 			time.Sleep(time.Second * 5)
 		}
 	}()
-	copyFileFn := func(ctx context.Context, srcFs, dstFs fileservice.FileService, loc objectio.Location, dir string) error {
-		defer wg.Done()
-		name := loc.Name().String()
-		size := loc.Extent().End() + objectio.FooterSize
-		checksum, err := CopyFile(ctx, srcFs, dstFs, name, int64(size), dir)
-		if err != nil {
-			if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
-				isGC(gcFileMap, name) {
+	now = time.Now()
+	backupJobs := make([]*tasks.Job, len(files))
+	i := 0
+	for _, dentry := range files {
+		backupJob := &tasks.Job{}
+		backupJob.Init(context.Background(), dentry.String(), tasks.JTAny,
+			func(_ context.Context) *tasks.JobResult {
+
+				name := dentry.Name().String()
+				size := dentry.Extent().End() + objectio.FooterSize
+				checksum, err := CopyFile(context.Background(), srcFs, dstFs, name, int64(size), "")
+				if err != nil {
+					if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
+						isGC(gcFileMap, name) {
+						copyCount++
+						copySize += int(size)
+						return &tasks.JobResult{
+							Res: nil,
+						}
+					} else {
+						return &tasks.JobResult{
+							Err: err,
+							Res: nil,
+						}
+					}
+				}
+				fileMutex.Lock()
 				copyCount++
 				copySize += int(size)
-				return nil
-			} else {
-				retErr = err
-				return err
-			}
+				taeFileList = append(taeFileList, &taeFile{
+					path:     name,
+					size:     int64(size),
+					checksum: checksum,
+				})
+				fileMutex.Unlock()
+				return &tasks.JobResult{
+					Res: nil,
+				}
+			})
+		backupJobs[i] = backupJob
+		i++
+		err := jobScheduler.Schedule(backupJob)
+		if err != nil {
+			logutil.Infof("schedule job failed %v", err.Error())
+			return err
 		}
-		fileMutex.Lock()
-		copyCount++
-		copySize += int(size)
-		taeFileList = append(taeFileList, &taeFile{
-			path:     name,
-			size:     int64(size),
-			checksum: checksum,
-		})
-		fileMutex.Unlock()
-		return nil
 	}
-	now = time.Now()
-	for _, dentry := range files {
-		wg.Add(1)
-		go copyFileFn(ctx, srcFs, dstFs, dentry, "")
-	}
-	wg.Wait()
-	if retErr != nil {
-		return retErr
+
+	for y := 0; y < len(backupJobs); y++ {
+		ret := backupJobs[y].WaitDone()
+		if ret.Err != nil {
+			logutil.Infof("wait job done failed %v", ret.Err.Error())
+			return ret.Err
+		}
 	}
 	printMutex.Lock()
 	stopPrint = true
