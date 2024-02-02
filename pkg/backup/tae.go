@@ -209,7 +209,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	now = time.Now()
 	backupJobs := make([]*tasks.Job, len(files))
 	getJob := func(srcFs, dstFs fileservice.FileService, location objectio.Location) *tasks.Job {
-		job := &tasks.Job{}
+		job := new(tasks.Job)
 		job.Init(context.Background(), location.Name().String(), tasks.JTAny,
 			func(_ context.Context) *tasks.JobResult {
 
@@ -249,6 +249,7 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	idx := 0
 	for n := range files {
 		backupJobs[idx] = getJob(srcFs, dstFs, files[n])
+		idx++
 	}
 
 	for n := range backupJobs {
