@@ -608,6 +608,7 @@ func (task *flushTableTailTask) flushAblksForSnapshot(ctx context.Context) (subt
 		if dataVer, err = blkData.CollectAppendInRange(
 			types.TS{}, task.txn.GetStartTS(), true, common.MergeAllocator,
 		); err != nil {
+			logutil.Infof("flushAblksForSnapshot: failed to collect appendable data for block %v, err: %v", blk, err)
 			return
 		}
 		data = dataVer.Batch
@@ -620,6 +621,7 @@ func (task *flushTableTailTask) flushAblksForSnapshot(ctx context.Context) (subt
 		if deletes, err = blkData.CollectDeleteInRange(
 			ctx, types.TS{}, task.txn.GetStartTS(), true, common.MergeAllocator,
 		); err != nil {
+			logutil.Infof("flushAblksForSnapshot: failed to collect deletable data for block %v, err: %v", blk, err)
 			return
 		}
 		if deletes != nil {
