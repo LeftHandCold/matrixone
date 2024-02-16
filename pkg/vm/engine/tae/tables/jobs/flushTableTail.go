@@ -641,6 +641,7 @@ func (task *flushTableTailTask) flushAblksForSnapshot(ctx context.Context) (subt
 			true,
 		)
 		if err = task.rt.Scheduler.Schedule(ablockTask); err != nil {
+			logutil.Infof("flushAblksForSnapshot: failed to schedule flush task for block %v, err: %v", blk, err)
 			return
 		}
 		subtasks[i] = ablockTask
