@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/compress"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -545,6 +546,7 @@ func (w *objectWriterV1) Sync(ctx context.Context, items ...WriteOptions) error 
 	w.buffer.SetDataOptions(items...)
 	// if a compact task is rollbacked, it may leave a written file in fs
 	// here we just delete it and write again
+	time.Sleep(30 * time.Second)
 	return moerr.NewBadS3ConfigNoCtx("not implemented")
 	err := w.object.fs.Write(ctx, w.buffer.GetData())
 	if moerr.IsMoErrCode(err, moerr.ErrFileAlreadyExists) {
