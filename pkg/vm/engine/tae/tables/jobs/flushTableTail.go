@@ -789,7 +789,7 @@ func releaseFlushBlkTasks(subtasks []*flushBlkTask, err error) {
 		logutil.Infof("[FlushTabletail] release flush ablk bat because of err %v", err)
 		ictx, cancel := context.WithTimeout(
 			context.Background(),
-			10*time.Second, /*6*time.Minute,*/
+			50*time.Second, /*6*time.Minute,*/
 		)
 		defer cancel()
 		for _, subtask := range subtasks {
