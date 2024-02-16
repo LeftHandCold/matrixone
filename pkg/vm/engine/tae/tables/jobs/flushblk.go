@@ -16,6 +16,7 @@ package jobs
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"math/rand"
 	"time"
 
@@ -91,6 +92,7 @@ func (task *flushBlkTask) Execute(ctx context.Context) (err error) {
 		writer.SetSortKey(uint16(task.meta.GetSchema().GetSingleSortKeyIdx()))
 	}
 
+	logutil.Infof("flushblk %s, blk is %s, task.data is %d", name.String(), task.meta.String(), task.data.Length())
 	_, err = writer.WriteBatch(containers.ToCNBatch(task.data))
 	if err != nil {
 		return err
