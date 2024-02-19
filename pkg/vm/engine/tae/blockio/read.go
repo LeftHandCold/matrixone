@@ -52,6 +52,14 @@ func ReadByFilter(
 	if err != nil {
 		return
 	}
+	if info.MetaLocation().Name().String() == "7e00a9e0-cf01-11ee-a7ee-fefcfef4c117_00000" {
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			id := vector.GetFixedAt[int64](bat.Vecs[0], i)
+			if id == 1756143097500782593 {
+				logutil.Infof("id is %d, row is %d, blockiddd is %v", id, i, info.BlockID.String())
+			}
+		}
+	}
 	var deleteMask *nulls.Nulls
 
 	// merge persisted deletes
@@ -183,6 +191,7 @@ func BlockCompactionRead(
 	if err != nil {
 		return nil, err
 	}
+
 	if len(deletes) == 0 {
 		return loaded, nil
 	}
@@ -452,6 +461,15 @@ func readBlockData(
 
 		if loaded, err = LoadColumns(ctx, cols, typs, fs, info.MetaLocation(), m); err != nil {
 			return
+		}
+
+		if info.MetaLocation().Name().String() == "7e00a9e0-cf01-11ee-a7ee-fefcfef4c117_00000" {
+			for i := 0; i < bat.Vecs[0].Length(); i++ {
+				id := vector.GetFixedAt[int64](bat.Vecs[0], i)
+				if id == 1756143097500782593 {
+					logutil.Infof("id1111 is %d, row is %d, blockiddd is %v", id, i, info.BlockID.String())
+				}
+			}
 		}
 
 		colPos := 0
