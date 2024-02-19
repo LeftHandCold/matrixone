@@ -118,6 +118,7 @@ func BlockRead(
 	fs fileservice.FileService,
 	mp *mpool.MPool,
 	vp engine.VectorPool,
+	name string,
 ) (*batch.Batch, error) {
 	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
 		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
@@ -127,7 +128,9 @@ func BlockRead(
 		sels []int32
 		err  error
 	)
-
+	if name == "t_wms_stock_order" && len(columns) == 1 {
+		logutil.Infof("BlockRead is %v - %v, colTypes is %v", info.MetaLocation().String(), info.DeltaLocation().String(), colTypes)
+	}
 	if filter != nil && info.Sorted {
 		if sels, err = ReadByFilter(
 			ctx, info, inputDeletes, filterSeqnums, filterColTypes,
