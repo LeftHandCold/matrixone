@@ -136,7 +136,7 @@ func BlockRead(
 		sels []int32
 		err  error
 	)
-	if name == "t_wms_stock_order" && len(columns) == 1 {
+	if name == "t_wms_stock_order" {
 		logutil.Infof("BlockRead is %v - %v, colTypes is %v", info.MetaLocation().String(), info.DeltaLocation().String(), colTypes)
 	}
 	if filter != nil && info.Sorted {
