@@ -15,7 +15,6 @@
 package checkpoint
 
 import (
-	"fmt"
 	"sort"
 	"sync"
 	"time"
