@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
@@ -379,7 +380,7 @@ func TestICKPSeekLT(t *testing.T) {
 func TestNewObjectReade1r(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "84b4fa30-81ee-11ee-919c-5254000adb85_00000"
+	name := "c539476e-cf00-11ee-a7ee-fefcfef4c117_00000"
 
 	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -423,7 +424,7 @@ func TestNewObjectReade1r(t *testing.T) {
 func TestNewObjectReader1(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "073deb5b-822c-11ee-ae27-5254000adb85_00000"
+	name := "cd78288f-cecc-11ee-a7ee-fefcfef4c117_00000"
 
 	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -438,7 +439,7 @@ func TestNewObjectReader1(t *testing.T) {
 		return
 	}
 	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
-	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 4}, common.DefaultAllocator)
+	bats, err := reader.LoadAllColumns(ctx, []uint16{0}, common.DefaultAllocator)
 	if err != nil {
 		logutil.Infof("load all columns failed: %v", err)
 		return
@@ -448,11 +449,16 @@ func TestNewObjectReader1(t *testing.T) {
 	location := objectio.BuildLocation(name1, *reader.GetObjectReader().GetMetaExtent(), 51, 1)
 	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
 	//applyDelete(bats[0], bb)
-	ts := types.TS{}
+	//ts := types.TS{}
 	for y, bat := range bats {
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			id := vector.GetFixedAt[int64](bat.Vecs[0], i)
+			if id == 1756143097500782593 || i == 587 || i == 588 {
+				logutil.Infof("id is %d, row is %d, blockiddd is %v, y is %v", id, i, name, y)
+			}
+
 			//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
-			num := types.DecodeInt32(bat.Vecs[0].GetRawBytesAt(i))
+			/*num := types.DecodeInt32(bat.Vecs[0].GetRawBytesAt(i))
 			num1 := types.DecodeInt32(bat.Vecs[1].GetRawBytesAt(i))
 			num2 := types.DecodeInt32(bat.Vecs[2].GetRawBytesAt(i))
 			//ts.Unmarshal(bat.Vecs[4].GetRawBytesAt(i))
@@ -467,9 +473,9 @@ func TestNewObjectReader1(t *testing.T) {
 			//logutil.Infof("num is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
 			if i == bat.Vecs[0].Length()-1 {
 				logutil.Infof("num11122 is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
-			}
+			}*/
 		}
-		logutil.Infof("bats[0].Vecs[1].String() is %v", bat.Vecs[2].String())
+		//logutil.Infof("bats[0].Vecs[1].String() is %v", bat.Vecs[2].String())
 	}
 }
 
