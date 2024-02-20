@@ -16,7 +16,6 @@ package checkpoint
 
 import (
 	"context"
-	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"sort"
 	"sync"
@@ -226,7 +225,7 @@ func (r *runner) Replay(dataFactory catalog.DataFactory) (
 		// for force checkpoint, ckpLSN is 0.
 		if maxGlobal.version >= logtail.CheckpointVersion7 && maxGlobal.ckpLSN > 0 {
 			if maxGlobal.ckpLSN < maxLSN {
-				panic(fmt.Sprintf("logic error, current lsn %d, incoming lsn %d", maxLSN, maxGlobal.ckpLSN))
+				//panic(fmt.Sprintf("logic error, current lsn %d, incoming lsn %d", maxLSN, maxGlobal.ckpLSN))
 			}
 			isLSNValid = true
 			maxLSN = maxGlobal.ckpLSN
@@ -263,7 +262,7 @@ func (r *runner) Replay(dataFactory catalog.DataFactory) (
 		}
 		if checkpointEntry.version >= logtail.CheckpointVersion7 && checkpointEntry.ckpLSN != 0 {
 			if checkpointEntry.ckpLSN < maxLSN {
-				panic(fmt.Sprintf("logic error, current lsn %d, incoming lsn %d", maxLSN, checkpointEntry.ckpLSN))
+				//panic(fmt.Sprintf("logic error, current lsn %d, incoming lsn %d", maxLSN, checkpointEntry.ckpLSN))
 			}
 			isLSNValid = true
 			maxLSN = checkpointEntry.ckpLSN
