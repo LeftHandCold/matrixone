@@ -956,7 +956,7 @@ func (h *Handle) HandleDropOrTruncateRelation(
 }
 
 // TODO: debug for #13342, remove me later
-var districtMatchRegexp = regexp.MustCompile(`.*bmsql_district.*`)
+var districtMatchRegexp = regexp.MustCompile(`.*t_wms_stock_order.*`)
 
 func IsDistrictTable(name string) bool {
 	return districtMatchRegexp.MatchString(name)
@@ -1059,10 +1059,17 @@ func (h *Handle) HandleWrite(
 			}
 		}
 		// TODO: debug for #13342, remove me later
-		if IsDistrictTable(tb.Schema().(*catalog2.Schema).Name) {
+		/*if IsDistrictTable(tb.Schema().(*catalog2.Schema).Name) {
 			for i := 0; i < req.Batch.Vecs[0].Length(); i++ {
 				pk, _, _ := types.DecodeTuple(req.Batch.Vecs[11].GetRawBytesAt(i))
 				logutil.Infof("op1 %v %v", txn.GetStartTS().ToString(), PrintTuple(pk))
+			}
+		}*/
+		if IsDistrictTable(tb.Schema().(*catalog2.Schema).Name) {
+			for i := 0; i < req.Batch.Vecs[0].Length(); i++ {
+				//pk, _, _ := types.DecodeTuple(req.Batch.Vecs[11].GetRawBytesAt(i))
+				pk := vector.GetFixedAt[int64](req.Batch.Vecs[0], i)
+				logutil.Infof("op1 %v %d", txn.GetStartTS().ToString(), pk)
 			}
 		}
 		//Appends a batch of data into table.
@@ -1137,8 +1144,8 @@ func (h *Handle) HandleWrite(
 		for i := 0; i < rowIDVec.Length(); i++ {
 
 			rowID := objectio.HackBytes2Rowid(req.Batch.Vecs[0].GetRawBytesAt(i))
-			pk, _, _ := types.DecodeTuple(req.Batch.Vecs[1].GetRawBytesAt(i))
-			logutil.Infof("op2 %v %v %v", txn.GetStartTS().ToString(), PrintTuple(pk), rowID.String())
+			pk := vector.GetFixedAt[int64](req.Batch.Vecs[0], i)
+			logutil.Infof("op2 %v %d %v", txn.GetStartTS().ToString(), pk, rowID.String())
 		}
 	}
 	err = tb.DeleteByPhyAddrKeys(rowIDVec, pkVec)
