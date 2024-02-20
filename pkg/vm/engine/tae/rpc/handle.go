@@ -1144,7 +1144,7 @@ func (h *Handle) HandleWrite(
 		for i := 0; i < rowIDVec.Length(); i++ {
 
 			rowID := objectio.HackBytes2Rowid(req.Batch.Vecs[0].GetRawBytesAt(i))
-			pk := vector.GetFixedAt[int64](req.Batch.Vecs[0], i)
+			pk := vector.GetFixedAt[int64](req.Batch.Vecs[1], i)
 			logutil.Infof("op2 %v %d %v", txn.GetStartTS().ToString(), pk, rowID.String())
 		}
 	}
