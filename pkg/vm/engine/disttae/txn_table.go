@@ -2020,7 +2020,7 @@ func (tbl *txnTable) readNewRowid(vec *vector.Vector, row int,
 		bat, err := blockio.BlockRead(
 			tbl.proc.Load().Ctx, &blk, nil, columns, colTypes, tbl.db.txn.op.SnapshotTS(),
 			nil, nil, nil,
-			tbl.db.txn.engine.fs, tbl.proc.Load().Mp(), tbl.proc.Load(),
+			tbl.db.txn.engine.fs, tbl.proc.Load().Mp(), tbl.proc.Load(), tbl.tableDef.Name,
 		)
 		if err != nil {
 			return rowid, false, err

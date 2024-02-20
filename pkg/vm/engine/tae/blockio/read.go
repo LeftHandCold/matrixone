@@ -52,6 +52,14 @@ func ReadByFilter(
 	if err != nil {
 		return
 	}
+	if info.MetaLocation().Name().String() == "7e00a9e0-cf01-11ee-a7ee-fefcfef4c117_00000" {
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			id := vector.GetFixedAt[int64](bat.Vecs[0], i)
+			if id == 1756143097500782593 {
+				logutil.Infof("id is %d, row is %d, blockiddd is %v", id, i, info.BlockID.String())
+			}
+		}
+	}
 	var deleteMask *nulls.Nulls
 
 	// merge persisted deletes
@@ -118,6 +126,7 @@ func BlockRead(
 	fs fileservice.FileService,
 	mp *mpool.MPool,
 	vp engine.VectorPool,
+	name string,
 ) (*batch.Batch, error) {
 	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
 		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
@@ -127,7 +136,9 @@ func BlockRead(
 		sels []int32
 		err  error
 	)
-
+	if name == "t_wms_stock_order" {
+		logutil.Infof("BlockRead is %v - %v, colTypes is %v", info.MetaLocation().String(), info.DeltaLocation().String(), colTypes)
+	}
 	if filter != nil && info.Sorted {
 		if sels, err = ReadByFilter(
 			ctx, info, inputDeletes, filterSeqnums, filterColTypes,
@@ -180,6 +191,7 @@ func BlockCompactionRead(
 	if err != nil {
 		return nil, err
 	}
+
 	if len(deletes) == 0 {
 		return loaded, nil
 	}
@@ -449,6 +461,15 @@ func readBlockData(
 
 		if loaded, err = LoadColumns(ctx, cols, typs, fs, info.MetaLocation(), m); err != nil {
 			return
+		}
+
+		if info.MetaLocation().Name().String() == "7e00a9e0-cf01-11ee-a7ee-fefcfef4c117_00000" {
+			for i := 0; i < loaded.Vecs[0].Length(); i++ {
+				id := vector.GetFixedAt[int64](loaded.Vecs[0], i)
+				if id == 1756143097500782593 {
+					logutil.Infof("id1111 is %d, row is %d, blockiddd is %v", id, i, info.BlockID.String())
+				}
+			}
 		}
 
 		colPos := 0
