@@ -408,6 +408,8 @@ func getValueFromVector(vec *vector.Vector, ses *Session, expr *plan2.Expr) (int
 	switch vec.GetType().Oid {
 	case types.T_bool:
 		return vector.MustFixedCol[bool](vec)[0], nil
+	case types.T_bit:
+		return vector.MustFixedCol[uint64](vec)[0], nil
 	case types.T_int8:
 		return vector.MustFixedCol[int8](vec)[0], nil
 	case types.T_int16:
@@ -473,6 +475,7 @@ const (
 	fail
 	sessionId = "session_id"
 
+	txnId       = "txn_id"
 	statementId = "statement_id"
 )
 
@@ -536,6 +539,10 @@ func appendSessionField(fields []zap.Field, ses *Session) []zap.Field {
 		if ses.tStmt != nil {
 			fields = append(fields, zap.String(sessionId, uuid.UUID(ses.tStmt.SessionID).String()))
 			fields = append(fields, zap.String(statementId, uuid.UUID(ses.tStmt.StatementID).String()))
+			txnInfo := ses.GetTxnInfo()
+			if txnInfo != "" {
+				fields = append(fields, zap.String(txnId, txnInfo))
+			}
 		} else {
 			fields = append(fields, zap.String(sessionId, uuid.UUID(ses.GetUUID()).String()))
 		}
@@ -550,6 +557,13 @@ func logInfo(ses *Session, info string, msg string, fields ...zap.Field) {
 	fields = append(fields, zap.String("session_info", info))
 	fields = appendSessionField(fields, ses)
 	getLogger().Log(msg, log.DefaultLogOptions().WithLevel(zap.InfoLevel).AddCallerSkip(1), fields...)
+}
+
+func logInfof(info string, msg string, fields ...zap.Field) {
+	if logutil.GetSkip1Logger().Core().Enabled(zap.InfoLevel) {
+		fields = append(fields, zap.String("session_info", info))
+		getLogger().Log(msg, log.DefaultLogOptions().WithLevel(zap.InfoLevel).AddCallerSkip(1), fields...)
+	}
 }
 
 func logDebug(ses *Session, info string, msg string, fields ...zap.Field) {
@@ -589,6 +603,10 @@ func isCmdFieldListSql(sql string) bool {
 
 // makeCmdFieldListSql makes the internal CMD_FIELD_LIST sql
 func makeCmdFieldListSql(query string) string {
+	nullIdx := strings.IndexRune(query, rune(0))
+	if nullIdx != -1 {
+		query = query[:nullIdx]
+	}
 	return cmdFieldListSql + " " + query
 }
 
@@ -597,18 +615,8 @@ func parseCmdFieldList(ctx context.Context, sql string) (*InternalCmdFieldList, 
 	if !isCmdFieldListSql(sql) {
 		return nil, moerr.NewInternalError(ctx, "it is not the CMD_FIELD_LIST")
 	}
-	rest := strings.TrimSpace(sql[len(cmdFieldListSql):])
-	//find null
-	nullIdx := strings.IndexRune(rest, rune(0))
-	var tableName string
-	if nullIdx < len(rest) {
-		tableName = rest[:nullIdx]
-		//neglect wildcard
-		//wildcard := payload[nullIdx+1:]
-		return &InternalCmdFieldList{tableName: tableName}, nil
-	} else {
-		return nil, moerr.NewInternalError(ctx, "wrong format for COM_FIELD_LIST")
-	}
+	tableName := strings.TrimSpace(sql[len(cmdFieldListSql):])
+	return &InternalCmdFieldList{tableName: tableName}, nil
 }
 
 func getVariableValue(varDefault interface{}) string {
@@ -717,4 +725,119 @@ func needConvertedToAccessDeniedError(errMsg string) bool {
 		return true
 	}
 	return false
+}
+
+const (
+	quitStr = "!!!COM_QUIT!!!"
+)
+
+// makeExecuteSql appends the PREPARE sql and its values of parameters for the EXECUTE statement.
+// Format 1: execute ... using ...
+// execute.... // prepare stmt1 from .... ; set var1 = val1 ; set var2 = val2 ;
+// Format 2: COM_STMT_EXECUTE
+// execute.... // prepare stmt1 from .... ; param0 ; param1 ...
+func makeExecuteSql(ses *Session, stmt tree.Statement) string {
+	if ses == nil || stmt == nil {
+		return ""
+	}
+	preSql := ""
+	bb := &strings.Builder{}
+	//fill prepare parameters
+	switch t := stmt.(type) {
+	case *tree.Execute:
+		name := string(t.Name)
+		prepareStmt, err := ses.GetPrepareStmt(name)
+		if err != nil || prepareStmt == nil {
+			break
+		}
+		preSql = strings.TrimSpace(prepareStmt.Sql)
+		bb.WriteString(preSql)
+		bb.WriteString(" ; ")
+		if len(t.Variables) != 0 {
+			//for EXECUTE ... USING statement. append variables if there is.
+			//get SET VAR sql
+			setVarSqls := make([]string, len(t.Variables))
+			for i, v := range t.Variables {
+				_, userVal, err := ses.GetUserDefinedVar(v.Name)
+				if err == nil && userVal != nil && len(userVal.Sql) != 0 {
+					setVarSqls[i] = userVal.Sql
+				}
+			}
+			bb.WriteString(strings.Join(setVarSqls, " ; "))
+		} else if prepareStmt.params != nil {
+			//for COM_STMT_EXECUTE
+			//get value of parameters
+			paramCnt := prepareStmt.params.Length()
+			paramValues := make([]string, paramCnt)
+			vs := vector.MustFixedCol[types.Varlena](prepareStmt.params)
+			for i := 0; i < paramCnt; i++ {
+				isNull := prepareStmt.params.GetNulls().Contains(uint64(i))
+				if isNull {
+					paramValues[i] = "NULL"
+				} else {
+					paramValues[i] = vs[i].GetString(prepareStmt.params.GetArea())
+				}
+			}
+			bb.WriteString(strings.Join(paramValues, " ; "))
+		}
+	default:
+		return ""
+	}
+	return bb.String()
+}
+
+func mysqlColDef2PlanResultColDef(mr *MysqlResultSet) *plan.ResultColDef {
+	if mr == nil {
+		return nil
+	}
+
+	resultCols := make([]*plan.ColDef, len(mr.Columns))
+	for i, col := range mr.Columns {
+		resultCols[i] = &plan.ColDef{
+			Name: col.Name(),
+		}
+		switch col.ColumnType() {
+		case defines.MYSQL_TYPE_VAR_STRING:
+			resultCols[i].Typ = &plan.Type{
+				Id: int32(types.T_varchar),
+			}
+		case defines.MYSQL_TYPE_LONG:
+			resultCols[i].Typ = &plan.Type{
+				Id: int32(types.T_int32),
+			}
+		case defines.MYSQL_TYPE_LONGLONG:
+			resultCols[i].Typ = &plan.Type{
+				Id: int32(types.T_int64),
+			}
+		case defines.MYSQL_TYPE_DOUBLE:
+			resultCols[i].Typ = &plan.Type{
+				Id: int32(types.T_float64),
+			}
+		case defines.MYSQL_TYPE_FLOAT:
+			resultCols[i].Typ = &plan.Type{
+				Id: int32(types.T_float32),
+			}
+		case defines.MYSQL_TYPE_DATE:
+			resultCols[i].Typ = &plan.Type{
+				Id: int32(types.T_date),
+			}
+		case defines.MYSQL_TYPE_TIME:
+			resultCols[i].Typ = &plan.Type{
+				Id: int32(types.T_time),
+			}
+		case defines.MYSQL_TYPE_DATETIME:
+			resultCols[i].Typ = &plan.Type{
+				Id: int32(types.T_datetime),
+			}
+		case defines.MYSQL_TYPE_TIMESTAMP:
+			resultCols[i].Typ = &plan.Type{
+				Id: int32(types.T_timestamp),
+			}
+		default:
+			panic(fmt.Sprintf("unsupported mysql type %d", col.ColumnType()))
+		}
+	}
+	return &plan.ResultColDef{
+		ResultCols: resultCols,
+	}
 }

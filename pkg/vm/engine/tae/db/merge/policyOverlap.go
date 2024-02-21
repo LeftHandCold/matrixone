@@ -40,8 +40,8 @@ func NewOverlapPolicy() *Overlap {
 }
 
 // impl Policy for Basic
-func (o *Overlap) OnObject(obj *catalog.SegmentEntry) {
-	sortKeyZonemap := obj.Stat.GetSortKeyZonemap()
+func (o *Overlap) OnObject(obj *catalog.ObjectEntry) {
+	sortKeyZonemap := obj.GetSortKeyZonemap()
 	if sortKeyZonemap != nil {
 		o.analyzer.push(sortKeyZonemap.GetMin(), true, obj)
 		o.analyzer.push(sortKeyZonemap.GetMax(), false, obj)
@@ -49,9 +49,9 @@ func (o *Overlap) OnObject(obj *catalog.SegmentEntry) {
 		if o.schema.Name == "bmsql_new_order" {
 			minv := sortKeyZonemap.GetMinBuf()
 			maxv := sortKeyZonemap.GetMaxBuf()
-			mint, _, _ := types.DecodeTuple(minv)
-			maxt, _, _ := types.DecodeTuple(maxv)
-			logutil.Infof("Mergeblocks %d %s %s", obj.SortHint, mint.ErrString(), maxt.ErrString())
+			mint, _, _, _ := types.DecodeTuple(minv)
+			maxt, _, _, _ := types.DecodeTuple(maxv)
+			logutil.Infof("Mergeblocks %d %s %s", obj.SortHint, mint.ErrString(nil), maxt.ErrString(nil))
 		}
 	}
 }
@@ -59,7 +59,7 @@ func (o *Overlap) OnObject(obj *catalog.SegmentEntry) {
 func (o *Overlap) SetConfig(*catalog.TableEntry, func() txnif.AsyncTxn, any) {}
 func (o *Overlap) GetConfig(*catalog.TableEntry) any                         { return nil }
 
-func (o *Overlap) Revise(cpu, mem int64) []*catalog.SegmentEntry {
+func (o *Overlap) Revise(cpu, mem int64) []*catalog.ObjectEntry {
 	o.analyzer.analyze(o.schema.GetSingleSortKeyType().Oid, o.schema.Name)
 	return nil
 }
@@ -73,7 +73,7 @@ func (o *Overlap) ResetForTable(entry *catalog.TableEntry) {
 type OverlapUnit struct {
 	point  any
 	isOpen bool
-	entry  *catalog.SegmentEntry
+	entry  *catalog.ObjectEntry
 }
 
 type OverlapInspector struct {
@@ -84,13 +84,15 @@ func (oi *OverlapInspector) reset() {
 	oi.units = oi.units[:0]
 }
 
-func (oi *OverlapInspector) push(point any, isOpen bool, entry *catalog.SegmentEntry) {
+func (oi *OverlapInspector) push(point any, isOpen bool, entry *catalog.ObjectEntry) {
 	oi.units = append(oi.units, OverlapUnit{point, isOpen, entry})
 }
 
 func (oi *OverlapInspector) analyze(t types.T, name string) {
 	sort.Slice(oi.units, func(i, j int) bool {
 		switch t {
+		case types.T_bit:
+			return oi.units[i].point.(uint64) < oi.units[j].point.(uint64)
 		case types.T_int8:
 			return oi.units[i].point.(int8) < oi.units[j].point.(int8)
 		case types.T_int16:

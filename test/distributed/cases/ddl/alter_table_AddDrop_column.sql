@@ -201,7 +201,7 @@ drop table if exists foreign02;
 create table foreign02(col1 int,
                        col2 int,
                        col3 int primary key,
-                       foreign key(col1) references foreign01(col1));
+                       constraint `c1` foreign key(col1) references foreign01(col1));
 show create table foreign01;
 show create table foreign02;
 insert into foreign01 values(1,'sfhuwe',1,1);
@@ -304,6 +304,8 @@ commit;
 alter table transaction03 drop column d;
 show create table transaction03;
 -- @session}
+show create table transaction03;
+select * from transaction03;
 drop table transaction03;
 
 -- transcation: w-w conflict
@@ -573,4 +575,24 @@ drop table newRename;
 drop role role_r1;
 drop user role_u1;
 
+-- begin, alter table add/drop column, commit, then select
+drop table if exists table01;
+begin;
+create table table01(col1 int, col2 char);
+insert into table01 values(1,'a');
+alter table table01 add column col3 int;
+commit;
+select * from table01;
+select col1 from table01;
+drop table table01;
+
+drop table if exists table02;
+begin;
+create table table02(col1 int, col2 char);
+insert into table02 values(1,'a');
+alter table table02 drop column col2;
+commit;
+select * from table02;
+select col1 from table02;
+drop table table02;
 drop database test;

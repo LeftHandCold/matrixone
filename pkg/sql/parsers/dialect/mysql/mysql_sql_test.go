@@ -27,8 +27,8 @@ var (
 		input  string
 		output string
 	}{
-		input:  "select (col + col) / 2",
-		output: "select (col + col) / 2",
+		input:  "explain analyze verbose force execute st",
+		output: "explain (analyze,verbose) execute st",
 	}
 )
 
@@ -78,20 +78,38 @@ var (
 		input  string
 		output string
 	}{{
+		input:  "create account 0b6d35cc_11ab_4da5_a5c5_c4c09917c11 admin_name='admin' identified by '123456';",
+		output: "create account 0b6d35cc_11ab_4da5_a5c5_c4c09917c11 admin_name 'admin' identified by '******'",
+	}, {
+		input:  "select enable from t1;",
+		output: "select enable from t1",
+	}, {
 		input:  "select _wstart(ts), _wend(ts), max(temperature), min(temperature) from sensor_data where ts > \"2023-08-01 00:00:00.000\" and ts < \"2023-08-01 00:50:00.000\" interval(ts, 10, minute) sliding(5, minute) fill(prev);",
 		output: "select _wstart(ts), _wend(ts), max(temperature), min(temperature) from sensor_data where ts > 2023-08-01 00:00:00.000 and ts < 2023-08-01 00:50:00.000 interval(ts, 10, minute) sliding(5, minute) fill(prev)",
 	}, {
 		input:  "select cluster_centers(a) from t1;",
-		output: "select cluster_centers(a, 1,vector_cosine_ops) from t1",
+		output: "select cluster_centers(a, 1,vector_l2_ops,random,false) from t1",
 	}, {
-		input:  "select cluster_centers(a spherical_kmeans '5') from t1;",
+		input:  "select cluster_centers(a kmeans '5') from t1;",
 		output: "select cluster_centers(a, 5) from t1",
 	}, {
-		input:  "select cluster_centers(a spherical_kmeans '5,vector_l2_ops') from t1;",
+		input:  "select cluster_centers(a kmeans '5,vector_l2_ops') from t1;",
 		output: "select cluster_centers(a, 5,vector_l2_ops) from t1",
 	}, {
-		input:  "select cluster_centers(a spherical_kmeans '5,vector_cosine_ops') from t1;",
+		input:  "select cluster_centers(a kmeans '5,vector_cosine_ops') from t1;",
 		output: "select cluster_centers(a, 5,vector_cosine_ops) from t1",
+	}, {
+		input:  "select cluster_centers(a kmeans '5,vector_cosine_ops,kmeansplusplus') from t1;",
+		output: "select cluster_centers(a, 5,vector_cosine_ops,kmeansplusplus) from t1",
+	}, {
+		input:  "select cluster_centers(a kmeans '5,vector_cosine_ops,random') from t1;",
+		output: "select cluster_centers(a, 5,vector_cosine_ops,random) from t1",
+	}, {
+		input:  "select cluster_centers(a kmeans '5,vector_cosine_ops,random,true') from t1;",
+		output: "select cluster_centers(a, 5,vector_cosine_ops,random,true) from t1",
+	}, {
+		input:  "alter table t1 alter reindex idx1 IVFFLAT lists = 5",
+		output: "alter table t1 alter reindex idx1 ivfflat lists = 5",
 	}, {
 		input:  "create connector for s with (\"type\"='kafka', \"topic\"= 'user', \"partition\" = '1', \"value\"= 'json', \"bootstrap.servers\" = '127.0.0.1:62610');",
 		output: "create connector for s with (type = kafka, topic = user, partition = 1, value = json, bootstrap.servers = 127.0.0.1:62610)",
@@ -102,26 +120,20 @@ var (
 		input:  "create connector for s with (\"type\"='kafkamo', \"topic\"= 'user', \"partion\" = '1', \"value\"= 'json', \"bootstrap.servers\" = '127.0.0.1:62610');",
 		output: "create connector for s with (type = kafkamo, topic = user, partion = 1, value = json, bootstrap.servers = 127.0.0.1:62610)",
 	}, {
-		input:  "create stream s(a varchar, b varchar) with (\"type\"='kafka', \"topic\"= 'user', \"partion\" = '1', \"value\"= 'json', \"bootstrap.servers\" = '127.0.0.1:62610');",
-		output: "create stream s (a varchar, b varchar) with (type = kafka, topic = user, partion = 1, value = json, bootstrap.servers = 127.0.0.1:62610)",
+		input:  "create source s(a varchar, b varchar) with (\"type\"='kafka', \"topic\"= 'user', \"partion\" = '1', \"value\"= 'json', \"bootstrap.servers\" = '127.0.0.1:62610');",
+		output: "create source s (a varchar, b varchar) with (type = kafka, topic = user, partion = 1, value = json, bootstrap.servers = 127.0.0.1:62610)",
 	}, {
-		input:  "drop stream if exists s",
+		input:  "drop source if exists s",
 		output: "drop table if exists s",
 	}, {
-		input:  "CREATE STREAM enriched WITH (\n    VALUE_SCHEMA_ID = 1\n  ) AS\n  SELECT\n     cs.*,\n     u.name,\n     u.classification,\n     u.level\n  FROM clickstream cs\n    JOIN users u ON u.id = cs.userId",
-		output: "create stream enriched with (value_schema_id = 1) as select cs.*, u.name, u.classification, u.level from clickstream as cs inner join users as u on u.id = cs.userid",
+		input:  "CREATE source pageviews (\n    page_id BIGINT KEY\n  ) WITH (\n    KAFKA_TOPIC = 'keyed-pageviews-topic',\n    VALUE_FORMAT = 'JSON_SR',\n    VALUE_SCHEMA_ID = 2\n  );",
+		output: "create source pageviews (page_id bigint key) with (kafka_topic = keyed-pageviews-topic, value_format = JSON_SR, value_schema_id = 2)",
 	}, {
-		input:  "CREATE STREAM filtered AS\n   SELECT \n     a, \n     few,\n     columns \n   FROM source_stream",
-		output: "create stream filtered as select a, few, columns from source_stream",
+		input:  "CREATE source pageviews (\n    viewtime BIGINT,\n    user_id VARCHAR\n  ) WITH (\n    KAFKA_TOPIC = 'keyless-pageviews-topic',\n    KEY_FORMAT = 'AVRO',\n    KEY_SCHEMA_ID = 1,\n    VALUE_FORMAT = 'JSON_SR'\n  );",
+		output: "create source pageviews (viewtime bigint, user_id varchar) with (kafka_topic = keyless-pageviews-topic, key_format = AVRO, key_schema_id = 1, value_format = JSON_SR)",
 	}, {
-		input:  "CREATE STREAM pageviews (\n    page_id BIGINT KEY\n  ) WITH (\n    KAFKA_TOPIC = 'keyed-pageviews-topic',\n    VALUE_FORMAT = 'JSON_SR',\n    VALUE_SCHEMA_ID = 2\n  );",
-		output: "create stream pageviews (page_id bigint key) with (kafka_topic = keyed-pageviews-topic, value_format = JSON_SR, value_schema_id = 2)",
-	}, {
-		input:  "CREATE STREAM pageviews (\n    viewtime BIGINT,\n    user_id VARCHAR\n  ) WITH (\n    KAFKA_TOPIC = 'keyless-pageviews-topic',\n    KEY_FORMAT = 'AVRO',\n    KEY_SCHEMA_ID = 1,\n    VALUE_FORMAT = 'JSON_SR'\n  );",
-		output: "create stream pageviews (viewtime bigint, user_id varchar) with (kafka_topic = keyless-pageviews-topic, key_format = AVRO, key_schema_id = 1, value_format = JSON_SR)",
-	}, {
-		input:  "CREATE STREAM pageviews (page_id BIGINT, viewtime BIGINT, user_id VARCHAR) WITH (\n    KAFKA_TOPIC = 'keyless-pageviews-topic',\n    VALUE_FORMAT = 'JSON'\n  )",
-		output: "create stream pageviews (page_id bigint, viewtime bigint, user_id varchar) with (kafka_topic = keyless-pageviews-topic, value_format = JSON)",
+		input:  "CREATE source pageviews (page_id BIGINT, viewtime BIGINT, user_id VARCHAR) WITH (\n    KAFKA_TOPIC = 'keyless-pageviews-topic',\n    VALUE_FORMAT = 'JSON'\n  )",
+		output: "create source pageviews (page_id bigint, viewtime bigint, user_id varchar) with (kafka_topic = keyless-pageviews-topic, value_format = JSON)",
 	}, {
 		input:  "select row_number() over (partition by col1, col2 order by col3 desc range unbounded preceding) from t1",
 		output: "select row_number() over (partition by col1, col2 order by col3 desc range unbounded preceding) from t1",
@@ -253,7 +265,7 @@ var (
 		output: "create table t1 (a datetime on update current_timestamp(1))",
 	}, {
 		input:  `create table table10 (a int primary key, b varchar(10)) checksum=0 COMMENT="asdf"`,
-		output: "create table table10 (a int primary key, b varchar(10)) checksum = 0 comment = asdf",
+		output: "create table table10 (a int primary key, b varchar(10)) checksum = 0 comment = 'asdf'",
 	}, {
 		input:  "commit work",
 		output: "commit",
@@ -324,6 +336,9 @@ var (
 	}, {
 		input:  "select cast(\"2022-01-01 01:23:34\" as varchar)",
 		output: "select cast(2022-01-01 01:23:34 as varchar)",
+	}, {
+		input:  "select serial_extract(col, 1 as varchar(3)) from t1",
+		output: "select serial_extract(col, 1 as varchar(3)) from t1",
 	}, {
 		input:  "select binary('Geeksforgeeks')",
 		output: "select binary(Geeksforgeeks)",
@@ -558,6 +573,9 @@ var (
 		input:  "SELECT sum(a) as 'hello' from t1;",
 		output: "select sum(a) as hello from t1",
 	}, {
+		input:  "select stream from t1;",
+		output: "select stream from t1",
+	}, {
 		input:  "SELECT DATE_ADD(\"2017-06-15\", INTERVAL -10 MONTH);",
 		output: "select date_add(2017-06-15, interval(-10, month))",
 	}, {
@@ -735,6 +753,12 @@ var (
 	}, {
 		input: "create table t (a int, b char, primary key idx (a, b))",
 	}, {
+		input:  "create dynamic table t as select a from t1",
+		output: "create dynamic table t as select a from t1",
+	}, {
+		input:  "create dynamic table t as select a from t1 with (\"type\"='kafka')",
+		output: "create dynamic table t as select a from t1 with (type = kafka)",
+	}, {
 		input:  "create external table t (a int) infile 'data.txt'",
 		output: "create external table t (a int) infile 'data.txt'",
 	}, {
@@ -745,7 +769,7 @@ var (
 		input: "create external table t (a int) infile {'filepath'='data.txt', 'compression'='lz4'}",
 	}, {
 		input:  "create external table t (a int) infile 'data.txt' FIELDS TERMINATED BY '' OPTIONALLY ENCLOSED BY '' LINES TERMINATED BY ''",
-		output: "create external table t (a int) infile 'data.txt' fields terminated by \t optionally enclosed by \u0000 lines",
+		output: "create external table t (a int) infile 'data.txt' fields terminated by '' optionally enclosed by '' lines terminated by ''",
 	}, {
 		input:  "SET NAMES 'utf8mb4' COLLATE 'utf8mb4_general_ci'",
 		output: "set names = utf8mb4 utf8mb4_general_ci",
@@ -782,7 +806,7 @@ var (
 		output: "load data infile test/loadfile5 ignore into table t.a fields terminated by , (, , c, d, e, f)",
 	}, {
 		input:  "load data infile '/root/lineorder_flat_10.tbl' into table lineorder_flat FIELDS TERMINATED BY '' OPTIONALLY ENCLOSED BY '' LINES TERMINATED BY '';",
-		output: "load data infile /root/lineorder_flat_10.tbl into table lineorder_flat fields terminated by \t optionally enclosed by \u0000 lines",
+		output: "load data infile /root/lineorder_flat_10.tbl into table lineorder_flat fields terminated by '' optionally enclosed by '' lines terminated by ''",
 	}, {
 		input:  "load data local infile 'data' replace into table db.a (a, b, @vc, @vd) set a = @vc != 0, d = @vd != 1",
 		output: "load data local infile data replace into table db.a (a, b, @vc, @vd) set a = @vc != 0, d = @vd != 1",
@@ -822,7 +846,7 @@ var (
 		input: "create external table t (a int) infile {'filepath'='data.txt', 'compression'='lz4'}",
 	}, {
 		input:  "create external table t (a int) infile 'data.txt' FIELDS TERMINATED BY '' OPTIONALLY ENCLOSED BY '' LINES TERMINATED BY ''",
-		output: "create external table t (a int) infile 'data.txt' fields terminated by \t optionally enclosed by \u0000 lines",
+		output: "create external table t (a int) infile 'data.txt' fields terminated by '' optionally enclosed by '' lines terminated by ''",
 	}, {
 		input:  "create external table t (a int) URL s3option{'endpoint'='s3.us-west-2.amazonaws.com', 'access_key_id'='XXX', 'secret_access_key'='XXX', 'bucket'='test', 'filepath'='*.txt', 'region'='us-west-2'}",
 		output: "create external table t (a int) url s3option {'endpoint'='s3.us-west-2.amazonaws.com', 'access_key_id'='******', 'secret_access_key'='******', 'bucket'='test', 'filepath'='*.txt', 'region'='us-west-2'}",
@@ -831,7 +855,7 @@ var (
 		output: "load data infile test/loadfile5 ignore into table t.a fields terminated by , (, , c, d, e, f)",
 	}, {
 		input:  "load data infile '/root/lineorder_flat_10.tbl' into table lineorder_flat FIELDS TERMINATED BY '' OPTIONALLY ENCLOSED BY '' LINES TERMINATED BY '';",
-		output: "load data infile /root/lineorder_flat_10.tbl into table lineorder_flat fields terminated by \t optionally enclosed by \u0000 lines",
+		output: "load data infile /root/lineorder_flat_10.tbl into table lineorder_flat fields terminated by '' optionally enclosed by '' lines terminated by ''",
 	}, {
 		input: "load data infile {'filepath'='data.txt', 'compression'='auto'} into table db.a",
 	}, {
@@ -982,7 +1006,7 @@ var (
 			output: "create table table11  (a int)",
 		}, {
 			input:  "create table table10 (a int primary key, b varchar(10)) checksum=0 COMMENT=\"asdf\"",
-			output: "create table table10 (a int primary key, b varchar(10)) checksum = 0 comment = asdf",
+			output: "create table table10 (a int primary key, b varchar(10)) checksum = 0 comment = 'asdf'",
 		}, {
 			input:  "create temporary table table05 ( a int, b char(10));",
 			output: "create temporary table table05 (a int, b char(10))",
@@ -1053,7 +1077,7 @@ var (
 			output: "create table a (a int) partition by key algorithm = 2 (a, b, db.t.c) (partition xx row_format = dynamic max_rows = 1000 min_rows = 100)",
 		}, {
 			input:  "create table a (a int) engine = 'innodb' row_format = dynamic comment = 'table A' compression = 'lz4' data directory = '/data' index directory = '/index' max_rows = 1000 min_rows = 100",
-			output: "create table a (a int) engine = innodb row_format = dynamic comment = table A compression = lz4 data directory = /data index directory = /index max_rows = 1000 min_rows = 100",
+			output: "create table a (a int) engine = innodb row_format = dynamic comment = 'table A' compression = lz4 data directory = /data index directory = /index max_rows = 1000 min_rows = 100",
 		}, {
 			input:  "create table a (a int) partition by linear key algorithm = 3221 (a, b, db.t.c) (partition xx values less than (1, 2, 323), partition yy)",
 			output: "create table a (a int) partition by linear key algorithm = 3221 (a, b, db.t.c) (partition xx values less than (1, 2, 323), partition yy)",
@@ -1408,10 +1432,13 @@ var (
 			input:  "create index idx using ivfflat on A (a) LISTS 10",
 			output: "create index idx using ivfflat on a (a) LISTS 10 ",
 		}, {
-			input:  "create index idx using ivfflat on A (a) LISTS 10 similarity_function 'IP'",
-			output: "create index idx using ivfflat on a (a) LISTS 10 SIMILARITY_FUNCTION IP ",
+			input:  "create index idx using ivfflat on A (a) LISTS 10 op_type 'vector_l2_ops'",
+			output: "create index idx using ivfflat on a (a) LISTS 10 OP_TYPE vector_l2_ops ",
 		}, {
 			input: "create index idx1 on a (a)",
+		}, {
+			input:  "create index idx using master on A (a,b,c)",
+			output: "create index idx using master on a (a, b, c)",
 		}, {
 			input: "create unique index idx1 using btree on a (a, b(10), (a + b), (a - b)) visible",
 		}, {
@@ -2068,7 +2095,7 @@ var (
 		},
 		{
 			input:  "create table test (`col` varchar(255) DEFAULT b'0')",
-			output: "create table test (col varchar(255) default 0)",
+			output: "create table test (col varchar(255) default 0b0)",
 		},
 		{
 			input:  "select trim(a)",
@@ -2197,7 +2224,7 @@ var (
 		},
 		{
 			input:  "alter table tbl1 drop index idx_name, drop key idx_name, drop column col1, drop primary key, comment = 'aa'",
-			output: "alter table tbl1 drop index idx_name, drop key idx_name, drop column col1, drop primary key, comment = aa",
+			output: "alter table tbl1 drop index idx_name, drop key idx_name, drop column col1, drop primary key, comment = 'aa'",
 		},
 		{
 			input: "alter table tbl1 drop key idx_name",
@@ -2213,7 +2240,7 @@ var (
 		},
 		{
 			input:  "alter table tbl1 checksum = 0, COMMENT = 'asdf'",
-			output: "alter table tbl1 checksum = 0, comment = asdf",
+			output: "alter table tbl1 checksum = 0, comment = 'asdf'",
 		},
 		{
 			input:  "alter table t1 alter index c visible",
@@ -2281,7 +2308,7 @@ var (
 		},
 		{
 			input:  "alter table t1 comment 'abc'",
-			output: "alter table t1 comment = abc",
+			output: "alter table t1 comment = 'abc'",
 		},
 		{
 			input: "alter table t1 rename to t2",
@@ -2291,6 +2318,42 @@ var (
 		},
 		{
 			input: "alter table t1 drop column a, drop column b",
+		},
+		{
+			input:  "ALTER TABLE employees ADD PARTITION (PARTITION p05 VALUES LESS THAN (500001))",
+			output: "alter table employees add partition (partition p05 values less than (500001))",
+		},
+		{
+			input:  "alter table t add partition (partition p4 values in (7), partition p5 values in (8, 9))",
+			output: "alter table t add partition (partition p4 values in (7), partition p5 values in (8, 9))",
+		},
+		{
+			input:  "ALTER TABLE t1 DROP PARTITION p1",
+			output: "alter table t1 drop partition p1",
+		},
+		{
+			input:  "ALTER TABLE t1 DROP PARTITION p0, p1",
+			output: "alter table t1 drop partition p0, p1",
+		},
+		{
+			input:  "ALTER TABLE t1 TRUNCATE PARTITION p0",
+			output: "alter table t1 truncate partition p0",
+		},
+		{
+			input:  "ALTER TABLE t1 TRUNCATE PARTITION p0, p3",
+			output: "alter table t1 truncate partition p0, p3",
+		},
+		{
+			input:  "ALTER TABLE t1 TRUNCATE PARTITION ALL",
+			output: "alter table t1 truncate partition all",
+		},
+		{
+			input:  "ALTER TABLE titles partition by range(to_days(from_date)) (partition p01 values less than (to_days('1985-12-31')), partition p02 values less than (to_days('1986-12-31')), partition p03 values less than (to_days('1987-12-31')))",
+			output: "alter table titles partition by range(to_days(from_date)) (partition p01 values less than (to_days(1985-12-31)), partition p02 values less than (to_days(1986-12-31)), partition p03 values less than (to_days(1987-12-31)))",
+		},
+		{
+			input:  "create table pt2 (id int, date_column date) partition by range(year(date_column)) (partition p1 values less than (2010) comment 'p1 comment', partition p2 values less than maxvalue comment 'p3 comment')",
+			output: "create table pt2 (id int, date_column date) partition by range(year(date_column)) (partition p1 values less than (2010) comment = 'p1 comment', partition p2 values less than (MAXVALUE) comment = 'p3 comment')",
 		},
 		{
 			input: "create publication pub1 database db1",
@@ -2383,6 +2446,13 @@ var (
 		},
 		{
 			input: "show subscriptions",
+		},
+		{
+			input: "show subscriptions all",
+		},
+		{
+			input:  "show subscriptions all like '%pub'",
+			output: "show subscriptions all like %pub",
 		},
 		{
 			input:  "insert into tbl values ($$this is a dollar-quoted string$$)",
@@ -2615,8 +2685,11 @@ var (
 			input:  "insert into t1 values(_binary 0x123)",
 			output: "insert into t1 values (123)",
 		}, {
-			input:  "backup '123' filesystem '/home/abc'",
-			output: "backup 123 filesystem /home/abc",
+			input:  "backup '123' filesystem '/home/abc' parallelism '1'",
+			output: "backup 123 filesystem /home/abc parallelism 1",
+		}, {
+			input:  "backup '125' filesystem '/tmp/backup' parallelism '1';",
+			output: "backup 125 filesystem /tmp/backup parallelism 1",
 		}, {
 			input:  "backup '123' s3option {\"bucket\"='dan-test1', \"filepath\"='ex_table_dan_gzip.gz',\"role_arn\"='arn:aws:iam::468413122987:role/dev-cross-s3', \"external_id\"='5404f91c_4e59_4898_85b3', \"compression\"='auto'}",
 			output: "backup 123 s3option {'bucket'='dan-test1', 'filepath'='ex_table_dan_gzip.gz', 'role_arn'='arn:aws:iam::468413122987:role/dev-cross-s3', 'external_id'='5404f91c_4e59_4898_85b3', 'compression'='auto'}",
@@ -2638,6 +2711,10 @@ var (
 		}, {
 			input:  "/*!50001 CREATE ALGORITHM=UNDEFINED *//*!50013 DEFINER=`root`@`%` SQL SECURITY DEFINER *//*!50001 VIEW `xab0100` AS (select `a`.`SYSUSERID` AS `sysuserid`,`a`.`USERID` AS `userid`,`a`.`USERNAME` AS `usernm`,`a`.`PWDHASH` AS `userpwd`,`a`.`USERTYPE` AS `usertype`,`a`.`EMPID` AS `empid`,`a`.`EMAIL` AS `email`,`a`.`TELO` AS `telo`,`a`.`TELH` AS `telh`,`a`.`MOBIL` AS `mobil`,(case `a`.`ACTIVED` when '1' then 'N' when '2' then 'Y' else 'Y' end) AS `useyn`,`a`.`ENABLEPWD` AS `enablepwd`,`a`.`ENABLEMMSG` AS `enablemmsg`,`a`.`FEECENTER` AS `feecenter`,left(concat(ifnull(`c`.`ORGID`,''),'|'),(char_length(concat(ifnull(`c`.`ORGID`,''),'|')) - 1)) AS `orgid`,left(concat(ifnull(`c`.`ORGNAME`,''),'|'),(char_length(concat(ifnull(`c`.`ORGNAME`,''),'|')) - 1)) AS `orgname`,ifnull(`a`.`ISPLANNER`,'') AS `isplanner`,ifnull(`a`.`ISWHEMPLOYEE`,'') AS `iswhemployee`,ifnull(`a`.`ISBUYER`,'') AS `isbuyer`,ifnull(`a`.`ISQCEMPLOYEE`,'') AS `isqceemployee`,ifnull(`a`.`ISSALEEMPLOYEE`,'') AS `issaleemployee`,`a`.`SEX` AS `sex`,ifnull(`c`.`ENTID`,'3') AS `ORGANIZATION_ID`,ifnull(`a`.`NOTICEUSER`,'') AS `NOTICEUSER` from ((`kaf_cpcuser` `a` left join `kaf_cpcorguser` `b` on((`a`.`SYSUSERID` = `b`.`SYSUSERID`))) left join `kaf_cpcorg` `c` on((`b`.`ORGID` = `c`.`ORGID`))) order by `a`.`SYSUSERID`,`a`.`USERID`,`a`.`USERNAME`,`a`.`USERPASS`,`a`.`USERTYPE`,`a`.`EMPID`,`a`.`EMAIL`,`a`.`TELO`,`a`.`TELH`,`a`.`MOBIL`,`a`.`ACTIVED`,`a`.`ENABLEPWD`,`a`.`ENABLEMMSG`,`a`.`FEECENTER`,`a`.`ISPLANNER`,`a`.`ISWHEMPLOYEE`,`a`.`ISBUYER`,`a`.`ISQCEMPLOYEE`,`a`.`ISSALEEMPLOYEE`,`a`.`SEX`,`c`.`ENTID`) */;",
 			output: "create view xab0100 as (select a.sysuserid as sysuserid, a.userid as userid, a.username as usernm, a.pwdhash as userpwd, a.usertype as usertype, a.empid as empid, a.email as email, a.telo as telo, a.telh as telh, a.mobil as mobil, (case a.actived when 1 then N when 2 then Y else Y end) as useyn, a.enablepwd as enablepwd, a.enablemmsg as enablemmsg, a.feecenter as feecenter, left(concat(ifnull(c.orgid, ), |), (char_length(concat(ifnull(c.orgid, ), |)) - 1)) as orgid, left(concat(ifnull(c.orgname, ), |), (char_length(concat(ifnull(c.orgname, ), |)) - 1)) as orgname, ifnull(a.isplanner, ) as isplanner, ifnull(a.iswhemployee, ) as iswhemployee, ifnull(a.isbuyer, ) as isbuyer, ifnull(a.isqcemployee, ) as isqceemployee, ifnull(a.issaleemployee, ) as issaleemployee, a.sex as sex, ifnull(c.entid, 3) as ORGANIZATION_ID, ifnull(a.noticeuser, ) as NOTICEUSER from kaf_cpcuser as a left join kaf_cpcorguser as b on ((a.sysuserid = b.sysuserid)) left join kaf_cpcorg as c on ((b.orgid = c.orgid)) order by a.sysuserid, a.userid, a.username, a.userpass, a.usertype, a.empid, a.email, a.telo, a.telh, a.mobil, a.actived, a.enablepwd, a.enablemmsg, a.feecenter, a.isplanner, a.iswhemployee, a.isbuyer, a.isqcemployee, a.issaleemployee, a.sex, c.entid)",
+		},
+		{
+			input:  "CREATE TABLE `ecbase_push_log` (`id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',`create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间') ENGINE=InnoDB AUTO_INCREMENT=654 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='推送记录表'/*!50500 PARTITION BY RANGE  COLUMNS(create_time)(PARTITION p20240115 VALUES LESS THAN ('2024-01-15 00:00:00') ENGINE = InnoDB,PARTITION p20240116 VALUES LESS THAN ('2024-01-16 00:00:00') ENGINE = InnoDB,PARTITION p20240117 VALUES LESS THAN ('2024-01-17 00:00:00') ENGINE = InnoDB,PARTITION p20240118 VALUES LESS THAN ('2024-01-18 00:00:00') ENGINE = InnoDB,PARTITION p20240119 VALUES LESS THAN ('2024-01-19 00:00:00') ENGINE = InnoDB,PARTITION p20240120 VALUES LESS THAN ('2024-01-20 00:00:00') ENGINE = InnoDB,PARTITION p20240121 VALUES LESS THAN ('2024-01-21 00:00:00') ENGINE = InnoDB,PARTITION p20240122 VALUES LESS THAN ('2024-01-22 00:00:00') ENGINE = InnoDB,PARTITION p20240123 VALUES LESS THAN ('2024-01-23 00:00:00') ENGINE = InnoDB,PARTITION p20240124 VALUES LESS THAN ('2024-01-24 00:00:00') ENGINE = InnoDB,PARTITION p20240125 VALUES LESS THAN ('2024-01-25 00:00:00') ENGINE = InnoDB) */;",
+			output: "create table ecbase_push_log (id bigint not null auto_increment comment 主键, create_time datetime not null default current_timestamp() comment 创建时间) engine = innodb auto_increment = 654 charset = utf8mb4 Collate = utf8mb4_general_ci comment = '推送记录表' partition by range columns (create_time) (partition p20240115 values less than (2024-01-15 00:00:00) engine = innodb, partition p20240116 values less than (2024-01-16 00:00:00) engine = innodb, partition p20240117 values less than (2024-01-17 00:00:00) engine = innodb, partition p20240118 values less than (2024-01-18 00:00:00) engine = innodb, partition p20240119 values less than (2024-01-19 00:00:00) engine = innodb, partition p20240120 values less than (2024-01-20 00:00:00) engine = innodb, partition p20240121 values less than (2024-01-21 00:00:00) engine = innodb, partition p20240122 values less than (2024-01-22 00:00:00) engine = innodb, partition p20240123 values less than (2024-01-23 00:00:00) engine = innodb, partition p20240124 values less than (2024-01-24 00:00:00) engine = innodb, partition p20240125 values less than (2024-01-25 00:00:00) engine = innodb)",
 		},
 		{
 			input:  "show connectors",
@@ -2663,6 +2740,46 @@ var (
 			input:  "create table t1(a vecf32(3), b vecf64(3), c int)",
 			output: "create table t1 (a vecf32(3), b vecf64(3), c int)",
 		},
+		{
+			input:  "alter table tbl1 drop constraint fk_name",
+			output: "alter table tbl1 drop foreign key fk_name",
+		},
+		{
+			input:  "explain force execute st using @a",
+			output: "explain execute st using @a",
+		},
+		{
+			input:  "explain analyze force execute st using @a",
+			output: "explain (analyze) execute st using @a",
+		},
+		{
+			input:  "explain verbose force execute st using @a",
+			output: "explain (verbose) execute st using @a",
+		},
+		{
+			input:  "explain analyze verbose force execute st using @a",
+			output: "explain (analyze,verbose) execute st using @a",
+		},
+		{
+			input:  "explain force execute st",
+			output: "explain execute st",
+		},
+		{
+			input:  "explain analyze force execute st",
+			output: "explain (analyze) execute st",
+		},
+		{
+			input:  "explain verbose force execute st",
+			output: "explain (verbose) execute st",
+		},
+		{
+			input:  "explain analyze verbose force execute st",
+			output: "explain (analyze,verbose) execute st",
+		},
+		{
+			input:  "explain analyze verbose force execute st",
+			output: "explain (analyze,verbose) execute st",
+		},
 	}
 )
 
@@ -2678,6 +2795,45 @@ func TestValid(t *testing.T) {
 			continue
 		}
 		out := tree.String(ast, dialect.MYSQL)
+		if tcase.output != out {
+			t.Errorf("Parsing failed. \nExpected/Got:\n%s\n%s", tcase.output, out)
+		}
+	}
+}
+
+var (
+	validStrSQL = []struct {
+		input  string
+		output string
+	}{
+		{
+			input:  "create table pt1 (id int, category varchar(50)) partition by list columns(category) (partition p1 values in ('A', 'B') comment 'Category A and B', partition p2 values in ('C', 'D') comment 'Category C and D')",
+			output: "create table pt1 (id int, category varchar(50)) partition by list columns (category) (partition p1 values in ('A', 'B') comment = 'Category A and B', partition p2 values in ('C', 'D') comment = 'Category C and D')",
+		},
+		{
+			input:  "create table titles (emp_no int not null, title varchar(50) not null, from_date date not null, to_date date, primary key (emp_no, title, from_date)) partition by range(to_days(from_date)) (partition p01 values less than (to_days('1985-12-31')), partition p02 values less than (to_days('1986-12-31')))",
+			output: "create table titles (emp_no int not null, title varchar(50) not null, from_date date not null, to_date date, primary key (emp_no, title, from_date)) partition by range(to_days(from_date)) (partition p01 values less than (to_days('1985-12-31')), partition p02 values less than (to_days('1986-12-31')))",
+		},
+		{
+			input:  "create table pt2 (id int, date_column date, value int) partition by range(year(date_column)) (partition p1 values less than (2010) comment 'Before 2010', partition p2 values less than (2020) comment '2010 - 2019', partition p3 values less than (MAXVALUE) comment '2020 and Beyond')",
+			output: "create table pt2 (id int, date_column date, value int) partition by range(year(date_column)) (partition p1 values less than (2010) comment = 'Before 2010', partition p2 values less than (2020) comment = '2010 - 2019', partition p3 values less than (MAXVALUE) comment = '2020 and Beyond')",
+		},
+	}
+)
+
+// Test whether strings in SQL can be restored in string format
+func TestSQLStringFmt(t *testing.T) {
+	ctx := context.TODO()
+	for _, tcase := range validStrSQL {
+		if tcase.output == "" {
+			tcase.output = tcase.input
+		}
+		ast, err := ParseOne(ctx, tcase.input, 1)
+		if err != nil {
+			t.Errorf("Parse(%q) err: %v", tcase.input, err)
+			continue
+		}
+		out := tree.StringWithOpts(ast, dialect.MYSQL, tree.WithSingleQuoteString())
 		if tcase.output != out {
 			t.Errorf("Parsing failed. \nExpected/Got:\n%s\n%s", tcase.output, out)
 		}
@@ -2818,6 +2974,18 @@ var (
 		},
 		{
 			input: "create table t (a int, b char, constraint index idx(a, b) )",
+		},
+		{
+			input: "ALTER TABLE t1 TRUNCATE PARTITION ALL, p0",
+		},
+		{
+			input: "ALTER TABLE pt5 add column a INT NOT NULL, ADD PARTITION (PARTITION p4 VALUES LESS THAN (2022))",
+		},
+		{
+			input: "ALTER TABLE pt5 ADD PARTITION (PARTITION p4 VALUES LESS THAN (2022)),add column a INT NOT NULL",
+		},
+		{
+			input: "ALTER TABLE t1 ADD PARTITION (PARTITION p5 VALUES IN (15, 17)",
 		},
 	}
 )

@@ -24,6 +24,7 @@ import (
 
 var (
 	AggSumSupportedParameters = []types.T{
+		types.T_bit,
 		types.T_uint8, types.T_uint16, types.T_uint32, types.T_uint64,
 		types.T_int8, types.T_int16, types.T_int32, types.T_int64,
 		types.T_float32, types.T_float64,
@@ -37,6 +38,8 @@ var (
 			return types.T_int64.ToType()
 		case types.T_uint8, types.T_uint16, types.T_uint32, types.T_uint64:
 			return types.T_uint64.ToType()
+		case types.T_bit:
+			return types.T_uint64.ToType()
 		case types.T_decimal64:
 			return types.New(types.T_decimal64, 18, typs[0].Scale)
 		case types.T_decimal128:
@@ -46,8 +49,10 @@ var (
 	}
 )
 
-func NewAggSum(overloadID int64, dist bool, inputTypes []types.Type, outputType types.Type, _ any, _ any) (agg.Agg[any], error) {
+func NewAggSum(overloadID int64, dist bool, inputTypes []types.Type, outputType types.Type, _ any) (agg.Agg[any], error) {
 	switch inputTypes[0].Oid {
+	case types.T_bit:
+		return newGenericSum[uint64, uint64](overloadID, inputTypes[0], outputType, dist)
 	case types.T_uint8:
 		return newGenericSum[uint8, uint64](overloadID, inputTypes[0], outputType, dist)
 	case types.T_uint16:
@@ -71,15 +76,15 @@ func NewAggSum(overloadID int64, dist bool, inputTypes []types.Type, outputType 
 	case types.T_decimal64:
 		aggPriv := &sAggDecimal64Sum{}
 		if dist {
-			return agg.NewUnaryDistAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+			return agg.NewUnaryDistAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 		}
-		return agg.NewUnaryAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+		return agg.NewUnaryAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 	case types.T_decimal128:
 		aggPriv := &sAggDecimal128Sum{}
 		if dist {
-			return agg.NewUnaryDistAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+			return agg.NewUnaryDistAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 		}
-		return agg.NewUnaryAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+		return agg.NewUnaryAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 	}
 	return nil, moerr.NewInternalErrorNoCtx("unsupported type '%s' for sum", inputTypes[0])
 }
@@ -87,9 +92,9 @@ func NewAggSum(overloadID int64, dist bool, inputTypes []types.Type, outputType 
 func newGenericSum[T1 numeric, T2 maxScaleNumeric](overloadID int64, typ types.Type, otyp types.Type, dist bool) (agg.Agg[any], error) {
 	aggPriv := &sAggSum[T1, T2]{}
 	if dist {
-		return agg.NewUnaryDistAgg(overloadID, aggPriv, false, typ, otyp, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+		return agg.NewUnaryDistAgg(overloadID, aggPriv, false, typ, otyp, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 	}
-	return agg.NewUnaryAgg(overloadID, aggPriv, false, typ, otyp, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+	return agg.NewUnaryAgg(overloadID, aggPriv, false, typ, otyp, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 }
 
 type sAggSum[Input numeric, Output numeric] struct{}

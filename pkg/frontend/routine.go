@@ -22,10 +22,12 @@ import (
 	"time"
 
 	"github.com/fagongzi/goetty/v2"
+	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/config"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/util/metric"
+	"github.com/matrixorigin/matrixone/pkg/util/status"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"go.uber.org/zap"
 )
@@ -62,6 +64,16 @@ type Routine struct {
 	goroutineID uint64
 
 	restricted atomic.Bool
+
+	printInfoOnce bool
+}
+
+func (rt *Routine) needPrintSessionInfo() bool {
+	if rt.printInfoOnce {
+		rt.printInfoOnce = false
+		return true
+	}
+	return false
 }
 
 func (rt *Routine) setResricted(val bool) {
@@ -187,6 +199,34 @@ func (rt *Routine) cancelRequestCtx() {
 	}
 }
 
+func (rt *Routine) reportSystemStatus() (r bool) {
+	ss := rt.ses
+	if ss == nil {
+		return
+	}
+	rm := ss.getRoutineManager()
+	if rm == nil {
+		return
+	}
+
+	now := time.Now()
+	defer func() {
+		if r {
+			rm.reportSystemStatusTime.Store(&now)
+		}
+	}()
+	last := rm.reportSystemStatusTime.Load()
+	if last == nil {
+		r = true
+		return
+	}
+	if now.Sub(*last) > time.Minute {
+		r = true
+		return
+	}
+	return
+}
+
 func (rt *Routine) handleRequest(req *Request) error {
 	var ses *Session
 	var routineCtx context.Context
@@ -197,7 +237,20 @@ func (rt *Routine) handleRequest(req *Request) error {
 	reqBegin := time.Now()
 	var span trace.Span
 	routineCtx, span = trace.Start(rt.getCancelRoutineCtx(), "Routine.handleRequest",
-		trace.WithKind(trace.SpanKindStatement))
+		trace.WithHungThreshold(30*time.Minute),
+		trace.WithProfileGoroutine(),
+		trace.WithProfileSystemStatus(func() ([]byte, error) {
+			ss, ok := runtime.ProcessLevelRuntime().GetGlobalVariables(runtime.StatusServer)
+			if !ok {
+				return nil, nil
+			}
+			if !rt.reportSystemStatus() {
+				return nil, nil
+			}
+			data, err := ss.(*status.Server).Dump()
+			return data, err
+		}),
+	)
 	defer span.End()
 
 	parameters := rt.getParameters()
@@ -209,14 +262,17 @@ func (rt *Routine) handleRequest(req *Request) error {
 	rt.setCancelRequestFunc(cancelRequestFunc)
 	ses = rt.getSession()
 	ses.UpdateDebugString()
+
+	if rt.needPrintSessionInfo() {
+		logInfof(ses.GetDebugString(), "mo received first request")
+	}
+
 	tenant := ses.GetTenantInfo()
 	nodeCtx := cancelRequestCtx
 	if ses.getRoutineManager().baseService != nil {
 		nodeCtx = context.WithValue(cancelRequestCtx, defines.NodeIDKey{}, ses.getRoutineManager().baseService.ID())
 	}
-	tenantCtx := context.WithValue(nodeCtx, defines.TenantIDKey{}, tenant.GetTenantID())
-	tenantCtx = context.WithValue(tenantCtx, defines.UserIDKey{}, tenant.GetUserID())
-	tenantCtx = context.WithValue(tenantCtx, defines.RoleIDKey{}, tenant.GetDefaultRoleID())
+	tenantCtx := defines.AttachAccount(nodeCtx, tenant.GetTenantID(), tenant.GetUserID(), tenant.GetDefaultRoleID())
 	ses.SetRequestContext(tenantCtx)
 	executor.SetSession(ses)
 
@@ -375,6 +431,7 @@ func NewRoutine(ctx context.Context, protocol MysqlProtocol, executor CmdExecuto
 		cancelRoutineCtx:  cancelRoutineCtx,
 		cancelRoutineFunc: cancelRoutineFunc,
 		parameters:        parameters,
+		printInfoOnce:     true,
 	}
 
 	return ri

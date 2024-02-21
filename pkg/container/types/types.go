@@ -32,6 +32,9 @@ const (
 	// bool family
 	T_bool T = 10
 
+	// T_bit bit family
+	T_bit T = 11
+
 	// numeric/integer family
 	T_int8    T = 20
 	T_int16   T = 21
@@ -91,9 +94,10 @@ const (
 )
 
 const (
-	TxnTsSize   = 12
-	RowidSize   = 24
-	BlockidSize = 20
+	TxnTsSize    = 12
+	RowidSize    = 24
+	ObjectidSize = 18
+	BlockidSize  = 20
 )
 
 type Type struct {
@@ -249,6 +253,9 @@ type Rowid [RowidSize]byte
 // Segmentid
 type Segmentid = Uuid
 
+// Objectid
+type Objectid [ObjectidSize]byte
+
 // Blockid
 type Blockid [BlockidSize]byte
 
@@ -338,9 +345,10 @@ type Number interface {
 	Ints | UInts | Floats | Decimal
 }
 
-var Types map[string]T = map[string]T{
+var Types = map[string]T{
 	"bool": T_bool,
 
+	"bit":      T_bit,
 	"tinyint":  T_int8,
 	"smallint": T_int16,
 	"int":      T_int32,
@@ -490,7 +498,7 @@ func (t Type) IsDecimal() bool {
 }
 
 func (t Type) IsNumeric() bool {
-	return t.IsIntOrUint() || t.IsFloat() || t.IsDecimal()
+	return t.IsIntOrUint() || t.IsFloat() || t.IsDecimal() || t.Oid == T_bit
 }
 
 func (t Type) IsTemporal() bool {
@@ -511,6 +519,8 @@ func (t Type) String() string {
 
 func (t Type) DescString() string {
 	switch t.Oid {
+	case T_bit:
+		return fmt.Sprintf("BIT(%d)", t.Width)
 	case T_char:
 		return fmt.Sprintf("CHAR(%d)", t.Width)
 	case T_varchar:
@@ -544,6 +554,9 @@ func (t T) ToType() Type {
 	switch t {
 	case T_bool:
 		typ.Size = 1
+	case T_bit:
+		typ.Size = 8
+		typ.Width = MaxBitLen
 	case T_int8:
 		typ.Size = 1
 	case T_int16:
@@ -621,6 +634,8 @@ func (t T) String() string {
 		return "ANY"
 	case T_bool:
 		return "BOOL"
+	case T_bit:
+		return "BIT"
 	case T_int8:
 		return "TINYINT"
 	case T_int16:
@@ -700,6 +715,8 @@ func (t T) OidString() string {
 		return "T_json"
 	case T_bool:
 		return "T_bool"
+	case T_bit:
+		return "T_bit"
 	case T_int64:
 		return "T_int64"
 	case T_int32:
@@ -769,6 +786,8 @@ func (t T) TypeLen() int {
 	switch t {
 	case T_any:
 		return 0
+	case T_bit:
+		return 8
 	case T_int8, T_bool:
 		return 1
 	case T_int16:
@@ -818,6 +837,8 @@ func (t T) FixedLength() int {
 	switch t {
 	case T_any:
 		return 0
+	case T_bit:
+		return 8
 	case T_int8, T_uint8, T_bool:
 		return 1
 	case T_int16, T_uint16:
@@ -857,7 +878,8 @@ func (t T) IsOrdered() bool {
 	case T_int8, T_int16, T_int32, T_int64,
 		T_uint8, T_uint16, T_uint32, T_uint64,
 		T_float32, T_float64,
-		T_date, T_time, T_datetime, T_timestamp:
+		T_date, T_time, T_datetime, T_timestamp,
+		T_bit:
 		return true
 	default:
 		return false

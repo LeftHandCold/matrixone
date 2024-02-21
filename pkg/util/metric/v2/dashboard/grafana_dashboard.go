@@ -28,6 +28,7 @@ import (
 	"github.com/K-Phoen/grabana/target/prometheus"
 	"github.com/K-Phoen/grabana/timeseries"
 	tsaxis "github.com/K-Phoen/grabana/timeseries/axis"
+	"github.com/K-Phoen/grabana/variable/datasource"
 	"github.com/K-Phoen/grabana/variable/interval"
 	"github.com/K-Phoen/grabana/variable/query"
 )
@@ -41,6 +42,7 @@ type DashboardCreator struct {
 	dataSource      string
 	extraFilterFunc func() string
 	by              string
+	filterOptions   []dashboard.Option
 }
 
 func NewCloudDashboardCreator(
@@ -54,6 +56,7 @@ func NewCloudDashboardCreator(
 	}
 	dc.extraFilterFunc = dc.getCloudFilters
 	dc.by = "pod"
+	dc.initCloudFilterOptions()
 	return dc
 }
 
@@ -68,6 +71,37 @@ func NewLocalDashboardCreator(
 	}
 	dc.extraFilterFunc = dc.getLocalFilters
 	dc.by = "instance"
+	dc.initLocalFilterOptions()
+	return dc
+}
+
+func NewK8SDashboardCreator(
+	host,
+	username,
+	password,
+	dataSource string) *DashboardCreator {
+	dc := &DashboardCreator{
+		cli:        grabana.NewClient(http.DefaultClient, host, grabana.WithBasicAuth(username, password)),
+		dataSource: dataSource,
+	}
+	dc.extraFilterFunc = dc.getK8SFilters
+	dc.by = "pod"
+	dc.initK8SFilterOptions()
+	return dc
+}
+
+func NewCloudCtrlPlaneDashboardCreator(
+	host,
+	username,
+	password,
+	dataSource string) *DashboardCreator {
+	dc := &DashboardCreator{
+		cli:        grabana.NewClient(http.DefaultClient, host, grabana.WithBasicAuth(username, password)),
+		dataSource: AutoUnitPrometheusDatasource,
+	}
+	dc.extraFilterFunc = dc.getCloudFilters
+	dc.by = "pod"
+	dc.initCloudCtrlPlaneFilterOptions(dataSource)
 	return dc
 }
 
@@ -101,6 +135,14 @@ func (c *DashboardCreator) Create() error {
 	}
 
 	if err := c.initTraceDashboard(); err != nil {
+		return err
+	}
+
+	if err := c.initProxyDashboard(); err != nil {
+		return err
+	}
+
+	if err := c.initFrontendDashboard(); err != nil {
 		return err
 	}
 
@@ -268,41 +310,15 @@ func (c *DashboardCreator) getMultiHistogram(
 }
 
 func (c *DashboardCreator) withRowOptions(rows ...dashboard.Option) []dashboard.Option {
-	return append(rows,
+	rows = append(rows,
 		dashboard.AutoRefresh("30s"),
 		dashboard.Time("now-30m", "now"),
 		dashboard.VariableAsInterval(
 			"interval",
 			interval.Default("1m"),
 			interval.Values([]string{"1m", "5m", "10m", "30m", "1h", "6h", "12h"}),
-		),
-		dashboard.VariableAsQuery(
-			"physicalCluster",
-			query.DataSource(c.dataSource),
-			query.DefaultAll(),
-			query.IncludeAll(),
-			query.Multiple(),
-			query.Label("matrixone_cloud_main_cluster"),
-			query.Request("label_values(matrixone_cloud_main_cluster)"),
-		),
-		dashboard.VariableAsQuery(
-			"cluster",
-			query.DataSource(c.dataSource),
-			query.DefaultAll(),
-			query.IncludeAll(),
-			query.Multiple(),
-			query.Label("matrixone_cloud_cluster"),
-			query.Request("label_values(matrixone_cloud_cluster)"),
-		),
-		dashboard.VariableAsQuery(
-			"pod",
-			query.DataSource(c.dataSource),
-			query.DefaultAll(),
-			query.IncludeAll(),
-			query.Multiple(),
-			query.Label("pod"),
-			query.Request("label_values(pod)"),
 		))
+	return append(rows, c.filterOptions...)
 }
 
 func (c *DashboardCreator) getMetricWithFilter(name string, filter string) string {
@@ -332,6 +348,118 @@ func (c *DashboardCreator) getCloudFilters() string {
 	return `matrixone_cloud_main_cluster=~"$physicalCluster", matrixone_cloud_cluster=~"$cluster", pod=~"$pod"`
 }
 
+func (c *DashboardCreator) initCloudFilterOptions() {
+	c.filterOptions = append(c.filterOptions,
+		dashboard.VariableAsQuery(
+			"physicalCluster",
+			query.DataSource(c.dataSource),
+			query.DefaultAll(),
+			query.IncludeAll(),
+			query.Multiple(),
+			query.Label("matrixone_cloud_main_cluster"),
+			query.Request("label_values(matrixone_cloud_main_cluster)"),
+		),
+		dashboard.VariableAsQuery(
+			"cluster",
+			query.DataSource(c.dataSource),
+			query.DefaultAll(),
+			query.IncludeAll(),
+			query.Multiple(),
+			query.Label("matrixone_cloud_cluster"),
+			query.Request("label_values(matrixone_cloud_cluster)"),
+		),
+		dashboard.VariableAsQuery(
+			"pod",
+			query.DataSource(c.dataSource),
+			query.DefaultAll(),
+			query.IncludeAll(),
+			query.Multiple(),
+			query.Label("pod"),
+			query.Request("label_values(pod)"),
+		))
+}
+
+const Prometheus = "prometheus"
+const AutoUnitPrometheusDatasource = `${ds_prom}`
+
+func (c *DashboardCreator) initCloudCtrlPlaneFilterOptions(metaDatasource string) {
+	c.filterOptions = append(c.filterOptions,
+		dashboard.VariableAsQuery(
+			"unit",
+			query.DataSource(metaDatasource),
+			query.Label("unit"),
+			query.Request("label_values(controlplane_instance_detail_info,unit)"),
+		),
+		dashboard.VariableAsDatasource(
+			"ds_prom",
+			datasource.Type(Prometheus),
+			datasource.Regex(`/$unit-prometheus/`),
+		),
+		dashboard.VariableAsQuery(
+			"physicalCluster",
+			query.DataSource(`${ds_prom}`),
+			query.Label("matrixone_cloud_main_cluster"),
+			query.Request("label_values(up,matrixone_cloud_main_cluster)"),
+		),
+		dashboard.VariableAsQuery(
+			"cluster",
+			query.DataSource(`${ds_prom}`),
+			query.DefaultAll(),
+			query.IncludeAll(),
+			query.Multiple(),
+			query.Label("matrixone_cloud_cluster"),
+			query.Request("label_values(up,matrixone_cloud_cluster)"),
+		),
+		dashboard.VariableAsQuery(
+			"pod",
+			query.DataSource(`${ds_prom}`),
+			query.DefaultAll(),
+			query.IncludeAll(),
+			query.Multiple(),
+			query.Label("pod"),
+			query.Request(`label_values(up{matrixone_cloud_main_cluster="$physicalCluster"},pod)`),
+		))
+}
+
 func (c *DashboardCreator) getLocalFilters() string {
 	return ""
+}
+
+func (c *DashboardCreator) initLocalFilterOptions() {
+	c.filterOptions = append(c.filterOptions,
+		dashboard.VariableAsQuery(
+			"instance",
+			query.DataSource(c.dataSource),
+			query.DefaultAll(),
+			query.IncludeAll(),
+			query.Multiple(),
+			query.Label("instance"),
+			query.Request("label_values(instance)"),
+		))
+}
+
+func (c *DashboardCreator) getK8SFilters() string {
+	return `namespace=~"$namespace", pod=~"$pod"`
+}
+
+func (c *DashboardCreator) initK8SFilterOptions() {
+	c.filterOptions = append(c.filterOptions,
+		dashboard.VariableAsQuery(
+			"namespace",
+			query.DataSource(c.dataSource),
+			query.DefaultAll(),
+			query.IncludeAll(),
+			query.Multiple(),
+			query.Label("namespace"),
+			query.Request("label_values(namespace)"),
+		),
+		dashboard.VariableAsQuery(
+			"pod",
+			query.DataSource(c.dataSource),
+			query.DefaultAll(),
+			query.IncludeAll(),
+			query.Multiple(),
+			query.Label("pod"),
+			query.Request("label_values(pod)"),
+		))
 }

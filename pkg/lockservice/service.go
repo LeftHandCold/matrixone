@@ -18,9 +18,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"hash/crc64"
 	"sync"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/common/reuse"
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/common/stopper"
 	"github.com/matrixorigin/matrixone/pkg/common/util"
@@ -32,10 +34,17 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 )
 
+// WithWait setup wait func to wait some condition ready
+func WithWait(wait func()) Option {
+	return func(s *service) {
+		s.option.wait = wait
+	}
+}
+
 type service struct {
 	cfg                  Config
 	serviceID            string
-	tables               sync.Map // table id -> locktable
+	tableGroups          *lockTableHolders
 	activeTxnHolder      activeTxnHolder
 	fsp                  *fixedSlicePool
 	deadlockDetector     *detector
@@ -53,18 +62,25 @@ type service struct {
 
 	mu struct {
 		sync.RWMutex
-		allocating map[uint64]chan struct{}
+		allocating map[uint32]map[uint64]chan struct{}
+	}
+
+	option struct {
+		wait func()
 	}
 }
 
 // NewLockService create a lock service instance
-func NewLockService(cfg Config) LockService {
+func NewLockService(
+	cfg Config,
+	opts ...Option) LockService {
 	cfg.Validate()
 	s := &service{
 		// If a cn with the same uuid is restarted within a short period of time, it will lead to
 		// the possibility that the remote locks will not be released, because the heartbeat timeout
-		// of a remote lockservice cannot be detected. To solve this problem we use uuid+create-time as
-		// service id, then a cn reboot with the same uuid will also be considered as not a lockservice.
+		// of a remote lockservice cannot be detected. To solve this problem we use uuid+create-time
+		// as service id, then a cn reboot with the same uuid will also be considered as not a same
+		// lockservice.
 		serviceID: getServiceIdentifier(cfg.ServiceID, time.Now().UnixNano()),
 		cfg:       cfg,
 		fsp:       newFixedSlicePool(int(cfg.MaxFixedSliceSize)),
@@ -72,7 +88,13 @@ func NewLockService(cfg Config) LockService {
 			stopper.WithLogger(getLogger().RawLogger())),
 		fetchWhoWaitingListC: make(chan who, 10240),
 	}
-	s.mu.allocating = make(map[uint64]chan struct{})
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	s.tableGroups = &lockTableHolders{service: s.serviceID, holders: map[uint32]*lockTableHolder{}}
+	s.mu.allocating = make(map[uint32]map[uint64]chan struct{})
 	s.activeTxnHolder = newMapBasedTxnHandler(s.serviceID, s.fsp)
 	s.deadlockDetector = newDeadlockDetector(
 		s.fetchTxnWaitingList,
@@ -94,11 +116,14 @@ func (s *service) Lock(
 	txnID []byte,
 	options pb.LockOptions) (pb.Result, error) {
 	v2.TxnLockTotalCounter.Inc()
+	options.Validate(rows)
 
 	start := time.Now()
 	defer func() {
 		v2.TxnAcquireLockDurationHistogram.Observe(time.Since(start).Seconds())
 	}()
+
+	s.wait()
 
 	// FIXME(fagongzi): too many mem alloc in trace
 	ctx, span := trace.Debug(ctx, "lockservice.lock")
@@ -109,7 +134,7 @@ func (s *service) Lock(
 	}
 
 	txn := s.activeTxnHolder.getActiveTxn(txnID, true, "")
-	l, err := s.getLockTableWithCreate(tableID, true)
+	l, err := s.getLockTableWithCreate(options.Group, tableID, rows, options.Sharding)
 	if err != nil {
 		return pb.Result{}, err
 	}
@@ -142,11 +167,14 @@ func (s *service) Lock(
 func (s *service) Unlock(
 	ctx context.Context,
 	txnID []byte,
-	commitTS timestamp.Timestamp) error {
+	commitTS timestamp.Timestamp,
+	mutations ...pb.ExtraMutation) error {
 	start := time.Now()
 	defer func() {
 		v2.TxnUnlockDurationHistogram.Observe(time.Since(start).Seconds())
 	}()
+
+	s.wait()
 
 	// FIXME(fagongzi): too many mem alloc in trace
 	_, span := trace.Debug(ctx, "lockservice.unlock")
@@ -163,7 +191,7 @@ func (s *service) Unlock(
 	}
 
 	defer logUnlockTxn(s.serviceID, txn)()
-	txn.close(s.serviceID, txnID, commitTS, s.getLockTable)
+	txn.close(s.serviceID, txnID, commitTS, s.getLockTable, mutations...)
 	// The deadlock detector will hold the deadlocked transaction that is aborted
 	// to avoid the situation where the deadlock detection is interfered with by
 	// the abort transaction. When a transaction is unlocked, the deadlock detector
@@ -184,10 +212,7 @@ func (s *service) Close() error {
 	var err error
 	s.stopOnce.Do(func() {
 		s.stopper.Stop()
-		s.tables.Range(func(key, value any) bool {
-			value.(lockTable).close()
-			return true
-		})
+		s.tableGroups.removeWithFilter(func(_ uint64, _ lockTable) bool { return true })
 		if err = s.remote.client.Close(); err != nil {
 			return
 		}
@@ -202,6 +227,7 @@ func (s *service) Close() error {
 			return
 		}
 		s.events.close()
+		s.activeTxnHolder.close()
 		close(s.fetchWhoWaitingListC)
 	})
 	return err
@@ -250,46 +276,78 @@ func (s *service) abortDeadlockTxn(wait pb.WaitTxn, err error) {
 	activeTxn.abort(s.serviceID, wait, err)
 }
 
-func (s *service) getLockTable(tableID uint64) (lockTable, error) {
-	return s.getLockTableWithCreate(tableID, false)
+func (s *service) getLockTable(
+	group uint32,
+	tableID uint64) (lockTable, error) {
+	if v := s.tableGroups.get(group, tableID); v != nil {
+		return v, nil
+	}
+	return s.waitLockTableBind(
+		group,
+		tableID,
+		false), nil
 }
 
-func (s *service) waitLockTableBind(tableID uint64, locked bool) lockTable {
-	getter := func() chan struct{} {
-		if !locked {
-			s.mu.RLock()
-			defer s.mu.RUnlock()
-		}
-		return s.mu.allocating[tableID]
+func (s *service) getAllocatingC(
+	group uint32,
+	tableID uint64,
+	locked bool) chan struct{} {
+	if !locked {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
 	}
-
-	c := getter()
-	if c != nil {
-		<-c
-	}
-	if v, ok := s.tables.Load(tableID); ok {
-		return v.(lockTable)
+	if m, ok := s.mu.allocating[group]; ok {
+		return m[tableID]
 	}
 	return nil
 }
 
-func (s *service) getLockTableWithCreate(tableID uint64, create bool) (lockTable, error) {
-	if v, ok := s.tables.Load(tableID); ok {
-		return v.(lockTable), nil
+func (s *service) waitLockTableBind(
+	group uint32,
+	tableID uint64,
+	locked bool) lockTable {
+	c := s.getAllocatingC(group, tableID, locked)
+	if c != nil {
+		<-c
 	}
-	if !create {
-		return s.waitLockTableBind(tableID, false), nil
+	return s.tableGroups.get(group, tableID)
+}
+
+func (s *service) getLockTableWithCreate(
+	group uint32,
+	tableID uint64,
+	rows [][]byte,
+	sharding pb.Sharding) (lockTable, error) {
+	originTableID := tableID
+	if sharding == pb.Sharding_ByRow {
+		tableID = shardingByRow(rows[0])
+	}
+
+	if v := s.tableGroups.get(group, tableID); v != nil {
+		return v, nil
 	}
 
 	var c chan struct{}
 	fn := func() lockTable {
 		s.mu.Lock()
-		defer s.mu.Unlock()
-		v := s.waitLockTableBind(tableID, true)
+		waitC := s.getAllocatingC(group, tableID, true)
+		if waitC != nil {
+			s.mu.Unlock()
+			<-waitC
+			s.mu.Lock()
+		}
+
+		v := s.tableGroups.get(group, tableID)
 		if v == nil {
 			c = make(chan struct{})
-			s.mu.allocating[tableID] = c
+			m, ok := s.mu.allocating[group]
+			if !ok {
+				m = make(map[uint64]chan struct{})
+				s.mu.allocating[group] = m
+			}
+			m[tableID] = c
 		}
+		s.mu.Unlock()
 		return v
 	}
 	if v := fn(); v != nil {
@@ -297,33 +355,29 @@ func (s *service) getLockTableWithCreate(tableID uint64, create bool) (lockTable
 	}
 
 	defer func() {
-		close(c)
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		delete(s.mu.allocating, tableID)
+		delete(s.mu.allocating[group], tableID)
+		close(c)
 	}()
 	bind, err := getLockTableBind(
 		s.remote.client,
+		group,
 		tableID,
-		s.serviceID)
+		originTableID,
+		s.serviceID,
+		sharding)
 	if err != nil {
 		return nil, err
 	}
 
-	l := s.createLockTableByBind(bind)
-	if _, loaded := s.tables.LoadOrStore(tableID, l); loaded {
-		getLogger().Fatal("BUG: cannot loaded lock table from tables")
-	}
-	return l, nil
+	v := s.tableGroups.set(group, tableID, s.createLockTableByBind(bind))
+	return v, nil
 }
 
 func (s *service) handleBindChanged(newBind pb.LockTable) {
 	new := s.createLockTableByBind(newBind)
-	old, loaded := s.tables.Swap(newBind.Table, new)
-	if loaded {
-		old.(lockTable).close()
-	}
-	logRemoteBindChanged(s.serviceID, old.(lockTable).getBind(), newBind)
+	s.tableGroups.set(newBind.Group, newBind.Table, new)
 }
 
 func (s *service) createLockTableByBind(bind pb.LockTable) lockTable {
@@ -337,18 +391,31 @@ func (s *service) createLockTableByBind(bind pb.LockTable) lockTable {
 			bind,
 			s.fsp,
 			s.events,
-			s.clock)
+			s.clock,
+			s.activeTxnHolder)
 	} else {
-		return newRemoteLockTable(
+		remote := newRemoteLockTable(
 			s.serviceID,
 			s.cfg.RemoteLockTimeout.Duration,
 			bind,
 			s.remote.client,
 			s.handleBindChanged)
+		if !s.cfg.EnableRemoteLocalProxy {
+			return remote
+		}
+		return newLockTableProxy(s.serviceID, remote)
 	}
 }
 
+func (s *service) wait() {
+	if s.option.wait == nil {
+		return
+	}
+	s.option.wait()
+}
+
 type activeTxnHolder interface {
+	close()
 	getActiveTxn(txnID []byte, create bool, remoteService string) *activeTxn
 	deleteActiveTxn(txnID []byte) *activeTxn
 	keepRemoteActiveTxn(remoteService string)
@@ -496,6 +563,16 @@ func (h *mapBasedTxnHolder) getTimeoutRemoveTxn(
 	return timeoutTxns, wait
 }
 
+func (h *mapBasedTxnHolder) close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for k, txn := range h.mu.activeTxns {
+		reuse.Free(txn, nil)
+		delete(h.mu.activeTxns, k)
+	}
+}
+
 type remote struct {
 	id   string
 	time time.Time
@@ -510,4 +587,119 @@ func getUUIDFromServiceIdentifier(id string) string {
 		return id
 	}
 	return id[19:]
+}
+
+func shardingByRow(row []byte) uint64 {
+	return crc64.Checksum(row, crc64.MakeTable(crc64.ECMA))
+}
+
+type lockTableHolders struct {
+	sync.RWMutex
+	service string
+	holders map[uint32]*lockTableHolder
+}
+
+func (m *lockTableHolders) get(group uint32, id uint64) lockTable {
+	return m.mustGetHolder(group).get(id)
+}
+
+func (m *lockTableHolders) set(group uint32, id uint64, new lockTable) lockTable {
+	return m.mustGetHolder(group).set(id, new)
+}
+
+func (m *lockTableHolders) mustGetHolder(group uint32) *lockTableHolder {
+	m.RLock()
+	h, ok := m.holders[group]
+	m.RUnlock()
+	if ok {
+		return h
+	}
+
+	m.Lock()
+	defer m.Unlock()
+	if h, ok := m.holders[group]; ok {
+		return h
+	}
+	h = &lockTableHolder{
+		service: m.service,
+		tables:  map[uint64]lockTable{},
+	}
+	m.holders[group] = h
+	return h
+}
+
+func (m *lockTableHolders) iter(fn func(uint64, lockTable) bool) {
+	m.RLock()
+	defer m.RUnlock()
+	for _, h := range m.holders {
+		if !h.iter(fn) {
+			return
+		}
+	}
+}
+
+func (m *lockTableHolders) removeWithFilter(filter func(uint64, lockTable) bool) {
+	m.RLock()
+	defer m.RUnlock()
+
+	for _, h := range m.holders {
+		h.removeWithFilter(filter)
+	}
+}
+
+type lockTableHolder struct {
+	sync.RWMutex
+	service string
+	tables  map[uint64]lockTable
+}
+
+func (m *lockTableHolder) get(id uint64) lockTable {
+	m.RLock()
+	defer m.RUnlock()
+	return m.tables[id]
+}
+
+func (m *lockTableHolder) set(id uint64, new lockTable) lockTable {
+	m.Lock()
+	defer m.Unlock()
+
+	old, ok := m.tables[id]
+
+	if !ok {
+		m.tables[id] = new
+		return new
+	}
+
+	oldBind := old.getBind()
+	newBind := new.getBind()
+	if oldBind.Changed(newBind) {
+		old.close()
+		m.tables[id] = new
+		logRemoteBindChanged(m.service, oldBind, newBind)
+		return new
+	}
+	new.close()
+	return old
+}
+
+func (m *lockTableHolder) iter(fn func(uint64, lockTable) bool) bool {
+	m.RLock()
+	defer m.RUnlock()
+	for id, v := range m.tables {
+		if !fn(id, v) {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *lockTableHolder) removeWithFilter(filter func(uint64, lockTable) bool) {
+	m.Lock()
+	defer m.Unlock()
+	for id, v := range m.tables {
+		if filter(id, v) {
+			v.close()
+			delete(m.tables, id)
+		}
+	}
 }

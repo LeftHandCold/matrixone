@@ -29,8 +29,11 @@ const (
 	End
 )
 
+const argName = "intersect_all"
+
 func (arg *Argument) String(buf *bytes.Buffer) {
-	buf.WriteString(" intersect all ")
+	buf.WriteString(argName)
+	buf.WriteString(": intersect all ")
 }
 
 func (arg *Argument) Prepare(proc *process.Process) error {
@@ -54,15 +57,19 @@ func (arg *Argument) Prepare(proc *process.Process) error {
 // throw away values that do not exist in the hash table.
 // preserve values that exist in the hash table (the minimum of the number of times that exist in either).
 func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
+	if err, isCancel := vm.CancelCheck(proc); isCancel {
+		return vm.CancelResult, err
+	}
+
 	var err error
-	analyzer := proc.GetAnalyze(arg.info.Idx)
+	analyzer := proc.GetAnalyze(arg.GetIdx(), arg.GetParallelIdx(), arg.GetParallelMajor())
 	analyzer.Start()
 	defer analyzer.Stop()
 	result := vm.NewCallResult()
 	for {
 		switch arg.ctr.state {
 		case Build:
-			if err = arg.ctr.build(proc, analyzer, arg.info.IsFirst); err != nil {
+			if err = arg.ctr.build(proc, analyzer, arg.GetIsFirst()); err != nil {
 				return result, err
 			}
 			if arg.ctr.hashTable != nil {
@@ -72,7 +79,7 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 
 		case Probe:
 			last := false
-			last, err = arg.ctr.probe(proc, analyzer, arg.info.IsFirst, arg.info.IsLast, &result)
+			last, err = arg.ctr.probe(proc, analyzer, arg.GetIsFirst(), arg.GetIsLast(), &result)
 			if err != nil {
 				return result, err
 			}

@@ -23,8 +23,11 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
+const argName = "intersect"
+
 func (arg *Argument) String(buf *bytes.Buffer) {
-	buf.WriteString(" intersect ")
+	buf.WriteString(argName)
+	buf.WriteString(": intersect ")
 }
 
 func (arg *Argument) Prepare(proc *process.Process) error {
@@ -42,8 +45,11 @@ func (arg *Argument) Prepare(proc *process.Process) error {
 }
 
 func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
+	if err, isCancel := vm.CancelCheck(proc); isCancel {
+		return vm.CancelResult, err
+	}
 
-	analyze := proc.GetAnalyze(arg.info.Idx)
+	analyze := proc.GetAnalyze(arg.GetIdx(), arg.GetParallelIdx(), arg.GetParallelMajor())
 	analyze.Start()
 	defer analyze.Stop()
 
@@ -52,7 +58,7 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 	for {
 		switch arg.ctr.state {
 		case build:
-			if err := arg.ctr.buildHashTable(proc, analyze, 1, arg.info.IsFirst); err != nil {
+			if err := arg.ctr.buildHashTable(proc, analyze, 1, arg.GetIsFirst()); err != nil {
 				return result, err
 			}
 			if arg.ctr.hashTable != nil {
@@ -63,7 +69,7 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 		case probe:
 			var err error
 			isLast := false
-			if isLast, err = arg.ctr.probeHashTable(proc, analyze, 0, arg.info.IsFirst, arg.info.IsLast, &result); err != nil {
+			if isLast, err = arg.ctr.probeHashTable(proc, analyze, 0, arg.GetIsFirst(), arg.GetIsLast(), &result); err != nil {
 				result.Status = vm.ExecStop
 				return result, err
 			}
@@ -131,7 +137,7 @@ func (c *container) buildHashTable(proc *process.Process, analyse process.Analyz
 				}
 			}
 		}
-		btc.Clean(proc.Mp())
+		proc.PutBatch(btc)
 	}
 	return nil
 }
@@ -216,7 +222,7 @@ func (c *container) probeHashTable(proc *process.Process, analyze process.Analyz
 			}
 		}
 
-		btc.Clean(proc.Mp())
+		proc.PutBatch(btc)
 		analyze.Alloc(int64(c.btc.Size()))
 		analyze.Output(c.btc, isLast)
 

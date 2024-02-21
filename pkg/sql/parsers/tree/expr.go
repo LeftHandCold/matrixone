@@ -19,6 +19,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"math"
 	"strconv"
+	"strings"
 )
 
 // AST for the expression
@@ -817,6 +818,10 @@ func (node *Subquery) Accept(v Visitor) (Expr, bool) {
 	panic("unimplement Subquery Accept")
 }
 
+func (node *Subquery) String() string {
+	return "subquery"
+}
+
 func NewSubquery(s SelectStatement, e bool) *Subquery {
 	return &Subquery{
 		Select: s,
@@ -1120,6 +1125,56 @@ type ResolvableTypeReference interface {
 
 var _ ResolvableTypeReference = &UnresolvedObjectName{}
 var _ ResolvableTypeReference = &T{}
+
+type SerialExtractExpr struct {
+	exprImpl
+	SerialExpr Expr
+	IndexExpr  Expr
+	ResultType ResolvableTypeReference
+}
+
+func (node *SerialExtractExpr) Format(ctx *FmtCtx) {
+	ctx.WriteString("serial_extract(")
+	node.SerialExpr.Format(ctx)
+	ctx.WriteString(", ")
+	node.IndexExpr.Format(ctx)
+	ctx.WriteString(" as ")
+	node.ResultType.(*T).InternalType.Format(ctx)
+	ctx.WriteByte(')')
+}
+
+// Accept implements NodeChecker interface
+func (node *SerialExtractExpr) Accept(v Visitor) (Expr, bool) {
+	//TODO: need validation from @iamlinjunhong
+
+	newNode, skipChildren := v.Enter(node)
+	if skipChildren {
+		return v.Exit(newNode)
+	}
+	node = newNode.(*SerialExtractExpr)
+
+	tmpNode, ok := node.SerialExpr.Accept(v)
+	if !ok {
+		return node, false
+	}
+	node.SerialExpr = tmpNode
+
+	tmpNode, ok = node.IndexExpr.Accept(v)
+	if !ok {
+		return node, false
+	}
+	node.IndexExpr = tmpNode
+
+	return v.Exit(node)
+}
+
+func NewSerialExtractExpr(serialExpr Expr, indexExpr Expr, typ ResolvableTypeReference) *SerialExtractExpr {
+	return &SerialExtractExpr{
+		SerialExpr: serialExpr,
+		IndexExpr:  indexExpr,
+		ResultType: typ,
+	}
+}
 
 // the Cast expression
 type CastExpr struct {
@@ -1608,6 +1663,8 @@ func (node *MaxValue) Accept(v Visitor) (Expr, bool) {
 type SampleExpr struct {
 	// rows or percent.
 	typ sampleType
+	// sample level.
+	level sampleLevel
 
 	// N or K
 	n int
@@ -1640,19 +1697,9 @@ func (s SampleExpr) Accept(v Visitor) (node Expr, ok bool) {
 }
 
 func (s SampleExpr) Valid() error {
-	// todo: this check does not work now. should add more rules into parser. but it's ok for now.
-	if len(s.columns) > 1 {
-		for _, col := range s.columns {
-			if _, ok := col.(UnqualifiedStar); ok {
-				return moerr.NewSyntaxErrorNoCtx(
-					"sample(expr list, N rows / K percent) supports only one '*' in expr list.")
-			}
-		}
-	}
-
 	if s.typ == SampleRows {
-		if s.n < 1 || s.n > 1000 {
-			return moerr.NewSyntaxErrorNoCtx("sample(expr list, N rows) requires N between 1 and 1000.")
+		if s.n < 1 || s.n > 11_000 {
+			return moerr.NewSyntaxErrorNoCtx("sample(expr list, N rows) requires N between 1 and 11000.")
 		}
 		return nil
 	} else {
@@ -1667,36 +1714,51 @@ func (s SampleExpr) GetColumns() (columns Exprs, isStar bool) {
 	return s.columns, s.isStar
 }
 
-func (s SampleExpr) GetSampleDetail() (isSampleRows bool, n int32, k float64) {
-	return s.typ == SampleRows, int32(s.n), s.k
+func (s SampleExpr) GetSampleDetail() (isSampleRows bool, usingRow bool, n int32, k float64) {
+	return s.typ == SampleRows, s.level == SampleUsingRow, int32(s.n), s.k
 }
 
 type sampleType int
+type sampleLevel int
 
 const (
 	SampleRows    sampleType = 0
 	SamplePercent sampleType = 1
+
+	SampleUsingBlock sampleLevel = 0
+	SampleUsingRow   sampleLevel = 1
 )
 
-func NewSampleRowsFuncExpression(number int, columns Exprs) (*SampleExpr, error) {
-	return &SampleExpr{
+func NewSampleRowsFuncExpression(number int, isStar bool, columns Exprs, sampleUnit string) (*SampleExpr, error) {
+	e := &SampleExpr{
 		typ:     SampleRows,
 		n:       number,
 		k:       0,
+		isStar:  isStar,
 		columns: columns,
-	}, nil
+	}
+	if len(sampleUnit) == 5 && strings.ToLower(sampleUnit) == "block" {
+		e.level = SampleUsingBlock
+		return e, nil
+	}
+	if len(sampleUnit) == 3 && strings.ToLower(sampleUnit) == "row" {
+		e.level = SampleUsingRow
+		return e, nil
+	}
+	return e, moerr.NewInternalErrorNoCtx("sample(expr, N rows, unit) only support unit 'block' or 'row'")
 }
 
-func NewSamplePercentFuncExpression1(percent int64, columns Exprs) (*SampleExpr, error) {
+func NewSamplePercentFuncExpression1(percent int64, isStar bool, columns Exprs) (*SampleExpr, error) {
 	return &SampleExpr{
 		typ:     SamplePercent,
 		n:       0,
 		k:       float64(percent),
+		isStar:  isStar,
 		columns: columns,
 	}, nil
 }
 
-func NewSamplePercentFuncExpression2(percent float64, columns Exprs) (*SampleExpr, error) {
+func NewSamplePercentFuncExpression2(percent float64, isStar bool, columns Exprs) (*SampleExpr, error) {
 	if nan := math.IsNaN(percent); nan {
 		return nil, moerr.NewSyntaxErrorNoCtx("sample(expr, K percent) requires K between 0.00 and 100.00")
 	}
@@ -1706,6 +1768,7 @@ func NewSamplePercentFuncExpression2(percent float64, columns Exprs) (*SampleExp
 		typ:     SamplePercent,
 		n:       0,
 		k:       k,
+		isStar:  isStar,
 		columns: columns,
 	}, nil
 }

@@ -16,6 +16,7 @@ package vm
 
 import (
 	"bytes"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
@@ -62,11 +63,12 @@ const (
 	MergeOffset
 	MergeRecursive
 	MergeCTE
+	Partition
 
 	Deletion
 	Insert
 	External
-	Stream
+	Source
 
 	Minus
 	Intersect
@@ -84,6 +86,7 @@ const (
 	MergeDelete
 	Right
 	OnDuplicateKey
+	FuzzyFilter
 	PreInsert
 	PreInsertUnique
 	PreInsertSecondaryIndex
@@ -114,6 +117,11 @@ type Instruction struct {
 	// flag for analyzeInfo record the row information
 	IsFirst bool
 	IsLast  bool
+
+	CnAddr      string
+	OperatorID  int32
+	ParallelID  int32
+	MaxParallel int32
 }
 
 type Operator interface {
@@ -130,11 +138,95 @@ type Operator interface {
 	//Call calls an operator.
 	Call(proc *process.Process) (CallResult, error)
 
-	//SetInfo set operator info
-	SetInfo(info *OperatorInfo)
+	//Release an operator
+	Release()
 
-	//AppendChild append child to operator
+	// OperatorBase methods
+	SetInfo(info *OperatorInfo)
 	AppendChild(child Operator)
+
+	GetOperatorBase() *OperatorBase
+}
+
+type OperatorBase struct {
+	OperatorInfo
+	Children []Operator
+}
+
+func (o *OperatorBase) SetInfo(info *OperatorInfo) {
+	o.OperatorInfo = *info
+}
+
+func (o *OperatorBase) NumChildren() int {
+	return len(o.Children)
+}
+
+func (o *OperatorBase) AppendChild(child Operator) {
+	o.Children = append(o.Children, child)
+}
+
+func (o *OperatorBase) SetChildren(children []Operator) {
+	o.Children = children
+}
+
+func (o *OperatorBase) GetChildren(idx int) Operator {
+	return o.Children[idx]
+}
+
+func (o *OperatorBase) GetCnAddr() string {
+	return o.CnAddr
+}
+
+func (o *OperatorBase) GetOperatorID() int32 {
+	return o.OperatorID
+}
+
+func (o *OperatorBase) GetParalleID() int32 {
+	return o.ParallelID
+}
+
+func (o *OperatorBase) GetMaxParallel() int32 {
+	return o.MaxParallel
+}
+
+func (o *OperatorBase) GetIdx() int {
+	return o.Idx
+}
+
+func (o *OperatorBase) GetParallelIdx() int {
+	return o.ParallelIdx
+}
+
+func (o *OperatorBase) GetParallelMajor() bool {
+	return o.ParallelMajor
+}
+
+func (o *OperatorBase) GetIsFirst() bool {
+	return o.IsFirst
+}
+
+func (o *OperatorBase) GetIsLast() bool {
+	return o.IsLast
+}
+
+var CancelResult = CallResult{
+	Status: ExecStop,
+}
+
+func CancelCheck(proc *process.Process) (error, bool) {
+	select {
+	case <-proc.Ctx.Done():
+		return proc.Ctx.Err(), true
+	default:
+		return nil, false
+	}
+}
+
+func ChildrenCall(o Operator, proc *process.Process, anal process.Analyze) (CallResult, error) {
+	beforeChildrenCall := time.Now()
+	result, err := o.Call(proc)
+	anal.ChildrenCallStop(beforeChildrenCall)
+	return result, err
 }
 
 type ExecStatus int
@@ -165,16 +257,22 @@ func NewCallResult() CallResult {
 }
 
 type OperatorInfo struct {
-	Idx     int
-	IsFirst bool
-	IsLast  bool
-}
+	Idx           int
+	ParallelIdx   int
+	ParallelMajor bool
+	IsFirst       bool
+	IsLast        bool
 
+	CnAddr      string
+	OperatorID  int32
+	ParallelID  int32
+	MaxParallel int32
+}
 type Instructions []Instruction
 
 func (ins *Instruction) IsBrokenNode() bool {
 	switch ins.Op {
-	case Order, MergeOrder:
+	case Order, MergeOrder, Partition:
 		return true
 	case Limit, MergeLimit:
 		return true
@@ -194,6 +292,11 @@ func (ins *Instruction) IsBrokenNode() bool {
 		return true
 	}
 	return false
+}
+
+func (ins *Instruction) CannotRemote() bool {
+	// todo: I think we should add more operators here.
+	return ins.Op == LockOp
 }
 
 type ModificationArgument interface {

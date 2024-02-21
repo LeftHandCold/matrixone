@@ -392,7 +392,7 @@ func TestNormalizeL2(t *testing.T) {
 		{
 			name:    "Test1 - float32 - zero vector",
 			args:    args{argF32: []float32{0, 0, 0}},
-			wantErr: true,
+			wantF32: []float32{0, 0, 0},
 		},
 		{
 			name:    "Test1.b - float32",
@@ -407,7 +407,7 @@ func TestNormalizeL2(t *testing.T) {
 		{
 			name:    "Test2 - float64 - zero vector",
 			args:    args{argF64: []float64{0, 0, 0}},
-			wantErr: true,
+			wantF64: []float64{0, 0, 0},
 		},
 		{
 			name:    "Test3 - float64",
@@ -695,13 +695,48 @@ func TestCosineSimilarity(t *testing.T) {
 	}
 	tests := []testCase{
 		{
-			name: "Test1 - float32",
+			name: "Test1.a - float32",
 			args: args{argLeftF32: []float32{1, 2, 3}, argRightF32: []float32{1, 2, 3}},
 			want: 1,
 		},
 		{
-			name: "Test2 - float64",
+			name: "Test1.b - float32",
+			args: args{argLeftF32: []float32{0.46323407, 23.498016, 563.923, 56.076736, 8732.958}, argRightF32: []float32{0.46323407, 23.498016, 563.923, 56.076736, 8732.958}},
+			want: 1,
+		},
+		{
+			name: "Test2.a - float64",
 			args: args{argLeftF64: []float64{1, 2, 3}, argRightF64: []float64{1, 2, 3}},
+			want: 1,
+		},
+		{
+			name: "Test2.b - float64",
+			args: args{argLeftF64: []float64{0.46323407, 23.498016, 563.923, 56.076736, 8732.958}, argRightF64: []float64{0.46323407, 23.498016, 563.923, 56.076736, 8732.958}},
+			want: 1,
+		},
+		{
+			name: "Test2.c - float64",
+			args: args{argLeftF64: []float64{0.8166459, 0.66616553, 0.4886152}, argRightF64: []float64{0.8166459, 0.66616553, 0.4886152}},
+			want: 1,
+		},
+		{
+			name: "Test2.d - float64",
+			args: args{argLeftF64: []float64{8.5606893, 6.7903588, 821.977768}, argRightF64: []float64{8.5606893, 6.7903588, 821.977768}},
+			want: 1,
+		},
+		{
+			name: "Test2.e - float64",
+			args: args{argLeftF64: []float64{0.9260021, 0.26637346, 0.06567037}, argRightF64: []float64{0.9260021, 0.26637346, 0.06567037}},
+			want: 1,
+		},
+		{
+			name: "Test2.f - float64",
+			args: args{argLeftF64: []float64{0.45756745, 65.2996871, 321.623636, 3.60082066, 87.58445764}, argRightF64: []float64{0.45756745, 65.2996871, 321.623636, 3.60082066, 87.58445764}},
+			want: 1,
+		},
+		{
+			name: "Test2.g - float64",
+			args: args{argLeftF64: []float64{0.46323407, 23.49801546, 563.9229458, 56.07673508, 8732.9583881}, argRightF64: []float64{0.46323407, 23.49801546, 563.9229458, 56.07673508, 8732.9583881}},
 			want: 1,
 		},
 	}
@@ -709,12 +744,12 @@ func TestCosineSimilarity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 
 			if tt.args.argLeftF32 != nil {
-				if gotRes, _ := CosineSimilarity[float32](tt.args.argLeftF32, tt.args.argRightF32); !assertx.InEpsilonF64(tt.want, gotRes) {
+				if gotRes, _ := CosineSimilarity[float32](tt.args.argLeftF32, tt.args.argRightF32); !reflect.DeepEqual(tt.want, gotRes) {
 					t.Errorf("CosineSimilarity() = %v, want %v", gotRes, tt.want)
 				}
 			}
 			if tt.args.argLeftF64 != nil {
-				if gotRes, _ := CosineSimilarity[float64](tt.args.argLeftF64, tt.args.argRightF64); !assertx.InEpsilonF64(tt.want, gotRes) {
+				if gotRes, _ := CosineSimilarity[float64](tt.args.argLeftF64, tt.args.argRightF64); !reflect.DeepEqual(tt.want, gotRes) {
 					t.Errorf("CosineSimilarity() = %v, want %v", gotRes, tt.want)
 				}
 			}
@@ -796,12 +831,85 @@ func TestCosineDistance(t *testing.T) {
 
 			if tt.args.argLeftF32 != nil {
 				if gotRes, _ := CosineDistance[float32](tt.args.argLeftF32, tt.args.argRightF32); !assertx.InEpsilonF64(tt.want, gotRes) {
-					t.Errorf("L2Distance() = %v, want %v", gotRes, tt.want)
+					t.Errorf("CosineDistance() = %v, want %v", gotRes, tt.want)
 				}
 			}
 			if tt.args.argLeftF64 != nil {
 				if gotRes, _ := CosineDistance[float64](tt.args.argLeftF64, tt.args.argRightF64); !assertx.InEpsilonF64(tt.want, gotRes) {
-					t.Errorf("L2Distance() = %v, want %v", gotRes, tt.want)
+					t.Errorf("CosineDistance() = %v, want %v", gotRes, tt.want)
+				}
+			}
+
+		})
+	}
+}
+
+func TestScalarOp(t *testing.T) {
+	type args struct {
+		argVecF32 []float32
+		argVecF64 []float64
+		argOp     string
+		argSca    float64
+	}
+	type testCase struct {
+		name       string
+		args       args
+		wantVecF32 []float32
+		wantVecF64 []float64
+	}
+	tests := []testCase{
+		{
+			name:       "Test1 - float32",
+			args:       args{argVecF32: []float32{1, 2, 3}, argOp: "+", argSca: 2},
+			wantVecF32: []float32{3, 4, 5},
+		},
+		{
+			name:       "Test2 - float32",
+			args:       args{argVecF32: []float32{1, 2, 3}, argOp: "-", argSca: 2},
+			wantVecF32: []float32{-1, 0, 1},
+		},
+		{
+			name:       "Test3 - float32",
+			args:       args{argVecF32: []float32{1, 2, 3}, argOp: "*", argSca: 2},
+			wantVecF32: []float32{2, 4, 6},
+		},
+		{
+			name:       "Test4 - float32",
+			args:       args{argVecF32: []float32{1, 2, 3}, argOp: "/", argSca: 2},
+			wantVecF32: []float32{0.5, 1, 1.5},
+		},
+
+		{
+			name:       "Test5 - float64",
+			args:       args{argVecF64: []float64{1, 2, 3}, argOp: "+", argSca: 2},
+			wantVecF64: []float64{3, 4, 5},
+		},
+		{
+			name:       "Test6 - float64",
+			args:       args{argVecF64: []float64{1, 2, 3}, argOp: "-", argSca: 2},
+			wantVecF64: []float64{-1, 0, 1},
+		},
+		{
+			name:       "Test7 - float64",
+			args:       args{argVecF64: []float64{1, 2, 3}, argOp: "*", argSca: 2},
+			wantVecF64: []float64{2, 4, 6},
+		},
+		{
+			name:       "Test8 - float64",
+			args:       args{argVecF64: []float64{1, 2, 3}, argOp: "/", argSca: 2},
+			wantVecF64: []float64{0.5, 1, 1.5},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			if tt.args.argVecF32 != nil {
+				if gotRes, _ := ScalarOp[float32](tt.args.argVecF32, tt.args.argOp, tt.args.argSca); !reflect.DeepEqual(gotRes, tt.wantVecF32) {
+					t.Errorf("ScalarOp() = %v, want %v", gotRes, tt.wantVecF32)
+				}
+			} else if tt.args.argVecF64 != nil {
+				if gotRes, _ := ScalarOp[float64](tt.args.argVecF64, tt.args.argOp, tt.args.argSca); !reflect.DeepEqual(gotRes, tt.wantVecF64) {
+					t.Errorf("ScalarOp() = %v, want %v", gotRes, tt.wantVecF64)
 				}
 			}
 

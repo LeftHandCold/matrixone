@@ -18,7 +18,7 @@ insert into text_01 select '123','7834','commmmmmment';
 insert into text_01 values ('789',' 23:50:00','20');
 select * from text_01;
 create table text_02(t1 text,t2 tinytext,t3 mediumtext,t4 longtext,t5 text);
-load data infile '$resources/blob_file/blob1.csv' into table text_02;
+load data infile '$resources/blob_file/blob1.csv' into table text_02 fields terminated by ',';
 select * from text_02;
 insert into text_02 values ("123木头人","zt@126.com","1000-01-01","9999-12-31 23:59:59.999999","2038-01-19 03:14:07.999999");
 select * from text_02;
@@ -155,3 +155,25 @@ prepare stmt2 from 'select length(b) from blob_05';
 execute stmt2 ;
 deallocate prepare stmt1;
 deallocate prepare stmt2;
+-- add blob cases
+create table testblob(c1 blob);
+--insert xml data
+INSERT into testblob VALUES ('<?xml version="1.0" encoding="ISO-8859-1"?><book category="COOKING"><title lang="en">everyday</titile><author>laurentis</author><year>2005</year><price>20.34</price></book>');
+select upper(hex(c1)) from testblob;
+--insert 0x data
+insert into testblob values(0xC20766572736);
+select upper(hex(c1)) from testblob;
+insert into testblob values(0x2635AB72632402);
+select upper(hex(c1)) from testblob;
+--insert character data
+insert into testblob values('yyyyybbbbbbbb');
+select upper(hex(c1)) from testblob;
+--insert int data
+insert into testblob values(65536);
+select upper(hex(c1)) from testblob;
+--insert chinese character data
+insert into testblob values("中国");
+select upper(hex(c1)) from testblob;
+--insert mix character data
+insert into testblob values('12735ksuhWEDf&*()-=+{}[]\:?/,.~!@#$%^|');
+select upper(hex(c1)) from testblob;

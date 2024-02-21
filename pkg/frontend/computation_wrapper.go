@@ -16,6 +16,7 @@ package frontend
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,7 +27,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/defines"
-	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/compile"
@@ -43,8 +43,10 @@ import (
 	"github.com/mohae/deepcopy"
 )
 
-var _ ComputationWrapper = &TxnComputationWrapper{}
-var _ ComputationWrapper = &NullComputationWrapper{}
+var (
+	_ ComputationWrapper = &TxnComputationWrapper{}
+	_ ComputationWrapper = &NullComputationWrapper{}
+)
 
 type NullComputationWrapper struct {
 	*TxnComputationWrapper
@@ -60,16 +62,8 @@ func (ncw *NullComputationWrapper) GetAst() tree.Statement {
 	return ncw.stmt
 }
 
-func (ncw *NullComputationWrapper) SetDatabaseName(db string) error {
-	return nil
-}
-
 func (ncw *NullComputationWrapper) GetColumns() ([]interface{}, error) {
 	return []interface{}{}, nil
-}
-
-func (ncw *NullComputationWrapper) GetAffectedRows() uint64 {
-	return 0
 }
 
 func (ncw *NullComputationWrapper) Compile(requestCtx context.Context, u interface{}, fill func(interface{}, *batch.Batch) error) (interface{}, error) {
@@ -101,10 +95,12 @@ type TxnComputationWrapper struct {
 	runResult *util2.RunResult
 
 	uuid uuid.UUID
+	//holds values of params in the PREPARE
+	paramVals []any
 }
 
 func InitTxnComputationWrapper(ses *Session, stmt tree.Statement, proc *process.Process) *TxnComputationWrapper {
-	uuid, _ := uuid.NewUUID()
+	uuid, _ := uuid.NewV7()
 	return &TxnComputationWrapper{
 		stmt: stmt,
 		proc: proc,
@@ -117,12 +113,22 @@ func (cwft *TxnComputationWrapper) GetAst() tree.Statement {
 	return cwft.stmt
 }
 
-func (cwft *TxnComputationWrapper) GetProcess() *process.Process {
-	return cwft.proc
+func (cwft *TxnComputationWrapper) Free() {
+	if cwft.stmt != nil {
+		if !strings.HasPrefix(cwft.ses.sql, "execute ") {
+			cwft.stmt.Free()
+			cwft.stmt = nil
+		}
+	}
+	cwft.plan = nil
+	cwft.proc = nil
+	cwft.ses = nil
+	cwft.compile = nil
+	cwft.runResult = nil
 }
 
-func (cwft *TxnComputationWrapper) SetDatabaseName(db string) error {
-	return nil
+func (cwft *TxnComputationWrapper) GetProcess() *process.Process {
+	return cwft.proc
 }
 
 func (cwft *TxnComputationWrapper) GetColumns() ([]interface{}, error) {
@@ -188,10 +194,6 @@ func (cwft *TxnComputationWrapper) GetClock() clock.Clock {
 	return rt.Clock()
 }
 
-func (cwft *TxnComputationWrapper) GetAffectedRows() uint64 {
-	return cwft.runResult.AffectRows
-}
-
 func (cwft *TxnComputationWrapper) GetServerStatus() uint16 {
 	return cwft.ses.GetServerStatus()
 }
@@ -222,7 +224,6 @@ func (cwft *TxnComputationWrapper) Compile(requestCtx context.Context, u interfa
 		return nil, err
 	}
 
-	txnCtx = fileservice.EnsureStatementProfiler(txnCtx, requestCtx)
 	txnCtx = statistic.EnsureStatsInfoCanBeFound(txnCtx, requestCtx)
 
 	// Increase the statement ID and update snapshot TS before build plan, because the
@@ -249,7 +250,10 @@ func (cwft *TxnComputationWrapper) Compile(requestCtx context.Context, u interfa
 	if !cacheHit {
 		cwft.plan, err = buildPlan(requestCtx, cwft.ses, cwft.ses.GetTxnCompileCtx(), cwft.stmt)
 	} else if cwft.ses != nil && cwft.ses.GetTenantInfo() != nil {
-		cwft.ses.accountId = defines.GetAccountId(requestCtx)
+		cwft.ses.accountId, err = defines.GetAccountId(requestCtx)
+		if err != nil {
+			return nil, err
+		}
 		err = authenticateCanExecuteStatementAndPlan(requestCtx, cwft.ses, cwft.stmt, cwft.plan)
 	}
 	if err != nil {
@@ -263,67 +267,15 @@ func (cwft *TxnComputationWrapper) Compile(requestCtx context.Context, u interfa
 	}
 	if _, ok := cwft.stmt.(*tree.Execute); ok {
 		executePlan := cwft.plan.GetDcl().GetExecute()
-		stmtName := executePlan.GetName()
-		prepareStmt, err := cwft.ses.GetPrepareStmt(stmtName)
+		plan, stmt, err := replacePlan(requestCtx, cwft.ses, cwft, executePlan)
 		if err != nil {
 			return nil, err
 		}
-		preparePlan := prepareStmt.PreparePlan.GetDcl().GetPrepare()
 
-		// TODO check if schema change, obj.Obj is zero all the time in 0.6
-		for _, obj := range preparePlan.GetSchemas() {
-			newObj, newTableDef := cwft.ses.txnCompileCtx.Resolve(obj.SchemaName, obj.ObjName)
-			if newObj == nil {
-				return nil, moerr.NewInternalError(requestCtx, "table '%s' in prepare statement '%s' does not exist anymore", obj.ObjName, stmtName)
-			}
-			if newObj.Obj != obj.Obj || newTableDef.Version != uint32(obj.Server) {
-				return nil, moerr.NewInternalError(requestCtx, "table '%s' has been changed, please reset prepare statement '%s'", obj.ObjName, stmtName)
-			}
-		}
-
-		// The default count is 1. Setting it to 2 ensures that memory will not be reclaimed.
-		//  Convenient to reuse memory next time
-		if prepareStmt.InsertBat != nil {
-			prepareStmt.InsertBat.SetCnt(1000) //we will make sure :  when retry in lock error, we will not clean up this batch
-			cwft.proc.SetPrepareBatch(prepareStmt.InsertBat)
-			cwft.proc.SetPrepareExprList(prepareStmt.exprList)
-		}
-		numParams := len(preparePlan.ParamTypes)
-		if prepareStmt.params != nil && prepareStmt.params.Length() > 0 { //use binary protocol
-			if prepareStmt.params.Length() != numParams {
-				return nil, moerr.NewInvalidInput(requestCtx, "Incorrect arguments to EXECUTE")
-			}
-			cwft.proc.SetPrepareParams(prepareStmt.params)
-		} else if len(executePlan.Args) > 0 {
-			if len(executePlan.Args) != numParams {
-				return nil, moerr.NewInvalidInput(requestCtx, "Incorrect arguments to EXECUTE")
-			}
-			params := cwft.proc.GetVector(types.T_text.ToType())
-			for _, arg := range executePlan.Args {
-				exprImpl := arg.Expr.(*plan.Expr_V)
-				param, err := cwft.proc.GetResolveVariableFunc()(exprImpl.V.Name, exprImpl.V.System, exprImpl.V.Global)
-				if err != nil {
-					return nil, err
-				}
-				if param == nil {
-					return nil, moerr.NewInvalidInput(requestCtx, "Incorrect arguments to EXECUTE")
-				}
-				err = util.AppendAnyToStringVector(cwft.proc, param, params)
-				if err != nil {
-					return nil, err
-				}
-			}
-			cwft.proc.SetPrepareParams(params)
-		} else {
-			if numParams > 0 {
-				return nil, moerr.NewInvalidInput(requestCtx, "Incorrect arguments to EXECUTE")
-			}
-		}
-
-		cwft.plan = preparePlan.Plan
+		cwft.plan = plan
 
 		// reset plan & stmt
-		cwft.stmt = prepareStmt.PrepareStmt
+		cwft.stmt = stmt
 		// reset some special stmt for execute statement
 		switch cwft.stmt.(type) {
 		case *tree.ShowTableStatus:
@@ -354,7 +306,7 @@ func (cwft *TxnComputationWrapper) Compile(requestCtx context.Context, u interfa
 	if tInfo != nil {
 		tenant = tInfo.GetTenant()
 	}
-	cwft.compile = compile.New(
+	cwft.compile = compile.NewCompile(
 		addr,
 		cwft.ses.GetDatabaseName(),
 		cwft.ses.GetSql(),
@@ -368,8 +320,20 @@ func (cwft *TxnComputationWrapper) Compile(requestCtx context.Context, u interfa
 		deepcopy.Copy(cwft.ses.getCNLabels()).(map[string]string),
 		getStatementStartAt(requestCtx),
 	)
+	defer func() {
+		if err != nil {
+			cwft.compile.Release()
+		}
+	}()
 	cwft.compile.SetBuildPlanFunc(func() (*plan2.Plan, error) {
-		return buildPlan(requestCtx, cwft.ses, cwft.ses.GetTxnCompileCtx(), cwft.stmt)
+		plan, err := buildPlan(requestCtx, cwft.ses, cwft.ses.GetTxnCompileCtx(), cwft.stmt)
+		if err != nil {
+			return nil, err
+		}
+		if plan.IsPrepare {
+			_, _, err = plan2.ResetPreparePlan(cwft.ses.GetTxnCompileCtx(), plan)
+		}
+		return plan, err
 	})
 
 	if _, ok := cwft.stmt.(*tree.ExplainAnalyze); ok {
@@ -382,7 +346,8 @@ func (cwft *TxnComputationWrapper) Compile(requestCtx context.Context, u interfa
 	// check if it is necessary to initialize the temporary engine
 	if cwft.compile.NeedInitTempEngine(cwft.ses.IfInitedTempEngine()) {
 		// 0. init memory-non-dist storage
-		tnStore, err := cwft.ses.SetTempTableStorage(cwft.GetClock())
+		var tnStore *metadata.TNService
+		tnStore, err = cwft.ses.SetTempTableStorage(cwft.GetClock())
 		if err != nil {
 			return nil, err
 		}
@@ -459,4 +424,69 @@ func getStatementStartAt(ctx context.Context) time.Time {
 		return time.Now()
 	}
 	return v.(time.Time)
+}
+
+// replacePlan replaces the plan of the EXECUTE by the plan generated by
+// the PREPARE and setups the params for the plan.
+func replacePlan(requestCtx context.Context, ses *Session, cwft *TxnComputationWrapper, execPlan *plan.Execute) (*plan.Plan, tree.Statement, error) {
+	stmtName := execPlan.GetName()
+	prepareStmt, err := ses.GetPrepareStmt(stmtName)
+	if err != nil {
+		return nil, nil, err
+	}
+	preparePlan := prepareStmt.PreparePlan.GetDcl().GetPrepare()
+
+	// TODO check if schema change, obj.Obj is zero all the time in 0.6
+	for _, obj := range preparePlan.GetSchemas() {
+		newObj, newTableDef := ses.txnCompileCtx.Resolve(obj.SchemaName, obj.ObjName)
+		if newObj == nil {
+			return nil, nil, moerr.NewInternalError(requestCtx, "table '%s' in prepare statement '%s' does not exist anymore", obj.ObjName, stmtName)
+		}
+		if newObj.Obj != obj.Obj || newTableDef.Version != uint32(obj.Server) {
+			return nil, nil, moerr.NewInternalError(requestCtx, "table '%s' has been changed, please reset prepare statement '%s'", obj.ObjName, stmtName)
+		}
+	}
+
+	// The default count is 1. Setting it to 2 ensures that memory will not be reclaimed.
+	//  Convenient to reuse memory next time
+	if prepareStmt.InsertBat != nil {
+		prepareStmt.InsertBat.SetCnt(1000) // we will make sure :  when retry in lock error, we will not clean up this batch
+		cwft.proc.SetPrepareBatch(prepareStmt.InsertBat)
+		cwft.proc.SetPrepareExprList(prepareStmt.exprList)
+	}
+	numParams := len(preparePlan.ParamTypes)
+	if prepareStmt.params != nil && prepareStmt.params.Length() > 0 { // use binary protocol
+		if prepareStmt.params.Length() != numParams {
+			return nil, nil, moerr.NewInvalidInput(requestCtx, "Incorrect arguments to EXECUTE")
+		}
+		cwft.proc.SetPrepareParams(prepareStmt.params)
+	} else if len(execPlan.Args) > 0 {
+		if len(execPlan.Args) != numParams {
+			return nil, nil, moerr.NewInvalidInput(requestCtx, "Incorrect arguments to EXECUTE")
+		}
+		params := cwft.proc.GetVector(types.T_text.ToType())
+		paramVals := make([]any, numParams)
+		for i, arg := range execPlan.Args {
+			exprImpl := arg.Expr.(*plan.Expr_V)
+			param, err := cwft.proc.GetResolveVariableFunc()(exprImpl.V.Name, exprImpl.V.System, exprImpl.V.Global)
+			if err != nil {
+				return nil, nil, err
+			}
+			if param == nil {
+				return nil, nil, moerr.NewInvalidInput(requestCtx, "Incorrect arguments to EXECUTE")
+			}
+			err = util.AppendAnyToStringVector(cwft.proc, param, params)
+			if err != nil {
+				return nil, nil, err
+			}
+			paramVals[i] = param
+		}
+		cwft.proc.SetPrepareParams(params)
+		cwft.paramVals = paramVals
+	} else {
+		if numParams > 0 {
+			return nil, nil, moerr.NewInvalidInput(requestCtx, "Incorrect arguments to EXECUTE")
+		}
+	}
+	return preparePlan.Plan, prepareStmt.PrepareStmt, nil
 }

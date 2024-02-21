@@ -18,6 +18,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/common/system"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	logservicepb "github.com/matrixorigin/matrixone/pkg/pb/logservice"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
@@ -79,9 +80,17 @@ func (s *service) heartbeat(ctx context.Context) {
 		TaskServiceCreated: s.GetTaskRunner() != nil,
 		QueryAddress:       s.queryServiceServiceAddr(),
 		InitWorkState:      s.cfg.InitWorkState,
-		GossipAddress:      s.gossipServiceAddr(),
-		GossipJoined:       s.gossipNode.Joined(),
 		ConfigData:         s.config.GetData(),
+		Resource: logservicepb.Resource{
+			CPUTotal:     uint64(system.NumCPU()),
+			CPUAvailable: system.CPUAvailable(),
+			MemTotal:     system.MemoryTotal(),
+			MemAvailable: system.MemoryAvailable(),
+		},
+	}
+	if s.gossipNode != nil {
+		hb.GossipAddress = s.gossipServiceAddr()
+		hb.GossipJoined = s.gossipNode.Joined()
 	}
 
 	cb, err := s._hakeeperClient.SendCNHeartbeat(ctx2, hb)
@@ -91,8 +100,13 @@ func (s *service) heartbeat(ctx context.Context) {
 		return
 	}
 
+	select {
+	case <-s.hakeeperConnected:
+	default:
+		s.initTaskServiceHolder()
+		close(s.hakeeperConnected)
+	}
 	s.config.DecrCount()
-
 	s.handleCommands(cb.Commands)
 }
 

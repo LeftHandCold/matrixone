@@ -16,11 +16,14 @@ package fileservice
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	gotrace "runtime/trace"
 	"strings"
 	"time"
@@ -56,11 +59,14 @@ func NewMinioSDK(
 	options := new(minio.Options)
 
 	// credentials
-	credentialProviders := []credentials.Provider{
-		// aws env
-		new(credentials.EnvAWS),
-		// minio env
-		new(credentials.EnvMinio),
+	var credentialProviders []credentials.Provider
+	if !args.NoDefaultCredentials {
+		credentialProviders = append(credentialProviders,
+			// aws env
+			new(credentials.EnvAWS),
+			// minio env
+			new(credentials.EnvMinio),
+		)
 	}
 	if args.KeyID != "" && args.KeySecret != "" {
 		// static
@@ -73,13 +79,13 @@ func NewMinioSDK(
 			},
 		})
 	}
-	if args.AssumeRoleARN != "" {
+	if args.RoleARN != "" {
 		// assume role
 		credentialProviders = append(credentialProviders, &credentials.STSAssumeRole{
 			Options: credentials.STSAssumeRoleOptions{
 				AccessKey:       args.KeyID,
 				SecretKey:       args.KeySecret,
-				RoleARN:         args.AssumeRoleARN,
+				RoleARN:         args.RoleARN,
 				RoleSessionName: args.ExternalID,
 			},
 		})
@@ -121,7 +127,7 @@ func NewMinioSDK(
 	dialer := &net.Dialer{
 		KeepAlive: 5 * time.Second,
 	}
-	options.Transport = &http.Transport{
+	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           dialer.DialContext,
 		MaxIdleConns:          100,
@@ -132,6 +138,33 @@ func NewMinioSDK(
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}
+	if len(args.CertFiles) > 0 {
+		// custom certs
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			panic(err)
+		}
+		for _, path := range args.CertFiles {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				logutil.Info("load cert file error",
+					zap.Any("err", err),
+				)
+				// ignore
+				continue
+			}
+			logutil.Info("file service: load cert file",
+				zap.Any("path", path),
+			)
+			pool.AppendCertsFromPEM(content)
+		}
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: true,
+			RootCAs:            pool,
+		}
+		transport.TLSClientConfig = tlsConfig
+	}
+	options.Transport = transport
 
 	// endpoint
 	isSecure, err := minioValidateEndpoint(&args)
@@ -149,23 +182,24 @@ func NewMinioSDK(
 		return nil, err
 	}
 
-	// validate
-	ok, err := client.BucketExists(ctx, args.Bucket)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, moerr.NewInternalErrorNoCtx(
-			"bad s3 config, no such bucket or no permissions: %v",
-			args.Bucket,
-		)
-	}
-
 	logutil.Info("new object storage",
 		zap.Any("sdk", "minio"),
-		zap.Any("endpoint", args.Endpoint),
-		zap.Any("bucket", args.Bucket),
+		zap.Any("arguments", args),
 	)
+
+	if !args.NoBucketValidation {
+		// validate
+		ok, err := client.BucketExists(ctx, args.Bucket)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, moerr.NewInternalErrorNoCtx(
+				"bad s3 config, no such bucket or no permissions: %v",
+				args.Bucket,
+			)
+		}
+	}
 
 	return &MinioSDK{
 		name:            args.Name,

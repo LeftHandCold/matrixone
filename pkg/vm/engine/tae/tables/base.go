@@ -19,7 +19,8 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
+
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -54,7 +55,6 @@ type baseBlock struct {
 	rt   *dbutils.Runtime
 	meta *catalog.BlockEntry
 	mvcc *updates.MVCCHandle
-	ttl  time.Time
 	impl data.Block
 
 	node atomic.Pointer[Node]
@@ -69,7 +69,6 @@ func newBaseBlock(
 		impl: impl,
 		rt:   rt,
 		meta: meta,
-		ttl:  time.Now(),
 	}
 	blk.mvcc = updates.NewMVCCHandle(meta)
 	blk.RWMutex = blk.mvcc.RWMutex
@@ -84,16 +83,16 @@ func (blk *baseBlock) GetRuntime() *dbutils.Runtime {
 	return blk.rt
 }
 
-func (blk *baseBlock) EstimateMemSize() int {
+func (blk *baseBlock) EstimateMemSize() (int, int) {
 	node := blk.PinNode()
 	defer node.Unref()
 	blk.RLock()
 	defer blk.RUnlock()
-	size := blk.mvcc.EstimateMemSizeLocked()
+	asize, dsize := blk.mvcc.EstimateMemSizeLocked()
 	if !node.IsPersisted() {
-		size += node.MustMNode().EstimateMemSize()
+		asize += node.MustMNode().EstimateMemSize()
 	}
-	return size
+	return asize, dsize
 }
 
 func (blk *baseBlock) PinNode() *Node {
@@ -187,42 +186,27 @@ func (blk *baseBlock) LoadPersistedCommitTS() (vec containers.Vector, err error)
 	if location.IsEmpty() {
 		return
 	}
-	bat, err := blockio.LoadColumns(
+	//Extend lifetime of vectors is without the function.
+	//need to copy. closeFunc will be nil.
+	vectors, _, err := blockio.LoadColumns2(
 		context.Background(),
 		[]uint16{objectio.SEQNUM_COMMITTS},
 		nil,
 		blk.rt.Fs.Service,
 		location,
-		nil,
+		fileservice.Policy(0),
+		true,
+		blk.rt.VectorPool.Transient,
 	)
 	if err != nil {
 		return
 	}
-	if bat.Vecs[0].GetType().Oid != types.T_TS {
+	if vectors[0].GetType().Oid != types.T_TS {
 		panic(fmt.Sprintf("%s: bad commits layout", blk.meta.ID.String()))
 	}
-	vec = containers.ToTNVector(bat.Vecs[0], common.DefaultAllocator)
+	vec = vectors[0]
 	return
 }
-
-// func (blk *baseBlock) LoadPersistedData() (bat *containers.Batch, err error) {
-// 	schema := blk.meta.GetSchema()
-// 	bat = containers.NewBatch()
-// 	defer func() {
-// 		if err != nil {
-// 			bat.Close()
-// 		}
-// 	}()
-// 	var vec containers.Vector
-// 	for i, col := range schema.ColDefs {
-// 		vec, err = blk.LoadPersistedColumnData(i)
-// 		if err != nil {
-// 			return
-// 		}
-// 		bat.AddVector(col.Name, vec)
-// 	}
-// 	return
-// }
 
 func (blk *baseBlock) LoadPersistedColumnData(
 	ctx context.Context, schema *catalog.Schema, colIdx int, mp *mpool.MPool,
@@ -337,6 +321,7 @@ func (blk *baseBlock) foreachPersistedDeletesCommittedInRange(
 	if deletes == nil || err != nil {
 		return
 	}
+	//defer deletes.Close()
 	if persistedByCN {
 		if deltalocCommitTS.Equal(txnif.UncommitTS) {
 			return
@@ -603,6 +588,9 @@ func (blk *baseBlock) TryDeleteByDeltaloc(
 	if err2 != nil {
 		return
 	}
+	if !blk.meta.GetDeltaLoc().IsEmpty() {
+		return
+	}
 	blk.Lock()
 	defer blk.Unlock()
 	if !blk.mvcc.GetDeleteChain().IsEmpty() {
@@ -658,7 +646,7 @@ func (blk *baseBlock) CollectDeleteInRange(
 	withAborted bool,
 	mp *mpool.MPool,
 ) (bat *containers.Batch, err error) {
-	bat, minTS, err := blk.inMemoryCollectDeleteInRange(
+	bat, minTS, _, err := blk.inMemoryCollectDeleteInRange(
 		ctx,
 		start,
 		end,
@@ -682,16 +670,57 @@ func (blk *baseBlock) CollectDeleteInRange(
 	return
 }
 
+// CollectDeleteInRangeAfterDeltalocation collects deletes after
+// a certain delta location and committed in [start,end]
+// When subscribe a table, it collects delta location, then it collects deletes.
+// To avoid collecting duplicate deletes,
+// it collects after start ts of the delta location.
+// If the delta location is from CN, deletes is committed after startTS.
+// CollectDeleteInRange still collect duplicate deletes.
+func (blk *baseBlock) CollectDeleteInRangeAfterDeltalocation(
+	ctx context.Context,
+	start, end types.TS, // start is startTS of deltalocation
+	withAborted bool,
+	mp *mpool.MPool,
+) (bat *containers.Batch, err error) {
+	// persisted is persistedTS of deletes of the blk
+	// it equals startTS of the last delta location
+	bat, _, persisted, err := blk.inMemoryCollectDeleteInRange(
+		ctx,
+		start,
+		end,
+		withAborted,
+		mp,
+	)
+	if err != nil {
+		return
+	}
+	// if persisted > start,
+	// there's another delta location committed.
+	// It includes more deletes than former delta location.
+	if persisted.Greater(start) {
+		bat, err = blk.persistedCollectDeleteInRange(
+			ctx,
+			bat,
+			start,
+			end,
+			withAborted,
+			mp,
+		)
+	}
+	return
+}
+
 func (blk *baseBlock) inMemoryCollectDeleteInRange(
 	ctx context.Context,
 	start, end types.TS,
 	withAborted bool,
 	mp *mpool.MPool,
-) (bat *containers.Batch, minTS types.TS, err error) {
+) (bat *containers.Batch, minTS, persistedTS types.TS, err error) {
 	blk.RLock()
 	schema := blk.meta.GetSchema()
 	pkDef := schema.GetPrimaryKey()
-	rowID, ts, pk, abort, abortedMap, deletes, minTS := blk.mvcc.CollectDeleteLocked(start.Next(), end, pkDef.Type, mp)
+	rowID, ts, pk, abort, abortedMap, deletes, minTS, persistedTS := blk.mvcc.CollectDeleteLocked(start.Next(), end, pkDef.Type, mp)
 	blk.RUnlock()
 	if rowID == nil {
 		return
@@ -709,7 +738,7 @@ func (blk *baseBlock) inMemoryCollectDeleteInRange(
 	bat = containers.NewBatch()
 	bat.AddVector(catalog.PhyAddrColumnName, rowID)
 	bat.AddVector(catalog.AttrCommitTs, ts)
-	bat.AddVector(pkDef.Name, pk)
+	bat.AddVector(catalog.AttrPKVal, pk)
 	if withAborted {
 		bat.AddVector(catalog.AttrAborted, abort)
 	} else {
@@ -772,55 +801,6 @@ func (blk *baseBlock) persistedCollectDeleteInRange(
 		mp,
 	)
 	return bat, nil
-}
-
-func (blk *baseBlock) adjustScore(
-	rawScoreFn func() (int, bool),
-	ttl time.Duration,
-	force bool) int {
-	score, dropped := rawScoreFn()
-	if dropped {
-		return 0
-	}
-	if force {
-		score = 100
-	}
-	if score == 0 || score > 1 {
-		return score
-	}
-	var ratio float32
-	if blk.meta.IsAppendable() {
-		currRows := uint32(blk.Rows())
-		ratio = float32(currRows) / float32(blk.meta.GetSchema().BlockMaxRows)
-		if ratio >= 0 && ratio < 0.2 {
-			ttl = 3*ttl - ttl/2
-		} else if ratio >= 0.2 && ratio < 0.4 {
-			ttl = 2 * ttl
-		} else if ratio >= 0.4 && ratio < 0.6 {
-			ttl = 2*ttl - ttl/2
-		}
-	}
-
-	deleteCnt := blk.mvcc.GetDeleteCnt()
-	ratio = float32(deleteCnt) / float32(blk.meta.GetSchema().BlockMaxRows)
-	if ratio <= 1 && ratio > 0.5 {
-		ttl /= 8
-	} else if ratio <= 0.5 && ratio > 0.3 {
-		ttl /= 4
-	} else if ratio <= 0.3 && ratio > 0.2 {
-		ttl /= 2
-	} else if ratio <= 0.2 && ratio > 0.1 {
-		ttl /= 1
-	} else {
-		factor := 1.25 - ratio
-		factor = factor * factor * factor * factor
-		ttl = time.Duration(float32(ttl) * factor)
-	}
-
-	if time.Now().After(blk.ttl.Add(ttl)) {
-		return 100
-	}
-	return 1
 }
 
 func (blk *baseBlock) OnReplayDelete(node txnif.DeleteNode) (err error) {

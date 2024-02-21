@@ -32,6 +32,7 @@ var (
 		types.T_timestamp, types.T_time,
 		types.T_decimal64, types.T_decimal128,
 		types.T_bool,
+		types.T_bit,
 		types.T_varchar, types.T_char, types.T_blob, types.T_text,
 		types.T_uuid,
 		types.T_binary, types.T_varbinary,
@@ -42,10 +43,12 @@ var (
 	}
 )
 
-func NewAggAnyValue(overloadID int64, dist bool, inputTypes []types.Type, outputType types.Type, _ any, _ any) (agg.Agg[any], error) {
+func NewAggAnyValue(overloadID int64, dist bool, inputTypes []types.Type, outputType types.Type, _ any) (agg.Agg[any], error) {
 	switch inputTypes[0].Oid {
 	case types.T_bool:
 		return newGenericAnyValue[bool](overloadID, inputTypes[0], outputType, dist)
+	case types.T_bit:
+		return newGenericAnyValue[uint64](overloadID, inputTypes[0], outputType, dist)
 	case types.T_uint8:
 		return newGenericAnyValue[uint8](overloadID, inputTypes[0], outputType, dist)
 	case types.T_uint16:
@@ -85,9 +88,9 @@ func NewAggAnyValue(overloadID int64, dist bool, inputTypes []types.Type, output
 	case types.T_char, types.T_varchar, types.T_blob, types.T_json, types.T_text, types.T_binary, types.T_varbinary:
 		aggPriv := &sAggAnyValue[[]byte]{}
 		if dist {
-			return agg.NewUnaryDistAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.FillBytes, nil), nil
+			return agg.NewUnaryDistAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.FillBytes), nil
 		}
-		return agg.NewUnaryAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.FillBytes, nil), nil
+		return agg.NewUnaryAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.FillBytes), nil
 	case types.T_Rowid:
 		return newGenericAnyValue[types.Rowid](overloadID, inputTypes[0], outputType, dist)
 	}
@@ -97,9 +100,9 @@ func NewAggAnyValue(overloadID int64, dist bool, inputTypes []types.Type, output
 func newGenericAnyValue[T any](overloadID int64, typ, otyp types.Type, dist bool) (agg.Agg[T], error) {
 	aggPriv := &sAggAnyValue[T]{}
 	if dist {
-		return agg.NewUnaryDistAgg(overloadID, aggPriv, false, typ, otyp, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+		return agg.NewUnaryDistAgg(overloadID, aggPriv, false, typ, otyp, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 	}
-	return agg.NewUnaryAgg(overloadID, aggPriv, false, typ, otyp, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+	return agg.NewUnaryAgg(overloadID, aggPriv, false, typ, otyp, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 }
 
 type sAggAnyValue[T any] struct{}

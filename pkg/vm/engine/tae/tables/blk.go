@@ -16,8 +16,6 @@ package tables
 
 import (
 	"context"
-	"math/rand"
-	"time"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -60,12 +58,16 @@ func (blk *block) Init() (err error) {
 func (blk *block) OnApplyDelete(
 	deleted uint64,
 	ts types.TS) (err error) {
-	blk.meta.GetSegment().GetTable().RemoveRows(deleted)
+	blk.meta.GetObject().GetTable().RemoveRows(deleted)
 	return
 }
 
 func (blk *block) PrepareCompact() bool {
 	return blk.meta.PrepareCompact()
+}
+
+func (blk *block) PrepareCompactInfo() (result bool, reason string) {
+	return blk.meta.PrepareCompact(), ""
 }
 
 func (blk *block) FreezeAppend() {}
@@ -130,7 +132,7 @@ func (blk *block) BatchDedup(
 ) (err error) {
 	defer func() {
 		if moerr.IsMoErrCode(err, moerr.ErrDuplicateEntry) {
-			logutil.Infof("BatchDedup %s (%v)BLK-%s: %v", blk.meta.GetSegment().GetTable().GetLastestSchema().Name, blk.IsAppendable(), blk.meta.ID.String(), err)
+			logutil.Infof("BatchDedup %s (%v)BLK-%s: %v", blk.meta.GetObject().GetTable().GetLastestSchema().Name, blk.IsAppendable(), blk.meta.ID.String(), err)
 		}
 	}()
 	return blk.PersistedBatchDedup(
@@ -187,11 +189,6 @@ func (blk *block) estimateRawScore() (score int, dropped bool) {
 		}
 	}
 	return
-}
-
-func (blk *block) EstimateScore(ttl time.Duration, force bool) int {
-	ttl = time.Duration(float64(ttl) * float64(rand.Intn(5)+10) / float64(10))
-	return blk.adjustScore(blk.estimateRawScore, ttl, force)
 }
 
 func (blk *block) GetByFilter(

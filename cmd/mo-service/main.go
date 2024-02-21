@@ -30,12 +30,12 @@ import (
 	_ "time/tzdata"
 
 	"github.com/google/uuid"
-	"github.com/matrixorigin/matrixone/pkg/cacheservice/client"
 	"github.com/matrixorigin/matrixone/pkg/cnservice"
 	"github.com/matrixorigin/matrixone/pkg/cnservice/cnclient"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/common/stopper"
+	"github.com/matrixorigin/matrixone/pkg/common/system"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/gossip"
@@ -43,10 +43,12 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	"github.com/matrixorigin/matrixone/pkg/proxy"
+	qclient "github.com/matrixorigin/matrixone/pkg/queryservice/client"
 	"github.com/matrixorigin/matrixone/pkg/sql/compile"
 	"github.com/matrixorigin/matrixone/pkg/tnservice"
 	"github.com/matrixorigin/matrixone/pkg/udf/pythonservice"
 	"github.com/matrixorigin/matrixone/pkg/util"
+	"github.com/matrixorigin/matrixone/pkg/util/debug/goroutine"
 	"github.com/matrixorigin/matrixone/pkg/util/export"
 	"github.com/matrixorigin/matrixone/pkg/util/export/table"
 	"github.com/matrixorigin/matrixone/pkg/util/metric/mometric"
@@ -156,6 +158,10 @@ func startService(
 	}
 	setupProcessLevelRuntime(cfg, stopper)
 
+	setupStatusServer(runtime.ProcessLevelRuntime())
+
+	goroutine.StartLeakCheck(stopper, cfg.Goroutine)
+
 	st, err := cfg.getServiceType()
 	if err != nil {
 		return err
@@ -174,8 +180,8 @@ func startService(
 		}
 		for i := range cfg.FileServices {
 			cfg.FileServices[i].Cache.KeyRouterFactory = gossipNode.DistKeyCacheGetter()
-			cfg.FileServices[i].Cache.CacheClient, err = client.NewCacheClient(
-				client.ClientConfig{RPC: cfg.FileServices[i].Cache.RPC},
+			cfg.FileServices[i].Cache.QueryClient, err = qclient.NewQueryClient(
+				cfg.CN.UUID, cfg.FileServices[i].Cache.RPC,
 			)
 			if err != nil {
 				return err
@@ -221,6 +227,9 @@ func startCNService(
 	fileService fileservice.FileService,
 	gossipNode *gossip.Node,
 ) error {
+	// start up system module to do some calculation.
+	system.Run(stopper)
+
 	if err := waitClusterCondition(cfg.HAKeeperClient, waitAnyShardReady); err != nil {
 		return err
 	}
@@ -249,8 +258,8 @@ func startCNService(
 		<-ctx.Done()
 		// Close the cache client which is used in file service.
 		for _, fs := range cfg.FileServices {
-			if fs.Cache.CacheClient != nil {
-				_ = fs.Cache.CacheClient.Close()
+			if fs.Cache.QueryClient != nil {
+				_ = fs.Cache.QueryClient.Close()
 			}
 		}
 		if err := s.Close(); err != nil {
@@ -393,7 +402,7 @@ func getNodeUUID(ctx context.Context, st metadata.ServiceType, cfg *Config) (UUI
 		var uuidErr error
 		var nodeUUID uuid.UUID
 		if nodeUUID, uuidErr = uuid.Parse(cfg.CN.UUID); uuidErr != nil {
-			nodeUUID = uuid.New()
+			nodeUUID, _ = uuid.NewV7()
 		}
 		if err := util.SetUUIDNodeID(ctx, nodeUUID[:]); err != nil {
 			return "", moerr.ConvertPanicError(ctx, err)

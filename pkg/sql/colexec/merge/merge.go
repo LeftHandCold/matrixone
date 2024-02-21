@@ -22,8 +22,11 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
+const argName = "merge"
+
 func (arg *Argument) String(buf *bytes.Buffer) {
-	buf.WriteString(" union all ")
+	buf.WriteString(argName)
+	buf.WriteString(": union all ")
 }
 
 func (arg *Argument) Prepare(proc *process.Process) error {
@@ -34,7 +37,11 @@ func (arg *Argument) Prepare(proc *process.Process) error {
 }
 
 func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
-	anal := proc.GetAnalyze(arg.info.Idx)
+	if err, isCancel := vm.CancelCheck(proc); isCancel {
+		return vm.CancelResult, err
+	}
+
+	anal := proc.GetAnalyze(arg.GetIdx(), arg.GetParallelIdx(), arg.GetParallelMajor())
 	anal.Start()
 	defer anal.Stop()
 	var end bool
@@ -58,8 +65,8 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 		break
 	}
 
-	anal.Input(arg.buf, arg.info.IsFirst)
-	anal.Output(arg.buf, arg.info.IsLast)
+	anal.Input(arg.buf, arg.GetIsFirst())
+	anal.Output(arg.buf, arg.GetIsLast())
 	result.Batch = arg.buf
 	return result, nil
 }

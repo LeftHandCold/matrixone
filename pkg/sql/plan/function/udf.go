@@ -17,12 +17,10 @@ package function
 import (
 	"context"
 	"encoding/json"
-	"golang.org/x/sync/errgroup"
 	"io"
 	"time"
 
 	"github.com/google/uuid"
-
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/bytejson"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -31,6 +29,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/udf"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
+	"golang.org/x/sync/errgroup"
 )
 
 type Udf struct {
@@ -63,18 +62,19 @@ type Arg struct {
 }
 
 func (u *Udf) GetPlanExpr() *plan.Expr {
+	uid, _ := uuid.NewV7()
 	bytes, _ := json.Marshal(&UdfWithContext{
 		Udf: u,
 		Context: map[string]string{
-			"queryId": uuid.NewString(),
+			"queryId": uid.String(),
 		},
 	})
 	return &plan.Expr{
 		Typ: type2PlanType(types.T_text.ToType()),
-		Expr: &plan.Expr_C{
-			C: &plan.Const{
+		Expr: &plan.Expr_Lit{
+			Lit: &plan.Literal{
 				Isnull: false,
-				Value: &plan.Const_Sval{
+				Value: &plan.Literal_Sval{
 					Sval: string(bytes),
 				},
 			},

@@ -17,15 +17,18 @@ package product
 import (
 	"bytes"
 
+	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
+
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
-const batchSize = 8192
+const argName = "product"
 
 func (arg *Argument) String(buf *bytes.Buffer) {
-	buf.WriteString(" cross join ")
+	buf.WriteString(argName)
+	buf.WriteString(": cross join ")
 }
 
 func (arg *Argument) Prepare(proc *process.Process) error {
@@ -36,7 +39,11 @@ func (arg *Argument) Prepare(proc *process.Process) error {
 }
 
 func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
-	anal := proc.GetAnalyze(arg.info.Idx)
+	if err, isCancel := vm.CancelCheck(proc); isCancel {
+		return vm.CancelResult, err
+	}
+
+	anal := proc.GetAnalyze(arg.GetIdx(), arg.GetParallelIdx(), arg.GetParallelMajor())
 	anal.Start()
 	defer anal.Stop()
 	ap := arg
@@ -53,7 +60,7 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 
 		case Probe:
 			if ctr.inBat != nil {
-				if err := ctr.probe(ap, proc, anal, arg.info.IsLast, &result); err != nil {
+				if err := ctr.probe(ap, proc, anal, arg.GetIsLast(), &result); err != nil {
 					return result, err
 				}
 				return result, nil
@@ -77,8 +84,8 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 				ctr.inBat = nil
 				continue
 			}
-			anal.Input(ctr.inBat, arg.info.IsFirst)
-			if err := ctr.probe(ap, proc, anal, arg.info.IsLast, &result); err != nil {
+			anal.Input(ctr.inBat, arg.GetIsFirst())
+			if err := ctr.probe(ap, proc, anal, arg.GetIsLast(), &result); err != nil {
 				return result, err
 			}
 			return result, nil
@@ -92,16 +99,19 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 }
 
 func (ctr *container) build(ap *Argument, proc *process.Process, anal process.Analyze) error {
-	bat, _, err := ctr.ReceiveFromSingleReg(1, anal)
-	if err != nil {
-		return err
-	}
-	if bat != nil {
-		if ctr.bat != nil {
-			proc.PutBatch(ctr.bat)
-			ctr.bat = nil
+	for {
+		bat, _, err := ctr.ReceiveFromSingleReg(1, anal)
+		if err != nil {
+			return err
 		}
-		ctr.bat = bat
+		if bat == nil {
+			break
+		}
+		ctr.bat, _, err = proc.AppendBatchFromOffset(ctr.bat, bat, 0)
+		if err != nil {
+			return err
+		}
+		proc.PutBatch(bat)
 	}
 	return nil
 }
@@ -136,7 +146,7 @@ func (ctr *container) probe(ap *Argument, proc *process.Process, anal process.An
 				}
 			}
 		}
-		if ctr.rbat.Vecs[0].Length() >= batchSize {
+		if ctr.rbat.Vecs[0].Length() >= colexec.DefaultBatchSize {
 			anal.Output(ctr.rbat, isLast)
 			result.Batch = ctr.rbat
 			ctr.rbat.SetRowCount(ctr.rbat.Vecs[0].Length())

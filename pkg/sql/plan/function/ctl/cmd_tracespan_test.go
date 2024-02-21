@@ -26,10 +26,12 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/morpc"
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
+	"github.com/matrixorigin/matrixone/pkg/defines"
 	logpb "github.com/matrixorigin/matrixone/pkg/pb/logservice"
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	"github.com/matrixorigin/matrixone/pkg/pb/query"
 	"github.com/matrixorigin/matrixone/pkg/queryservice"
+	qclient "github.com/matrixorigin/matrixone/pkg/queryservice/client"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 	"github.com/mohae/deepcopy"
@@ -73,6 +75,7 @@ func initRuntime(uuids []string, queryAddress []string) {
 		clusterservice.WithDisableRefresh(),
 		clusterservice.WithServices(cns, nil))
 	runtime.ProcessLevelRuntime().SetGlobalVariables(runtime.ClusterService, moCluster)
+	runtime.ProcessLevelRuntime().SetGlobalVariables(runtime.MOProtocolVersion, defines.MORPCLatestVersion)
 }
 
 func TestCanHandleSelfCmd(t *testing.T) {
@@ -88,11 +91,11 @@ func TestCanHandleSelfCmd(t *testing.T) {
 	initRuntime(nil, nil)
 
 	uuid := uuid2.New().String()
-	service, err := queryservice.NewQueryService(uuid, "", morpc.Config{})
+	cli, err := qclient.NewQueryClient(uuid, morpc.Config{})
 	require.Nil(t, err)
 
 	a1.proc = new(process.Process)
-	a1.proc.QueryService = service
+	a1.proc.QueryClient = cli
 	a1.service = cn
 	a1.parameter = fmt.Sprintf("%s:enable:s3,local:10", uuid)
 
@@ -139,11 +142,13 @@ func TestCanTransferQuery(t *testing.T) {
 	require.Nil(t, err)
 	qs2, err := queryservice.NewQueryService(uuids[1], addrs[1], morpc.Config{})
 	require.Nil(t, err)
+	qt1, err := qclient.NewQueryClient(uuids[1], morpc.Config{})
+	require.Nil(t, err)
 
 	qs1.AddHandleFunc(query.CmdMethod_TraceSpan, mockHandleTraceSpan, false)
 	qs2.AddHandleFunc(query.CmdMethod_TraceSpan, mockHandleTraceSpan, false)
 
-	a1.proc.QueryService = qs1
+	a1.proc.QueryClient = qt1
 
 	err = qs1.Start()
 	require.Nil(t, err)

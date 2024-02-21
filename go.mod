@@ -8,6 +8,7 @@ require (
 	github.com/FastFilter/xorfilter v0.1.4
 	github.com/K-Phoen/grabana v0.21.19
 	github.com/RoaringBitmap/roaring v1.2.3
+	github.com/aliyun/alibaba-cloud-sdk-go v1.62.654
 	github.com/aliyun/aliyun-oss-go-sdk v3.0.1+incompatible
 	github.com/aliyun/credentials-go v1.3.1
 	github.com/aws/aws-sdk-go-v2 v1.18.0
@@ -19,8 +20,10 @@ require (
 	github.com/axiomhq/hyperloglog v0.0.0-20230201085229-3ddf4bad03dc
 	github.com/cespare/xxhash/v2 v2.2.0
 	github.com/cockroachdb/errors v1.9.1
-	github.com/confluentinc/confluent-kafka-go/v2 v2.2.0
+	github.com/confluentinc/confluent-kafka-go/v2 v2.3.0
 	github.com/docker/go-units v0.5.0
+	github.com/dolthub/maphash v0.1.0
+	github.com/elastic/gosigar v0.14.2
 	github.com/fagongzi/goetty/v2 v2.0.3-0.20230628075727-26c9a2fd5fb8
 	github.com/fagongzi/util v0.0.0-20210923134909-bccc37b5040d
 	github.com/felixge/fgprof v0.9.3
@@ -32,7 +35,7 @@ require (
 	github.com/google/gops v0.3.25
 	github.com/google/pprof v0.0.0-20230510103437-eeec1cb781c3
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
-	github.com/google/uuid v1.3.0
+	github.com/google/uuid v1.5.0
 	github.com/hashicorp/memberlist v0.3.1
 	github.com/jhump/protoreflect v1.15.2
 	github.com/lni/dragonboat/v4 v4.0.0-20220815145555-6f622e8bcbef
@@ -54,6 +57,7 @@ require (
 	github.com/shirou/gopsutil/v3 v3.22.4
 	github.com/smartystreets/goconvey v1.7.2
 	github.com/spf13/cobra v1.7.0
+	github.com/spkg/bom v1.0.0
 	github.com/stretchr/testify v1.8.4
 	github.com/tidwall/btree v1.6.0
 	github.com/tidwall/pretty v1.2.1
@@ -70,6 +74,7 @@ require (
 
 require (
 	github.com/K-Phoen/sdk v0.12.3 // indirect
+	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/gosimple/slug v1.13.1 // indirect
 	github.com/gosimple/unidecode v1.0.1 // indirect
@@ -79,6 +84,7 @@ require (
 	github.com/minio/sha256-simd v1.0.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/opentracing/opentracing-go v1.2.1-0.20220228012449-10b1cf09e00b // indirect
 	github.com/rs/xid v1.5.0 // indirect
 	golang.org/x/crypto v0.14.0 // indirect
 	golang.org/x/text v0.13.0 // indirect
@@ -106,7 +112,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.12.10 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.14.10 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/bits-and-blooms/bitset v1.2.0 // indirect
+	github.com/bits-and-blooms/bitset v1.8.0 // indirect
 	github.com/bufbuild/protocompile v0.6.0 // indirect
 	github.com/cockroachdb/logtags v0.0.0-20230118201751-21c54148d20b // indirect
 	github.com/cockroachdb/pebble v0.0.0-20220407171941-2120d145e292 // indirect
@@ -115,7 +121,7 @@ require (
 	github.com/dgryski/go-metro v0.0.0-20180109044635-280f6062b5bc // indirect
 	github.com/getsentry/sentry-go v0.12.0 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
-	github.com/golang/protobuf v1.5.3
+	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/gopherjs/gopherjs v1.12.80 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
@@ -165,7 +171,8 @@ require (
 replace github.com/hashicorp/memberlist => github.com/matrixorigin/memberlist v0.5.1-0.20230322082342-95015c95ee76
 
 replace (
-	github.com/fagongzi/goetty/v2 v2.0.3-0.20230628075727-26c9a2fd5fb8 => github.com/matrixorigin/goetty/v2 v2.0.0-20230811091418-ff72333eabdc
+	github.com/elastic/gosigar v0.14.2 => github.com/matrixorigin/gosigar v0.14.3-0.20231205085924-69ea5558fb97
+	github.com/fagongzi/goetty/v2 v2.0.3-0.20230628075727-26c9a2fd5fb8 => github.com/matrixorigin/goetty/v2 v2.0.0-20231122095211-6a25dc9130ca
 	github.com/lni/dragonboat/v4 v4.0.0-20220815145555-6f622e8bcbef => github.com/matrixorigin/dragonboat/v4 v4.0.0-20230426084722-d189534f8004
 	github.com/lni/goutils v1.3.1-0.20220604063047-388d67b4dbc4 => github.com/matrixorigin/goutils v1.3.1-0.20220604063047-388d67b4dbc4
 	github.com/lni/vfs v0.2.1-0.20220616104132-8852fd867376 => github.com/matrixorigin/vfs v0.2.1-0.20220616104132-8852fd867376

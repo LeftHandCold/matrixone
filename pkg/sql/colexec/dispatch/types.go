@@ -15,15 +15,12 @@
 package dispatch
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/matrixorigin/matrixone/pkg/cnservice/cnclient"
-	"github.com/matrixorigin/matrixone/pkg/common/morpc"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/common/reuse"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
-	"github.com/matrixorigin/matrixone/pkg/pb/pipeline"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
@@ -33,33 +30,18 @@ var _ vm.Operator = new(Argument)
 
 const (
 	maxMessageSizeToMoRpc = 64 * mpool.MB
-	procTimeout           = 10000 * time.Second
 	waitNotifyTimeout     = 45 * time.Second
 
-	// send to all reg functions
 	SendToAllLocalFunc = iota
-	SendToAllRemoteFunc
 	SendToAllFunc
-
-	// send to any reg functions
 	SendToAnyLocalFunc
-	SendToAnyRemoteFunc
 	SendToAnyFunc
-
-	//shuffle to all reg functions
 	ShuffleToAllFunc
 )
 
-type WrapperClientSession struct {
-	msgId uint64
-	cs    morpc.ClientSession
-	uuid  uuid.UUID
-	// toAddr string
-	doneCh chan struct{}
-}
 type container struct {
 	// the clientsession info for the channel you want to dispatch
-	remoteReceivers []*WrapperClientSession
+	remoteReceivers []process.WrapCs
 	// sendFunc is the rule you want to send batch
 	sendFunc func(bat *batch.Batch, ap *Argument, proc *process.Process) (bool, error)
 
@@ -99,46 +81,52 @@ type Argument struct {
 	ShuffleRegIdxLocal  []int
 	ShuffleRegIdxRemote []int
 
-	info     *vm.OperatorInfo
-	Children []vm.Operator
+	vm.OperatorBase
 }
 
-func (arg *Argument) SetInfo(info *vm.OperatorInfo) {
-	arg.info = info
+func (arg *Argument) GetOperatorBase() *vm.OperatorBase {
+	return &arg.OperatorBase
 }
 
-func (arg *Argument) AppendChild(child vm.Operator) {
-	arg.Children = append(arg.Children, child)
+func init() {
+	reuse.CreatePool[Argument](
+		func() *Argument {
+			return &Argument{}
+		},
+		func(a *Argument) {
+			*a = Argument{}
+		},
+		reuse.DefaultOptions[Argument]().
+			WithEnableChecker(),
+	)
+}
+
+func (arg Argument) TypeName() string {
+	return argName
+}
+
+func NewArgument() *Argument {
+	return reuse.Alloc[Argument](nil)
+}
+
+func (arg *Argument) Release() {
+	if arg != nil {
+		reuse.Free[Argument](arg, nil)
+	}
 }
 
 func (arg *Argument) Free(proc *process.Process, pipelineFailed bool, err error) {
 	if arg.ctr != nil {
 		if arg.ctr.isRemote {
-			if !arg.ctr.prepared {
-				arg.waitRemoteRegsReady(proc)
-			}
 			for _, r := range arg.ctr.remoteReceivers {
-				timeoutCtx, cancel := context.WithTimeout(context.Background(), procTimeout)
-				_ = cancel
-				message := cnclient.AcquireMessage()
-				{
-					message.Id = r.msgId
-					message.Cmd = pipeline.Method_BatchMessage
-					message.Sid = pipeline.Status_MessageEnd
-					message.Uuid = r.uuid[:]
-				}
-				if pipelineFailed {
-					message.Err = pipeline.EncodedMessageError(timeoutCtx, err)
-				}
-				r.cs.Write(timeoutCtx, message)
-				close(r.doneCh)
+				r.Err <- err
 			}
 
 			uuids := make([]uuid.UUID, 0, len(arg.RemoteRegs))
 			for i := range arg.RemoteRegs {
 				uuids = append(uuids, arg.RemoteRegs[i].Uuid)
 			}
-			colexec.Srv.DeleteUuids(uuids)
+			colexec.Get().DeleteUuids(uuids)
 		}
 	}
 
@@ -148,8 +136,6 @@ func (arg *Argument) Free(proc *process.Process, pipelineFailed bool, err error)
 			case <-arg.LocalRegs[i].Ctx.Done():
 			case arg.LocalRegs[i].Ch <- nil:
 			}
-		} else {
-			arg.LocalRegs[i].CleanChannel(proc.Mp())
 		}
 		close(arg.LocalRegs[i].Ch)
 	}

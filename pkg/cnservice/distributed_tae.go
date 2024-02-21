@@ -18,10 +18,12 @@ import (
 	"context"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/config"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
+	"github.com/matrixorigin/matrixone/pkg/util/status"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
 )
@@ -49,7 +51,7 @@ func (s *service) initDistributedTAE(
 	if err != nil {
 		return err
 	}
-	colexec.Srv = colexec.NewServer(hakeeper)
+	colexec.NewServer(hakeeper)
 
 	// start I/O pipeline
 	blockio.Start()
@@ -65,6 +67,8 @@ func (s *service) initDistributedTAE(
 		fs,
 		client,
 		hakeeper,
+		s.gossipNode.StatsKeyRouter(),
+		s.cfg.LogtailUpdateStatsThreshold,
 	)
 	pu.StorageEngine = s.storeEngine
 
@@ -73,6 +77,13 @@ func (s *service) initDistributedTAE(
 	err = cnEngine.InitLogTailPushModel(ctx, s.timestampWaiter)
 	if err != nil {
 		return err
+	}
+
+	ss, ok := runtime.ProcessLevelRuntime().GetGlobalVariables(runtime.StatusServer)
+	if ok {
+		statusServer := ss.(*status.Server)
+		statusServer.SetTxnClient(s.cfg.UUID, client)
+		statusServer.SetLogTailClient(s.cfg.UUID, cnEngine.PushClient())
 	}
 
 	// internal sql executor.

@@ -17,12 +17,13 @@ package upgrader
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/frontend"
 	"github.com/matrixorigin/matrixone/pkg/util/export/table"
 	ie "github.com/matrixorigin/matrixone/pkg/util/internalExecutor"
-	"strings"
 )
 
 func ParseDataTypeToColType(dataType string) (table.ColType, error) {
@@ -30,6 +31,8 @@ func ParseDataTypeToColType(dataType string) (table.ColType, error) {
 	switch {
 	case strings.Contains(dataTypeStr, "datetime"):
 		return table.TDatetime, nil
+	case strings.Contains(dataTypeStr, "timestamp"):
+		return table.TTimestamp, nil
 	case strings.EqualFold(dataTypeStr, "bigint unsigned"):
 		return table.TUint64, nil
 	case strings.EqualFold(dataTypeStr, "bigint"):
@@ -40,6 +43,8 @@ func ParseDataTypeToColType(dataType string) (table.ColType, error) {
 		return table.TUint32, nil
 	case strings.EqualFold(dataTypeStr, "double"):
 		return table.TFloat64, nil
+	case strings.EqualFold(dataTypeStr, "float"):
+		return table.TFloat32, nil
 	case strings.EqualFold(dataTypeStr, "json"):
 		return table.TJson, nil
 	case strings.EqualFold(dataTypeStr, "text"):
@@ -58,10 +63,7 @@ func ParseDataTypeToColType(dataType string) (table.ColType, error) {
 }
 
 func attachAccount(ctx context.Context, tenant *frontend.TenantInfo) context.Context {
-	ctx = context.WithValue(ctx, defines.TenantIDKey{}, tenant.GetTenantID())
-	ctx = context.WithValue(ctx, defines.UserIDKey{}, tenant.GetUserID())
-	ctx = context.WithValue(ctx, defines.RoleIDKey{}, tenant.GetDefaultRoleID())
-	return ctx
+	return defines.AttachAccount(ctx, tenant.GetTenantID(), tenant.GetUserID(), tenant.GetDefaultRoleID())
 }
 
 func makeOptions(tenant *frontend.TenantInfo) *ie.OptsBuilder {

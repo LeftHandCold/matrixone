@@ -16,7 +16,6 @@ package data
 
 import (
 	"context"
-	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -36,7 +35,7 @@ import (
 type CheckpointUnit interface {
 	MutationInfo() string
 	RunCalibration() int
-	EstimateScore(time.Duration, bool) int
+	// EstimateScore(time.Duration, bool) int
 	BuildCompactionTaskFactory() (tasks.TxnTaskFactory, tasks.TaskType, []common.ID, error)
 }
 
@@ -72,6 +71,7 @@ type Block interface {
 	GetID() *common.ID
 	IsAppendable() bool
 	PrepareCompact() bool
+	PrepareCompactInfo() (bool, string)
 
 	Rows() int
 	GetColumnDataById(
@@ -127,7 +127,7 @@ type Block interface {
 		mp *mpool.MPool,
 	) error
 	PPString(level common.PPLevel, depth int, prefix string) string
-	EstimateMemSize() int
+	EstimateMemSize() (int, int)
 	GetRuntime() *dbutils.Runtime
 
 	Init() error
@@ -135,6 +135,7 @@ type Block interface {
 	GCInMemeoryDeletesByTS(types.TS)
 	CollectAppendInRange(start, end types.TS, withAborted bool, mp *mpool.MPool) (*containers.BatchWithVersion, error)
 	CollectDeleteInRange(ctx context.Context, start, end types.TS, withAborted bool, mp *mpool.MPool) (*containers.Batch, error)
+	CollectDeleteInRangeAfterDeltalocation(ctx context.Context, start, end types.TS, withAborted bool, mp *mpool.MPool) (*containers.Batch, error)
 	// GetAppendNodeByRow(row uint32) (an txnif.AppendNode)
 	// GetDeleteNodeByRow(row uint32) (an txnif.DeleteNode)
 	GetFs() *objectio.ObjectFS

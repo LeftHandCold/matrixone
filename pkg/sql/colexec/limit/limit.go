@@ -23,7 +23,10 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
+const argName = "limit"
+
 func (arg *Argument) String(buf *bytes.Buffer) {
+	buf.WriteString(argName)
 	buf.WriteString(fmt.Sprintf("limit(%v)", arg.Limit))
 }
 
@@ -33,20 +36,26 @@ func (arg *Argument) Prepare(_ *process.Process) error {
 
 // Call returning only the first n tuples from its input
 func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
-	ap := arg
-	anal := proc.GetAnalyze(arg.info.Idx)
-	anal.Start()
-	defer anal.Stop()
+	if err, isCancel := vm.CancelCheck(proc); isCancel {
+		return vm.CancelResult, err
+	}
 
-	result, err := arg.children[0].Call(proc)
+	ap := arg
+	anal := proc.GetAnalyze(arg.GetIdx(), arg.GetParallelIdx(), arg.GetParallelMajor())
+
+	result, err := arg.GetChildren(0).Call(proc)
 	if err != nil {
 		return result, err
 	}
+
+	anal.Start()
+	defer anal.Stop()
+
 	if result.Batch == nil || result.Batch.IsEmpty() || result.Batch.Last() {
 		return result, nil
 	}
 	bat := result.Batch
-	anal.Input(bat, arg.info.IsFirst)
+	anal.Input(bat, arg.GetIsFirst())
 
 	if ap.Seen >= ap.Limit {
 		result.Batch = nil
@@ -58,12 +67,12 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 	if newSeen >= ap.Limit { // limit - seen
 		batch.SetLength(bat, int(ap.Limit-ap.Seen))
 		ap.Seen = newSeen
-		anal.Output(bat, arg.info.IsLast)
+		anal.Output(bat, arg.GetIsLast())
 
 		result.Status = vm.ExecStop
 		return result, nil
 	}
-	anal.Output(bat, arg.info.IsLast)
+	anal.Output(bat, arg.GetIsLast())
 	ap.Seen = newSeen
 	return result, nil
 }

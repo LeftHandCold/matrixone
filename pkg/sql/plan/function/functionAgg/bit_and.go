@@ -30,6 +30,7 @@ var (
 		types.T_int8, types.T_int16, types.T_int32, types.T_int64,
 		types.T_float32, types.T_float64,
 		types.T_binary, types.T_varbinary,
+		types.T_bit,
 	}
 	AggBitAndReturnType = func(typs []types.Type) types.Type {
 		if typs[0].Oid == types.T_binary || typs[0].Oid == types.T_varbinary {
@@ -39,8 +40,10 @@ var (
 	}
 )
 
-func NewAggBitAnd(overloadID int64, dist bool, inputTypes []types.Type, outputType types.Type, _ any, _ any) (agg.Agg[any], error) {
+func NewAggBitAnd(overloadID int64, dist bool, inputTypes []types.Type, outputType types.Type, _ any) (agg.Agg[any], error) {
 	switch inputTypes[0].Oid {
+	case types.T_bit:
+		return newGenericBitAnd[uint64](overloadID, inputTypes[0], outputType, dist)
 	case types.T_uint8:
 		return newGenericBitAnd[uint8](overloadID, inputTypes[0], outputType, dist)
 	case types.T_uint16:
@@ -64,9 +67,9 @@ func NewAggBitAnd(overloadID int64, dist bool, inputTypes []types.Type, outputTy
 	case types.T_binary, types.T_varbinary:
 		aggPriv := &sAggBinaryBitAnd{}
 		if dist {
-			return agg.NewUnaryDistAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+			return agg.NewUnaryDistAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 		}
-		return agg.NewUnaryAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+		return agg.NewUnaryAgg(overloadID, aggPriv, false, inputTypes[0], outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 	}
 	return nil, moerr.NewInternalErrorNoCtx("unsupported type '%s' for bit_and", inputTypes[0])
 }
@@ -74,9 +77,9 @@ func NewAggBitAnd(overloadID int64, dist bool, inputTypes []types.Type, outputTy
 func newGenericBitAnd[T numeric](overloadID int64, inputType types.Type, outputType types.Type, dist bool) (agg.Agg[any], error) {
 	aggPriv := &sAggBitAnd[T]{}
 	if dist {
-		return agg.NewUnaryDistAgg[T, uint64](overloadID, aggPriv, false, inputType, outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+		return agg.NewUnaryDistAgg[T, uint64](overloadID, aggPriv, false, inputType, outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 	}
-	return agg.NewUnaryAgg[T, uint64](overloadID, aggPriv, false, inputType, outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill, nil), nil
+	return agg.NewUnaryAgg[T, uint64](overloadID, aggPriv, false, inputType, outputType, aggPriv.Grows, aggPriv.Eval, aggPriv.Merge, aggPriv.Fill), nil
 }
 
 type sAggBitAnd[T numeric] struct{}

@@ -93,7 +93,8 @@ func GenerateFunctionStrParameter(v *Vector) FunctionParameterWrapper[types.Varl
 			sourceVector: v,
 		}
 	}
-	cols := toTypedSlice[types.Varlena](&v.col)
+	var cols []types.Varlena
+	ToSlice(v, &cols)
 	if v.IsConst() {
 		return &FunctionParameterScalar[types.Varlena]{
 			typ:          *t,
@@ -522,6 +523,8 @@ func NewFunctionResultWrapper(
 	switch typ.Oid {
 	case types.T_bool:
 		return newResultFunc[bool](v, getVectorMethod, putVectorMethod, mp)
+	case types.T_bit:
+		return newResultFunc[uint64](v, getVectorMethod, putVectorMethod, mp)
 	case types.T_int8:
 		return newResultFunc[int8](v, getVectorMethod, putVectorMethod, mp)
 	case types.T_int16:

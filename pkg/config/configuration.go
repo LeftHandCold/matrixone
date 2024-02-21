@@ -24,7 +24,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/lockservice"
 	"github.com/matrixorigin/matrixone/pkg/logservice"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
-	"github.com/matrixorigin/matrixone/pkg/queryservice"
+	qclient "github.com/matrixorigin/matrixone/pkg/queryservice/client"
 	"github.com/matrixorigin/matrixone/pkg/taskservice"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/udf"
@@ -132,11 +132,11 @@ var (
 	defaultOBBufferSize int64 = 10485760
 
 	// defaultOBCollectorCntPercent
-	defaultOBCollectorCntPercent = 10
+	defaultOBCollectorCntPercent = 1000
 	// defaultOBGeneratorCntPercent
-	defaultOBGeneratorCntPercent = 400
+	defaultOBGeneratorCntPercent = 1000
 	// defaultOBExporterCntPercent
-	defaultOBExporterCntPercent = 400
+	defaultOBExporterCntPercent = 1000
 
 	// defaultPrintDebugInterval default: 30 minutes
 	defaultPrintDebugInterval = 30
@@ -693,8 +693,8 @@ type ParameterUnit struct {
 	// LockService instance
 	LockService lockservice.LockService
 
-	// QueryService instance
-	QueryService queryservice.QueryService
+	// QueryClient instance
+	QueryClient qclient.QueryClient
 
 	UdfService udf.Service
 

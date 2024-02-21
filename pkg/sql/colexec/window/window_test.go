@@ -26,7 +26,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/testutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
-	"github.com/stretchr/testify/require"
 )
 
 const Rows = 100
@@ -90,35 +89,6 @@ func TestString(t *testing.T) {
 	}
 }
 
-func TestPrepare(t *testing.T) {
-	for _, tc := range tcs {
-		err := tc.arg.Prepare(tc.proc)
-		require.NoError(t, err)
-	}
-}
-
-func TestWindow(t *testing.T) {
-	for _, tc := range tcs {
-		err := tc.arg.Prepare(tc.proc)
-		require.NoError(t, err)
-
-		_, err = tc.arg.Call(tc.proc)
-		require.NoError(t, err)
-
-		_, err = tc.arg.Call(tc.proc)
-		require.NoError(t, err)
-
-		_, err = tc.arg.Call(tc.proc)
-		require.NoError(t, err)
-
-		_, err = tc.arg.Call(tc.proc)
-		require.NoError(t, err)
-
-		_, err = tc.arg.Call(tc.proc)
-		require.NoError(t, err)
-	}
-}
-
 func newTestCase(flgs []bool, ts []types.Type, exprs []*plan.Expr, aggs []agg.Aggregate) winTestCase {
 	for _, expr := range exprs {
 		if col, ok := expr.Expr.(*plan.Expr_Col); ok {
@@ -137,10 +107,12 @@ func newTestCase(flgs []bool, ts []types.Type, exprs []*plan.Expr, aggs []agg.Ag
 			WinSpecList: exprs,
 			Types:       ts,
 			Aggs:        aggs,
-			info: &vm.OperatorInfo{
-				Idx:     0,
-				IsFirst: false,
-				IsLast:  false,
+			OperatorBase: vm.OperatorBase{
+				OperatorInfo: vm.OperatorInfo{
+					Idx:     0,
+					IsFirst: false,
+					IsLast:  false,
+				},
 			},
 		},
 	}

@@ -26,20 +26,30 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
+const argName = "table_function"
+
 func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
+	if err, isCancel := vm.CancelCheck(proc); isCancel {
+		return vm.CancelResult, err
+	}
+
 	tblArg := arg
 	var (
 		f bool
 		e error
 	)
-	idx := arg.info.Idx
+	idx := arg.GetIdx()
 
-	result, err := arg.children[0].Call(proc)
+	result, err := arg.GetChildren(0).Call(proc)
 	if err != nil {
 		return result, err
 	}
 
-	switch tblArg.Name {
+	anal := proc.GetAnalyze(arg.GetIdx(), arg.GetParallelIdx(), arg.GetParallelMajor())
+	anal.Start()
+	defer anal.Stop()
+
+	switch tblArg.FuncName {
 	case "unnest":
 		f, e = unnestCall(idx, proc, tblArg, &result)
 	case "generate_series":
@@ -62,7 +72,7 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 		f, e = moCacheCall(idx, proc, tblArg, &result)
 	default:
 		result.Status = vm.ExecStop
-		return result, moerr.NewNotSupported(proc.Ctx, fmt.Sprintf("table function %s is not supported", tblArg.Name))
+		return result, moerr.NewNotSupported(proc.Ctx, fmt.Sprintf("table function %s is not supported", tblArg.FuncName))
 	}
 	if e != nil || f {
 		if f {
@@ -87,12 +97,12 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 
 	if arg.buf.VectorCount() != len(tblArg.retSchema) {
 		result.Status = vm.ExecStop
-		return result, moerr.NewInternalError(proc.Ctx, "table function %s return length mismatch", tblArg.Name)
+		return result, moerr.NewInternalError(proc.Ctx, "table function %s return length mismatch", tblArg.FuncName)
 	}
 	for i := range tblArg.retSchema {
 		if arg.buf.GetVector(int32(i)).GetType().Oid != tblArg.retSchema[i].Oid {
 			result.Status = vm.ExecStop
-			return result, moerr.NewInternalError(proc.Ctx, "table function %s return type mismatch", tblArg.Name)
+			return result, moerr.NewInternalError(proc.Ctx, "table function %s return type mismatch", tblArg.FuncName)
 		}
 	}
 
@@ -104,7 +114,8 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 }
 
 func (arg *Argument) String(buf *bytes.Buffer) {
-	buf.WriteString(arg.Name)
+	buf.WriteString(argName)
+	buf.WriteString(arg.FuncName)
 }
 
 func (arg *Argument) Prepare(proc *process.Process) error {
@@ -117,7 +128,7 @@ func (arg *Argument) Prepare(proc *process.Process) error {
 	}
 	tblArg.retSchema = retSchema
 
-	switch tblArg.Name {
+	switch tblArg.FuncName {
 	case "unnest":
 		return unnestPrepare(proc, tblArg)
 	case "generate_series":
@@ -139,7 +150,7 @@ func (arg *Argument) Prepare(proc *process.Process) error {
 	case "mo_cache":
 		return moCachePrepare(proc, tblArg)
 	default:
-		return moerr.NewNotSupported(proc.Ctx, fmt.Sprintf("table function %s is not supported", tblArg.Name))
+		return moerr.NewNotSupported(proc.Ctx, fmt.Sprintf("table function %s is not supported", tblArg.FuncName))
 	}
 }
 

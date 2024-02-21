@@ -157,6 +157,9 @@ func (ie *internalExecutor) Exec(ctx context.Context, sql string, opts ie.Sessio
 	defer sess.Close()
 	ie.executor.SetSession(sess)
 	ie.proto.stashResult = false
+	if sql == "" {
+		return
+	}
 	return ie.executor.doComQuery(ctx, &UserInput{sql: sql})
 }
 
@@ -193,7 +196,16 @@ func (ie *internalExecutor) newCmdSession(ctx context.Context, opts ie.SessionOv
 	sess.SetRequestContext(ctx)
 	sess.SetConnectContext(ctx)
 
-	t, _ := GetTenantInfo(ctx, DefaultTenantMoAdmin)
+	var t *TenantInfo
+	if accountId, err := defines.GetAccountId(ctx); err == nil {
+		t = &TenantInfo{
+			TenantID:      accountId,
+			UserID:        defines.GetUserId(ctx),
+			DefaultRoleID: defines.GetRoleId(ctx),
+		}
+	} else {
+		t, _ = GetTenantInfo(ctx, DefaultTenantMoAdmin)
+	}
 	sess.SetTenantInfo(t)
 	applyOverride(sess, ie.baseSessOpts)
 	applyOverride(sess, opts)
@@ -226,6 +238,10 @@ type internalProtocol struct {
 
 func (ip *internalProtocol) GetCapability() uint32 {
 	return DefaultCapability
+}
+
+func (ip *internalProtocol) SetCapability(uint32) {
+
 }
 
 func (ip *internalProtocol) IsTlsEstablished() bool {

@@ -154,6 +154,43 @@ func CosineSimilarity[T types.RealNumbers](v1, v2 []T) (float64, error) {
 		cosineSimilarity = -1.0
 	}
 
+	// NOTE: Downcast the float64 cosine_similarity to float32 and check if it is
+	// 1.0 or -1.0 to avoid precision issue.
+	//
+	//  Example for corner case:
+	// - cosine_similarity(a,a) = 1:
+	// - Without downcasting check, we get the following results:
+	//   cosine_similarity( [0.46323407, 23.498016, 563.923, 56.076736, 8732.958] ,
+	//					    [0.46323407, 23.498016, 563.923, 56.076736, 8732.958] ) =   0.9999999999999998
+	// - With downcasting, we get the following results:
+	//   cosine_similarity( [0.46323407, 23.498016, 563.923, 56.076736, 8732.958] ,
+	//					    [0.46323407, 23.498016, 563.923, 56.076736, 8732.958] ) =   1
+	//
+	//  Reason:
+	// The reason for this check is
+	// 1. gonums mat.Dot, mat.Norm returns float64. In other databases, we mostly do float32 operations.
+	// 2. float64 operations are not exact.
+	// mysql> select 76586261.65813679/(8751.35770370157 *8751.35770370157);
+	//+-----------------------------------------------------------+
+	//| 76586261.65813679 / (8751.35770370157 * 8751.35770370157) |
+	//+-----------------------------------------------------------+
+	//|                                            1.000000000000 |
+	//+-----------------------------------------------------------+
+	//mysql> select cast(76586261.65813679 as double)/(8751.35770370157 * 8751.35770370157);
+	//+---------------------------------------------------------------------------+
+	//| cast(76586261.65813679 as double) / (8751.35770370157 * 8751.35770370157) |
+	//+---------------------------------------------------------------------------+
+	//|                                                        0.9999999999999996 |
+	//+---------------------------------------------------------------------------+
+	// 3. We only need to handle the case for 1.0 and -1.0 with float32 precision.
+	//    Rest of the cases can have float64 precision.
+	cosineSimilarityF32 := float32(cosineSimilarity)
+	if cosineSimilarityF32 == 1 {
+		cosineSimilarity = 1
+	} else if cosineSimilarityF32 == -1 {
+		cosineSimilarity = -1
+	}
+
 	return cosineSimilarity, nil
 }
 
@@ -163,7 +200,10 @@ func NormalizeL2[T types.RealNumbers](v1 []T) ([]T, error) {
 
 	norm := mat.Norm(vec, 2)
 	if norm == 0 {
-		return nil, moerr.NewInternalErrorNoCtx("normalize_l2: cannot normalize a zero vector")
+		// NOTE: don't throw error here. If you throw error, then when a zero vector comes in the Vector Index
+		// Mapping Query, the query will fail. Instead, return the same zero vector.
+		// This is consistent with FAISS:https://github.com/facebookresearch/faiss/blob/0716bde2500edb2e18509bf05f5dfa37bd698082/faiss/utils/distances.cpp#L97
+		return v1, nil
 	}
 
 	vec.ScaleVec(1/norm, vec)
@@ -183,6 +223,40 @@ func L2Norm[T types.RealNumbers](v []T) (float64, error) {
 	vec := ToGonumVector[T](v)
 
 	return mat.Norm(vec, 2), nil
+}
+
+func ScalarOp[T types.RealNumbers](v []T, operation string, scalar float64) ([]T, error) {
+	vec := ToGonumVector[T](v)
+	switch operation {
+	case "+", "-":
+		//TODO: optimize this in future.
+		scalarVec := make([]float64, vec.Len())
+		if operation == "+" {
+			for i := range scalarVec {
+				scalarVec[i] = scalar
+			}
+		} else {
+			for i := range scalarVec {
+				scalarVec[i] = -scalar
+			}
+		}
+		scalarDenseVec := mat.NewVecDense(vec.Len(), scalarVec)
+		vec.AddVec(vec, scalarDenseVec)
+	case "*", "/":
+		var scale float64
+		if operation == "/" {
+			if scalar == 0 {
+				return nil, moerr.NewDivByZeroNoCtx()
+			}
+			scale = float64(1) / scalar
+		} else {
+			scale = scalar
+		}
+		vec.ScaleVec(scale, vec)
+	default:
+		return nil, moerr.NewInternalErrorNoCtx("scale_vector: invalid operation")
+	}
+	return ToMoArray[T](vec), nil
 }
 
 /* ------------ [END] Performance critical functions. ------- */
@@ -231,6 +305,62 @@ func Cast[I types.RealNumbers, O types.RealNumbers](in []I) (out []O, err error)
 	}
 
 	return out, nil
+}
+
+/** Slice Array **/
+
+// SubArrayFromLeft Slice from left to right, starting from 0
+func SubArrayFromLeft[T types.RealNumbers](s []T, offset int64) []T {
+	totalLen := int64(len(s))
+	if offset > totalLen {
+		return []T{}
+	}
+	return s[offset:]
+}
+
+// SubArrayFromRight Cut slices from right to left, starting from 1
+func SubArrayFromRight[T types.RealNumbers](s []T, offset int64) []T {
+	totalLen := int64(len(s))
+	if offset > totalLen {
+		return []T{}
+	}
+	return s[totalLen-offset:]
+}
+
+// SubArrayFromLeftWithLength Cut the slice with length from left to right, starting from 0
+func SubArrayFromLeftWithLength[T types.RealNumbers](s []T, offset int64, length int64) []T {
+	if offset < 0 {
+		return []T{}
+	}
+	return subArrayOffsetLen(s, offset, length)
+}
+
+// SubArrayFromRightWithLength From right to left, cut the slice with length from 1
+func SubArrayFromRightWithLength[T types.RealNumbers](s []T, offset int64, length int64) []T {
+	return subArrayOffsetLen(s, -offset, length)
+}
+
+func subArrayOffsetLen[T types.RealNumbers](s []T, offset int64, length int64) []T {
+	totalLen := int64(len(s))
+	if offset < 0 {
+		offset += totalLen
+		if offset < 0 {
+			return []T{}
+		}
+	}
+	if offset >= totalLen {
+		return []T{}
+	}
+
+	if length <= 0 {
+		return []T{}
+	} else {
+		end := offset + length
+		if end > totalLen {
+			end = totalLen
+		}
+		return s[offset:end]
+	}
 }
 
 /* ------------ [END] mat.VecDense not supported functions ------- */

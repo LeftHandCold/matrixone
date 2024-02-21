@@ -16,6 +16,7 @@ package intersect
 
 import (
 	"github.com/matrixorigin/matrixone/pkg/common/hashmap"
+	"github.com/matrixorigin/matrixone/pkg/common/reuse"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
 	"github.com/matrixorigin/matrixone/pkg/vm"
@@ -37,16 +38,38 @@ type Argument struct {
 	IBucket uint64
 	NBucket uint64
 
-	info     *vm.OperatorInfo
-	children []vm.Operator
+	vm.OperatorBase
 }
 
-func (arg *Argument) SetInfo(info *vm.OperatorInfo) {
-	arg.info = info
+func (arg *Argument) GetOperatorBase() *vm.OperatorBase {
+	return &arg.OperatorBase
 }
 
-func (arg *Argument) AppendChild(child vm.Operator) {
-	arg.children = append(arg.children, child)
+func init() {
+	reuse.CreatePool[Argument](
+		func() *Argument {
+			return &Argument{}
+		},
+		func(a *Argument) {
+			*a = Argument{}
+		},
+		reuse.DefaultOptions[Argument]().
+			WithEnableChecker(),
+	)
+}
+
+func (arg Argument) TypeName() string {
+	return argName
+}
+
+func NewArgument() *Argument {
+	return reuse.Alloc[Argument](nil)
+}
+
+func (arg *Argument) Release() {
+	if arg != nil {
+		reuse.Free[Argument](arg, nil)
+	}
 }
 
 type container struct {
@@ -70,19 +93,21 @@ type container struct {
 
 func (arg *Argument) Free(proc *process.Process, pipelineFailed bool, err error) {
 	ctr := arg.ctr
-	if ctr.hashTable != nil {
-		ctr.hashTable.Free()
-		ctr.hashTable = nil
-	}
-	if ctr.btc != nil {
-		ctr.btc.Clean(proc.Mp())
-		ctr.btc = nil
-	}
-	if ctr.cnts != nil {
-		for i := range ctr.cnts {
-			proc.Mp().PutSels(ctr.cnts[i])
+	if ctr != nil {
+		if ctr.hashTable != nil {
+			ctr.hashTable.Free()
+			ctr.hashTable = nil
 		}
-		ctr.cnts = nil
+		if ctr.btc != nil {
+			ctr.btc.Clean(proc.Mp())
+			ctr.btc = nil
+		}
+		if ctr.cnts != nil {
+			for i := range ctr.cnts {
+				proc.Mp().PutSels(ctr.cnts[i])
+			}
+			ctr.cnts = nil
+		}
+		ctr.FreeAllReg()
 	}
-	ctr.FreeAllReg()
 }

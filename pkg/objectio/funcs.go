@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 
@@ -25,8 +26,25 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 )
+
+var enableCacheRelease bool
+
+func init() {
+	enableCacheRelease = false
+}
+
+func ReleaseIOEntry(entry *fileservice.IOEntry) {
+	if enableCacheRelease {
+		entry.CachedData.Release()
+	}
+}
+
+func ReleaseIOVector(vector *fileservice.IOVector) {
+	if enableCacheRelease {
+		vector.Release()
+	}
+}
 
 func ReadExtent(
 	ctx context.Context,
@@ -35,7 +53,7 @@ func ReadExtent(
 	policy fileservice.Policy,
 	fs fileservice.FileService,
 	factory CacheConstructorFactory,
-) (v []byte, err error) {
+) (buf []byte, err error) {
 	ioVec := &fileservice.IOVector{
 		FilePath: name,
 		Entries:  make([]fileservice.IOEntry, 1),
@@ -51,7 +69,10 @@ func ReadExtent(
 		return
 	}
 	//TODO when to call ioVec.Release?
-	v = ioVec.Entries[0].CachedData.Bytes()
+	v := ioVec.Entries[0].CachedData.Bytes()
+	buf = make([]byte, len(v))
+	copy(buf, v)
+	ReleaseIOEntry(&ioVec.Entries[0])
 	return
 }
 
@@ -114,8 +135,9 @@ func ReadOneBlock(
 	typs []types.Type,
 	m *mpool.MPool,
 	fs fileservice.FileService,
+	policy fileservice.Policy,
 ) (ioVec *fileservice.IOVector, err error) {
-	return ReadOneBlockWithMeta(ctx, meta, name, blk, seqnums, typs, m, fs, constructorFactory)
+	return ReadOneBlockWithMeta(ctx, meta, name, blk, seqnums, typs, m, fs, constructorFactory, policy)
 }
 
 func ReadOneBlockWithMeta(
@@ -128,15 +150,14 @@ func ReadOneBlockWithMeta(
 	m *mpool.MPool,
 	fs fileservice.FileService,
 	factory CacheConstructorFactory,
-	policies ...fileservice.Policy,
+	policy fileservice.Policy,
 ) (ioVec *fileservice.IOVector, err error) {
 	ioVec = &fileservice.IOVector{
 		FilePath: name,
 		Entries:  make([]fileservice.IOEntry, 0),
+		Policy:   policy,
 	}
-	if len(policies) > 0 {
-		ioVec.Policy = policies[0]
-	}
+
 	var filledEntries []fileservice.IOEntry
 	blkmeta := meta.GetBlockMeta(uint32(blk))
 	maxSeqnum := blkmeta.GetMaxSeqnum()
@@ -206,8 +227,7 @@ func ReadOneBlockWithMeta(
 					meta.BlockHeader().BlockID().String(), filledEntries[i].Size, typs[i])
 				buf := &bytes.Buffer{}
 				buf.Write(EncodeIOEntryHeader(&IOEntryHeader{Type: IOET_ColData, Version: IOET_ColumnData_CurrVer}))
-				err = containers.FillCNConstVector(length, typs[i], nil, m).MarshalBinaryWithBuffer(buf)
-				if err != nil {
+				if err = vector.NewConstNull(typs[i], length, m).MarshalBinaryWithBuffer(buf); err != nil {
 					return
 				}
 				cacheData := fileservice.DefaultCacheDataAllocator.Alloc(buf.Len())

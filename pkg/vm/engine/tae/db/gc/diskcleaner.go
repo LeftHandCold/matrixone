@@ -46,6 +46,9 @@ type DiskCleaner struct {
 	fs  *objectio.ObjectFS
 	ctx context.Context
 
+	// disableGC is used to control whether to delete objects
+	disableGC bool
+
 	// ckpClient is used to get the instance of the specified checkpoint
 	ckpClient checkpoint.RunnerReader
 
@@ -101,12 +104,14 @@ func NewDiskCleaner(
 	fs *objectio.ObjectFS,
 	ckpClient checkpoint.RunnerReader,
 	catalog *catalog.Catalog,
+	disableGC bool,
 ) *DiskCleaner {
 	cleaner := &DiskCleaner{
 		ctx:       ctx,
 		fs:        fs,
 		ckpClient: ckpClient,
 		catalog:   catalog,
+		disableGC: disableGC,
 	}
 	cleaner.delWorker = NewGCWorker(fs, cleaner)
 	cleaner.processQueue = sm.NewSafeQueue(10000, 1000, cleaner.process)
@@ -238,7 +243,7 @@ func (cleaner *DiskCleaner) process(items ...any) {
 	var input *GCTable
 	var err error
 	if input, err = cleaner.createNewInput(candidates); err != nil {
-		logutil.Errorf("processing clean %s: %v", candidates[0].String(), err)
+		logutil.Errorf("[DiskGC]processing clean %s: %v", candidates[0].String(), err)
 		// TODO
 		return
 	}
@@ -246,10 +251,12 @@ func (cleaner *DiskCleaner) process(items ...any) {
 	cleaner.updateMaxConsumed(candidates[len(candidates)-1])
 	err = cleaner.tryGC()
 	if err != nil {
+		logutil.Errorf("[DiskGC]processing clean tryGC %s: %v", candidates[0].String(), err)
 		return
 	}
 	err = cleaner.mergeGCFile()
 	if err != nil {
+		logutil.Errorf("[DiskGC]processing clean mergeGCFile %s: %v", candidates[0].String(), err)
 		// TODO: Error handle
 		return
 	}
@@ -290,8 +297,8 @@ func (cleaner *DiskCleaner) collectCkpData(
 	factory := logtail.IncrementalCheckpointDataFactory(
 		ckp.GetStart(),
 		ckp.GetEnd(),
-		cleaner.fs.Service,
 		false,
+		true,
 	)
 	data, err = factory(cleaner.catalog)
 	return
@@ -350,7 +357,7 @@ func (cleaner *DiskCleaner) tryGC() error {
 	gc := cleaner.softGC()
 	// Delete files after softGC
 	// TODO:Requires Physical Removal Policy
-	err := cleaner.delWorker.ExecDelete(cleaner.ctx, gc)
+	err := cleaner.delWorker.ExecDelete(cleaner.ctx, gc, cleaner.disableGC)
 	if err != nil {
 		return err
 	}

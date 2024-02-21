@@ -261,7 +261,7 @@ create table emp(
                     comm decimal(7,2),
                     deptno varchar(20),
                     primary key(empno),
-                    FOREIGN KEY (deptno) REFERENCES dept(deptno)
+                    constraint `c1` FOREIGN KEY (deptno) REFERENCES dept(deptno)
 );
 
 INSERT INTO emp VALUES (7369,'SMITH','CLERK',7902,'1980-12-17',800,NULL,20);
@@ -766,7 +766,7 @@ drop table if exists foreign02;
 create table foreign02(col1 int,
                        col2 int,
                        col3 int primary key,
-                       foreign key(col1) references foreign01(col1));
+                       constraint `c1` foreign key(col1) references foreign01(col1));
 show create table foreign01;
 show create table foreign02;
 insert into foreign01 values(1,'sfhuwe',1,1);
@@ -1150,4 +1150,14 @@ show create table mix01;
 select table_name,COLUMN_NAME, data_type,is_nullable from information_schema.columns where table_name like 'mix01' and COLUMN_NAME not like '__mo%';
 drop table mix01;
 
+-- begin, alter table change column, commit, then select
+drop table if exists table01;
+begin;
+create table table01(col1 int, col2 decimal);
+insert into table01 values(100,200);
+alter table table01 change column col1 NewCol1 float;
+commit;
+select * from table01;
+select newcol1 from table01;
+drop table table01;
 drop database db2;

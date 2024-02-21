@@ -124,9 +124,10 @@ type Schema struct {
 	Constraint     []byte
 
 	// do not send to cn
-	BlockMaxRows     uint32
-	SegmentMaxBlocks uint16
-	Extra            *apipb.SchemaExtra
+	BlockMaxRows uint32
+	// for aobj, there're at most one blk
+	ObjectMaxBlocks uint16
+	Extra           *apipb.SchemaExtra
 
 	// do not write down, reconstruct them when reading
 	NameMap    map[string]int // name -> logical idx
@@ -172,6 +173,29 @@ func (s *Schema) ApplyAlterTable(req *apipb.AlterTableReq) error {
 		s.Constraint = req.GetUpdateCstr().GetConstraints()
 	case apipb.AlterKind_UpdateComment:
 		s.Comment = req.GetUpdateComment().GetComment()
+	case apipb.AlterKind_RenameColumn:
+		rename := req.GetRenameCol()
+		var targetCol *ColDef
+		for _, def := range s.ColDefs {
+			if def.Name == rename.NewName {
+				return moerr.NewInternalErrorNoCtx("duplicate column %q", def.Name)
+			}
+			if def.Name == rename.OldName {
+				targetCol = def
+			}
+		}
+		if targetCol == nil {
+			return moerr.NewInternalErrorNoCtx("column %q not found", rename.OldName)
+		}
+		if targetCol.SeqNum != uint16(rename.SequenceNum) {
+			return moerr.NewInternalErrorNoCtx("unmatched seqnumn: %d != %d", targetCol.SeqNum, rename.SequenceNum)
+		}
+		targetCol.Name = rename.NewName
+		// a -> b, z -> a, m -> z
+		// only m column deletion should be sent to cn. a and z can be seen as update according to pk, <tid-colname>
+		s.Extra.DroppedAttrs = append(s.Extra.DroppedAttrs, rename.OldName)
+		s.removeDroppedName(rename.NewName)
+		logutil.Infof("[Alter] rename column %s %s %d", rename.OldName, rename.NewName, targetCol.SeqNum)
 	case apipb.AlterKind_AddColumn:
 		add := req.GetAddColumn()
 		logutil.Infof("[Alter] add column %s(%s)@%d", add.Column.Name, types.T(add.Column.Typ.Id), add.InsertPosition)
@@ -232,6 +256,13 @@ func (s *Schema) ApplyAlterTable(req *apipb.AlterTableReq) error {
 		}
 		logutil.Infof("[Alter] rename table %s -> %s", s.Name, rename.NewName)
 		s.Name = rename.NewName
+	case apipb.AlterKind_AddPartition:
+		newPartitionDef := req.GetAddPartition().GetPartitionDef()
+		bytes, err := newPartitionDef.MarshalPartitionInfo()
+		if err != nil {
+			return err
+		}
+		s.Partition = string(bytes)
 	default:
 		return moerr.NewNYINoCtx("unsupported alter kind: %v", req.Kind)
 	}
@@ -311,7 +342,7 @@ func (s *Schema) ReadFromWithVersion(r io.Reader, ver uint16) (n int64, err erro
 		return
 	}
 	n += int64(sn2)
-	if sn2, err = r.Read(types.EncodeUint16(&s.SegmentMaxBlocks)); err != nil {
+	if sn2, err = r.Read(types.EncodeUint16(&s.ObjectMaxBlocks)); err != nil {
 		return
 	}
 	n += int64(sn2)
@@ -459,7 +490,7 @@ func (s *Schema) Marshal() (buf []byte, err error) {
 	if _, err = w.Write(types.EncodeUint32(&s.BlockMaxRows)); err != nil {
 		return
 	}
-	if _, err = w.Write(types.EncodeUint16(&s.SegmentMaxBlocks)); err != nil {
+	if _, err = w.Write(types.EncodeUint16(&s.ObjectMaxBlocks)); err != nil {
 		return
 	}
 	if _, err = w.Write(types.EncodeUint32(&s.Version)); err != nil {
@@ -1048,7 +1079,7 @@ func MockSchemaAll(colCnt int, pkIdx int, from ...int) *Schema {
 	}
 
 	schema.BlockMaxRows = 1000
-	schema.SegmentMaxBlocks = 10
+	schema.ObjectMaxBlocks = 10
 	schema.Constraint, _ = constraintDef.MarshalBinary()
 	_ = schema.Finalize(false)
 	return schema

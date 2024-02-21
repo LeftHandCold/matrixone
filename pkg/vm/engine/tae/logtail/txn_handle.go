@@ -41,7 +41,6 @@ import (
 const (
 	blkMetaInsBatch int8 = iota
 	blkMetaDelBatch
-	segMetaDelBatch
 	dataInsBatch
 	dataDelBatch
 	dbInsBatch
@@ -52,6 +51,7 @@ const (
 	tblSpecialDeleteBatch
 	columnInsBatch
 	columnDelBatch
+	objectInfoBatch
 	batchTotalNum
 )
 
@@ -63,7 +63,8 @@ type TxnLogtailRespBuilder struct {
 
 	batches []*containers.Batch
 
-	logtails *[]logtail.TableLogtail
+	logtails       *[]logtail.TableLogtail
+	currentLogtail *logtail.TableLogtail
 
 	batchToClose []*containers.Batch
 	insertBatch  *roaring.Bitmap
@@ -98,7 +99,7 @@ func (b *TxnLogtailRespBuilder) CollectLogtail(txn txnif.AsyncTxn) (*[]logtail.T
 		b.visitTable,
 		b.rotateTable,
 		b.visitMetadata,
-		b.visitSegment,
+		b.visitObject,
 		b.visitAppend,
 		b.visitDelete)
 	b.BuildResp()
@@ -108,28 +109,33 @@ func (b *TxnLogtailRespBuilder) CollectLogtail(txn txnif.AsyncTxn) (*[]logtail.T
 	return logtails, b.Close
 }
 
-func (b *TxnLogtailRespBuilder) visitSegment(iseg any) {
-	seg := iseg.(*catalog.SegmentEntry)
-	node := seg.GetLatestNodeLocked()
+func (b *TxnLogtailRespBuilder) visitObject(iobj any) {
+	obj := iobj.(*catalog.ObjectEntry)
+	node := obj.GetLatestNodeLocked()
+	if obj.IsAppendable() && node.BaseNode.IsEmpty() {
+		return
+	}
 	if !node.DeletedAt.Equal(txnif.UncommitTS) {
+		if b.batches[objectInfoBatch] == nil {
+			b.batches[objectInfoBatch] = makeRespBatchFromSchema(ObjectInfoSchema, common.LogtailAllocator)
+		}
+		visitObject(b.batches[objectInfoBatch], obj, node, true, b.txn.GetPrepareTS())
 		return
 	}
 
-	deleteAt := b.txn.GetPrepareTS()
-	rowid := objectio.HackSegid2Rowid(&seg.ID)
-
-	if b.batches[segMetaDelBatch] == nil {
-		b.batches[segMetaDelBatch] = makeRespBatchFromSchema(DelSchema, common.LogtailAllocator)
+	if b.batches[objectInfoBatch] == nil {
+		b.batches[objectInfoBatch] = makeRespBatchFromSchema(ObjectInfoSchema, common.LogtailAllocator)
 	}
-
-	b.batches[segMetaDelBatch].GetVectorByName(catalog.AttrRowID).Append(rowid, false)
-	b.batches[segMetaDelBatch].GetVectorByName(catalog.AttrCommitTs).Append(deleteAt, false)
+	visitObject(b.batches[objectInfoBatch], obj, node, true, b.txn.GetPrepareTS())
 }
 
 func (b *TxnLogtailRespBuilder) visitMetadata(iblk any) {
 	blk := iblk.(*catalog.BlockEntry)
 	node := blk.GetLatestNodeLocked()
 	if node.BaseNode.MetaLoc.IsEmpty() {
+		return
+	}
+	if node.BaseNode.DeltaLoc.IsEmpty() {
 		return
 	}
 	if b.batches[blkMetaInsBatch] == nil {
@@ -205,9 +211,9 @@ func (b *TxnLogtailRespBuilder) visitDelete(ctx context.Context, vnode txnif.Del
 	var pkVec containers.Vector
 	if len(batch.Vecs) == 2 {
 		pkVec = containers.MakeVector(pkDef.Type, common.LogtailAllocator)
-		batch.AddVector(pkDef.Name, pkVec)
+		batch.AddVector(catalog.AttrPKVal, pkVec)
 	} else {
-		pkVec = batch.GetVectorByName(pkDef.Name)
+		pkVec = batch.GetVectorByName(catalog.AttrPKVal)
 	}
 
 	it := deletes.Iterator()
@@ -365,11 +371,23 @@ func (b *TxnLogtailRespBuilder) buildLogtailEntry(tid, dbid uint64, tableName, d
 		DbId: dbid,
 		TbId: tid,
 	}
-	tail := logtail.TableLogtail{
-		Ts:       &ts,
-		Table:    tableID,
-		Commands: []api.Entry{*entry},
+	if b.currentLogtail == nil {
+		b.currentLogtail = &logtail.TableLogtail{
+			Ts:       &ts,
+			Table:    tableID,
+			Commands: make([]api.Entry, 0),
+		}
+	} else {
+		if tid != b.currentLogtail.Table.TbId {
+			*b.logtails = append(*b.logtails, *b.currentLogtail)
+			b.currentLogtail = &logtail.TableLogtail{
+				Ts:       &ts,
+				Table:    tableID,
+				Commands: make([]api.Entry, 0),
+			}
+		}
 	}
+	b.currentLogtail.Commands = append(b.currentLogtail.Commands, *entry)
 	// specail delete batch and delete batch should be in the same TableLogtail
 	if batchIdx == dbDelBatch || batchIdx == tblDelBatch {
 		var bat2 *containers.Batch
@@ -391,9 +409,8 @@ func (b *TxnLogtailRespBuilder) buildLogtailEntry(tid, dbid uint64, tableName, d
 			DatabaseName: dbName,
 			Bat:          apiBat2,
 		}
-		tail.Commands = append(tail.Commands, *entry2)
+		b.currentLogtail.Commands = append(b.currentLogtail.Commands, *entry2)
 	}
-	*b.logtails = append(*b.logtails, tail)
 }
 
 func (b *TxnLogtailRespBuilder) rotateTable(dbName, tableName string, dbid, tid uint64) {
@@ -407,10 +424,11 @@ func (b *TxnLogtailRespBuilder) rotateTable(dbName, tableName string, dbid, tid 
 		b.batchToClose = append(b.batchToClose, b.batches[blkMetaDelBatch])
 		b.batches[blkMetaDelBatch] = nil
 	}
-	b.buildLogtailEntry(b.currTableID, b.currDBID, fmt.Sprintf("_%d_seg", b.currTableID), b.currDBName, segMetaDelBatch, true)
-	if b.batches[segMetaDelBatch] != nil {
-		b.batchToClose = append(b.batchToClose, b.batches[segMetaDelBatch])
-		b.batches[segMetaDelBatch] = nil
+
+	b.buildLogtailEntry(b.currTableID, b.currDBID, fmt.Sprintf("_%d_obj", b.currTableID), b.currDBName, objectInfoBatch, false)
+	if b.batches[objectInfoBatch] != nil {
+		b.batchToClose = append(b.batchToClose, b.batches[objectInfoBatch])
+		b.batches[objectInfoBatch] = nil
 	}
 	b.buildLogtailEntry(b.currTableID, b.currDBID, b.currTableName, b.currDBName, dataDelBatch, true)
 	if b.batches[dataDelBatch] != nil {
@@ -432,7 +450,7 @@ func (b *TxnLogtailRespBuilder) rotateTable(dbName, tableName string, dbid, tid 
 func (b *TxnLogtailRespBuilder) BuildResp() {
 	b.buildLogtailEntry(b.currTableID, b.currDBID, fmt.Sprintf("_%d_meta", b.currTableID), b.currDBName, blkMetaInsBatch, false)
 	b.buildLogtailEntry(b.currTableID, b.currDBID, fmt.Sprintf("_%d_meta", b.currTableID), b.currDBName, blkMetaDelBatch, true)
-	b.buildLogtailEntry(b.currTableID, b.currDBID, fmt.Sprintf("_%d_seg", b.currTableID), b.currDBName, segMetaDelBatch, true)
+	b.buildLogtailEntry(b.currTableID, b.currDBID, fmt.Sprintf("_%d_obj", b.currTableID), b.currDBName, objectInfoBatch, false)
 	b.buildLogtailEntry(b.currTableID, b.currDBID, b.currTableName, b.currDBName, dataDelBatch, true)
 	b.buildLogtailEntry(b.currTableID, b.currDBID, b.currTableName, b.currDBName, dataInsBatch, false)
 
@@ -450,5 +468,9 @@ func (b *TxnLogtailRespBuilder) BuildResp() {
 			b.batchToClose = append(b.batchToClose, b.batches[i])
 			b.batches[i] = nil
 		}
+	}
+	if b.currentLogtail != nil {
+		*b.logtails = append(*b.logtails, *b.currentLogtail)
+		b.currentLogtail = nil
 	}
 }

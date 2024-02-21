@@ -17,6 +17,8 @@ package sample
 import (
 	"bytes"
 	"fmt"
+	"math/rand"
+
 	"github.com/matrixorigin/matrixone/pkg/common/hashmap"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -29,14 +31,28 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
+const argName = "sample"
+
 func (arg *Argument) String(buf *bytes.Buffer) {
+	buf.WriteString(argName)
+	buf.WriteString(": ")
 	switch arg.Type {
 	case mergeSampleByRow:
 		buf.WriteString(fmt.Sprintf("merge sample %d rows ", arg.Rows))
 	case sampleByRow:
 		buf.WriteString(fmt.Sprintf(" sample %d rows ", arg.Rows))
+		if arg.UsingBlock {
+			buf.WriteString("using blocks ")
+		} else {
+			buf.WriteString("using rows ")
+		}
 	case sampleByPercent:
 		buf.WriteString(fmt.Sprintf(" sample %.2f percent ", arg.Percents))
+		if arg.UsingBlock {
+			buf.WriteString("using blocks ")
+		} else {
+			buf.WriteString("using rows ")
+		}
 	default:
 		buf.WriteString("unknown sample type")
 	}
@@ -52,14 +68,15 @@ func (arg *Argument) Prepare(proc *process.Process) (err error) {
 
 	switch arg.Type {
 	case sampleByRow:
-		arg.ctr.samplePool = newSamplePoolByRows(proc, arg.Rows, len(arg.SampleExprs), true)
+		arg.ctr.samplePool = newSamplePoolByRows(proc, arg.Rows, len(arg.SampleExprs), arg.NeedOutputRowSeen)
 	case sampleByPercent:
 		arg.ctr.samplePool = newSamplePoolByPercent(proc, arg.Percents, len(arg.SampleExprs))
 	case mergeSampleByRow:
-		arg.ctr.samplePool = newSamplePoolByRows(proc, arg.Rows, len(arg.SampleExprs), false)
+		arg.ctr.samplePool = newSamplePoolByRowsForMerge(proc, arg.Rows, len(arg.SampleExprs), arg.NeedOutputRowSeen)
 	default:
 		return moerr.NewInternalErrorNoCtx(fmt.Sprintf("unknown sample type %d", arg.Type))
 	}
+	arg.ctr.samplePool.setPerfFields(arg.ctr.isGroupBy)
 
 	// sample column related.
 	arg.ctr.sampleExecutors, err = colexec.NewExpressionExecutorsFromPlanExpressions(proc, arg.SampleExprs)
@@ -88,26 +105,46 @@ func (arg *Argument) Prepare(proc *process.Process) (err error) {
 }
 
 func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
-	result, lastErr := arg.children[0].Call(proc)
+	if err, isCancel := vm.CancelCheck(proc); isCancel {
+		return vm.CancelResult, err
+	}
+
+	// duplicate code from other operators.
+	result, lastErr := arg.GetChildren(0).Call(proc)
 	if lastErr != nil {
 		return result, lastErr
 	}
+	anal := proc.GetAnalyze(arg.GetIdx(), arg.GetParallelIdx(), arg.GetParallelMajor())
+	anal.Start()
+	defer anal.Stop()
 
 	if arg.buf != nil {
 		proc.PutBatch(arg.buf)
 		arg.buf = nil
 	}
-	arg.buf = result.Batch
+
+	// real work starts here.
 	bat := result.Batch
 
 	ctr := arg.ctr
+	if ctr.workDone {
+		result.Batch = nil
+		return result, nil
+	}
+
 	if bat == nil {
-		result.Batch, lastErr = ctr.samplePool.Output(true)
+		result.Batch, lastErr = ctr.samplePool.Result(true)
+		anal.Output(result.Batch, arg.GetIsLast())
+		arg.buf = result.Batch
+		result.Status = vm.ExecStop
+		ctr.workDone = true
 		return result, lastErr
 	}
 
 	var err error
 	if !bat.IsEmpty() {
+		anal.Input(bat, arg.GetIsFirst())
+
 		if err = ctr.evaluateSampleAndGroupByColumns(proc, bat); err != nil {
 			return result, err
 		}
@@ -122,7 +159,16 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 		}
 	}
 
-	result.Batch, err = ctr.samplePool.Output(false)
+	if arg.UsingBlock && ctr.samplePool.IsFull() && rand.Intn(2) == 0 {
+		result.Batch, err = ctr.samplePool.Result(true)
+		result.Status = vm.ExecStop
+		ctr.workDone = true
+
+	} else {
+		result.Batch, err = ctr.samplePool.Result(false)
+	}
+	anal.Output(result.Batch, arg.GetIsLast())
+	arg.buf = result.Batch
 	return result, err
 }
 
@@ -200,7 +246,7 @@ func (ctr *container) hashAndSample(bat *batch.Batch, ib, nb int, mp *mpool.MPoo
 		if err != nil {
 			return err
 		}
-		err = ctr.samplePool.BatchSample(n, groupList, ctr.sampleVectors, ctr.groupVectors, bat)
+		err = ctr.samplePool.BatchSample(i, n, groupList, ctr.sampleVectors, ctr.groupVectors, bat)
 		if err != nil {
 			return err
 		}

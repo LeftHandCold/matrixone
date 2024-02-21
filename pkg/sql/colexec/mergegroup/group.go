@@ -23,8 +23,11 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
+const argName = "merge_group"
+
 func (arg *Argument) String(buf *bytes.Buffer) {
-	buf.WriteString("mergeroup()")
+	buf.WriteString(argName)
+	buf.WriteString(": mergeroup()")
 }
 
 func (arg *Argument) Prepare(proc *process.Process) error {
@@ -37,9 +40,13 @@ func (arg *Argument) Prepare(proc *process.Process) error {
 }
 
 func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
+	if err, isCancel := vm.CancelCheck(proc); isCancel {
+		return vm.CancelResult, err
+	}
+
 	ap := arg
 	ctr := ap.ctr
-	anal := proc.GetAnalyze(arg.info.Idx)
+	anal := proc.GetAnalyze(arg.GetIdx(), arg.GetParallelIdx(), arg.GetParallelMajor())
 	anal.Start()
 	defer anal.Stop()
 	result := vm.NewCallResult()
@@ -56,7 +63,7 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 				if end {
 					break
 				}
-				anal.Input(bat, arg.info.IsFirst)
+				anal.Input(bat, arg.GetIsFirst())
 				if err = ctr.process(bat, proc); err != nil {
 					bat.Clean(proc.Mp())
 					return result, err
@@ -68,6 +75,9 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 			if ctr.bat != nil {
 				if ap.NeedEval {
 					for i, agg := range ctr.bat.Aggs {
+						if ap.PartialResults != nil {
+							agg.SetPartialResult(ap.PartialResults[i])
+						}
 						vec, err := agg.Eval(proc.Mp())
 						if err != nil {
 							ctr.state = End
@@ -83,7 +93,7 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 					}
 					ctr.bat.Aggs = nil
 				}
-				anal.Output(ctr.bat, arg.info.IsLast)
+				anal.Output(ctr.bat, arg.GetIsLast())
 				result.Batch = ctr.bat
 			}
 			ctr.state = End

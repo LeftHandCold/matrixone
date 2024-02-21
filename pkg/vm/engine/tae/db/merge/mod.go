@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 )
 
@@ -26,16 +27,14 @@ var StopMerge atomic.Bool
 
 const (
 	constMergeMinBlks       = 5
-	const1GBytes            = 1 << 30
-	const1MBytes            = 1 << 20
 	constMergeExpansionRate = 6
-	constMaxMemCap          = 4 * constMergeExpansionRate * const1GBytes // max orginal memory for a object
+	constMaxMemCap          = 4 * constMergeExpansionRate * common.Const1GBytes // max orginal memory for a object
 	constSmallMergeGap      = 3 * time.Minute
 )
 
 type Policy interface {
-	OnObject(obj *catalog.SegmentEntry)
-	Revise(cpu, mem int64) []*catalog.SegmentEntry
+	OnObject(obj *catalog.ObjectEntry)
+	Revise(cpu, mem int64) []*catalog.ObjectEntry
 	ResetForTable(*catalog.TableEntry)
 	SetConfig(*catalog.TableEntry, func() txnif.AsyncTxn, any)
 	GetConfig(*catalog.TableEntry) any

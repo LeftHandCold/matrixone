@@ -26,6 +26,8 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/util/trace/impl/motrace/statistic"
 )
 
+var errUnsupportedNodeType = "Unsupported node type when plan is serialized to json"
+
 // The global variable is used to serialize plan and avoid objects being repeatedly created
 var MarshalPlanOptions = ExplainOptions{
 	Verbose: true,
@@ -103,7 +105,7 @@ func (m MarshalNodeImpl) GetNodeName(ctx context.Context) (string, error) {
 	if value, ok := nodeTypeToNameMap[m.node.NodeType]; ok {
 		return value, nil
 	} else {
-		return "", moerr.NewInternalError(ctx, "Unsupported node type when plan is serialized to json")
+		return "", moerr.NewInternalError(ctx, errUnsupportedNodeType)
 	}
 }
 
@@ -112,7 +114,7 @@ func (m MarshalNodeImpl) GetNodeTitle(ctx context.Context, options *ExplainOptio
 	buf := bytes.NewBuffer(make([]byte, 0, 400))
 	var err error
 	switch m.node.NodeType {
-	case plan.Node_TABLE_SCAN, plan.Node_EXTERNAL_SCAN, plan.Node_MATERIAL_SCAN, plan.Node_STREAM_SCAN:
+	case plan.Node_TABLE_SCAN, plan.Node_EXTERNAL_SCAN, plan.Node_MATERIAL_SCAN, plan.Node_SOURCE_SCAN:
 		//"title" : "SNOWFLAKE_SAMPLE_DATA.TPCDS_SF10TCL.DATE_DIM",
 		if m.node.ObjRef != nil {
 			buf.WriteString(m.node.ObjRef.GetSchemaName() + "." + m.node.ObjRef.GetObjName())
@@ -191,6 +193,22 @@ func (m MarshalNodeImpl) GetNodeTitle(ctx context.Context, options *ExplainOptio
 		return "on_duplicate_key", nil
 	case plan.Node_LOCK_OP:
 		return "lock_op", nil
+	case plan.Node_ASSERT:
+		return "assert", nil
+	case plan.Node_BROADCAST:
+		return "broadcast", nil
+	case plan.Node_SPLIT:
+		return "split", nil
+	case plan.Node_GATHER:
+		return "gather", nil
+	case plan.Node_REPLACE:
+		return "replace", nil
+	case plan.Node_TIME_WINDOW:
+		return "time_window", nil
+	case plan.Node_FILL:
+		return "fill", nil
+	case plan.Node_PARTITION:
+		return "partition", nil
 	case plan.Node_FUNCTION_SCAN:
 		//"title" : "SNOWFLAKE_SAMPLE_DATA.TPCDS_SF10TCL.DATE_DIM",
 		if m.node.TableDef != nil && m.node.TableDef.TblFunc != nil {
@@ -198,8 +216,26 @@ func (m MarshalNodeImpl) GetNodeTitle(ctx context.Context, options *ExplainOptio
 		} else {
 			return "", moerr.NewInvalidInput(ctx, "Table definition not found when plan is serialized to json")
 		}
+	case plan.Node_FUZZY_FILTER:
+		return "fuzzy_filter", nil
+	case plan.Node_SAMPLE:
+		return "sample", nil
+	case plan.Node_UNKNOWN:
+		return "unknown", nil
+	case plan.Node_DISTINCT:
+		return "distinct", nil
+	case plan.Node_UNIQUE:
+		return "unique", nil
+	case plan.Node_MINUS_ALL:
+		return "minus_all", nil
+	case plan.Node_EXTERNAL_FUNCTION:
+		return "external_function", nil
+	case plan.Node_WINDOW:
+		return "window", nil
+	case plan.Node_MATERIAL:
+		return "mterial", nil
 	default:
-		return "", moerr.NewInternalError(ctx, "Unsupported node type when plan is serialized to json")
+		return "", moerr.NewInternalError(ctx, errUnsupportedNodeType)
 	}
 	return strings.TrimSpace(buf.String()), nil
 }
@@ -208,7 +244,7 @@ func (m MarshalNodeImpl) GetNodeLabels(ctx context.Context, options *ExplainOpti
 	labels := make([]Label, 0)
 
 	switch m.node.NodeType {
-	case plan.Node_TABLE_SCAN, plan.Node_EXTERNAL_SCAN, plan.Node_MATERIAL_SCAN, plan.Node_STREAM_SCAN:
+	case plan.Node_TABLE_SCAN, plan.Node_EXTERNAL_SCAN, plan.Node_MATERIAL_SCAN, plan.Node_SOURCE_SCAN:
 		tableDef := m.node.TableDef
 		objRef := m.node.ObjRef
 		fullTableName := ""
@@ -473,8 +509,98 @@ func (m MarshalNodeImpl) GetNodeLabels(ctx context.Context, options *ExplainOpti
 			Name:  Label_Lock_Op, //"lock op",
 			Value: []string{},
 		})
+	case plan.Node_TIME_WINDOW:
+		labels = append(labels, Label{
+			Name:  Label_Time_Window,
+			Value: []string{},
+		})
+	case plan.Node_PARTITION:
+		labels = append(labels, Label{
+			Name:  Label_Partition,
+			Value: []string{},
+		})
+	case plan.Node_BROADCAST:
+		labels = append(labels, Label{
+			Name:  Label_Boardcast,
+			Value: []string{},
+		})
+	case plan.Node_SPLIT:
+		labels = append(labels, Label{
+			Name:  Label_Split,
+			Value: []string{},
+		})
+	case plan.Node_GATHER:
+		labels = append(labels, Label{
+			Name:  Label_Gather,
+			Value: []string{},
+		})
+	case plan.Node_ASSERT:
+		labels = append(labels, Label{
+			Name:  Label_Assert,
+			Value: []string{},
+		})
+	case plan.Node_ON_DUPLICATE_KEY:
+		labels = append(labels, Label{
+			Name:  Label_On_Duplicate_Key,
+			Value: []string{},
+		})
+	case plan.Node_FUZZY_FILTER:
+		labels = append(labels, Label{
+			Name:  Label_Fuzzy_Filter,
+			Value: []string{},
+		})
+	case plan.Node_EXTERNAL_FUNCTION:
+		labels = append(labels, Label{
+			Name:  Label_External_Function,
+			Value: []string{},
+		})
+	case plan.Node_FILL:
+		labels = append(labels, Label{
+			Name:  Label_Fill,
+			Value: []string{},
+		})
+	case plan.Node_DISTINCT:
+		labels = append(labels, Label{
+			Name:  Label_Distinct,
+			Value: []string{},
+		})
+	case plan.Node_SAMPLE:
+		labels = append(labels, Label{
+			Name:  Label_Sample,
+			Value: []string{},
+		})
+	case plan.Node_WINDOW:
+		labels = append(labels, Label{
+			Name:  Label_Window,
+			Value: []string{},
+		})
+	case plan.Node_MINUS_ALL:
+		labels = append(labels, Label{
+			Name:  Label_Minus_All,
+			Value: []string{},
+		})
+	case plan.Node_UNIQUE:
+		labels = append(labels, Label{
+			Name:  Label_Unique,
+			Value: []string{},
+		})
+	case plan.Node_REPLACE:
+		labels = append(labels, Label{
+			Name:  Label_Replace,
+			Value: []string{},
+		})
+	case plan.Node_UNKNOWN:
+		labels = append(labels, Label{
+			Name:  Label_Unknown,
+			Value: []string{},
+		})
+	case plan.Node_MATERIAL:
+		labels = append(labels, Label{
+			Name:  Label_Meterial,
+			Value: []string{},
+		})
 	default:
-		return nil, moerr.NewInternalError(ctx, "Unsupported node type when plan is serialized to json")
+		return nil, moerr.NewInternalError(ctx, errUnsupportedNodeType)
 	}
 
 	if m.node.NodeType != plan.Node_FILTER && m.node.FilterList != nil {

@@ -16,6 +16,7 @@ package loopjoin
 
 import (
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/common/reuse"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -36,12 +37,14 @@ const (
 type container struct {
 	colexec.ReceiverOperator
 
-	state   int
-	bat     *batch.Batch
-	rbat    *batch.Batch
-	joinBat *batch.Batch
-	expr    colexec.ExpressionExecutor
-	cfs     []func(*vector.Vector, *vector.Vector, int64, int) error
+	state    int
+	probeIdx int
+	bat      *batch.Batch
+	rbat     *batch.Batch
+	inBat    *batch.Batch
+	joinBat  *batch.Batch
+	expr     colexec.ExpressionExecutor
+	cfs      []func(*vector.Vector, *vector.Vector, int64, int) error
 }
 
 type Argument struct {
@@ -49,17 +52,38 @@ type Argument struct {
 	Cond   *plan.Expr
 	Result []colexec.ResultPos
 	Typs   []types.Type
-
-	info     *vm.OperatorInfo
-	children []vm.Operator
+	vm.OperatorBase
 }
 
-func (arg *Argument) SetInfo(info *vm.OperatorInfo) {
-	arg.info = info
+func (arg *Argument) GetOperatorBase() *vm.OperatorBase {
+	return &arg.OperatorBase
 }
 
-func (arg *Argument) AppendChild(child vm.Operator) {
-	arg.children = append(arg.children, child)
+func init() {
+	reuse.CreatePool[Argument](
+		func() *Argument {
+			return &Argument{}
+		},
+		func(a *Argument) {
+			*a = Argument{}
+		},
+		reuse.DefaultOptions[Argument]().
+			WithEnableChecker(),
+	)
+}
+
+func (arg Argument) TypeName() string {
+	return argName
+}
+
+func NewArgument() *Argument {
+	return reuse.Alloc[Argument](nil)
+}
+
+func (arg *Argument) Release() {
+	if arg != nil {
+		reuse.Free[Argument](arg, nil)
+	}
 }
 
 func (arg *Argument) Free(proc *process.Process, pipelineFailed bool, err error) {
@@ -84,6 +108,10 @@ func (ctr *container) cleanBatch(mp *mpool.MPool) {
 	if ctr.joinBat != nil {
 		ctr.joinBat.Clean(mp)
 		ctr.joinBat = nil
+	}
+	if ctr.inBat != nil {
+		ctr.inBat.Clean(mp)
+		ctr.inBat = nil
 	}
 }
 

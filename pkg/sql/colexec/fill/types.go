@@ -16,6 +16,7 @@ package fill
 
 import (
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/common/reuse"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
@@ -32,8 +33,7 @@ const (
 	findNull      = 2
 	findValue     = 3
 	fillValue     = 4
-
-	findNullPre = 5
+	findNullPre   = 5
 )
 
 type container struct {
@@ -55,11 +55,13 @@ type container struct {
 	subStatus int
 	colIdx    int
 	buf       *batch.Batch
+	idx       int
 
 	// linear
 	nullIdx int
 	nullRow int
 	exes    []colexec.ExpressionExecutor
+	done    bool
 
 	process func(ctr *container, ap *Argument, proc *process.Process, anal process.Analyze) (vm.CallResult, error)
 }
@@ -71,17 +73,38 @@ type Argument struct {
 	FillType plan.Node_FillType
 	FillVal  []*plan.Expr
 	AggIds   []int32
-
-	info     *vm.OperatorInfo
-	children []vm.Operator
+	vm.OperatorBase
 }
 
-func (arg *Argument) SetInfo(info *vm.OperatorInfo) {
-	arg.info = info
+func (arg *Argument) GetOperatorBase() *vm.OperatorBase {
+	return &arg.OperatorBase
 }
 
-func (arg *Argument) AppendChild(child vm.Operator) {
-	arg.children = append(arg.children, child)
+func init() {
+	reuse.CreatePool[Argument](
+		func() *Argument {
+			return &Argument{}
+		},
+		func(a *Argument) {
+			*a = Argument{}
+		},
+		reuse.DefaultOptions[Argument]().
+			WithEnableChecker(),
+	)
+}
+
+func (arg Argument) TypeName() string {
+	return argName
+}
+
+func NewArgument() *Argument {
+	return reuse.Alloc[Argument](nil)
+}
+
+func (arg *Argument) Release() {
+	if arg != nil {
+		reuse.Free[Argument](arg, nil)
+	}
 }
 
 func (arg *Argument) Free(proc *process.Process, pipelineFailed bool, err error) {

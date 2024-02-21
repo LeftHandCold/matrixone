@@ -16,7 +16,6 @@ package frontend
 
 import (
 	"context"
-	"strconv"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -108,16 +107,10 @@ func (oq *outputQueue) flush() error {
 		return nil
 	}
 	if oq.ep.needExportToFile() {
-		rsLen := oq.rowIdx
 		if err := exportDataToCSVFile(oq); err != nil {
 			logError(oq.ses, oq.ses.GetDebugString(),
 				"Error occurred while exporting to CSV file",
 				zap.Error(err))
-			return err
-		}
-		resp := oq.ses.SetNewResponse(OkResponse, rsLen, int(COM_QUERY), "", 0, 1)
-		if err2 := oq.ses.GetMysqlProtocol().SendResponse(oq.ses.GetRequestContext(), resp); err2 != nil {
-			err := moerr.NewInternalError(oq.ses.GetRequestContext(), "routine send response failed. error:%v ", err2)
 			return err
 		}
 	} else {
@@ -184,6 +177,8 @@ func extractRowFromVector(ses *Session, vec *vector.Vector, i int, row []interfa
 		row[i] = types.DecodeJson(copyBytes(vec.GetBytesAt(rowIndex), needCopyBytes))
 	case types.T_bool:
 		row[i] = vector.GetFixedAt[bool](vec, rowIndex)
+	case types.T_bit:
+		row[i] = vector.GetFixedAt[uint64](vec, rowIndex)
 	case types.T_int8:
 		row[i] = vector.GetFixedAt[int8](vec, rowIndex)
 	case types.T_uint8:
@@ -201,19 +196,9 @@ func extractRowFromVector(ses *Session, vec *vector.Vector, i int, row []interfa
 	case types.T_uint64:
 		row[i] = vector.GetFixedAt[uint64](vec, rowIndex)
 	case types.T_float32:
-		val := vector.GetFixedAt[float32](vec, rowIndex)
-		if vec.GetType().Scale < 0 || vec.GetType().Width == 0 {
-			row[i] = val
-		} else {
-			row[i] = strconv.FormatFloat(float64(val), 'f', int(vec.GetType().Scale), 64)
-		}
+		row[i] = vector.GetFixedAt[float32](vec, rowIndex)
 	case types.T_float64:
-		val := vector.GetFixedAt[float64](vec, rowIndex)
-		if vec.GetType().Scale < 0 || vec.GetType().Width == 0 {
-			row[i] = val
-		} else {
-			row[i] = strconv.FormatFloat(val, 'f', int(vec.GetType().Scale), 64)
-		}
+		row[i] = vector.GetFixedAt[float64](vec, rowIndex)
 	case types.T_char, types.T_varchar, types.T_blob, types.T_text, types.T_binary, types.T_varbinary:
 		row[i] = copyBytes(vec.GetBytesAt(rowIndex), needCopyBytes)
 	case types.T_array_float32:

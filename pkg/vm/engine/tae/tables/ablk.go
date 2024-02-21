@@ -16,8 +16,8 @@ package tables
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
-	"time"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -66,7 +66,7 @@ func newABlock(
 }
 
 func (blk *ablock) OnApplyAppend(n txnif.AppendNode) (err error) {
-	blk.meta.GetSegment().GetTable().AddRows(
+	blk.meta.GetObject().GetTable().AddRows(
 		uint64(n.GetMaxRow() - n.GetStartRow()),
 	)
 	return
@@ -75,7 +75,7 @@ func (blk *ablock) OnApplyAppend(n txnif.AppendNode) (err error) {
 func (blk *ablock) OnApplyDelete(
 	deleted uint64,
 	ts types.TS) (err error) {
-	blk.meta.GetSegment().GetTable().RemoveRows(deleted)
+	blk.meta.GetObject().GetTable().RemoveRows(deleted)
 	return
 }
 
@@ -97,6 +97,28 @@ func (blk *ablock) IsAppendable() bool {
 		return false
 	}
 	return node.Rows() < blk.meta.GetSchema().BlockMaxRows
+}
+
+func (blk *ablock) PrepareCompactInfo() (result bool, reason string) {
+	if n := blk.RefCount(); n > 0 {
+		reason = fmt.Sprintf("entering refcount %d", n)
+		return
+	}
+	blk.FreezeAppend()
+	if !blk.meta.PrepareCompact() || !blk.mvcc.PrepareCompact() {
+		if !blk.meta.PrepareCompact() {
+			reason = "meta preparecomp false"
+		} else {
+			reason = "mvcc preparecomp false"
+		}
+		return
+	}
+
+	if n := blk.RefCount(); n != 0 {
+		reason = fmt.Sprintf("ending refcount %d", n)
+		return
+	}
+	return blk.RefCount() == 0, reason
 }
 
 func (blk *ablock) PrepareCompact() bool {
@@ -357,10 +379,6 @@ func (blk *ablock) estimateRawScore() (score int, dropped bool) {
 func (blk *ablock) RunCalibration() (score int) {
 	score, _ = blk.estimateRawScore()
 	return
-}
-
-func (blk *ablock) EstimateScore(ttl time.Duration, force bool) int {
-	return blk.adjustScore(blk.estimateRawScore, ttl, force)
 }
 
 func (blk *ablock) OnReplayAppend(node txnif.AppendNode) (err error) {

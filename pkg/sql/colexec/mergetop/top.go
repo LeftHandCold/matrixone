@@ -27,9 +27,12 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
+const argName = "merge_top"
+
 func (arg *Argument) String(buf *bytes.Buffer) {
+	buf.WriteString(argName)
 	ap := arg
-	buf.WriteString("mergetop([")
+	buf.WriteString(": mergetop([")
 	for i, f := range ap.Fs {
 		if i > 0 {
 			buf.WriteString(", ")
@@ -62,7 +65,11 @@ func (arg *Argument) Prepare(proc *process.Process) (err error) {
 }
 
 func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
-	anal := proc.GetAnalyze(arg.info.Idx)
+	if err, isCancel := vm.CancelCheck(proc); isCancel {
+		return vm.CancelResult, err
+	}
+
+	anal := proc.GetAnalyze(arg.GetIdx(), arg.GetParallelIdx(), arg.GetParallelMajor())
 	anal.Start()
 	defer anal.Stop()
 	ap := arg
@@ -74,7 +81,7 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 		return result, nil
 	}
 
-	if end, err := ctr.build(ap, proc, anal, arg.info.IsFirst); err != nil {
+	if end, err := ctr.build(ap, proc, anal, arg.GetIsFirst()); err != nil {
 		return result, err
 	} else if end {
 		result.Status = vm.ExecStop
@@ -86,7 +93,7 @@ func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
 		result.Status = vm.ExecStop
 		return result, nil
 	}
-	err := ctr.eval(ap.Limit, proc, anal, arg.info.IsLast, &result)
+	err := ctr.eval(ap.Limit, proc, anal, arg.GetIsLast(), &result)
 	if err == nil {
 		result.Status = vm.ExecStop
 		return result, nil

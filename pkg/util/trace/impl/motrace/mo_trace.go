@@ -30,7 +30,6 @@ import (
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
-	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/util/export/table"
 	"github.com/matrixorigin/matrixone/pkg/util/profile"
@@ -73,13 +72,6 @@ func (t *MOTracer) Start(ctx context.Context, name string, opts ...trace.SpanSta
 	}
 
 	span := newMOSpan()
-
-	// per statement profiler
-	ctx, end := fileservice.StatementProfileNewSpan(ctx)
-	if end != nil {
-		// Tips: check the BenchmarkMOSpan_if_vs_for result
-		span.onEnd = append(span.onEnd, end)
-	}
 
 	span.tracer = t
 	span.ctx = ctx
@@ -332,6 +324,34 @@ func (s *MOSpan) doProfileRuntime(ctx context.Context, name string, debug int) {
 	}
 }
 
+func (s *MOSpan) doProfileSystemStatus(ctx context.Context) {
+	if s.SpanConfig.ProfileSystemStatusFn == nil {
+		return
+	}
+	data, err := s.SpanConfig.ProfileSystemStatusFn()
+	if err != nil {
+		s.AddExtraFields(zap.String(profile.STATUS, err.Error()))
+		return
+	}
+	if data == nil {
+		return
+	}
+
+	factory := s.tracer.provider.writerFactory
+	filepath := profile.GetSystemStatusFilePath(s.SpanID.String(), time.Now())
+	logutil.Infof("system status dumped to file %s", filepath)
+	w := factory.GetWriter(ctx, filepath)
+	_, err = w.Write(data)
+	if err == nil {
+		err = w.Close()
+	}
+	if err != nil {
+		s.AddExtraFields(zap.String(profile.STATUS, err.Error()))
+	} else {
+		s.AddExtraFields(zap.String(profile.STATUS, filepath))
+	}
+}
+
 func (s *MOSpan) NeedRecord() (bool, error) {
 	// if the span kind falls in mo_ctl controlled spans, we
 	// hope it ignores the long time threshold set by the tracer and deadline restrictions.
@@ -410,6 +430,10 @@ func (s *MOSpan) doProfile() {
 		} else {
 			s.AddExtraFields(zap.String(profile.TRACE, filepath))
 		}
+	}
+	// profile system status.
+	if s.ProfileSystemStatus() {
+		s.doProfileSystemStatus(ctx)
 	}
 	s.doneProfile = true
 }

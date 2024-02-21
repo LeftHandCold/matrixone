@@ -21,8 +21,11 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
+const argName = "output"
+
 func (arg *Argument) String(buf *bytes.Buffer) {
-	buf.WriteString("sql output")
+	buf.WriteString(argName)
+	buf.WriteString(": sql output")
 }
 
 func (arg *Argument) Prepare(_ *process.Process) error {
@@ -30,11 +33,20 @@ func (arg *Argument) Prepare(_ *process.Process) error {
 }
 
 func (arg *Argument) Call(proc *process.Process) (vm.CallResult, error) {
+	if err, isCancel := vm.CancelCheck(proc); isCancel {
+		return vm.CancelResult, err
+	}
+
 	ap := arg
-	result, err := arg.children[0].Call(proc)
+	result, err := arg.GetChildren(0).Call(proc)
 	if err != nil {
 		return result, err
 	}
+
+	anal := proc.GetAnalyze(arg.GetIdx(), arg.GetParallelIdx(), arg.GetParallelMajor())
+	anal.Start()
+	defer anal.Stop()
+
 	if result.Batch == nil {
 		result.Status = vm.ExecStop
 		return result, nil

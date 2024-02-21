@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+
 	"github.com/fagongzi/goetty/v2/buf"
 	"github.com/golang/mock/gomock"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -44,7 +46,7 @@ func TestTxnHandler_NewTxn(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		ctx := context.TODO()
+		ctx := defines.AttachAccountId(context.TODO(), sysAccountID)
 		txnOperator := mock_frontend.NewMockTxnOperator(ctrl)
 		txnOperator.EXPECT().Txn().Return(txn.TxnMeta{}).AnyTimes()
 		txnOperator.EXPECT().Rollback(gomock.Any()).Return(nil).AnyTimes()
@@ -100,7 +102,7 @@ func TestTxnHandler_CommitTxn(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		ctx := context.TODO()
+		ctx := defines.AttachAccountId(context.TODO(), sysAccountID)
 		idx := int64(1)
 		txnOperator := mock_frontend.NewMockTxnOperator(ctrl)
 		txnOperator.EXPECT().Txn().Return(txn.TxnMeta{
@@ -170,7 +172,7 @@ func TestTxnHandler_RollbackTxn(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		ctx := context.TODO()
+		ctx := defines.AttachAccountId(context.TODO(), sysAccountID)
 		txnOperator := mock_frontend.NewMockTxnOperator(ctrl)
 		txnOperator.EXPECT().Txn().Return(txn.TxnMeta{}).AnyTimes()
 		cnt := 0
@@ -195,12 +197,15 @@ func TestTxnHandler_RollbackTxn(t *testing.T) {
 
 		pu, err := getParameterUnit("test/system_vars_config.toml", eng, txnClient)
 		convey.So(err, convey.ShouldBeNil)
+		var gSys GlobalSystemVariables
+		InitGlobalSystemVariables(&gSys)
 
 		txn := InitTxnHandler(eng, txnClient, nil, nil)
 		txn.ses = &Session{
 			requestCtx: ctx,
 			pu:         pu,
 			connectCtx: ctx,
+			gSysVars:   &gSys,
 		}
 		_, _, err = txn.NewTxn()
 		convey.So(err, convey.ShouldBeNil)
@@ -235,8 +240,9 @@ func TestSession_TxnBegin(t *testing.T) {
 		eng.EXPECT().Hints().Return(hints).AnyTimes()
 		eng.EXPECT().New(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 		session := NewSession(proto, nil, config.NewParameterUnit(&config.FrontendParameters{}, eng, txnClient, nil), gSysVars, false, nil, nil)
-		session.SetRequestContext(context.Background())
-		session.SetConnectContext(context.Background())
+		ctx := defines.AttachAccountId(context.Background(), sysAccountID)
+		session.SetRequestContext(ctx)
+		session.SetConnectContext(ctx)
 		return session
 	}
 	convey.Convey("new session", t, func() {
@@ -253,8 +259,8 @@ func TestSession_TxnBegin(t *testing.T) {
 		convey.So(err, convey.ShouldBeNil)
 		err = ses.TxnBegin()
 		convey.So(err, convey.ShouldBeNil)
-		err = ses.SetAutocommit(false)
-		convey.So(err, convey.ShouldNotBeNil)
+		err = ses.SetAutocommit(true, false)
+		convey.So(err, convey.ShouldBeNil)
 		err = ses.TxnCommit()
 		convey.So(err, convey.ShouldBeNil)
 		_, _, err = ses.GetTxnHandler().GetTxn()
@@ -263,10 +269,10 @@ func TestSession_TxnBegin(t *testing.T) {
 		err = ses.TxnCommit()
 		convey.So(err, convey.ShouldBeNil)
 
-		err = ses.SetAutocommit(true)
+		err = ses.SetAutocommit(false, true)
 		convey.So(err, convey.ShouldBeNil)
 
-		err = ses.SetAutocommit(false)
+		err = ses.SetAutocommit(false, false)
 		convey.So(err, convey.ShouldBeNil)
 	})
 }
@@ -521,7 +527,7 @@ func TestVariables(t *testing.T) {
 		vars := ses.CopyAllSessionVars()
 		convey.So(len(vars), convey.ShouldNotBeZeroValue)
 
-		err := ses.SetUserDefinedVar("abc", 1)
+		err := ses.SetUserDefinedVar("abc", 1, "")
 		convey.So(err, convey.ShouldBeNil)
 
 		_, _, err = ses.GetUserDefinedVar("abc")
@@ -542,8 +548,9 @@ func TestSession_TxnCompilerContext(t *testing.T) {
 		}
 		proto := NewMysqlClientProtocol(0, ioses, 1024, sv)
 		session := NewSession(proto, nil, pu, gSysVars, false, nil, nil)
-		session.SetRequestContext(context.Background())
-		session.SetConnectContext(context.Background())
+		ctx := defines.AttachAccountId(context.Background(), sysAccountID)
+		session.SetRequestContext(ctx)
+		session.SetConnectContext(ctx)
 		return session
 	}
 
@@ -570,9 +577,10 @@ func TestSession_TxnCompilerContext(t *testing.T) {
 		table := mock_frontend.NewMockRelation(ctrl)
 		table.EXPECT().Ranges(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 		table.EXPECT().TableDefs(gomock.Any()).Return(nil, nil).AnyTimes()
+		table.EXPECT().GetTableDef(gomock.Any()).Return(&plan.TableDef{}).AnyTimes()
 		table.EXPECT().GetPrimaryKeys(gomock.Any()).Return(nil, nil).AnyTimes()
 		table.EXPECT().GetHideKeys(gomock.Any()).Return(nil, nil).AnyTimes()
-		table.EXPECT().Stats(gomock.Any(), gomock.Any(), gomock.Any()).Return(false).AnyTimes()
+		table.EXPECT().Stats(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 		table.EXPECT().TableColumns(gomock.Any()).Return(nil, nil).AnyTimes()
 		table.EXPECT().GetTableID(gomock.Any()).Return(uint64(10)).AnyTimes()
 		table.EXPECT().GetEngineType().Return(engine.Disttae).AnyTimes()
@@ -602,8 +610,9 @@ func TestSession_TxnCompilerContext(t *testing.T) {
 		pkd := tcc.GetPrimaryKeyDef("abc", "t1")
 		convey.So(len(pkd), convey.ShouldBeZeroValue)
 
-		stats := tcc.Stats(&plan2.ObjectRef{SchemaName: "abc", ObjName: "t1"})
-		convey.So(stats, convey.ShouldBeFalse)
+		stats, err := tcc.Stats(&plan2.ObjectRef{SchemaName: "abc", ObjName: "t1"})
+		convey.So(err, convey.ShouldBeNil)
+		convey.So(stats, convey.ShouldBeNil)
 	})
 }
 
@@ -794,4 +803,60 @@ func TestSession_updateTimeZone(t *testing.T) {
 	err = updateTimeZone(ses, ses.GetSysVars(), "time_zone", "")
 	assert.NoError(t, err)
 	assert.Equal(t, ses.GetTimeZone().String(), "UTC")
+}
+
+func TestTxnHandler_TxnOpenLog(t *testing.T) {
+	convey.Convey("txn open log", t, func() {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		ctx := defines.AttachAccountId(context.TODO(), sysAccountID)
+		txnOperator := mock_frontend.NewMockTxnOperator(ctrl)
+		txnOperator.EXPECT().Txn().Return(txn.TxnMeta{}).AnyTimes()
+		txnOperator.EXPECT().Rollback(gomock.Any()).Return(nil).AnyTimes()
+		txnOperator.EXPECT().Commit(gomock.Any()).Return(nil).AnyTimes()
+		// txnOperator.EXPECT().SetOpenLog(gomock.Any())
+		txnOperator.EXPECT().IsOpenLog().Return(true).AnyTimes()
+		txnClient := mock_frontend.NewMockTxnClient(ctrl)
+		cnt := 0
+		txnClient.EXPECT().New(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, _ timestamp.Timestamp, ootions ...client.TxnOption) (client.TxnOperator, error) {
+				cnt++
+				if cnt%2 != 0 {
+					return txnOperator, nil
+				} else {
+					return nil, moerr.NewInternalError(ctx, "startTxn failed")
+				}
+			}).AnyTimes()
+		eng := mock_frontend.NewMockEngine(ctrl)
+		eng.EXPECT().New(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		eng.EXPECT().New(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		eng.EXPECT().Hints().Return(engine.Hints{
+			CommitOrRollbackTimeout: time.Second,
+		}).AnyTimes()
+
+		ioses := mock_frontend.NewMockIOSession(ctrl)
+		ioses.EXPECT().OutBuf().Return(buf.NewByteBuf(1024)).AnyTimes()
+		ioses.EXPECT().Write(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		ioses.EXPECT().RemoteAddress().Return("").AnyTimes()
+		ioses.EXPECT().Ref().AnyTimes()
+
+		pu, err := getParameterUnit("test/system_vars_config.toml", eng, txnClient)
+		convey.So(err, convey.ShouldBeNil)
+
+		var gSys GlobalSystemVariables
+		InitGlobalSystemVariables(&gSys)
+		gSys.sysVars["transaction_operator_open_log"] = 1
+		txn := InitTxnHandler(eng, txnClient, nil, nil)
+		txn.ses = &Session{
+			requestCtx: ctx,
+			pu:         pu,
+			connectCtx: ctx,
+			gSysVars:   &gSys,
+		}
+
+		_, op, err := txn.NewTxnOperator()
+		convey.So(err, convey.ShouldBeNil)
+		convey.So(op.IsOpenLog(), convey.ShouldBeTrue)
+	})
 }

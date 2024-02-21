@@ -16,6 +16,7 @@ package process
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"sync/atomic"
 	"time"
 
@@ -30,11 +31,13 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/incrservice"
 	"github.com/matrixorigin/matrixone/pkg/lockservice"
-	"github.com/matrixorigin/matrixone/pkg/queryservice"
+	qclient "github.com/matrixorigin/matrixone/pkg/queryservice/client"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/udf"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 )
+
+const DefaultBatchSize = 8192
 
 // New creates a new Process.
 // A process stores the execution context.
@@ -45,7 +48,7 @@ func New(
 	txnOperator client.TxnOperator,
 	fileService fileservice.FileService,
 	lockService lockservice.LockService,
-	queryService queryservice.QueryService,
+	queryClient qclient.QueryClient,
 	hakeeper logservice.CNHAKeeperClient,
 	udfService udf.Service,
 	aicm *defines.AutoIncrCacheManager) *Process {
@@ -65,7 +68,7 @@ func New(
 			Limit: VectorLimit,
 		},
 		valueScanBatch: make(map[[16]byte]*batch.Batch),
-		QueryService:   queryService,
+		QueryClient:    queryClient,
 		Hakeeper:       hakeeper,
 		UdfService:     udfService,
 	}
@@ -94,7 +97,7 @@ func NewFromProc(p *Process, ctx context.Context, regNumber int) *Process {
 	proc.SessionInfo = p.SessionInfo
 	proc.FileService = p.FileService
 	proc.IncrService = p.IncrService
-	proc.QueryService = p.QueryService
+	proc.QueryClient = p.QueryClient
 	proc.Hakeeper = p.Hakeeper
 	proc.UdfService = p.UdfService
 	proc.UnixTime = p.UnixTime
@@ -118,6 +121,7 @@ func NewFromProc(p *Process, ctx context.Context, regNumber int) *Process {
 	}
 	proc.DispatchNotifyCh = make(chan WrapCs)
 	proc.LoadLocalReader = p.LoadLocalReader
+	proc.WaitPolicy = p.WaitPolicy
 	return proc
 }
 
@@ -222,15 +226,15 @@ func (proc *Process) ResetContextFromParent(parent context.Context) context.Cont
 	return newctx
 }
 
-func (proc *Process) GetAnalyze(idx int) Analyze {
-	if idx >= len(proc.AnalInfos) {
-		return &analyze{analInfo: nil}
+func (proc *Process) GetAnalyze(idx, parallelIdx int, parallelMajor bool) Analyze {
+	if idx >= len(proc.AnalInfos) || idx < 0 {
+		return &analyze{analInfo: nil, parallelIdx: parallelIdx, parallelMajor: parallelMajor}
 	}
-	return &analyze{analInfo: proc.AnalInfos[idx], wait: 0}
+	return &analyze{analInfo: proc.AnalInfos[idx], wait: 0, parallelIdx: parallelIdx, parallelMajor: parallelMajor}
 }
 
 func (proc *Process) AllocVectorOfRows(typ types.Type, nele int, nsp *nulls.Nulls) (*vector.Vector, error) {
-	vec := vector.NewVec(typ)
+	vec := proc.GetVector(typ)
 	err := vec.PreExtend(nele, proc.Mp())
 	if err != nil {
 		return nil, err
@@ -258,6 +262,51 @@ func (proc *Process) CopyVectorPool(src *Process) {
 	proc.vp = src.vp
 }
 
+func (proc *Process) NewBatchFromSrc(src *batch.Batch, preAllocSize int) (*batch.Batch, error) {
+	bat := batch.NewWithSize(len(src.Vecs))
+	bat.SetAttributes(src.Attrs)
+	bat.Recursive = src.Recursive
+	for i := range bat.Vecs {
+		v := proc.GetVector(*src.Vecs[i].GetType())
+		if v.Capacity() < preAllocSize {
+			err := v.PreExtend(preAllocSize, proc.Mp())
+			if err != nil {
+				return nil, err
+			}
+		}
+		bat.Vecs[i] = v
+	}
+	return bat, nil
+}
+
+func (proc *Process) AppendBatchFromOffset(dst *batch.Batch, src *batch.Batch, offset int) (*batch.Batch, int, error) {
+	var err error
+	if dst == nil {
+		dst, err = proc.NewBatchFromSrc(src, 0)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+	if dst.RowCount() >= DefaultBatchSize {
+		panic("can't call AppendBatchFromOffset when batch is full!")
+	}
+	if len(dst.Vecs) != len(src.Vecs) {
+		return nil, 0, moerr.NewInternalError(proc.Ctx, "unexpected error happens in batch append")
+	}
+	length := DefaultBatchSize - dst.RowCount()
+	if length+offset > src.RowCount() {
+		length = src.RowCount() - offset
+	}
+	for i := range dst.Vecs {
+		if err = dst.Vecs[i].UnionBatch(src.Vecs[i], int64(offset), length, nil, proc.Mp()); err != nil {
+			return dst, 0, err
+		}
+		dst.Vecs[i].SetSorted(false)
+	}
+	dst.AddRowCount(length)
+	return dst, length, nil
+}
+
 func (proc *Process) PutBatch(bat *batch.Batch) {
 	if bat == batch.EmptyBatch {
 		return
@@ -273,7 +322,7 @@ func (proc *Process) PutBatch(bat *batch.Batch) {
 			// very large vectors should not put back into pool, which cause these memory can not release.
 			// XXX I left the old logic here. But it's unreasonable to use the number of rows to determine if a vector's size.
 			// use Allocated() may suitable.
-			if vec.IsConst() || vec.NeedDup() || vec.Capacity() > 8192*64 {
+			if vec.IsConst() || vec.NeedDup() || vec.Allocated() > 8192*64 {
 				vec.Free(proc.mp)
 				bat.ReplaceVector(vec, nil)
 				continue

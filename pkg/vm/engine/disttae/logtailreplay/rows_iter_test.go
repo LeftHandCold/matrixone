@@ -75,7 +75,7 @@ func TestPartitionStateRowsIter(t *testing.T) {
 		}
 		state.HandleRowsInsert(ctx, &api.Batch{
 			Attrs: []string{"rowid", "time", "a"},
-			Vecs: []*api.Vector{
+			Vecs: []api.Vector{
 				mustVectorToProto(rowIDVec),
 				mustVectorToProto(tsVec),
 				mustVectorToProto(vec1),
@@ -112,7 +112,7 @@ func TestPartitionStateRowsIter(t *testing.T) {
 		}
 		require.Equal(t, 1, n)
 		require.Nil(t, iter.Close())
-		modified := state.PrimaryKeyMayBeModified(ts.Prev(), ts.Next(), bs)
+		modified := state.PrimaryKeyMayBeModified(ts.Prev(), ts.Next(), [][]byte{bs})
 		require.True(t, modified)
 	}
 
@@ -128,7 +128,7 @@ func TestPartitionStateRowsIter(t *testing.T) {
 		}
 		state.HandleRowsInsert(ctx, &api.Batch{
 			Attrs: []string{"rowid", "time", "a"},
-			Vecs: []*api.Vector{
+			Vecs: []api.Vector{
 				mustVectorToProto(rowIDVec),
 				mustVectorToProto(tsVec),
 				mustVectorToProto(vec1),
@@ -162,7 +162,7 @@ func TestPartitionStateRowsIter(t *testing.T) {
 		}
 		state.HandleRowsDelete(ctx, &api.Batch{
 			Attrs: []string{"rowid", "time"},
-			Vecs: []*api.Vector{
+			Vecs: []api.Vector{
 				mustVectorToProto(rowIDVec),
 				mustVectorToProto(tsVec),
 			},
@@ -207,7 +207,7 @@ func TestPartitionStateRowsIter(t *testing.T) {
 			modified := state.PrimaryKeyMayBeModified(
 				types.BuildTS(int64(deleteAt+i), 0).Prev(),
 				types.BuildTS(int64(deleteAt+i), 0).Next(),
-				key,
+				[][]byte{key},
 			)
 			require.True(t, modified)
 		}
@@ -237,7 +237,7 @@ func TestPartitionStateRowsIter(t *testing.T) {
 		}
 		state.HandleRowsDelete(ctx, &api.Batch{
 			Attrs: []string{"rowid", "time", "a"},
-			Vecs: []*api.Vector{
+			Vecs: []api.Vector{
 				mustVectorToProto(rowIDVec),
 				mustVectorToProto(tsVec),
 			},
@@ -290,7 +290,7 @@ func TestInsertAndDeleteAtTheSameTimestamp(t *testing.T) {
 		}
 		state.HandleRowsInsert(ctx, &api.Batch{
 			Attrs: []string{"rowid", "time", "a"},
-			Vecs: []*api.Vector{
+			Vecs: []api.Vector{
 				mustVectorToProto(rowIDVec),
 				mustVectorToProto(tsVec),
 				mustVectorToProto(vec1),
@@ -308,7 +308,7 @@ func TestInsertAndDeleteAtTheSameTimestamp(t *testing.T) {
 		}
 		state.HandleRowsDelete(ctx, &api.Batch{
 			Attrs: []string{"rowid", "time"},
-			Vecs: []*api.Vector{
+			Vecs: []api.Vector{
 				mustVectorToProto(rowIDVec),
 				mustVectorToProto(tsVec),
 			},
@@ -349,7 +349,7 @@ func TestInsertAndDeleteAtTheSameTimestamp(t *testing.T) {
 	for i := 0; i < num; i++ {
 		ts := types.BuildTS(int64(i), 0)
 		key := EncodePrimaryKey(int64(i), packer)
-		modified := state.PrimaryKeyMayBeModified(ts.Prev(), ts.Next(), key)
+		modified := state.PrimaryKeyMayBeModified(ts.Prev(), ts.Next(), [][]byte{key})
 		require.True(t, modified)
 	}
 
@@ -380,7 +380,7 @@ func TestDeleteBeforeInsertAtTheSameTime(t *testing.T) {
 		}
 		state.HandleRowsDelete(ctx, &api.Batch{
 			Attrs: []string{"rowid", "time"},
-			Vecs: []*api.Vector{
+			Vecs: []api.Vector{
 				mustVectorToProto(rowIDVec),
 				mustVectorToProto(tsVec),
 			},
@@ -399,7 +399,7 @@ func TestDeleteBeforeInsertAtTheSameTime(t *testing.T) {
 		}
 		state.HandleRowsInsert(ctx, &api.Batch{
 			Attrs: []string{"rowid", "time", "a"},
-			Vecs: []*api.Vector{
+			Vecs: []api.Vector{
 				mustVectorToProto(rowIDVec),
 				mustVectorToProto(tsVec),
 				mustVectorToProto(vec1),
@@ -441,7 +441,7 @@ func TestDeleteBeforeInsertAtTheSameTime(t *testing.T) {
 	for i := 0; i < num; i++ {
 		ts := types.BuildTS(int64(i), 0)
 		key := EncodePrimaryKey(int64(i), packer)
-		modified := state.PrimaryKeyMayBeModified(ts.Prev(), ts.Next(), key)
+		modified := state.PrimaryKeyMayBeModified(ts.Prev(), ts.Next(), [][]byte{key})
 		require.True(t, modified)
 	}
 
@@ -474,7 +474,7 @@ func TestPrimaryKeyModifiedWithDeleteOnly(t *testing.T) {
 		}
 		state.HandleRowsDelete(ctx, &api.Batch{
 			Attrs: []string{"rowid", "time", "i"},
-			Vecs: []*api.Vector{
+			Vecs: []api.Vector{
 				mustVectorToProto(rowIDVec),
 				mustVectorToProto(tsVec),
 				mustVectorToProto(primaryKeyVec), // with primary key
@@ -486,7 +486,7 @@ func TestPrimaryKeyModifiedWithDeleteOnly(t *testing.T) {
 	for i := 0; i < num; i++ {
 		ts := types.BuildTS(int64(i), 0)
 		key := EncodePrimaryKey(int64(i), packer)
-		modified := state.PrimaryKeyMayBeModified(ts.Prev(), ts.Next(), key)
+		modified := state.PrimaryKeyMayBeModified(ts.Prev(), ts.Next(), [][]byte{key})
 		require.True(t, modified)
 	}
 
