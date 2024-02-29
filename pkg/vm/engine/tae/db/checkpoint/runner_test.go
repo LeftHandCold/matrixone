@@ -482,9 +482,9 @@ func TestNewObjectReader1(t *testing.T) {
 func TestNewObjectReader2(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "55d07f0f-822b-11ee-ae27-5254000adb85_00002"
+	name := "018debe5-cd9d-7ba1-986d-dd62765d2ad3_00000"
 
-	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
+	fsDir := "/Users/shenjiangwei/Work/local/tae/matrixone/mo-data/shared"
 	c := fileservice.Config{
 		Name:    defines.LocalFileServiceName,
 		Backend: "DISK",
@@ -497,7 +497,7 @@ func TestNewObjectReader2(t *testing.T) {
 		return
 	}
 	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
-	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 2, 3, 5}, common.DefaultAllocator)
+	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 2, 3, 11}, common.DefaultAllocator)
 	if err != nil {
 		logutil.Infof("load all columns failed: %v", err)
 		return
@@ -508,7 +508,7 @@ func TestNewObjectReader2(t *testing.T) {
 	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
 	//applyDelete(bats[0], bb)
 	bf, w, err := reader.LoadOneBF(ctx, 0)
-	zm, err := reader.LoadZoneMaps(ctx, []uint16{0, 1, 2, 3, 5}, 0, nil)
+	zm, err := reader.LoadZoneMaps(ctx, []uint16{0, 1, 2, 3, 11}, 0, nil)
 	logutil.Infof("zm is %v-%v", zm[0].GetMax(), zm[0].GetMin())
 	logutil.Infof("bf is %v, w is %v, err is %v", bf.String(), w, err)
 	ts := types.TS{}
@@ -517,20 +517,19 @@ func TestNewObjectReader2(t *testing.T) {
 			//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
 			num := types.DecodeInt32(bat.Vecs[0].GetRawBytesAt(i))
 			num1 := types.DecodeInt32(bat.Vecs[1].GetRawBytesAt(i))
-			num3 := types.DecodeInt32(bat.Vecs[2].GetRawBytesAt(i))
-			entry := common.TypeStringValue(*bat.Vecs[3].GetType(), any(bat.Vecs[3].GetRawBytesAt(i)), false)
+			entry := common.TypeStringValue(*bat.Vecs[4].GetType(), any(bat.Vecs[4].GetRawBytesAt(i)), false)
 			num2 := entry
-			ts.Unmarshal(bat.Vecs[4].GetRawBytesAt(i))
+//			ts.Unmarshal(bat.Vecs[4].GetRawBytesAt(i))
 
 			if num == 9 && num1 == 4 {
 				logutil.Infof("num111 is %d-%d-%v, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
 			} else if num == 1 && num1 == 3 {
 				//logutil.Infof("num11122 is %d-%d-%v, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
 			}
-			if num2 == "3a15013a15013a160e07" {
-				t1, _, _ := types.DecodeTuple(bat.Vecs[3].GetRawBytesAt(i))
+			if num2 == "3a15563a1505" {
+				t1, _, _ := types.DecodeTuple(bat.Vecs[4].GetRawBytesAt(i))
 				//t1.String()
-				logutil.Infof("bats[0].Vecs[1].String() is %v, %d, n %d-%d-%d, y %d, t1.String() is %v, ts is %v", num2, i, num, num1, num3, y, t1.String(), ts.ToString())
+				logutil.Infof("bats[0].Vecs[1].String() is %v, %d, n %d-%d, y %d, t1.String() is %v, ts is %v", num2, i, num, num1, y, t1.String(), ts.ToString())
 			}
 			//logutil.Infof("num is %d-%d-%d, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
 		}

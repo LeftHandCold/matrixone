@@ -602,8 +602,8 @@ func (l *LocalFS) List(ctx context.Context, dirPath string) (ret []DirEntry, err
 			return nil, err
 		}
 		fileSize := info.Size()
-		nBlock := ceilingDiv(fileSize, _BlockSize)
-		contentSize := fileSize - _ChecksumSize*nBlock
+		//nBlock := ceilingDiv(fileSize, _BlockSize)
+		//contentSize := fileSize - _ChecksumSize*nBlock
 
 		isDir, err := entryIsDir(nativePath, name, info)
 		if err != nil {
@@ -612,7 +612,7 @@ func (l *LocalFS) List(ctx context.Context, dirPath string) (ret []DirEntry, err
 		ret = append(ret, DirEntry{
 			Name:  name,
 			IsDir: isDir,
-			Size:  contentSize,
+			Size:  fileSize,
 		})
 	}
 
