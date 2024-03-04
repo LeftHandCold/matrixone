@@ -15,6 +15,7 @@
 package objectio
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"io"
 
 	"github.com/matrixorigin/matrixone/pkg/compress"
@@ -40,11 +41,10 @@ func constructorFactory(size int64, algo uint8) CacheConstructor {
 			copy(cacheData.Bytes(), data)
 			return cacheData, nil
 		}
-
-		// lz4 compress
 		decompressed := allocator.Alloc(int(size))
 		bs, err := compress.Decompress(data, decompressed.Bytes(), compress.Lz4)
 		if err != nil {
+			logutil.Infof("err is %v", err.Error())
 			return
 		}
 		decompressed = decompressed.Slice(len(bs))

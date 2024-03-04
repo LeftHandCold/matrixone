@@ -220,7 +220,12 @@ func (r *BlockReader) LoadAllColumns(
 ) ([]*batch.Batch, error) {
 	meta, err := r.reader.ReadAllMeta(ctx, m)
 	if err != nil {
+		panic("sdfdsf")
 		return nil, err
+	}
+	ts, ok := meta.TombstoneMeta()
+	if ok {
+		logutil.Infof("ts is %d", ts.BlockCount())
 	}
 	dataMeta := meta.MustDataMeta()
 	if dataMeta.BlockHeader().MetaLocation().End() == 0 {
@@ -238,6 +243,7 @@ func (r *BlockReader) LoadAllColumns(
 
 	ioVectors, err := r.reader.ReadAll(ctx, idxs, nil)
 	if err != nil {
+		panic("sdfdsf")
 		return nil, err
 	}
 	for y := 0; y < int(dataMeta.BlockCount()); y++ {
@@ -269,7 +275,8 @@ func (r *BlockReader) LoadAllDeleteColumns(
 	if dataMeta.BlockHeader().MetaLocation().End() == 0 {
 		return nil, nil
 	}
-	block := dataMeta.GetBlockMeta(0)
+	logutil.Infof("block is %d", dataMeta.BlockCount())
+	block := dataMeta.GetBlockMeta(1)
 	if len(idxs) == 0 {
 		idxs = make([]uint16, block.GetColumnCount())
 		for i := range idxs {

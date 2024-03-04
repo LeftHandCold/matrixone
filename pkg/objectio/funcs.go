@@ -41,7 +41,7 @@ func ReadExtent(
 		Entries:     make([]fileservice.IOEntry, 1),
 		CachePolicy: cachePolicy,
 	}
-
+	logutil.Infof("ReadExtent %v", extent.String())
 	ioVec.Entries[0] = fileservice.IOEntry{
 		Offset:      int64(extent.Offset()),
 		Size:        int64(extent.Length()),
@@ -91,6 +91,7 @@ func ReadObjectMeta(
 	fs fileservice.FileService,
 ) (meta ObjectMeta, err error) {
 	var v []byte
+	logutil.Infof("extent is %v", extent.String())
 	if v, err = ReadExtent(ctx, name, extent, cachePolicy, fs, constructorFactory); err != nil {
 		return
 	}

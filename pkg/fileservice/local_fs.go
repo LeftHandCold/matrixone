@@ -659,13 +659,13 @@ func (l *LocalFS) StatFile(ctx context.Context, filePath string) (*DirEntry, err
 	}
 
 	fileSize := stat.Size()
-	nBlock := ceilingDiv(fileSize, _BlockSize)
-	contentSize := fileSize - _ChecksumSize*nBlock
+	//nBlock := ceilingDiv(fileSize, _BlockSize)
+	//contentSize := fileSize - _ChecksumSize*nBlock
 
 	return &DirEntry{
 		Name:  pathpkg.Base(filePath),
 		IsDir: false,
-		Size:  contentSize,
+		Size:  fileSize,
 	}, nil
 }
 

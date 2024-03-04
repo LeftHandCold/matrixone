@@ -367,6 +367,7 @@ func (r *objectReaderV1) ReadAllMeta(
 			return nil, err
 		}
 		ext := header.Extent()
+		//ext.SetAlg(0)
 		r.CacheMetaExtent(&ext)
 	}
 	return r.ReadMeta(ctx, m)

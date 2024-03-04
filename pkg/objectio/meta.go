@@ -350,6 +350,10 @@ func (f Footer) Marshal() []byte {
 	return unsafe.Slice((*byte)(unsafe.Pointer(&f)), FooterSize)
 }
 
+func (f Footer) UnMarshal(buf []byte) *Footer {
+	return (*Footer)(unsafe.Pointer(&buf[0]))
+}
+
 func IsSameObjectLocVsMeta(location Location, meta ObjectDataMeta) bool {
 	if len(location) == 0 || len(meta) == 0 {
 		return false

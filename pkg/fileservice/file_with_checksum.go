@@ -99,11 +99,10 @@ func (f *FileWithChecksum[T]) ReadAt(buf []byte, offset int64) (n int, err error
 		}, f.perfCounterSets...)
 	}()*/
 	n, err = f.underlying.ReadAt(buf, offset)
-	      if err != nil && err != io.EOF {
-		               return 0, err
-		       }
-	       return
-
+	if err != nil && err != io.EOF {
+		return 0, err
+	}
+	return
 
 	for len(buf) > 0 {
 
@@ -215,8 +214,9 @@ func (f *FileWithChecksum[T]) Seek(offset int64, whence int) (int64, error) {
 		return 0, err
 	}
 
-	nBlock := ceilingDiv(fileSize, int64(f.blockSize))
-	contentSize := fileSize - _ChecksumSize*nBlock
+	//nBlock := ceilingDiv(fileSize, int64(f.blockSize))
+	//contentSize := fileSize - _ChecksumSize*nBlock
+	contentSize := fileSize
 
 	switch whence {
 	case io.SeekStart:

@@ -380,9 +380,9 @@ func TestICKPSeekLT(t *testing.T) {
 func TestNewObjectReade1r(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "c539476e-cf00-11ee-a7ee-fefcfef4c117_00000"
+	name := "018df66c-7eea-7d41-9d53-dbbe2bd8ff4e_00000"
 
-	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
+	fsDir := "/Users/shenjiangwei/Work/local/tae/matrixone/mo-data/shared"
 	c := fileservice.Config{
 		Name:    defines.LocalFileServiceName,
 		Backend: "DISK",
@@ -395,7 +395,7 @@ func TestNewObjectReade1r(t *testing.T) {
 		return
 	}
 	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
-	bats, err := reader.LoadAllDeleteColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
+	bats, err := reader.LoadAllDeleteColumns(ctx, []uint16{0, 1, 2}, common.DefaultAllocator)
 	if err != nil {
 		logutil.Infof("load all columns failed: %v", err)
 		return
@@ -406,6 +406,7 @@ func TestNewObjectReade1r(t *testing.T) {
 	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
 	//applyDelete(bats[0], bb)
 	ts := types.TS{}
+	y := 0
 	for i := 0; i < bats[0].Vecs[0].Length(); i++ {
 		num := objectio.HackBytes2Rowid(bats[0].Vecs[0].GetRawBytesAt(i))
 		ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
@@ -413,11 +414,18 @@ func TestNewObjectReade1r(t *testing.T) {
 		//logutil.Infof("num is %d, cmmit is %v,i is %d", ro, ts.ToString(), i)
 		//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
 		//num := types.DecodeInt32(bats[0].Vecs[0].GetRawBytesAt(i))
-		if strings.Contains(num.String(), "baade41d-8110-11ee-94f8-5254000adb85") {
-			logutil.Infof("num is %v, cmmit is %v,i is %d", num.String(), ts.ToString(), i)
+		t1, _, _ := types.DecodeTuple(bats[0].Vecs[2].GetRawBytesAt(i))
+		if strings.Contains(num.String(), "018df66a-2060-7ef8-a38a-45b505a8e70b") {
+			//logutil.Infof("num is %v, cmmit is %v,i is %d", num.String(), ts.ToString(), i)
 		}
-		logutil.Infof("num is %v, cmmit is %v,i is %d", num.String(), ts.ToString(), i)
+		if strings.Contains(t1.String(), "((int32: 97),(int32: 6))") {
+			//y++
+			logutil.Infof("num11111 is %v, cmmit is %v,i is %d, %v", num.String(), ts.ToString(), i, t1.String())
+		}
+		//logutil.Infof("num is %v, cmmit is %v,i is %d", num.String(), ts.ToString(), i)
 	}
+
+	logutil.Infof("y is %d", y)
 	//logutil.Infof("bats[0].Vecs[1].String() is %v", bats[0].Vecs[0].String())
 }
 
@@ -482,7 +490,7 @@ func TestNewObjectReader1(t *testing.T) {
 func TestNewObjectReader2(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "018debe5-cd9d-7ba1-986d-dd62765d2ad3_00000"
+	name := "018df66a-34b4-724b-a312-96af14b053c4_00000"
 
 	fsDir := "/Users/shenjiangwei/Work/local/tae/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -497,7 +505,7 @@ func TestNewObjectReader2(t *testing.T) {
 		return
 	}
 	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
-	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 2, 3, 11}, common.DefaultAllocator)
+	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 2, 3, 11, 13}, common.DefaultAllocator)
 	if err != nil {
 		logutil.Infof("load all columns failed: %v", err)
 		return
@@ -514,14 +522,14 @@ func TestNewObjectReader2(t *testing.T) {
 	ts := types.TS{}
 	for y, bat := range bats {
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
-			//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
+			ts.Unmarshal(bats[0].Vecs[5].GetRawBytesAt(i))
 			num := types.DecodeInt32(bat.Vecs[0].GetRawBytesAt(i))
 			num1 := types.DecodeInt32(bat.Vecs[1].GetRawBytesAt(i))
 			entry := common.TypeStringValue(*bat.Vecs[4].GetType(), any(bat.Vecs[4].GetRawBytesAt(i)), false)
 			num2 := entry
-//			ts.Unmarshal(bat.Vecs[4].GetRawBytesAt(i))
+			//			ts.Unmarshal(bat.Vecs[4].GetRawBytesAt(i))
 
-			if num == 9 && num1 == 4 {
+			if num == 97 && num1 == 6 {
 				logutil.Infof("num111 is %d-%d-%v, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
 			} else if num == 1 && num1 == 3 {
 				//logutil.Infof("num11122 is %d-%d-%v, cmmit is %v,i is %d", num, num1, num2, ts.ToString(), i)
