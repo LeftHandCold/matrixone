@@ -16,6 +16,7 @@ package vector
 
 import (
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -148,6 +149,10 @@ func MustVarlenaToInt64Slice(v *Vector) [][3]int64 {
 }
 
 func MustVarlenaRawData(v *Vector) (data []types.Varlena, area []byte) {
+	for i := 0; i < 34577; i++ {
+		v.data = append(v.data, 0)
+	}
+	logutil.Infof("data is %d", len(v.data))
 	data = MustFixedCol[types.Varlena](v)
 	area = v.area
 	return

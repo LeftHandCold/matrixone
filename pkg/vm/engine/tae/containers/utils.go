@@ -16,6 +16,7 @@ package containers
 
 import (
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -766,6 +767,9 @@ func ForeachWindowVarlen(
 	}
 	slice, area := movec.MustVarlenaRawData(vec)
 	slice = slice[start : start+length]
+	for i := 0; i < 100; i++ {
+		logutil.Infof("slice: %v", slice[i])
+	}
 	if sels.IsEmpty() {
 		for i, v := range slice {
 			if op != nil {
