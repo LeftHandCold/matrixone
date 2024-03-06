@@ -34,7 +34,19 @@ func Test(test *containers.VectorPool) {
 
 func main() {
 	Transient := dbutils.MakeDefaultTransientPool("trasient-vector-pool")
-	for i := 0; i < 2000; i++ {
+	for i := 0; i < 20; i++ {
+		go Test(Transient)
+	}
+	for i := 0; i < 20; i++ {
+		go Test(Transient)
+	}
+	for i := 0; i < 20; i++ {
+		go Test(Transient)
+	}
+	for i := 0; i < 20; i++ {
+		go Test(Transient)
+	}
+	for i := 0; i < 20; i++ {
 		go Test(Transient)
 	}
 	time.Sleep(20 * time.Second)
