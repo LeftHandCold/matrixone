@@ -156,7 +156,6 @@ func MustVarlenaRawData(v *Vector) (data []types.Varlena, area []byte) {
 	for i := 0; i < r; i++ {
 		v.data = append(v.data, 0)
 	}
-	logutil.Infof("data is %d", len(v.data))
 	data = MustFixedCol[types.Varlena](v)
 	area = v.area
 	return
