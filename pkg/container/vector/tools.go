@@ -17,6 +17,9 @@ package vector
 import (
 	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"math/rand"
+
+	//"math/rand"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -149,7 +152,8 @@ func MustVarlenaToInt64Slice(v *Vector) [][3]int64 {
 }
 
 func MustVarlenaRawData(v *Vector) (data []types.Varlena, area []byte) {
-	for i := 0; i < 34577; i++ {
+	r := rand.Intn(34577)
+	for i := 0; i < r; i++ {
 		v.data = append(v.data, 0)
 	}
 	logutil.Infof("data is %d", len(v.data))

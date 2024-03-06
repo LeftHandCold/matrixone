@@ -767,11 +767,11 @@ func ForeachWindowVarlen(
 	}
 	slice, area := movec.MustVarlenaRawData(vec)
 	slice = slice[start : start+length]
-	for i := 0; i < 100; i++ {
-		logutil.Infof("slice: %v", slice[i])
-	}
 	if sels.IsEmpty() {
 		for i, v := range slice {
+			if v[0] > 23 {
+				logutil.Infof("slice[%d] = %v", i, v)
+			}
 			if op != nil {
 				if err = op(v.GetByteSlice(area), vec.IsNull(uint64(i+start)), i+start); err != nil {
 					break

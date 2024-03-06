@@ -17,6 +17,7 @@ package vector
 import (
 	"bytes"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"slices"
 	"sort"
 	"unsafe"
@@ -82,6 +83,7 @@ func ToSlice[T any](vec *Vector, ret *[]T) {
 		panic(fmt.Sprintf("type mismatch: %T %v", []T{}, vec.typ.String()))
 	}
 	//}
+	logutil.Infof("vec.col.Cap is %v", vec.col.Cap)
 	*ret = unsafe.Slice((*T)(vec.col.Ptr), vec.col.Cap)
 }
 

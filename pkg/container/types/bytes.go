@@ -15,6 +15,7 @@
 package types
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -101,6 +102,7 @@ func (v *Varlena) GetByteSlice(area []byte) []byte {
 	if svlen <= VarlenaInlineSize {
 		return v.ByteSlice()
 	}
+	logutil.Infof("v: %v", v)
 	voff, vlen := v.OffsetLen()
 	return area[voff : voff+vlen]
 }
