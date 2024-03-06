@@ -31,6 +31,8 @@ func main() {
 		logutil.Infof("dfsfsdfsdfs")
 		return
 	}
-	go Test(test)
+	for i := 0; i < 2000; i++ {
+		go Test(test)
+	}
 	time.Sleep(20 * time.Second)
 }
