@@ -15,39 +15,42 @@ func Test(test *containers.VectorPool) {
 	for i := 0; i < 15; i++ {
 		vecor := objectio.NewStringVector(8192, types.T_varchar.ToType(), test.GetAllocator(), true, nil)
 		vec := containers.ToTNVector(vecor, test.GetAllocator())
-		vc = append(vc, vec)
+		ve := vec.CloneWindowWithPool(0, vec.Length(), test)
+		vc = append(vc, ve)
 	}
 	mergesort.SortBlockColumns(vc, 0, test)
-	for y := 0; y < 15; y++ {
-		vec := vc[y]
+	for _, v1 := range vc {
 		sks := hyperloglog.New()
-		containers.ForeachWindowBytes(vec.GetDownstreamVector(), 0, vec.Length(), func(v []byte, isNull bool, row int) (err error) {
+		containers.ForeachWindowBytes(v1.GetDownstreamVector(), 0, v1.Length(), func(v []byte, isNull bool, row int) (err error) {
 			if isNull {
 				return
 			}
 			sks.Insert(v)
 			return
 		}, nil)
-		vec.Close()
+	}
+
+	for _, v1 := range vc {
+		v1.Close()
 	}
 }
 
 func main() {
 	Transient := dbutils.MakeDefaultTransientPool("trasient-vector-pool")
 	for i := 0; i < 20; i++ {
-		go Test(Transient)
+		Test(Transient)
 	}
 	for i := 0; i < 20; i++ {
-		go Test(Transient)
+		Test(Transient)
 	}
 	for i := 0; i < 20; i++ {
-		go Test(Transient)
+		Test(Transient)
 	}
 	for i := 0; i < 20; i++ {
-		go Test(Transient)
+		Test(Transient)
 	}
 	for i := 0; i < 20; i++ {
-		go Test(Transient)
+		Test(Transient)
 	}
 	time.Sleep(20 * time.Second)
 }
