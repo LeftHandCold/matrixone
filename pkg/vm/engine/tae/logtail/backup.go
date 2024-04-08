@@ -248,7 +248,7 @@ func trimObjectsData(
 						return isCkpChange, err
 					}
 					if commitTs.Greater(ts) {
-						windowCNBatch(bat, 0, uint64(v))
+						windowCNBatch(bat, 0, uint64(0))
 						logutil.Debugf("blkCommitTs %v ts %v , block is %v",
 							commitTs.ToString(), ts.ToString(), location.String())
 						isChange = true
