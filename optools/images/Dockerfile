@@ -17,7 +17,7 @@ RUN go mod download
 
 COPY . .
 
-RUN make analyze
+RUN make build
 
 FROM ubuntu:22.04
 
