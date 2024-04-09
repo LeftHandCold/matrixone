@@ -15,14 +15,11 @@
 package blockio
 
 import (
-	"crypto"
 	hll "github.com/axiomhq/hyperloglog"
 	"github.com/cespare/xxhash/v2"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
-	"hash"
-	"hash/maphash"
 )
 
 type ObjectColumnMetasBuilder struct {
@@ -73,9 +70,7 @@ func (b *ObjectColumnMetasBuilder) InspectVector(idx int, vec containers.Vector,
 	if vec.GetDownstreamVector().IsConstNull() {
 		return
 	}
-	vec2 := vec.CloneWindow(0, vec.Length())
-	defer vec2.Close()
-	containers.ForeachWindowBytes(vec2.GetDownstreamVector(), 0, vec.Length(), func(v []byte, isNull bool, row int) (err error) {
+	containers.ForeachWindowBytes(vec.GetDownstreamVector(), 0, vec.Length(), func(v []byte, isNull bool, row int) (err error) {
 		if isNull {
 			return
 		}
