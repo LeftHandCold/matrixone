@@ -69,7 +69,9 @@ func (b *ObjectColumnMetasBuilder) InspectVector(idx int, vec containers.Vector,
 	if vec.GetDownstreamVector().IsConstNull() {
 		return
 	}
-	containers.ForeachWindowBytes(vec.GetDownstreamVector(), 0, vec.Length(), func(v []byte, isNull bool, row int) (err error) {
+	vec2 := vec.CloneWindow(0, vec.Length())
+	defer vec2.Close()
+	containers.ForeachWindowBytes(vec2.GetDownstreamVector(), 0, vec.Length(), func(v []byte, isNull bool, row int) (err error) {
 		if isNull {
 			return
 		}
