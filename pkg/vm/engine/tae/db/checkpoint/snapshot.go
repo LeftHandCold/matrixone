@@ -18,6 +18,7 @@ import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
@@ -38,7 +39,9 @@ func SpecifiedCheckpoint(snapshot types.TS, files []*metaFile) ([]*metaFile, int
 func AllAfterAndGCheckpoint(snapshot types.TS, files []*metaFile) ([]*metaFile, int, error) {
 	var prev *metaFile
 	for i, file := range files {
+		logutil.Infof("snapshot %v, file %v-%v", snapshot.ToString(), file.start.ToString(), file.end.ToString())
 		if snapshot.LessEq(&file.end) && snapshot.Less(&prev.end) && file.start.IsEmpty() {
+			logutil.Infof("snapshot111 %v, file %v-%v, prev %v-%v", snapshot.ToString(), file.start.ToString(), file.end.ToString(), prev.start.ToString(), prev.end.ToString())
 			return files, i - 1, nil
 		}
 		prev = file

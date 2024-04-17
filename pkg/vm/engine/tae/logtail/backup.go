@@ -1220,7 +1220,7 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 		tid := objInfoTid.Get(i).(uint64)
 		createAt := objCreateAt.Get(i).(types.TS)
 		if commitTS.Less(&ts) {
-			logutil.Infof("commitTs1 less|| createAt greater than ts: %v-%v-%v, name is %v", commitTS.ToString(), createAt.ToString(), ts.ToString(), stats.ObjectName().String())
+			logutil.Infof("commitTs1 less than ts: %v-%v-%v, name is %v", commitTS.ToString(), createAt.ToString(), ts.ToString(), stats.ObjectName().String())
 			continue
 			//panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
 		}
