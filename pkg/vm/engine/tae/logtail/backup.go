@@ -1204,6 +1204,7 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 	blkMetaInsertBlkID := data.bats[BLKMetaInsertIDX].GetVectorByName(catalog.BlockMeta_ID)
 
 	objInfoData := data.bats[ObjectInfoIDX]
+	objCreateAt := objInfoData.GetVectorByName(EntryNode_CreateAt)
 	objInfoStats := objInfoData.GetVectorByName(ObjectAttr_ObjectStats)
 	objInfoState := objInfoData.GetVectorByName(ObjectAttr_State)
 	objInfoTid := objInfoData.GetVectorByName(SnapshotAttr_TID)
@@ -1217,7 +1218,10 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 		deleteAt := objInfoDelete.Get(i).(types.TS)
 		commitTS := objInfoCommit.Get(i).(types.TS)
 		tid := objInfoTid.Get(i).(uint64)
-		if commitTS.Less(&ts) {
+		createAt := objCreateAt.Get(i).(types.TS)
+		if commitTS.Less(&ts) || createAt.Greater(&ts) {
+			logutil.Infof("commitTs1 less|| createAt greater than ts: %v-%v-%v, name is %v", commitTS.ToString(), createAt.ToString(), ts.ToString(), stats.ObjectName().String())
+			continue
 			//panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
 		}
 
@@ -1228,6 +1232,7 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 	}
 
 	tnObjInfoData := data.bats[TNObjectInfoIDX]
+	tnCreateAt := tnObjInfoData.GetVectorByName(EntryNode_CreateAt)
 	tnObjInfoStats := tnObjInfoData.GetVectorByName(ObjectAttr_ObjectStats)
 	tnObjInfoState := tnObjInfoData.GetVectorByName(ObjectAttr_State)
 	tnObjInfoTid := tnObjInfoData.GetVectorByName(SnapshotAttr_TID)
@@ -1240,8 +1245,11 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 		deleteAt := tnObjInfoDelete.Get(i).(types.TS)
 		tid := tnObjInfoTid.Get(i).(uint64)
 		commitTS := tnObjInfoCommit.Get(i).(types.TS)
+		createAt := tnCreateAt.Get(i).(types.TS)
 
-		if commitTS.Less(&ts) {
+		if commitTS.Less(&ts) || createAt.Greater(&ts) {
+			logutil.Infof("commitTs less|| createAt greater than ts: %v-%v-%v, name is %v", commitTS.ToString(), createAt.ToString(), ts.ToString(), stats.ObjectName().String())
+			continue
 			//panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
 		}
 
