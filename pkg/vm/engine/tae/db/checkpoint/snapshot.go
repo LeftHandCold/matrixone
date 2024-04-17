@@ -93,7 +93,10 @@ func ListSnapshotCheckpoint(
 		}
 		bat.AddVector(colNames[i], vec)
 	}
-	entries, maxGlobalEnd := replayCheckpointEntries(bat, 3)
+	entries, maxGlobalEnd := replayCheckpointEntries(bat, 9)
+	for i := range entries {
+		logutil.Infof("entry %v", entries[i].String())
+	}
 	for i := range entries {
 		if entries[i].end.Equal(&maxGlobalEnd) && entries[i].entryType == ET_Global {
 			return entries[i:], nil
