@@ -261,6 +261,143 @@ func execBackup(ctx context.Context, srcFs, dstFs fileservice.FileService, names
 	return nil
 }
 
+func execBackupForSnapshot(ctx context.Context, srcFs, dstFs fileservice.FileService) error {
+	files := make(map[string]*fileservice.DirEntry, 0)
+	gcFileMap := make(map[string]string)
+	softDeletes := make(map[string]bool)
+	var loadDuration, copyDuration, reWriteDuration time.Duration
+	var oNames []objectio.ObjectName
+	defer func() {
+		logutil.Info("backup", common.OperationField("exec backup"),
+			common.AnyField("load checkpoint cost", loadDuration),
+			common.AnyField("copy file cost", copyDuration),
+			common.AnyField("rewrite checkpoint cost", reWriteDuration))
+	}()
+	snapshot := types.TS{}
+	checkpointEntries, err := checkpoint.ListSnapshotCheckpoint(ctx, srcFs, types.TS{}, 0, nil)
+	for i, ckp := range checkpointEntries {
+		ckpstart := ckp.GetStart()
+		ckpend := ckp.GetEnd()
+		if ckpstart.LessEq(&snapshot) && ckpend.GreaterEq(&snapshot) {
+			if i < len(checkpointEntries)-1 {
+				checkpointEntries = checkpointEntries[i+1:]
+				break
+			}
+			checkpointEntries = checkpointEntries[i:]
+			break
+		}
+
+	}
+	now := time.Now()
+	for i, ckp := range checkpointEntries {
+		var oneNames []objectio.ObjectName
+		var data *logtail.CheckpointData
+		if i == 0 {
+			oneNames, data, err = logtail.LoadCheckpointEntriesFromKey(ctx, srcFs, ckp.GetLocation(), ckp.GetVersion(), nil)
+		} else {
+			oneNames, data, err = logtail.LoadCheckpointEntriesFromKey(ctx, srcFs, ckp.GetLocation(), ckp.GetVersion(), &softDeletes)
+		}
+		if err != nil {
+			return err
+		}
+		defer data.Close()
+		oNames = append(oNames, oneNames...)
+	}
+	loadDuration += time.Since(now)
+	now = time.Now()
+	for _, oName := range oNames {
+		if files[oName.String()] == nil {
+			dentry, err := srcFs.StatFile(ctx, oName.String())
+			if err != nil {
+				if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+					continue
+				} else {
+					return err
+				}
+			}
+			files[oName.String()] = dentry
+		}
+	}
+	// record files
+	taeFileList := make([]*taeFile, 0, len(files))
+	for _, dentry := range files {
+		if dentry.IsDir {
+			panic("not support dir")
+		}
+		checksum, err := CopyFile(ctx, srcFs, dstFs, dentry, "")
+		if err != nil {
+			if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) &&
+				isGC(gcFileMap, dentry.Name) {
+				continue
+			} else {
+				return err
+			}
+
+		}
+		taeFileList = append(taeFileList, &taeFile{
+			path:     dentry.Name,
+			size:     dentry.Size,
+			checksum: checksum,
+		})
+	}
+
+	var end, start types.TS
+	var version uint64
+	trimCkp := checkpointEntries[len(checkpointEntries)-1]
+	start = trimCkp.GetStart()
+	end = trimCkp.GetEnd()
+	version = uint64(trimCkp.GetVersion())
+
+	sizeList, err := CopyDir(ctx, srcFs, dstFs, "ckp", start)
+	if err != nil {
+		return err
+	}
+	taeFileList = append(taeFileList, sizeList...)
+	sizeList, err = CopyDir(ctx, srcFs, dstFs, "gc", start)
+	if err != nil {
+		return err
+	}
+	copyDuration += time.Since(now)
+	taeFileList = append(taeFileList, sizeList...)
+	now = time.Now()
+	var checkpointFiles []string
+	var cnLocation, tnLocation objectio.Location
+	cnLocation, tnLocation, checkpointFiles, err = logtail.ReWriteCheckpointAndBlockFromKey(ctx, srcFs, dstFs,
+		trimCkp.GetLocation(), trimCkp.GetLocation(), uint32(version), snapshot, softDeletes)
+	for _, name := range checkpointFiles {
+		dentry, err := dstFs.StatFile(ctx, name)
+		if err != nil {
+			return err
+		}
+		taeFileList = append(taeFileList, &taeFile{
+			path: dentry.Name,
+			size: dentry.Size,
+		})
+	}
+	if err != nil {
+		return err
+	}
+	file, err := checkpoint.MergeCkpMeta(ctx, dstFs, cnLocation, tnLocation, start, end)
+	if err != nil {
+		return err
+	}
+	dentry, err := dstFs.StatFile(ctx, file)
+	if err != nil {
+		return err
+	}
+	taeFileList = append(taeFileList, &taeFile{
+		path: "ckp/" + dentry.Name,
+		size: dentry.Size,
+	})
+	reWriteDuration += time.Since(now)
+	//save tae files size
+	err = saveTaeFilesList(ctx, dstFs, taeFileList, end.ToString())
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func CopyDir(ctx context.Context, srcFs, dstFs fileservice.FileService, dir string, backup types.TS) ([]*taeFile, error) {
 	var checksum []byte
 	files, err := srcFs.List(ctx, dir)

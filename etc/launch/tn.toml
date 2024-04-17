@@ -7,3 +7,14 @@ level = "info"
 [tn]
 uuid = "dd4dccb4-4d3c-41f8-b482-5251dc7a41bf"
 port-base = 19000
+
+[tn.Ckp]
+flush-interval = "10s"
+min-count = 100
+scan-interval = "5s"
+incremental-interval = "30s"
+global-min-count = 3
+
+[tn.GCCfg]
+gc-ttl = "4m"
+scan-gc-interval = "1m"
