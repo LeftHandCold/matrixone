@@ -276,6 +276,9 @@ func execBackupForSnapshot(ctx context.Context, srcFs, dstFs fileservice.FileSer
 	}()
 	snapshot := types.StringToTS("1713342877336638542-0")
 	checkpointEntries, err := checkpoint.ListSnapshotCheckpoint(ctx, srcFs, snapshot, 0, nil)
+	for _, ckp := range checkpointEntries {
+		logutil.Infof("ckp : %v- %v", ckp.GetStart(), ckp.GetEnd())
+	}
 	for i, ckp := range checkpointEntries {
 		ckpstart := ckp.GetStart()
 		ckpend := ckp.GetEnd()
