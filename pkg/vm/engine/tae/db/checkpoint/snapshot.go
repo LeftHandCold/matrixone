@@ -94,9 +94,6 @@ func ListSnapshotCheckpoint(
 		bat.AddVector(colNames[i], vec)
 	}
 	entries, maxGlobalEnd := replayCheckpointEntries(bat, 9)
-	for i := range entries {
-		logutil.Infof("entry %v", entries[i].String())
-	}
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].end.Less(&entries[j].end)
 	})
