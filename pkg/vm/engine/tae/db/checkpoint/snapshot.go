@@ -63,6 +63,7 @@ func ListSnapshotCheckpoint(
 	if len(files) == 0 {
 		return nil, nil
 	}
+	logutil.Infof("snapshot %v, file %v-%v, name is %v", snapshot.ToString(), files[idx].start.ToString(), files[idx].end.ToString(), files[idx].name)
 	reader, err := blockio.NewFileReader(fs, CheckpointDir+files[idx].name)
 	if err != nil {
 		return nil, nil
