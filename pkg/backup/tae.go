@@ -273,8 +273,8 @@ func execBackupForSnapshot(ctx context.Context, srcFs, dstFs fileservice.FileSer
 			common.AnyField("copy file cost", copyDuration),
 			common.AnyField("rewrite checkpoint cost", reWriteDuration))
 	}()
-	snapshot := types.TS{}
-	checkpointEntries, err := checkpoint.ListSnapshotCheckpoint(ctx, srcFs, types.TS{}, 0, nil)
+	snapshot := types.StringToTS("1713340441434025432-0")
+	checkpointEntries, err := checkpoint.ListSnapshotCheckpoint(ctx, srcFs, snapshot, 0, nil)
 	for i, ckp := range checkpointEntries {
 		ckpstart := ckp.GetStart()
 		ckpend := ckp.GetEnd()
