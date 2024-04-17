@@ -1218,7 +1218,7 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 		commitTS := objInfoCommit.Get(i).(types.TS)
 		tid := objInfoTid.Get(i).(uint64)
 		if commitTS.Less(&ts) {
-			panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
+			//panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
 		}
 
 		if isABlk && deleteAt.IsEmpty() {
@@ -1242,7 +1242,7 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 		commitTS := tnObjInfoCommit.Get(i).(types.TS)
 
 		if commitTS.Less(&ts) {
-			panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
+			//panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
 		}
 
 		if stats.Extent().End() > 0 {

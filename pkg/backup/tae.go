@@ -291,6 +291,7 @@ func execBackupForSnapshot(ctx context.Context, srcFs, dstFs fileservice.FileSer
 	}
 	now := time.Now()
 	for i, ckp := range checkpointEntries {
+		logutil.Infof("load checkpoint start: %v, end: %v", ckp.GetStart().ToString(), ckp.GetEnd().ToString())
 		var oneNames []objectio.ObjectName
 		var data *logtail.CheckpointData
 		if i == 0 {
@@ -363,8 +364,8 @@ func execBackupForSnapshot(ctx context.Context, srcFs, dstFs fileservice.FileSer
 	now = time.Now()
 	var checkpointFiles []string
 	var cnLocation, tnLocation objectio.Location
-	cnLocation, tnLocation, checkpointFiles, err = logtail.ReWriteCheckpointAndBlockFromKey(ctx, srcFs, dstFs,
-		trimCkp.GetLocation(), trimCkp.GetLocation(), uint32(version), snapshot, softDeletes)
+	cnLocation, tnLocation, checkpointFiles, err = logtail.ReWriteCheckpointAndBlockFromKeyForSnapShot(ctx, srcFs, dstFs,
+		trimCkp.GetLocation(), trimCkp.GetLocation(), uint32(version), snapshot)
 	for _, name := range checkpointFiles {
 		dentry, err := dstFs.StatFile(ctx, name)
 		if err != nil {
