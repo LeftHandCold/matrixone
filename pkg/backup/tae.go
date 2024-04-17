@@ -393,7 +393,7 @@ func execBackupForSnapshot(ctx context.Context, srcFs, dstFs fileservice.FileSer
 	})
 	reWriteDuration += time.Since(now)
 	//save tae files size
-	err = saveTaeFilesList(ctx, dstFs, taeFileList, end.ToString())
+	err = saveTaeFilesList(ctx, dstFs, taeFileList, now.Format(time.DateTime))
 	if err != nil {
 		return err
 	}

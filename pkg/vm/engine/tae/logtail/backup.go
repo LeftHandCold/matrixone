@@ -1219,10 +1219,15 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 		commitTS := objInfoCommit.Get(i).(types.TS)
 		tid := objInfoTid.Get(i).(uint64)
 		createAt := objCreateAt.Get(i).(types.TS)
-		if commitTS.Less(&ts) || createAt.Greater(&ts) {
+		if commitTS.Less(&ts) {
 			logutil.Infof("commitTs1 less|| createAt greater than ts: %v-%v-%v, name is %v", commitTS.ToString(), createAt.ToString(), ts.ToString(), stats.ObjectName().String())
 			continue
 			//panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
+		}
+
+		if createAt.Greater(&ts) {
+			logutil.Infof("createAt1 greater than ts: %v-%v-%v, name is %v", commitTS.ToString(), createAt.ToString(), ts.ToString(), stats.ObjectName().String())
+			continue
 		}
 
 		if isABlk && deleteAt.IsEmpty() {
@@ -1247,8 +1252,14 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 		commitTS := tnObjInfoCommit.Get(i).(types.TS)
 		createAt := tnCreateAt.Get(i).(types.TS)
 
-		if commitTS.Less(&ts) || createAt.Greater(&ts) {
-			logutil.Infof("commitTs less|| createAt greater than ts: %v-%v-%v, name is %v", commitTS.ToString(), createAt.ToString(), ts.ToString(), stats.ObjectName().String())
+		if commitTS.Less(&ts) {
+			logutil.Infof("commitTs less than ts: %v-%v, name is %v", commitTS.ToString(), ts.ToString(), stats.ObjectName().String())
+			continue
+			//panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
+		}
+
+		if createAt.Greater(&ts) {
+			logutil.Infof("createAt greater than ts: %v-%v, name is %v", createAt.ToString(), ts.ToString(), stats.ObjectName().String())
 			continue
 			//panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
 		}
