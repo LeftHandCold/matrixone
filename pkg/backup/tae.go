@@ -285,10 +285,10 @@ func execBackupForSnapshot(ctx context.Context, srcFs, dstFs fileservice.FileSer
 		logutil.Infof("checkpoint start: %v, end: %v", ckpstart.ToString(), ckpend.ToString())
 		if ckpstart.LessEq(&snapshot) && ckpend.GreaterEq(&snapshot) {
 			if i < len(checkpointEntries)-1 {
-				checkpointEntries = checkpointEntries[i+1:]
+				checkpointEntries = checkpointEntries[:i+1]
 				break
 			}
-			checkpointEntries = checkpointEntries[i:]
+			checkpointEntries = checkpointEntries[:i]
 			break
 		}
 
