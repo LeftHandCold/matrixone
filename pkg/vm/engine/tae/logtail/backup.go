@@ -1210,7 +1210,7 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 	objInfoTid := objInfoData.GetVectorByName(SnapshotAttr_TID)
 	objInfoDelete := objInfoData.GetVectorByName(EntryNode_DeleteAt)
 	objInfoCommit := objInfoData.GetVectorByName(txnbase.SnapshotAttr_CommitTS)
-
+	deleteObj := make([]int, 0)
 	for i := 0; i < objInfoData.Length(); i++ {
 		stats := objectio.NewObjectStats()
 		stats.UnMarshal(objInfoStats.Get(i).([]byte))
@@ -1226,6 +1226,7 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 		}
 
 		if createAt.Greater(&ts) {
+			deleteObj = append(deleteObj, i)
 			logutil.Infof("createAt1 greater than ts: %v-%v-%v, name is %v", commitTS.ToString(), createAt.ToString(), ts.ToString(), stats.ObjectName().String())
 			continue
 		}
@@ -1233,7 +1234,15 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 		if isABlk && deleteAt.IsEmpty() {
 			panic(any(fmt.Sprintf("block %v deleteAt is empty", stats.ObjectName().String())))
 		}
-		addObjectToObjectData(stats, isABlk, !deleteAt.IsEmpty(), false, i, tid, &objectsData)
+		addObjectToObjectData(stats, isABlk, !deleteAt.IsEmpty(), false, i-len(deleteObj), tid, &objectsData)
+	}
+
+	for _, row := range deleteObj {
+		objInfoData.Delete(row)
+	}
+	if len(deleteObj) > 0 {
+		objInfoData.Compact()
+		data.bats[ObjectInfoIDX] = objInfoData
 	}
 
 	tnObjInfoData := data.bats[TNObjectInfoIDX]
@@ -1243,6 +1252,7 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 	tnObjInfoTid := tnObjInfoData.GetVectorByName(SnapshotAttr_TID)
 	tnObjInfoDelete := tnObjInfoData.GetVectorByName(EntryNode_DeleteAt)
 	tnObjInfoCommit := tnObjInfoData.GetVectorByName(txnbase.SnapshotAttr_CommitTS)
+	deletetnObj := make([]int, 0)
 	for i := 0; i < tnObjInfoData.Length(); i++ {
 		stats := objectio.NewObjectStats()
 		stats.UnMarshal(tnObjInfoStats.Get(i).([]byte))
@@ -1259,6 +1269,7 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 		}
 
 		if createAt.Greater(&ts) {
+			deletetnObj = append(deletetnObj, i)
 			logutil.Infof("createAt greater than ts: %v-%v, name is %v", createAt.ToString(), ts.ToString(), stats.ObjectName().String())
 			continue
 			//panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
@@ -1270,7 +1281,14 @@ func ReWriteCheckpointAndBlockFromKeyForSnapShot(
 		if !deleteAt.IsEmpty() {
 			panic(any(fmt.Sprintf("deleteAt is not empty: %v, name is %v", deleteAt.ToString(), stats.ObjectName().String())))
 		}
-		addObjectToObjectData(stats, isABlk, !deleteAt.IsEmpty(), true, i, tid, &objectsData)
+		addObjectToObjectData(stats, isABlk, !deleteAt.IsEmpty(), true, i-len(deletetnObj), tid, &objectsData)
+	}
+	for _, row := range deletetnObj {
+		tnObjInfoData.Delete(row)
+	}
+	if len(deleteObj) > 0 {
+		tnObjInfoData.Compact()
+		data.bats[TNObjectInfoIDX] = tnObjInfoData
 	}
 
 	if blkCNMetaInsert.Length() > 0 {
