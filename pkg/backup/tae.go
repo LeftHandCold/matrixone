@@ -354,7 +354,7 @@ func execBackupForSnapshot(ctx context.Context, srcFs, dstFs fileservice.FileSer
 	end = trimCkp.GetEnd()
 	version = uint64(trimCkp.GetVersion())
 
-	sizeList, err := CopyDir(ctx, srcFs, dstFs, "ckp", start)
+	sizeList, err := CopyDir(ctx, srcFs, dstFs, "ckp", start, checkpointEntries...)
 	if err != nil {
 		return err
 	}
@@ -404,7 +404,7 @@ func execBackupForSnapshot(ctx context.Context, srcFs, dstFs fileservice.FileSer
 	return nil
 }
 
-func CopyDir(ctx context.Context, srcFs, dstFs fileservice.FileService, dir string, backup types.TS) ([]*taeFile, error) {
+func CopyDir(ctx context.Context, srcFs, dstFs fileservice.FileService, dir string, backup types.TS, ckps ...*checkpoint.CheckpointEntry) ([]*taeFile, error) {
 	var checksum []byte
 	files, err := srcFs.List(ctx, dir)
 	if err != nil {
@@ -416,20 +416,40 @@ func CopyDir(ctx context.Context, srcFs, dstFs fileservice.FileService, dir stri
 		if file.IsDir {
 			panic("not support dir")
 		}
-		start, _ := blockio.DecodeCheckpointMetadataFileName(file.Name)
+		start, end := blockio.DecodeCheckpointMetadataFileName(file.Name)
 		if !backup.IsEmpty() && start.GreaterEq(&backup) {
 			logutil.Infof("[Backup] skip file %v", file.Name)
 			continue
 		}
-		checksum, err = CopyFile(ctx, srcFs, dstFs, &file, dir)
-		if err != nil {
-			return nil, err
+
+		if len(ckps) > 0 {
+			for _, ckp := range ckps {
+				cstart := ckp.GetStart()
+				cend := ckp.GetEnd()
+				if cstart.Equal(&start) && cend.Equal(&end) {
+					checksum, err = CopyFile(ctx, srcFs, dstFs, &file, dir)
+					if err != nil {
+						return nil, err
+					}
+					taeFileList = append(taeFileList, &taeFile{
+						path:     dir + string(os.PathSeparator) + file.Name,
+						size:     file.Size,
+						checksum: checksum,
+					})
+					break
+				}
+			}
+		} else {
+			checksum, err = CopyFile(ctx, srcFs, dstFs, &file, dir)
+			if err != nil {
+				return nil, err
+			}
+			taeFileList = append(taeFileList, &taeFile{
+				path:     dir + string(os.PathSeparator) + file.Name,
+				size:     file.Size,
+				checksum: checksum,
+			})
 		}
-		taeFileList = append(taeFileList, &taeFile{
-			path:     dir + string(os.PathSeparator) + file.Name,
-			size:     file.Size,
-			checksum: checksum,
-		})
 	}
 	return taeFileList, nil
 }
