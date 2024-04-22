@@ -17,6 +17,7 @@ package checkpoint
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"sync"
 	"time"
 
@@ -188,6 +189,22 @@ func (e *CheckpointEntry) Prefetch(
 	return
 }
 
+func (e *CheckpointEntry) PrefetchWithFs(
+	ctx context.Context,
+	fs fileservice.FileService,
+	data *logtail.CheckpointData,
+) (err error) {
+	if err = data.PrefetchFrom(
+		ctx,
+		e.version,
+		fs,
+		e.tnLocation,
+	); err != nil {
+		return
+	}
+	return
+}
+
 func (e *CheckpointEntry) Read(
 	ctx context.Context,
 	fs *objectio.ObjectFS,
@@ -210,6 +227,28 @@ func (e *CheckpointEntry) Read(
 	return
 }
 
+func (e *CheckpointEntry) ReadWithFs(
+	ctx context.Context,
+	fs fileservice.FileService,
+	data *logtail.CheckpointData,
+) (err error) {
+	reader, err := blockio.NewObjectReader(fs, e.tnLocation)
+	if err != nil {
+		return
+	}
+
+	if err = data.ReadFrom(
+		ctx,
+		e.version,
+		e.tnLocation,
+		reader,
+		fs,
+	); err != nil {
+		return
+	}
+	return
+}
+
 func (e *CheckpointEntry) PrefetchMetaIdx(
 	ctx context.Context,
 	fs *objectio.ObjectFS,
@@ -226,12 +265,40 @@ func (e *CheckpointEntry) PrefetchMetaIdx(
 	return
 }
 
+func (e *CheckpointEntry) PrefetchMetaIdxWithFs(
+	ctx context.Context,
+	fs fileservice.FileService,
+) (data *logtail.CheckpointData, err error) {
+	data = logtail.NewCheckpointData(common.CheckpointAllocator)
+	if err = data.PrefetchMeta(
+		ctx,
+		e.version,
+		fs,
+		e.tnLocation,
+	); err != nil {
+		return
+	}
+	return
+}
+
 func (e *CheckpointEntry) ReadMetaIdx(
 	ctx context.Context,
 	fs *objectio.ObjectFS,
 	data *logtail.CheckpointData,
 ) (err error) {
 	reader, err := blockio.NewObjectReader(fs.Service, e.tnLocation)
+	if err != nil {
+		return
+	}
+	return data.ReadTNMetaBatch(ctx, e.version, e.tnLocation, reader)
+}
+
+func (e *CheckpointEntry) ReadMetaIdxWithFs(
+	ctx context.Context,
+	fs fileservice.FileService,
+	data *logtail.CheckpointData,
+) (err error) {
+	reader, err := blockio.NewObjectReader(fs, e.tnLocation)
 	if err != nil {
 		return
 	}

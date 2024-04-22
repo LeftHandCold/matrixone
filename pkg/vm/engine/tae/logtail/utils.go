@@ -946,6 +946,62 @@ func (data *CNCheckpointData) InitMetaIdx(
 	return nil
 }
 
+type tableAndLength struct {
+	tid    uint64
+	length uint64
+}
+
+func (data *CheckpointData) PrintMetaBatch() {
+	bat := data.bats[MetaIDX]
+	tables := make([]*tableAndLength, 0)
+	tidVec := bat.GetVectorByName(SnapshotAttr_TID)
+	locationsVec := bat.GetVectorByName(SnapshotMetaAttr_BlockInsertBatchLocation)
+	for i := 0; i < tidVec.Length(); i++ {
+		tid := tidVec.Get(i).(uint64)
+		var locations BlockLocations
+		locations = locationsVec.Get(i).([]byte)
+		it := locations.MakeIterator()
+		length := uint64(0)
+		for it.HasNext() {
+			loc := it.Next()
+			length += loc.GetEndOffset() - loc.GetStartOffset()
+		}
+		pair := &tableAndLength{
+			tid:    tid,
+			length: length,
+		}
+		tables = append(tables, pair)
+	}
+	sort.Slice(tables, func(i, j int) bool {
+		return tables[i].length < tables[j].length
+	})
+	logutil.Infof("lalala table count %d", len(tables))
+	if len(tables) == 0 {
+		return
+	}
+	maxTable := tables[len(tables)-1]
+	/*for i := range tables {
+		logutil.Infof("sss table %d, length is %d", tables[i].tid, tables[i].length)
+	}*/
+	logutil.Infof("lalala max table %d, length is %d", maxTable.tid, maxTable.length)
+	ml := data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_MetaLoc)
+	files := make(map[string]uint64)
+	for i := 0; i < ml.Length(); i++ {
+		loc := BlockLocation(ml.Get(i).([]byte))
+		name := loc.GetLocation().Name()
+		if files[name.String()] == 0 {
+			files[name.String()] = 0
+		}
+		files[name.String()] += uint64(loc.GetLocation().Extent().Length())
+	}
+
+	for name, size := range files {
+		if size > 100000000 {
+			logutil.Infof("lalala file %s, size is %d", name, size)
+		}
+	}
+}
+
 func (data *CNCheckpointData) PrefetchMetaIdx(
 	ctx context.Context,
 	version uint32,

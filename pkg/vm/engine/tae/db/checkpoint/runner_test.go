@@ -17,7 +17,16 @@ package checkpoint
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 
@@ -366,4 +375,180 @@ func TestICKPSeekLT(t *testing.T) {
 		t.Log(e.String())
 	}
 	assert.Equal(t, 0, len(ckps))
+}
+
+func TestBlockWriter_GetName(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+
+	fsDir := "/Users/shenjiangwei/Work/local/tae/matrixone/mo-data/shared"
+	c := fileservice.Config{
+		Name:    defines.LocalFileServiceName,
+		Backend: "DISK",
+		DataDir: fsDir,
+	}
+	service, err := fileservice.NewFileService(ctx, c, nil)
+	assert.Nil(t, err)
+	dirs, err := service.List(ctx, CheckpointDir)
+	if err != nil {
+		return
+	}
+	if len(dirs) == 0 {
+		return
+	}
+	logutil.Infof("dirs: %v", dirs)
+	metaFiles := make([]*metaFile, 0)
+	var readDuration time.Duration
+	for i, dir := range dirs {
+		start, end := blockio.DecodeCheckpointMetadataFileName(dir.Name)
+		metaFiles = append(metaFiles, &metaFile{
+			start: start,
+			end:   end,
+			index: i,
+		})
+	}
+	sort.Slice(metaFiles, func(i, j int) bool {
+		return metaFiles[i].end.Less(metaFiles[j].end)
+	})
+	targetIdx := metaFiles[len(metaFiles)-1].index
+	dir := dirs[targetIdx]
+	reader, err := blockio.NewFileReader(service, CheckpointDir+dir.Name)
+	if err != nil {
+		logutil.Infof("failed to create reader: %v", err)
+		return
+	}
+	bats, err := reader.LoadAllColumns(ctx, nil, common.DefaultAllocator)
+	if err != nil {
+		logutil.Infof("failed to load all columns: %v", err)
+		return
+	}
+	bat := containers.NewBatch()
+	defer bat.Close()
+	t0 := time.Now()
+	colNames := CheckpointSchema.Attrs()
+	colTypes := CheckpointSchema.Types()
+	var isCheckpointVersion1 bool
+	// in version 1, checkpoint metadata doesn't contain 'version'.
+	if len(bats[0].Vecs) < CheckpointSchemaColumnCountV1 {
+		isCheckpointVersion1 = true
+	}
+	for i := range bats[0].Vecs {
+		if len(bats) == 0 {
+			continue
+		}
+		var vec containers.Vector
+		if bats[0].Vecs[i].Length() == 0 {
+			vec = containers.MakeVector(colTypes[i], common.DebugAllocator)
+		} else {
+			vec = containers.ToTNVector(bats[0].Vecs[i], common.DebugAllocator)
+		}
+		bat.AddVector(colNames[i], vec)
+	}
+	logutil.Infof("bat len %d", bat.Length())
+	readDuration += time.Since(t0)
+	datas := make([]*logtail.CheckpointData, bat.Length())
+
+	entries := make([]*CheckpointEntry, bat.Length())
+	emptyFile := make([]*CheckpointEntry, 0)
+	readfn := func(i int, readType uint16) {
+		start := bat.GetVectorByName(CheckpointAttr_StartTS).Get(i).(types.TS)
+		end := bat.GetVectorByName(CheckpointAttr_EndTS).Get(i).(types.TS)
+		cnLoc := objectio.Location(bat.GetVectorByName(CheckpointAttr_MetaLocation).Get(i).([]byte))
+		isIncremental := bat.GetVectorByName(CheckpointAttr_EntryType).Get(i).(bool)
+		typ := ET_Global
+		if isIncremental {
+			typ = ET_Incremental
+		}
+		var version uint32
+		if isCheckpointVersion1 {
+			version = logtail.CheckpointVersion1
+		} else {
+			version = bat.GetVectorByName(CheckpointAttr_Version).Get(i).(uint32)
+		}
+		var tnLoc objectio.Location
+		if version <= logtail.CheckpointVersion4 {
+			tnLoc = cnLoc
+		} else {
+			tnLoc = objectio.Location(bat.GetVectorByName(CheckpointAttr_AllLocations).Get(i).([]byte))
+		}
+		var ckpLSN, truncateLSN uint64
+		if version >= logtail.CheckpointVersion7 {
+			ckpLSN = bat.GetVectorByName(CheckpointAttr_CheckpointLSN).Get(i).(uint64)
+			truncateLSN = bat.GetVectorByName(CheckpointAttr_TruncateLSN).Get(i).(uint64)
+		}
+		logutil.Infof("cnLoc: %v, tnLoc: %v", cnLoc.String(), tnLoc.String())
+		checkpointEntry := &CheckpointEntry{
+			start:       start,
+			end:         end,
+			cnLocation:  cnLoc,
+			tnLocation:  tnLoc,
+			state:       ST_Finished,
+			entryType:   typ,
+			version:     version,
+			ckpLSN:      ckpLSN,
+			truncateLSN: truncateLSN,
+		}
+		var err2 error
+		if readType == PrefetchData {
+			logutil.Warnf("read %v failed: %v", checkpointEntry.String(), err2)
+			if err2 = checkpointEntry.PrefetchWithFs(ctx, service, datas[i]); err2 != nil {
+				logutil.Warnf("read %v failed: %v", checkpointEntry.String(), err2)
+			}
+		} else if readType == PrefetchMetaIdx {
+			datas[i], err = checkpointEntry.PrefetchMetaIdxWithFs(ctx, service)
+			if err != nil {
+				return
+			}
+		} else if readType == ReadMetaIdx {
+			err = checkpointEntry.ReadMetaIdxWithFs(ctx, service, datas[i])
+			if err != nil {
+				return
+			}
+		} else {
+			if err2 = checkpointEntry.ReadWithFs(ctx, service, datas[i]); err2 != nil {
+				logutil.Warnf("read %v failed: %v", checkpointEntry.String(), err2)
+				emptyFile = append(emptyFile, checkpointEntry)
+			} else {
+				entries[i] = checkpointEntry
+			}
+			datas[i].PrintMetaBatch()
+		}
+	}
+	t0 = time.Now()
+	for i := 0; i < bat.Length(); i++ {
+		metaLoc := objectio.Location(bat.GetVectorByName(CheckpointAttr_MetaLocation).Get(i).([]byte))
+
+		err = blockio.PrefetchMeta(service, metaLoc)
+		if err != nil {
+			return
+		}
+	}
+	for i := 0; i < bat.Length(); i++ {
+		readfn(i, PrefetchMetaIdx)
+	}
+	for i := 0; i < bat.Length(); i++ {
+		readfn(i, ReadMetaIdx)
+	}
+	for i := 0; i < bat.Length(); i++ {
+		readfn(i, PrefetchData)
+	}
+	for i := 0; i < bat.Length(); i++ {
+		readfn(i, ReadData)
+	}
+	readDuration += time.Since(t0)
+	if err != nil {
+		return
+	}
+	t0 = time.Now()
+	//globalIdx := 0
+	for i := 0; i < bat.Length(); i++ {
+		checkpointEntry := entries[i]
+		if checkpointEntry == nil {
+			continue
+		}
+		logutil.Infof("read %v", checkpointEntry.String())
+	}
+	/*meta, extent, err := blockio.GetLocationWithFilename(ctx, service, "7e625e16-6740-11ee-83ce-16a5e7607fd0_00000")
+	assert.Nil(t, err)
+	logutil.Infof("meta: %d, extent: %v", meta.SubMetaCount(), extent.String())*/
 }
