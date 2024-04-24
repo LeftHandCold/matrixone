@@ -86,14 +86,14 @@ type SnapshotMeta struct {
 	sync.RWMutex
 	objects     map[objectio.Segmentid]*objectInfo
 	tid         uint64
-	tables      map[uint32]map[uint64]*tableInfo
-	acctIndexes map[uint64]*tableInfo
+	tables      map[uint32]map[uint64]*TableInfo
+	acctIndexes map[uint64]*TableInfo
 }
 
-type tableInfo struct {
-	accID    uint32
-	dbID     uint64
-	tid      uint64
+type TableInfo struct {
+	AccID    uint32
+	DbID     uint64
+	Tid      uint64
 	createAt types.TS
 	deleteAt types.TS
 }
@@ -101,8 +101,8 @@ type tableInfo struct {
 func NewSnapshotMeta() *SnapshotMeta {
 	return &SnapshotMeta{
 		objects:     make(map[objectio.Segmentid]*objectInfo),
-		tables:      make(map[uint32]map[uint64]*tableInfo),
-		acctIndexes: make(map[uint64]*tableInfo),
+		tables:      make(map[uint32]map[uint64]*TableInfo),
+		acctIndexes: make(map[uint64]*TableInfo),
 	}
 }
 
@@ -126,7 +126,7 @@ func (sm *SnapshotMeta) Update(data *CheckpointData) *SnapshotMeta {
 		}
 		accID := insAccIDs[i]
 		if sm.tables[accID] == nil {
-			sm.tables[accID] = make(map[uint64]*tableInfo)
+			sm.tables[accID] = make(map[uint64]*TableInfo)
 		}
 		dbid := insDBIDs[i]
 		create := insCreateAts[i]
@@ -134,10 +134,10 @@ func (sm *SnapshotMeta) Update(data *CheckpointData) *SnapshotMeta {
 		if sm.tables[accID][tid] != nil {
 			continue
 		}
-		table := &tableInfo{
-			accID:    accID,
-			dbID:     dbid,
-			tid:      tid,
+		table := &TableInfo{
+			AccID:    accID,
+			DbID:     dbid,
+			Tid:      tid,
 			createAt: createAt,
 		}
 		sm.tables[accID][tid] = table
@@ -155,7 +155,7 @@ func (sm *SnapshotMeta) Update(data *CheckpointData) *SnapshotMeta {
 		table := sm.acctIndexes[tid]
 		table.deleteAt = dropAt
 		sm.acctIndexes[tid] = table
-		sm.tables[table.accID][tid] = table
+		sm.tables[table.AccID][tid] = table
 	}
 	if sm.tid == 0 {
 		return sm
@@ -245,7 +245,6 @@ func (sm *SnapshotMeta) GetSnapshot(ctx context.Context, fs fileservice.FileServ
 				if snapshotList[id] == nil {
 					snapshotList[id] = containers.MakeVector(colTypes[0], mp)
 				}
-				logutil.Infof("GetSnapshot: id %d, ts %v", id, snapTs.ToString())
 				err = vector.AppendFixed[types.TS](snapshotList[id].GetDownstreamVector(), snapTs, false, mp)
 				if err != nil {
 					return nil, err
@@ -328,13 +327,13 @@ func (sm *SnapshotMeta) SaveTableInfo(name string, fs fileservice.FileService) e
 		for _, table := range entry {
 			vector.AppendFixed[uint32](
 				bat.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector(),
-				table.accID, false, common.DebugAllocator)
+				table.AccID, false, common.DebugAllocator)
 			vector.AppendFixed[uint64](
 				bat.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector(),
-				table.dbID, false, common.DebugAllocator)
+				table.DbID, false, common.DebugAllocator)
 			vector.AppendFixed[uint64](
 				bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
-				table.tid, false, common.DebugAllocator)
+				table.Tid, false, common.DebugAllocator)
 			vector.AppendFixed[types.TS](
 				bat.GetVectorByName(catalog2.SystemRelAttr_CreateAt).GetDownstreamVector(),
 				table.createAt, false, common.DebugAllocator)
@@ -369,12 +368,12 @@ func (sm *SnapshotMeta) RebuildTableInfo(ins *containers.Batch) {
 		createTS := insCreateTSs[i]
 		deleteTS := insDeleteTSs[i]
 		if sm.tables[accid] == nil {
-			sm.tables[accid] = make(map[uint64]*tableInfo)
+			sm.tables[accid] = make(map[uint64]*TableInfo)
 		}
-		table := &tableInfo{
-			tid:      tid,
-			dbID:     dbid,
-			accID:    accid,
+		table := &TableInfo{
+			Tid:      tid,
+			DbID:     dbid,
+			AccID:    accid,
 			createAt: createTS,
 			deleteAt: deleteTS,
 		}
@@ -395,7 +394,7 @@ func (sm *SnapshotMeta) Rebuild(ins *containers.Batch) {
 		if sm.tid == 0 {
 			tid := ins.GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
 			if tid == 0 {
-				panic("tid is 0")
+				panic("Tid is 0")
 			}
 			sm.SetTid(tid)
 		}
@@ -529,7 +528,7 @@ func (sm *SnapshotMeta) GetSnapshotList(SnapshotList map[uint32][]types.TS, tid 
 	if sm.acctIndexes[tid] == nil {
 		return nil
 	}
-	accID := sm.acctIndexes[tid].accID
+	accID := sm.acctIndexes[tid].AccID
 	return SnapshotList[accID]
 }
 
@@ -543,23 +542,23 @@ func (sm *SnapshotMeta) MergeTableInfo(SnapshotList map[uint32][]types.TS) error
 		if SnapshotList[accID] == nil {
 			for _, table := range tables {
 				if !table.deleteAt.IsEmpty() {
-					delete(sm.tables[accID], table.tid)
-					delete(sm.acctIndexes, table.tid)
+					delete(sm.tables[accID], table.Tid)
+					delete(sm.acctIndexes, table.Tid)
 				}
 			}
 			continue
 		}
 		for _, table := range tables {
 			if !table.deleteAt.IsEmpty() && !isSnapshotRefers(table, SnapshotList[accID]) {
-				delete(sm.tables[accID], table.tid)
-				delete(sm.acctIndexes, table.tid)
+				delete(sm.tables[accID], table.Tid)
+				delete(sm.acctIndexes, table.Tid)
 			}
 		}
 	}
 	return nil
 }
 
-func isSnapshotRefers(table *tableInfo, snapVec []types.TS) bool {
+func isSnapshotRefers(table *TableInfo, snapVec []types.TS) bool {
 	if len(snapVec) == 0 {
 		return false
 	}

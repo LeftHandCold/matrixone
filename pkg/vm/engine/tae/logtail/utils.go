@@ -2719,6 +2719,11 @@ func (data *CheckpointData) GetTNObjectBatchs() *containers.Batch {
 func (data *CheckpointData) GetObjectBatchs() *containers.Batch {
 	return data.bats[ObjectInfoIDX]
 }
+
+func (data *CheckpointData) GetOneBatch(idx uint16) *containers.Batch {
+	return data.bats[idx]
+}
+
 func (data *CheckpointData) GetBlkBatchs() (
 	*containers.Batch,
 	*containers.Batch,
