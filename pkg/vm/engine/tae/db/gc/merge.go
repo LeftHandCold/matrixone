@@ -146,6 +146,7 @@ func MergeCheckpoint(
 
 	// TODO: checkpoint entry should maintain the location
 	_, err = writer.WriteEnd(ctx)
+	logutil.Infof("write checkpoint %s", name)
 	return err
 }
 

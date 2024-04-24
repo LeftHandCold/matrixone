@@ -464,7 +464,11 @@ func (c *checkpointCleaner) softGC(t *GCTable, gckp *checkpoint.CheckpointEntry,
 		logutil.Errorf("GetCheckpointRange failed: %v", err.Error())
 		return nil
 	}
-	MergeCheckpoint(c.ctx, c.fs.Service, ckps, snapList, mergeTable.objects, c.snapshotMeta.GetTableIdx(), common.DebugAllocator)
+	err = MergeCheckpoint(c.ctx, c.fs.Service, ckps, snapList, mergeTable.objects, c.snapshotMeta.GetTableIdx(), common.DebugAllocator)
+	if err != nil {
+		logutil.Errorf("MergeCheckpoint failed: %v", err.Error())
+		return nil
+	}
 	c.updateMaxCompared(gckp)
 	c.snapshotMeta.MergeTableInfo(snapList)
 	//logutil.Infof("SoftGC is %v, merge table: %v", gc, mergeTable.String())
