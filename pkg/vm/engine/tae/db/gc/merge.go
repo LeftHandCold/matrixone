@@ -50,6 +50,7 @@ func MergeCheckpoint(
 		return ckpSnapList[i].Less(&ckpSnapList[j])
 	})
 	for _, ckpEntry := range ckpEntries {
+		logutil.Infof("merge checkpoint %v", ckpEntry.String())
 		if !isSnapshotCKPRefers(ckpEntry, ckpSnapList) {
 			continue
 		}
