@@ -61,6 +61,9 @@ func MergeCheckpoint(
 		}
 		datas = append(datas, data)
 	}
+	if len(datas) == 0 {
+		return nil
+	}
 
 	tablesInfo := make([]*logtail.TableInfo, 0)
 	for _, table := range tables {
