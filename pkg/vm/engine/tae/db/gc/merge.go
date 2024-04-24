@@ -73,11 +73,13 @@ func MergeCheckpoint(
 	for _, table := range tablesInfo {
 		for _, data := range datas {
 			ins := data.GetObjectBatchs()
-			objectStats := vector.MustFixedCol[objectio.ObjectStats](ins.GetVectorByName(catalog.ObjectAttr_ObjectStats).GetDownstreamVector())
 			tid := vector.MustFixedCol[uint64](ins.GetVectorByName(catalog.SnapshotAttr_TID).GetDownstreamVector())
 
 			for i := 0; i < ins.Length(); i++ {
-				if objects[objectStats[i].ObjectName().String()] == nil || tid[i] != table.Tid {
+				var objectStats objectio.ObjectStats
+				buf := ins.GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
+				objectStats.UnMarshal(buf)
+				if objects[objectStats.ObjectName().String()] == nil || tid[i] != table.Tid {
 					continue
 				}
 				appendValToBatch(ins, ckpData.GetObjectBatchs(), i)
