@@ -16,6 +16,7 @@ package checkpoint
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
@@ -29,6 +30,7 @@ type RunnerReader interface {
 	GetGlobalCheckpointCount() int
 	CollectCheckpointsInRange(ctx context.Context, start, end types.TS) (ckpLoc string, lastEnd types.TS, err error)
 	ICKPSeekLT(ts types.TS, cnt int) []*CheckpointEntry
+	GetCheckpointRange(ts1, ts2 types.TS) ([]*CheckpointEntry, error)
 	MaxGlobalCheckpoint() *CheckpointEntry
 	MaxLSN() uint64
 }
@@ -127,6 +129,56 @@ func (r *runner) ICKPSeekLT(ts types.TS, cnt int) []*CheckpointEntry {
 		}
 	}
 	return incrementals
+}
+
+func (r *runner) GetCheckpointRange(ts1, ts2 types.TS) ([]*CheckpointEntry, error) {
+	r.storage.Lock()
+	tree := r.storage.entries.Copy()
+	gTree := r.storage.globals.Copy()
+	r.storage.Unlock()
+	incrementals := make([]*CheckpointEntry, 0)
+	gIt := gTree.Iter()
+	ok := gIt.Seek(NewCheckpointEntry(ts1, ts1, ET_Global))
+	if ok {
+		e := gIt.Item()
+		for !e.end.Equal(&ts1) {
+			if e.end.Equal(&ts1) {
+				incrementals = append(incrementals, e)
+				break
+			}
+			if e.end.Less(&ts1) {
+				if !gIt.Next() {
+					break
+				}
+				continue
+			}
+			if !gIt.Next() {
+				break
+			}
+		}
+	}
+	it := tree.Iter()
+	ok = it.Seek(NewCheckpointEntry(ts1, ts1, ET_Incremental))
+	if ok {
+		e := it.Item()
+		for e.start.LessEq(&ts2) {
+			e = it.Item()
+			if !e.IsFinished() {
+				return nil, moerr.NewTAENeedRetryNoCtx()
+			}
+			if e.start.Less(&ts1) {
+				if !it.Next() {
+					break
+				}
+				continue
+			}
+			incrementals = append(incrementals, e)
+			if !it.Next() {
+				break
+			}
+		}
+	}
+	return incrementals, nil
 }
 
 func (r *runner) GetPenddingIncrementalCount() int {

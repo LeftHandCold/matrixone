@@ -558,6 +558,12 @@ func (sm *SnapshotMeta) MergeTableInfo(SnapshotList map[uint32][]types.TS) error
 	return nil
 }
 
+func (sm *SnapshotMeta) GetTableIdx() map[uint64]*TableInfo {
+	sm.RLock()
+	defer sm.RUnlock()
+	return sm.acctIndexes
+}
+
 func isSnapshotRefers(table *TableInfo, snapVec []types.TS) bool {
 	if len(snapVec) == 0 {
 		return false
