@@ -106,7 +106,7 @@ func (m *MemoryFS) List(ctx context.Context, dirPath string) (entries []DirEntry
 	return
 }
 
-func (m *MemoryFS) Write(ctx context.Context, vector IOVector) error {
+func (m *MemoryFS) Write(ctx context.Context, vector IOVector, retry ...bool) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

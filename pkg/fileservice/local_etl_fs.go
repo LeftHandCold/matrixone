@@ -80,7 +80,7 @@ func (l *LocalETLFS) Name() string {
 	return l.name
 }
 
-func (l *LocalETLFS) Write(ctx context.Context, vector IOVector) error {
+func (l *LocalETLFS) Write(ctx context.Context, vector IOVector, retry ...bool) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"math/rand"
 	"os"
 	pathpkg "path"
 	"path/filepath"
@@ -160,7 +161,11 @@ func (l *LocalFS) Name() string {
 	return l.name
 }
 
-func (l *LocalFS) Write(ctx context.Context, vector IOVector) error {
+func (l *LocalFS) Write(ctx context.Context, vector IOVector, retry ...bool) error {
+	if rand.Intn(10) == 1 && len(retry) > 0 {
+		logutil.Infof("connection reset by peer11")
+		return moerr.NewInternalError(ctx, "connection reset by peer11")
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

@@ -30,7 +30,7 @@ type FileService interface {
 	// returns ErrFileExisted if file already existed
 	// returns ErrSizeNotMatch if provided size does not match data
 	// entries in vector should be written atomically. if write failed, following reads must not succeed.
-	Write(ctx context.Context, vector IOVector) error
+	Write(ctx context.Context, vector IOVector, retry ...bool) error
 
 	// Read reads a file to fill IOEntries
 	// returns ErrFileNotFound if requested file not found

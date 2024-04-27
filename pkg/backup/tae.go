@@ -459,7 +459,7 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, name, d
 		Policy: fileservice.SkipAllCache,
 	}
 
-	err = dstFs.Write(ctx, dstIoVec)
+	err = dstFs.Write(ctx, dstIoVec, true)
 	if err != nil {
 		return nil, err
 	}

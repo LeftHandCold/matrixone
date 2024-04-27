@@ -116,7 +116,7 @@ func (f *FileServices) ReadCache(ctx context.Context, vector *IOVector) error {
 	return fs.ReadCache(ctx, vector)
 }
 
-func (f *FileServices) Write(ctx context.Context, vector IOVector) error {
+func (f *FileServices) Write(ctx context.Context, vector IOVector, retry ...bool) error {
 	path, err := ParsePathAtService(vector.FilePath, "")
 	if err != nil {
 		return err
