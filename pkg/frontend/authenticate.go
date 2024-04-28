@@ -5879,8 +5879,7 @@ func determinePrivilegeSetOfStatement(stmt tree.Statement) *privilege {
 		kind = privilegeKindNone
 	case *tree.BackupStart:
 		objType = objectTypeNone
-		kind = privilegeKindSpecial
-		special = specialTagAdmin
+		kind = privilegeKindNone
 	case *tree.EmptyStmt:
 		objType = objectTypeNone
 		kind = privilegeKindNone
@@ -7430,11 +7429,6 @@ func authenticateUserCanExecuteStatementWithObjectTypeNone(ctx context.Context, 
 			return tenant.IsAdminRole(), nil
 		}
 
-		checkBackUpStartPrivilege := func() (bool, error) {
-			//only the moAdmin can execute the backup statement
-			return tenant.IsSysTenant(), nil
-		}
-
 		switch gp := stmt.(type) {
 		case *tree.Grant:
 			if gp.Typ == tree.GrantTypePrivilege {
@@ -7462,8 +7456,6 @@ func authenticateUserCanExecuteStatementWithObjectTypeNone(ctx context.Context, 
 			return checkRevokePrivilege()
 		case *tree.ShowAccounts:
 			return checkShowAccountsPrivilege()
-		case *tree.BackupStart:
-			return checkBackUpStartPrivilege()
 		}
 	}
 
