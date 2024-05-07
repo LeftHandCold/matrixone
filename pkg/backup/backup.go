@@ -76,24 +76,25 @@ func Backup(ctx context.Context, bs *tree.BackupStart, cfg *Config) error {
 		cfg.Parallelism = s3Conf.parallelism
 	}
 
+	prefix := uuid.New().String()
 	// step 2 : backup mo
 	if err = backupBuildInfo(ctx, cfg); err != nil {
 		return err
 	}
 
-	if err = backupConfigs(ctx, cfg); err != nil {
+	if err = backupConfigs(ctx, cfg, prefix); err != nil {
 		return err
 	}
 
-	if err = backupTae(ctx, cfg); err != nil {
+	if err = backupTae(ctx, cfg, prefix); err != nil {
 		return err
 	}
 
-	if err = backupHakeeper(ctx, cfg); err != nil {
+	if err = backupHakeeper(ctx, cfg, prefix); err != nil {
 		return err
 	}
 
-	if err = saveMetas(ctx, cfg); err != nil {
+	if err = saveMetas(ctx, cfg, prefix); err != nil {
 		return err
 	}
 
@@ -108,12 +109,12 @@ func backupBuildInfo(ctx context.Context, cfg *Config) error {
 }
 
 // saveConfigs saves cluster config or service config
-func backupConfigs(ctx context.Context, cfg *Config) error {
+func backupConfigs(ctx context.Context, cfg *Config, prefix string) error {
 	var err error
 	// save cluster config files
 	for typ, files := range launchConfigPaths {
 		for _, f := range files {
-			err = backupConfigFile(ctx, typ, f, cfg)
+			err = backupConfigFile(ctx, typ, f, cfg, prefix)
 			if err != nil {
 				return err
 			}
@@ -123,12 +124,12 @@ func backupConfigs(ctx context.Context, cfg *Config) error {
 	return err
 }
 
-var backupTae = func(ctx context.Context, config *Config) error {
-	fs := fileservice.SubPath(config.TaeDir, taeDir)
+var backupTae = func(ctx context.Context, config *Config, prefix string) error {
+	fs := fileservice.SubPath(config.TaeDir, prefix+"/"+taeDir)
 	return BackupData(ctx, config.SharedFs, fs, "", int(config.Parallelism))
 }
 
-func backupHakeeper(ctx context.Context, config *Config) error {
+func backupHakeeper(ctx context.Context, config *Config, prefix string) error {
 	var (
 		err    error
 		haData []byte
@@ -139,7 +140,7 @@ func backupHakeeper(ctx context.Context, config *Config) error {
 	if config.HAkeeper == nil {
 		return moerr.NewInternalError(ctx, "hakeeper client is nil")
 	}
-	fs := fileservice.SubPath(config.TaeDir, hakeeperDir)
+	fs := fileservice.SubPath(config.TaeDir, prefix+"/"+hakeeperDir)
 	// get hakeeper data
 	haData, err = config.HAkeeper.GetBackupData(ctx)
 	if err != nil {
@@ -148,7 +149,7 @@ func backupHakeeper(ctx context.Context, config *Config) error {
 	return writeFile(ctx, fs, HakeeperFile, haData)
 }
 
-func backupConfigFile(ctx context.Context, typ, configPath string, cfg *Config) error {
+func backupConfigFile(ctx context.Context, typ, configPath string, cfg *Config, prefix string) error {
 	if !cfg.metasGeneralFsMustBeSet() {
 		return moerr.NewInternalError(ctx, "invalid config or metas or fileservice")
 	}
@@ -162,11 +163,11 @@ func backupConfigFile(ctx context.Context, typ, configPath string, cfg *Config) 
 	_, file := path.Split(configPath)
 	newfile := file + "_" + uid.String()
 	cfg.Metas.AppendLaunchconfig(typ, newfile)
-	filename := configDir + "/" + newfile
+	filename := prefix + "/" + configDir + "/" + newfile
 	return writeFile(ctx, cfg.GeneralDir, filename, data)
 }
 
-func saveMetas(ctx context.Context, cfg *Config) error {
+func saveMetas(ctx context.Context, cfg *Config, prefix string) error {
 	if !cfg.metasGeneralFsMustBeSet() {
 		return moerr.NewInternalError(ctx, "invalid config or metas or fileservice")
 	}
@@ -175,7 +176,7 @@ func saveMetas(ctx context.Context, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return writeFile(ctx, cfg.GeneralDir, moMeta, []byte(metas))
+	return writeFile(ctx, cfg.GeneralDir, prefix+"/"+moMeta, []byte(metas))
 }
 
 func ToCsvLine2(s [][]string) (string, error) {
