@@ -396,7 +396,7 @@ func (p *PartitionState) HandleObjectDelete(
 		objEntry.DeleteTime = deleteTSCol[idx]
 		objEntry.CommitTS = commitTSCol[idx]
 		objEntry.Sorted = sortedCol[idx]
-		if tableID == 272517 || tableID == 272519 {
+		if tableID == 272519 {
 			logutil.Infof("HandleObjectDelete: %v", objEntry.ObjectStats.String())
 		}
 		p.objectDeleteHelper(tableID, objEntry, deleteTSCol[idx])
@@ -439,7 +439,7 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 		if exist {
 			objEntry.HasDeltaLoc = old.HasDeltaLoc
 		}
-		if tableIDCol[idx] == 272517 || tableIDCol[idx] == 272519 {
+		if tableIDCol[idx] == 272519 {
 			logutil.Infof("HandleObjectInsert: %v, Create: %v, drop: %v, exist is %v", objEntry.ObjectStats.String(), objEntry.CreateTime.ToString(), objEntry.DeleteTime.ToString(), exist)
 		}
 		if exist && !old.IsEmpty() {
@@ -730,7 +730,6 @@ func (p *PartitionState) HandleMetadataInsert(
 	commitTimeVector := vector.MustFixedCol[types.TS](mustVectorFromProto(input.Vecs[7]))
 	//segmentIDVector := vector.MustFixedCol[types.Uuid](mustVectorFromProto(input.Vecs[8]))
 	memTruncTSVector := vector.MustFixedCol[types.TS](mustVectorFromProto(input.Vecs[9]))
-
 	var numInserted, numDeleted int64
 	for i, blockID := range blockIDVector {
 		p.shared.Lock()
@@ -755,6 +754,7 @@ func (p *PartitionState) HandleMetadataInsert(
 		// Notice that only delta location can be updated by a newer delta location.
 		if location := objectio.Location(deltaLocationVector.GetBytesAt(i)); !location.IsEmpty() {
 			blockEntry.DeltaLoc = *(*[objectio.LocationLen]byte)(unsafe.Pointer(&location[0]))
+			logutil.Infof("update delta location %s, blockid %v", location.String(), blockID.String())
 		}
 		if t := commitTimeVector[i]; !t.IsEmpty() {
 			blockEntry.CommitTs = t
