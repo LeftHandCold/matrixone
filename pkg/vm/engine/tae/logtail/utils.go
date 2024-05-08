@@ -1434,12 +1434,12 @@ func (data *CNCheckpointData) ReadFromData(
 				return
 			}
 			if uint16(idx) == ObjectInfoIDX && len(bat.Vecs) > 0 {
-				tidVec := vector.MustFixedCol[uint64](bat.Vecs[4])
-				createTSVec := vector.MustFixedCol[types.TS](bat.Vecs[5])
-				deleteTSVec := vector.MustFixedCol[types.TS](bat.Vecs[6])
-				for y := 0; y < bat.Vecs[0].Length(); y++ {
+				tidVec := vector.MustFixedCol[uint64](bat.Vecs[7])
+				createTSVec := vector.MustFixedCol[types.TS](bat.Vecs[8])
+				deleteTSVec := vector.MustFixedCol[types.TS](bat.Vecs[9])
+				for y := 0; y < bat.Vecs[3].Length(); y++ {
 					var objectStats objectio.ObjectStats
-					buf := bat.Vecs[0].GetRawBytesAt(y)
+					buf := bat.Vecs[3].GetRawBytesAt(y)
 					objectStats.UnMarshal(buf)
 					tid := tidVec[y]
 					createTS := createTSVec[y]
