@@ -396,6 +396,9 @@ func (p *PartitionState) HandleObjectDelete(
 		objEntry.DeleteTime = deleteTSCol[idx]
 		objEntry.CommitTS = commitTSCol[idx]
 		objEntry.Sorted = sortedCol[idx]
+		if tableID == 272518 {
+			logutil.Infof("HandleObjectDelete: %v", objEntry.ObjectStats.String())
+		}
 		p.objectDeleteHelper(tableID, objEntry, deleteTSCol[idx])
 	}
 }
@@ -410,6 +413,7 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 	deleteTSCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[8]))
 	startTSCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[9]))
 	commitTSCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[11]))
+	tableIDCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[6]))
 
 	for idx := 0; idx < len(stateCol); idx++ {
 		p.shared.Lock()
@@ -425,6 +429,9 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 			continue
 		}
 
+		if tableIDCol[idx] == 272518 {
+			logutil.Infof("HandleObjectInsert: %v", objEntry.ObjectStats.String())
+		}
 		objEntry.EntryState = stateCol[idx]
 		objEntry.CreateTime = createTSCol[idx]
 		objEntry.DeleteTime = deleteTSCol[idx]
