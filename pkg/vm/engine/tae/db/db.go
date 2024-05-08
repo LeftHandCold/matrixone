@@ -216,7 +216,7 @@ func (db *DB) Replay(dataFactory *tables.DataFactory, maxTs types.TS, lsn uint64
 	if err != nil {
 		panic(err)
 	}
-	table, err := DataB.GetTableEntryByID(272518)
+	table, err := DataB.GetTableEntryByID(272517)
 	if err != nil {
 		panic(err)
 	}

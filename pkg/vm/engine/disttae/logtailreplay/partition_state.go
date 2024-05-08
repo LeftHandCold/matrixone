@@ -396,7 +396,7 @@ func (p *PartitionState) HandleObjectDelete(
 		objEntry.DeleteTime = deleteTSCol[idx]
 		objEntry.CommitTS = commitTSCol[idx]
 		objEntry.Sorted = sortedCol[idx]
-		if tableID == 272518 {
+		if tableID == 272517 {
 			logutil.Infof("HandleObjectDelete: %v", objEntry.ObjectStats.String())
 		}
 		p.objectDeleteHelper(tableID, objEntry, deleteTSCol[idx])
@@ -429,7 +429,7 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 			continue
 		}
 
-		if tableIDCol[idx] == 272518 {
+		if tableIDCol[idx] == 272517 {
 			logutil.Infof("HandleObjectInsert: %v", objEntry.ObjectStats.String())
 		}
 		objEntry.EntryState = stateCol[idx]
