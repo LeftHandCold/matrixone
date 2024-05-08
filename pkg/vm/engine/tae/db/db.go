@@ -212,7 +212,7 @@ func (db *DB) Replay(dataFactory *tables.DataFactory, maxTs types.TS, lsn uint64
 	err := db.TxnMgr.Init(replayer.GetMaxTS())
 
 	db.usageMemo.EstablishFromCKPs(db.Catalog)
-	/DataB, err := db.Catalog.GetDatabaseByID(272505)
+	DataB, err := db.Catalog.GetDatabaseByID(272505)
 	if err != nil {
 		panic(err)
 	}
