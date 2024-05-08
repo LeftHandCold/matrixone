@@ -548,6 +548,7 @@ func (r *runner) doIncrementalCheckpoint(entry *CheckpointEntry) (fields []zap.F
 	if err != nil {
 		return
 	}
+	logutil.Infof("checkpoint111 %s:%s:%s:%s", entry.start.ToString(), entry.end.ToString(), cnLocation.String(), tnLocation.String())
 	entry.SetLocation(cnLocation, tnLocation)
 
 	perfcounter.Update(r.ctx, func(counter *perfcounter.CounterSet) {
