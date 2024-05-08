@@ -1935,7 +1935,7 @@ func (data *CheckpointData) WriteTo(
 						var objectStats objectio.ObjectStats
 						buf := bat.GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(y).([]byte)
 						objectStats.UnMarshal(buf)
-						tid := bat.GetVectorByName(SnapshotAttr_TID).Get(y).(int64)
+						tid := bat.GetVectorByName(SnapshotAttr_TID).Get(y).(uint64)
 						createTS := bat.GetVectorByName(EntryNode_CreateAt).Get(y).(types.TS)
 						deleteTS := bat.GetVectorByName(EntryNode_DeleteAt).Get(y).(types.TS)
 
