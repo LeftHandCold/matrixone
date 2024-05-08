@@ -1433,6 +1433,21 @@ func (data *CNCheckpointData) ReadFromData(
 			if err != nil {
 				return
 			}
+			if uint16(idx) == ObjectInfoIDX && len(bat.Vecs) > 0 {
+				tidVec := vector.MustFixedCol[uint64](bat.Vecs[4])
+				createTSVec := vector.MustFixedCol[types.TS](bat.Vecs[5])
+				deleteTSVec := vector.MustFixedCol[types.TS](bat.Vecs[6])
+				for y := 0; y < bat.Vecs[0].Length(); y++ {
+					var objectStats objectio.ObjectStats
+					buf := bat.Vecs[0].GetRawBytesAt(y)
+					objectStats.UnMarshal(buf)
+					tid := tidVec[y]
+					createTS := createTSVec[y]
+					deleteTS := deleteTSVec[y]
+
+					logutil.Infof("readtidd: %d, createTS: %d, deleteTS: %d, objectStats: %v", tid, createTS.ToString(), deleteTS.ToString(), objectStats.String())
+				}
+			}
 			//logutil.Infof("load block %v: %d-%d to %d", block.GetLocation().String(), block.GetStartOffset(), block.GetEndOffset(), bat.Vecs[0].Length())
 			if block.GetEndOffset() == 0 {
 				continue
@@ -1456,21 +1471,6 @@ func (data *CNCheckpointData) ReadFromData(
 				}
 			}
 
-			if uint16(idx) == ObjectInfoIDX {
-				tidVec := vector.MustFixedCol[uint64](dataBats[uint32(i)].Vecs[4])
-				createTSVec := vector.MustFixedCol[types.TS](dataBats[uint32(i)].Vecs[5])
-				deleteTSVec := vector.MustFixedCol[types.TS](dataBats[uint32(i)].Vecs[6])
-				for y := 0; y < dataBats[uint32(i)].Vecs[0].Length(); y++ {
-					var objectStats objectio.ObjectStats
-					buf := dataBats[uint32(i)].Vecs[0].GetRawBytesAt(y)
-					objectStats.UnMarshal(buf)
-					tid := tidVec[y]
-					createTS := createTSVec[y]
-					deleteTS := deleteTSVec[y]
-
-					logutil.Infof("readtidd: %d, createTS: %d, deleteTS: %d, objectStats: %v", tid, createTS.ToString(), deleteTS.ToString(), objectStats.String())
-				}
-			}
 		}
 
 		if version <= CheckpointVersion5 {
