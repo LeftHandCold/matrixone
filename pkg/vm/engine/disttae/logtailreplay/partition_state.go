@@ -429,9 +429,6 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 			continue
 		}
 
-		if tableIDCol[idx] == 272517 {
-			logutil.Infof("HandleObjectInsert: %v", objEntry.ObjectStats.String())
-		}
 		objEntry.EntryState = stateCol[idx]
 		objEntry.CreateTime = createTSCol[idx]
 		objEntry.DeleteTime = deleteTSCol[idx]
@@ -441,6 +438,9 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 		old, exist := p.dataObjects.Get(objEntry)
 		if exist {
 			objEntry.HasDeltaLoc = old.HasDeltaLoc
+		}
+		if tableIDCol[idx] == 272517 {
+			logutil.Infof("HandleObjectInsert: %v, Create: %v, drop: %v, exist is %v", objEntry.ObjectStats.String(), objEntry.CreateTime.ToString(), objEntry.DeleteTime.ToString(), exist)
 		}
 		if exist && !old.IsEmpty() {
 			// why check the deleteTime here? consider this situation:
