@@ -1455,6 +1455,22 @@ func (data *CNCheckpointData) ReadFromData(
 					return
 				}
 			}
+
+			if uint16(idx) == ObjectInfoIDX {
+				tidVec := vector.MustFixedCol[uint64](dataBats[uint32(i)].Vecs[4])
+				createTSVec := vector.MustFixedCol[types.TS](dataBats[uint32(i)].Vecs[5])
+				deleteTSVec := vector.MustFixedCol[types.TS](dataBats[uint32(i)].Vecs[6])
+				for y := 0; y < dataBats[uint32(i)].Vecs[0].Length(); y++ {
+					var objectStats objectio.ObjectStats
+					buf := dataBats[uint32(i)].Vecs[0].GetRawBytesAt(y)
+					objectStats.UnMarshal(buf)
+					tid := tidVec[y]
+					createTS := createTSVec[y]
+					deleteTS := deleteTSVec[y]
+
+					logutil.Infof("readtidd: %d, createTS: %d, deleteTS: %d, objectStats: %v", tid, createTS.ToString(), deleteTS.ToString(), objectStats.String())
+				}
+			}
 		}
 
 		if version <= CheckpointVersion5 {
@@ -1913,6 +1929,18 @@ func (data *CheckpointData) WriteTo(
 				defer bat.Close()
 				if block, size, err = writer.WriteSubBatch(containers.ToCNBatch(bat), objectio.ConvertToSchemaType(uint16(i))); err != nil {
 					return
+				}
+				if uint16(i) == ObjectInfoIDX {
+					for y := 0; y < bat.Length(); y++ {
+						var objectStats objectio.ObjectStats
+						buf := bat.GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(y).([]byte)
+						objectStats.UnMarshal(buf)
+						tid := bat.GetVectorByName(SnapshotAttr_TID).Get(y).(int64)
+						createTS := bat.GetVectorByName(EntryNode_CreateAt).Get(y).(types.TS)
+						deleteTS := bat.GetVectorByName(EntryNode_DeleteAt).Get(y).(types.TS)
+
+						logutil.Infof("writedatatid: %d, createTS: %d, deleteTS: %d, objectStats: %v", tid, createTS.ToString(), deleteTS.ToString(), objectStats.String())
+					}
 				}
 				Endoffset := offset + bat.Length()
 				blockLoc := BuildBlockLoaction(block.GetID(), uint64(offset), uint64(Endoffset))
