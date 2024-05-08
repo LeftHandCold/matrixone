@@ -413,7 +413,7 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 	deleteTSCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[8]))
 	startTSCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[9]))
 	commitTSCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[11]))
-	tableIDCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[6]))
+	tableIDCol := vector.MustFixedCol[uint64](mustVectorFromProto(bat.Vecs[6]))
 
 	for idx := 0; idx < len(stateCol); idx++ {
 		p.shared.Lock()
