@@ -754,8 +754,8 @@ func (p *PartitionState) HandleMetadataInsert(
 			blockid := blockidVec[y]
 			commitTS := commitTSVec[y]
 			if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
-				logutil.Infof("HandleMetadataInsert blockid2: %v, deltaLoc: %v, commitTS: %v, length: %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), mustVectorFromProto(input.Vecs[2]).Length())
-				logutil.Infof("blockIDVector is %d, 68 is %v", len(blockIDVector), blockIDVector[68].String())
+				logutil.Infof("HandleMetadataInsert blockid2: %v, deltaLoc: %v, commitTS: %v, length: %d, y is %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), mustVectorFromProto(input.Vecs[2]).Length(), y)
+				logutil.Infof("blockIDVector is %d", len(blockIDVector))
 			}
 		}
 	}
