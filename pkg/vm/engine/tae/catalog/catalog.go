@@ -708,6 +708,9 @@ func (catalog *Catalog) onReplayUpdateBlock(
 	if err != nil {
 		panic(err)
 	}
+	if cmd.ID.TableID == 272519 {
+		logutil.Infof("replayUpdateBlock: %v", cmd.String())
+	}
 	catalog.replayObjectByBlock(
 		tbl,
 		cmd.ID.BlockID,
