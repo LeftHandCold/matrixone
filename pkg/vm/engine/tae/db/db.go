@@ -16,7 +16,6 @@ package db
 
 import (
 	"context"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"io"
 	"sync/atomic"
 	"time"
@@ -212,7 +211,7 @@ func (db *DB) Replay(dataFactory *tables.DataFactory, maxTs types.TS, lsn uint64
 	err := db.TxnMgr.Init(replayer.GetMaxTS())
 
 	db.usageMemo.EstablishFromCKPs(db.Catalog)
-	DataB, err := db.Catalog.GetDatabaseByID(272505)
+	/*DataB, err := db.Catalog.GetDatabaseByID(272505)
 	if err != nil {
 		panic(err)
 	}
@@ -220,7 +219,7 @@ func (db *DB) Replay(dataFactory *tables.DataFactory, maxTs types.TS, lsn uint64
 	if err != nil {
 		panic(err)
 	}
-	logutil.Infof("replay done2 %v", table2.PPString(common.PPL3, 10, ""))
+	logutil.Infof("replay done2 %v", table2.PPString(common.PPL3, 10, ""))*/
 	if err != nil {
 		panic(err)
 	}
