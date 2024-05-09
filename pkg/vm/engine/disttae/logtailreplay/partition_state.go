@@ -350,6 +350,7 @@ func (p *PartitionState) HandleLogtailEntry(
 	packer *types.Packer,
 ) {
 	txnTrace.GetService().ApplyLogtail(entry, 1)
+	logutil.Infof("handle logtail entry: %v", entry.String())
 	switch entry.EntryType {
 	case api.Entry_Insert:
 		if IsBlkTable(entry.TableName) {
