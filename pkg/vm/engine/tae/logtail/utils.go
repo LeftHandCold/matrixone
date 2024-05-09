@@ -1942,6 +1942,16 @@ func (data *CheckpointData) WriteTo(
 						logutil.Infof("writedatatid: %d, createTS: %d, deleteTS: %d, objectStats: %v", tid, createTS.ToString(), deleteTS.ToString(), objectStats.String())
 					}
 				}
+
+				if uint16(i) == BLKMetaInsertIDX {
+					for y := 0; y < bat.Length(); y++ {
+						blockid := bat.GetVectorByName(pkgcatalog.BlockMeta_ID).Get(i).(types.Blockid)
+						deltaLoc := objectio.Location(bat.GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte))
+						commitTS := bat.GetVectorByName(pkgcatalog.BlockMeta_CommitTs).Get(y).(types.TS)
+
+						logutil.Infof("writedelta: %v, commit: %v, loc: %v", blockid.String(), commitTS.ToString(), deltaLoc.String())
+					}
+				}
 				Endoffset := offset + bat.Length()
 				blockLoc := BuildBlockLoaction(block.GetID(), uint64(offset), uint64(Endoffset))
 				indexes[i] = append(indexes[i], blockIndexes{
