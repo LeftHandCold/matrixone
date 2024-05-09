@@ -16,6 +16,7 @@ package disttae
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"time"
 
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
@@ -44,8 +45,9 @@ func consumeEntry(
 	var packer *types.Packer
 	put := engine.packerPool.Get(&packer)
 	defer put.Put()
-
+	logutil.Infof("consumeEntry: %v", e.String())
 	if state != nil {
+		logutil.Infof("consumeEntry2: %v", e.String())
 		t0 := time.Now()
 		state.HandleLogtailEntry(ctx, engine.fs, e, primarySeqnum, packer)
 		v2.LogtailUpdatePartitonConsumeLogtailOneEntryLogtailReplayDurationHistogram.Observe(time.Since(t0).Seconds())
