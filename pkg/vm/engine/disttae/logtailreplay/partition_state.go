@@ -362,7 +362,7 @@ func (p *PartitionState) HandleLogtailEntry(
 					blockid := blockidVec[y]
 					commitTS := commitTSVec[y]
 					if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
-						logutil.Infof("HandleLogtailEntry blockid2: %v, deltaLoc: %v, commitTS: %v", blockid.String(), deltaLoc.String(), commitTS.ToString())
+						logutil.Infof("HandleLogtailEntry blockid2: %v, deltaLoc: %v, commitTS: %v, length: %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), mustVectorFromProto(entry.Bat.Vecs[2]).Length())
 					}
 				}
 			}
@@ -746,6 +746,18 @@ func (p *PartitionState) HandleMetadataInsert(
 	//segmentIDVector := vector.MustFixedCol[types.Uuid](mustVectorFromProto(input.Vecs[8]))
 	memTruncTSVector := vector.MustFixedCol[types.TS](mustVectorFromProto(input.Vecs[9]))
 	var numInserted, numDeleted int64
+	if len(input.Vecs) > 0 {
+		blockidVec := vector.MustFixedCol[types.Blockid](mustVectorFromProto(input.Vecs[2]))
+		commitTSVec := vector.MustFixedCol[types.TS](mustVectorFromProto(input.Vecs[7]))
+		for y := 0; y < mustVectorFromProto(input.Vecs[2]).Length(); y++ {
+			deltaLoc := objectio.Location(mustVectorFromProto(input.Vecs[6]).GetBytesAt(y))
+			blockid := blockidVec[y]
+			commitTS := commitTSVec[y]
+			if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+				logutil.Infof("HandleMetadataInsert blockid2: %v, deltaLoc: %v, commitTS: %v, length: %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), mustVectorFromProto(input.Vecs[2]).Length())
+			}
+		}
+	}
 	for i, blockID := range blockIDVector {
 		p.shared.Lock()
 		if t := commitTimeVector[i]; t.Greater(&p.shared.lastFlushTimestamp) {
