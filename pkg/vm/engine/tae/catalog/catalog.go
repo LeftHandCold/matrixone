@@ -781,6 +781,9 @@ func (catalog *Catalog) onReplayCreateBlock(
 		logutil.Info(catalog.SimplePPString(common.PPL3))
 		panic(err)
 	}
+	if tid == 272519 {
+		logutil.Infof("onReplayCreateBlock: %v, metaloc: %v, deltaloc: %v, txnNodeis %v", blkid.String(), metaloc.String(), deltaloc.String(), txnNode.String())
+	}
 	catalog.replayObjectByBlock(
 		rel,
 		*blkid,
