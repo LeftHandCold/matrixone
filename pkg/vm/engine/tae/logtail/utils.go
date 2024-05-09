@@ -17,6 +17,7 @@ package logtail
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"time"
 
@@ -1456,8 +1457,10 @@ func (data *CNCheckpointData) ReadFromData(
 					deltaLoc := objectio.Location(bat.Vecs[6].GetRawBytesAt(y))
 					blockid := blockidVec[y]
 					commitTS := commitTSVec[y]
-
-					logutil.Infof("readDelta blockid: %v, deltaLoc: %d, commitTS: %v", blockid.String(), deltaLoc.String(), commitTS.ToString())
+					if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+						logutil.Infof("readDelta blockid: %v, deltaLoc: %v, commitTS: %v,  i: %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), i)
+						logutil.Infof("%v", string(debug.Stack()))
+					}
 				}
 			}
 			//logutil.Infof("load block %v: %d-%d to %d", block.GetLocation().String(), block.GetStartOffset(), block.GetEndOffset(), bat.Vecs[0].Length())
@@ -1465,6 +1468,18 @@ func (data *CNCheckpointData) ReadFromData(
 				continue
 			}
 			windowCNBatch(bat, block.GetStartOffset(), block.GetEndOffset())
+			if uint16(idx) == BLKMetaInsertIDX && len(bat.Vecs) > 0 {
+				blockidVec := vector.MustFixedCol[types.Blockid](bat.Vecs[2])
+				commitTSVec := vector.MustFixedCol[types.TS](bat.Vecs[7])
+				for y := 0; y < bat.Vecs[2].Length(); y++ {
+					deltaLoc := objectio.Location(bat.Vecs[6].GetRawBytesAt(y))
+					blockid := blockidVec[y]
+					commitTS := commitTSVec[y]
+					if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+						logutil.Infof("readDelta blockid2: %v, deltaLoc: %v, commitTS: %v, i: %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), i)
+					}
+				}
+			}
 			if dataBats[uint32(i)] == nil {
 				cnBatch := batch.NewWithSize(len(bat.Vecs))
 				cnBatch.Attrs = make([]string, len(bat.Attrs))
