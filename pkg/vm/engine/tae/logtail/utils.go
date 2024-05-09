@@ -1448,6 +1448,18 @@ func (data *CNCheckpointData) ReadFromData(
 					logutil.Infof("readtidd: %d, createTS: %d, deleteTS: %d, objectStats: %v", tid, createTS.ToString(), deleteTS.ToString(), objectStats.String())
 				}
 			}
+
+			if uint16(idx) == BLKMetaInsertIDX && len(bat.Vecs) > 0 {
+				blockidVec := vector.MustFixedCol[types.Blockid](bat.Vecs[2])
+				commitTSVec := vector.MustFixedCol[types.TS](bat.Vecs[7])
+				for y := 0; y < bat.Vecs[2].Length(); y++ {
+					deltaLoc := objectio.Location(bat.Vecs[6].GetRawBytesAt(y))
+					blockid := blockidVec[y]
+					commitTS := commitTSVec[y]
+
+					logutil.Infof("readDelta blockid: %v, deltaLoc: %d, commitTS: %v", blockid.String(), deltaLoc.String(), commitTS.ToString())
+				}
+			}
 			//logutil.Infof("load block %v: %d-%d to %d", block.GetLocation().String(), block.GetStartOffset(), block.GetEndOffset(), bat.Vecs[0].Length())
 			if block.GetEndOffset() == 0 {
 				continue
