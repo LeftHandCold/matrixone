@@ -1546,7 +1546,7 @@ func (data *CNCheckpointData) GetTableDataFromBats(tid uint64, bats []*batch.Bat
 				blockid := blockidVec[y]
 				commitTS := commitTSVec[y]
 				if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
-					logutil.Infof("readDelta blockid2: %v, deltaLoc: %v, commitTS: %v, i: %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), i)
+					logutil.Infof("BlockInsert blockid2: %v, deltaLoc: %v, commitTS: %v", blockid.String(), deltaLoc.String(), commitTS.ToString())
 				}
 			}
 		}
