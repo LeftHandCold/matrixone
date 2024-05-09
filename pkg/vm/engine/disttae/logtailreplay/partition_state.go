@@ -759,6 +759,9 @@ func (p *PartitionState) HandleMetadataInsert(
 		}
 	}
 	for i, blockID := range blockIDVector {
+		if blockID.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+			logutil.Infof("update delta location111 %s, blockid %v, commitTimeVector[i] is %v", objectio.Location(deltaLocationVector.GetBytesAt(i)).String(), blockID.String(), commitTimeVector[i].ToString())
+		}
 		p.shared.Lock()
 		if t := commitTimeVector[i]; t.Greater(&p.shared.lastFlushTimestamp) {
 			p.shared.lastFlushTimestamp = t
@@ -769,9 +772,6 @@ func (p *PartitionState) HandleMetadataInsert(
 			BlockID: blockID,
 		}
 		blockEntry, ok := p.blockDeltas.Get(pivot)
-		if blockID.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
-			logutil.Infof("update delta location111 %s, blockid %v, ts %v, commitTimeVector[i] is %v, ok is %v", objectio.Location(deltaLocationVector.GetBytesAt(i)).String(), blockID.String(), blockEntry.CommitTs.ToString(), commitTimeVector[i].ToString(), ok)
-		}
 		if !ok {
 			blockEntry = pivot
 			numInserted++
