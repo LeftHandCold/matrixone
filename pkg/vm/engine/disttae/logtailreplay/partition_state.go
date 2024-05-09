@@ -746,6 +746,7 @@ func (p *PartitionState) HandleMetadataInsert(
 	//segmentIDVector := vector.MustFixedCol[types.Uuid](mustVectorFromProto(input.Vecs[8]))
 	memTruncTSVector := vector.MustFixedCol[types.TS](mustVectorFromProto(input.Vecs[9]))
 	var numInserted, numDeleted int64
+	boo := 0
 	if len(input.Vecs) > 0 {
 		blockidVec := vector.MustFixedCol[types.Blockid](mustVectorFromProto(input.Vecs[2]))
 		commitTSVec := vector.MustFixedCol[types.TS](mustVectorFromProto(input.Vecs[7]))
@@ -756,13 +757,14 @@ func (p *PartitionState) HandleMetadataInsert(
 			if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
 				logutil.Infof("HandleMetadataInsert blockid2: %v, deltaLoc: %v, commitTS: %v, length: %d, y is %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), mustVectorFromProto(input.Vecs[2]).Length(), y)
 				logutil.Infof("blockIDVector is %d", len(blockIDVector))
+				boo = 1
 			}
 		}
 	}
 	defer logutil.Infof("HandleMetadataInsert is done")
 	for i, blockID := range blockIDVector {
-		if blockID.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
-			logutil.Infof("update delta location111 %s, blockid %v, commitTimeVector[i] is %v", objectio.Location(deltaLocationVector.GetBytesAt(i)).String(), blockID.String(), commitTimeVector[i].ToString())
+		if boo > 0 {
+			logutil.Infof("update delta location111 %s, blockid %v, commitTimeVector[i] is %v i: %d", objectio.Location(deltaLocationVector.GetBytesAt(i)).String(), blockID.String(), commitTimeVector[i].ToString(), i)
 		}
 		p.shared.Lock()
 		if t := commitTimeVector[i]; t.Greater(&p.shared.lastFlushTimestamp) {
