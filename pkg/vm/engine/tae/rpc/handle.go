@@ -93,6 +93,12 @@ func (h *Handle) UpdateInterceptMatchRegexp(name string) {
 	h.interceptMatchRegexp.Store(regexp.MustCompile(fmt.Sprintf(`.*%s.*`, name)))
 }
 
+var districtMatchRegexp = regexp.MustCompile(`.*bmsql_order_line.*`)
+
+func IsDistrictTable(name string) bool {
+	return districtMatchRegexp.MatchString(name)
+}
+
 var _ rpchandle.Handler = (*Handle)(nil)
 
 type txnContext struct {
@@ -1110,6 +1116,12 @@ func (h *Handle) HandleWrite(
 			}
 		}
 		// TODO: debug for #13342, remove me later
+		if IsDistrictTable(tb.Schema().(*catalog2.Schema).Name) {
+			for i := 0; i < req.Batch.Vecs[0].Length(); i++ {
+				pk, _, _, _ := types.DecodeTuple(req.Batch.Vecs[10].GetRawBytesAt(i))
+				logutil.Infof("op1 %v %v", txn.GetStartTS().ToString(), PrintTuple(pk))
+			}
+		}
 		if h.IsInterceptTable(tb.Schema().(*catalog2.Schema).Name) {
 			if tb.Schema().(*catalog2.Schema).HasPK() {
 				idx := tb.Schema().(*catalog2.Schema).GetSingleSortKeyIdx()
@@ -1191,6 +1203,13 @@ func (h *Handle) HandleWrite(
 	defer rowIDVec.Close()
 	pkVec := containers.ToTNVector(req.Batch.GetVector(1), common.WorkspaceAllocator)
 	//defer pkVec.Close()
+	if IsDistrictTable(tb.Schema().(*catalog2.Schema).Name) {
+		for i := 0; i < rowIDVec.Length(); i++ {
+			rowID := objectio.HackBytes2Rowid(req.Batch.Vecs[0].GetRawBytesAt(i))
+			pk, _, _, _ := types.DecodeTuple(req.Batch.Vecs[1].GetRawBytesAt(i))
+			logutil.Infof("op2 %v %v %v", txn.GetStartTS().ToString(), PrintTuple(pk), rowID.String())
+		}
+	}
 	// TODO: debug for #13342, remove me later
 	if h.IsInterceptTable(tb.Schema().(*catalog2.Schema).Name) {
 		if tb.Schema().(*catalog2.Schema).HasPK() {
