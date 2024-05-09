@@ -212,16 +212,7 @@ func (db *DB) Replay(dataFactory *tables.DataFactory, maxTs types.TS, lsn uint64
 	err := db.TxnMgr.Init(replayer.GetMaxTS())
 
 	db.usageMemo.EstablishFromCKPs(db.Catalog)
-	db.Catalog.PPString(common.PPL3, 10, "")
-	/*DataB, err := db.Catalog.GetDatabaseByID(272505)
-	if err != nil {
-		panic(err)
-	}
-	table, err := DataB.GetTableEntryByID(272517)
-	if err != nil {
-		panic(err)
-	}
-	logutil.Infof("replay done %v", table.PPString(common.PPL3, 10, ""))
+	DataB, err := db.Catalog.GetDatabaseByID(272505)
 	if err != nil {
 		panic(err)
 	}
@@ -229,7 +220,7 @@ func (db *DB) Replay(dataFactory *tables.DataFactory, maxTs types.TS, lsn uint64
 	if err != nil {
 		panic(err)
 	}
-	logutil.Infof("replay done2 %v", table2.PPString(common.PPL3, 10, ""))*/
+	logutil.Infof("replay done2 %v", table2.PPString(common.PPL3, 10, ""))
 	if err != nil {
 		panic(err)
 	}
