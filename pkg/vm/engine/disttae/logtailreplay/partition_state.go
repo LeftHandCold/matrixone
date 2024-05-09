@@ -666,7 +666,9 @@ func (p *PartitionState) HandleRowsDelete(
 
 	numDeletes := int64(0)
 	for i, rowID := range rowIDVector {
-
+		if rowID.BorrowObjectID().String() == "018f5bd4-2096-7154-98e5-a6ad35e97434-0-49" {
+			logutil.Infof("delete rowID: %v", rowID.String())
+		}
 		blockID := rowID.CloneBlockID()
 		pivot := RowEntry{
 			BlockID: blockID,
