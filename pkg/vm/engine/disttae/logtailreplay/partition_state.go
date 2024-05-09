@@ -769,16 +769,14 @@ func (p *PartitionState) HandleMetadataInsert(
 			BlockID: blockID,
 		}
 		blockEntry, ok := p.blockDeltas.Get(pivot)
+		if blockID.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+			logutil.Infof("update delta location111 %s, blockid %v, ts %v, commitTimeVector[i] is %v, ok is %v", objectio.Location(deltaLocationVector.GetBytesAt(i)).String(), blockID.String(), blockEntry.CommitTs.ToString(), commitTimeVector[i].ToString(), ok)
+		}
 		if !ok {
 			blockEntry = pivot
 			numInserted++
 		} else if blockEntry.CommitTs.GreaterEq(&commitTimeVector[i]) {
 			// it possible to get an older version blk from lazy loaded checkpoint
-			if location := objectio.Location(deltaLocationVector.GetBytesAt(i)); !location.IsEmpty() {
-				if blockID.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
-					logutil.Infof("update delta location111 %s, blockid %v, ts %v, commitTimeVector[i] is %v", location.String(), blockID.String(), blockEntry.CommitTs.ToString(), commitTimeVector[i].ToString())
-				}
-			}
 			return
 		}
 
