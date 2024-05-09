@@ -762,6 +762,11 @@ func (p *PartitionState) HandleMetadataInsert(
 		}
 	}
 	defer logutil.Infof("HandleMetadataInsert is done")
+	for i := 0; i < len(blockIDVector); i++ {
+		if blockIDVector[i].String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+			logutil.Infof("update111 %s, blockid %v, commitTimeVector[i] is %v i: %d", objectio.Location(deltaLocationVector.GetBytesAt(i)).String(), blockIDVector[i].String(), commitTimeVector[i].ToString(), i)
+		}
+	}
 	for i, blockID := range blockIDVector {
 		if boo > 0 {
 			logutil.Infof("update delta location111 %s, blockid %v, commitTimeVector[i] is %v i: %d", objectio.Location(deltaLocationVector.GetBytesAt(i)).String(), blockID.String(), commitTimeVector[i].ToString(), i)
