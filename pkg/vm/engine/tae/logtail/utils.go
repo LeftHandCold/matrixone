@@ -1450,7 +1450,7 @@ func (data *CNCheckpointData) ReadFromData(
 				}
 			}
 
-			if uint16(idx) == BLKMetaInsertIDX && len(bat.Vecs) > 0 {
+			/*if uint16(idx) == BLKMetaInsertIDX && len(bat.Vecs) > 0 {
 				blockidVec := vector.MustFixedCol[types.Blockid](bat.Vecs[2])
 				commitTSVec := vector.MustFixedCol[types.TS](bat.Vecs[7])
 				for y := 0; y < bat.Vecs[2].Length(); y++ {
@@ -1462,7 +1462,7 @@ func (data *CNCheckpointData) ReadFromData(
 						logutil.Infof("%v", string(debug.Stack()))
 					}
 				}
-			}
+			}*/
 			//logutil.Infof("load block %v: %d-%d to %d", block.GetLocation().String(), block.GetStartOffset(), block.GetEndOffset(), bat.Vecs[0].Length())
 			if block.GetEndOffset() == 0 {
 				continue
@@ -1538,6 +1538,18 @@ func (data *CNCheckpointData) GetTableDataFromBats(tid uint64, bats []*batch.Bat
 
 	insTaeBat = bats[BlockInsert]
 	if insTaeBat != nil {
+		if len(insTaeBat.Vecs) > 0 {
+			blockidVec := vector.MustFixedCol[types.Blockid](insTaeBat.Vecs[2])
+			commitTSVec := vector.MustFixedCol[types.TS](insTaeBat.Vecs[7])
+			for y := 0; y < insTaeBat.Vecs[2].Length(); y++ {
+				deltaLoc := objectio.Location(insTaeBat.Vecs[6].GetBytesAt(y))
+				blockid := blockidVec[y]
+				commitTS := commitTSVec[y]
+				if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+					logutil.Infof("readDelta blockid2: %v, deltaLoc: %v, commitTS: %v, i: %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), i)
+				}
+			}
+		}
 		ins, err = batch.BatchToProtoBatch(insTaeBat)
 		if err != nil {
 			return
