@@ -1512,6 +1512,14 @@ func (data *CNCheckpointData) ReadFromData(
 	return
 }
 
+func MustVectorFromProto(v api.Vector) *vector.Vector {
+	ret, err := vector.ProtoVectorToVector(v)
+	if err != nil {
+		panic(err)
+	}
+	return ret
+}
+
 func (data *CNCheckpointData) GetTableDataFromBats(tid uint64, bats []*batch.Batch) (ins, del, cnIns, objInfo *api.Batch, err error) {
 	var insTaeBat, delTaeBat, cnInsTaeBat, objInfoTaeBat *batch.Batch
 	if len(bats) == 0 {
@@ -1537,21 +1545,21 @@ func (data *CNCheckpointData) GetTableDataFromBats(tid uint64, bats []*batch.Bat
 
 	insTaeBat = bats[BlockInsert]
 	if insTaeBat != nil {
-		if len(insTaeBat.Vecs) > 0 {
-			blockidVec := vector.MustFixedCol[types.Blockid](insTaeBat.Vecs[2])
-			commitTSVec := vector.MustFixedCol[types.TS](insTaeBat.Vecs[7])
-			for y := 0; y < insTaeBat.Vecs[2].Length(); y++ {
-				deltaLoc := objectio.Location(insTaeBat.Vecs[6].GetBytesAt(y))
+		ins, err = batch.BatchToProtoBatch(insTaeBat)
+		if err != nil {
+			return
+		}
+		if len(ins.Vecs) > 0 {
+			blockidVec := vector.MustFixedCol[types.Blockid](MustVectorFromProto(ins.Vecs[2]))
+			commitTSVec := vector.MustFixedCol[types.TS](MustVectorFromProto(ins.Vecs[7]))
+			for y := 0; y < MustVectorFromProto(ins.Vecs[2]).Length(); y++ {
+				deltaLoc := objectio.Location(MustVectorFromProto(ins.Vecs[6]).GetBytesAt(y))
 				blockid := blockidVec[y]
 				commitTS := commitTSVec[y]
 				if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
 					logutil.Infof("BlockInsert blockid2: %v, deltaLoc: %v, commitTS: %v", blockid.String(), deltaLoc.String(), commitTS.ToString())
 				}
 			}
-		}
-		ins, err = batch.BatchToProtoBatch(insTaeBat)
-		if err != nil {
-			return
 		}
 	}
 	delTaeBat = bats[BlockDelete]

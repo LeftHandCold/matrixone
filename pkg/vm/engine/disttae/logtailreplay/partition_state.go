@@ -350,10 +350,22 @@ func (p *PartitionState) HandleLogtailEntry(
 	packer *types.Packer,
 ) {
 	txnTrace.GetService().ApplyLogtail(entry, 1)
-	logutil.Infof("handle logtail entry: %v", entry.String())
+	logutil.Infof("handle logtail entry: %d", entry.EntryType)
 	switch entry.EntryType {
 	case api.Entry_Insert:
 		if IsBlkTable(entry.TableName) {
+			if len(entry.Bat.Vecs) > 0 {
+				blockidVec := vector.MustFixedCol[types.Blockid](mustVectorFromProto(entry.Bat.Vecs[2]))
+				commitTSVec := vector.MustFixedCol[types.TS](mustVectorFromProto(entry.Bat.Vecs[7]))
+				for y := 0; y < mustVectorFromProto(entry.Bat.Vecs[2]).Length(); y++ {
+					deltaLoc := objectio.Location(mustVectorFromProto(entry.Bat.Vecs[6]).GetBytesAt(y))
+					blockid := blockidVec[y]
+					commitTS := commitTSVec[y]
+					if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+						logutil.Infof("HandleLogtailEntry blockid2: %v, deltaLoc: %v, commitTS: %v", blockid.String(), deltaLoc.String(), commitTS.ToString())
+					}
+				}
+			}
 			p.HandleMetadataInsert(ctx, fs, entry.Bat)
 		} else if IsObjTable(entry.TableName) {
 			p.HandleObjectInsert(ctx, entry.Bat, fs)
