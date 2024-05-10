@@ -777,7 +777,7 @@ func (p *PartitionState) HandleMetadataInsert(
 		} else if blockEntry.CommitTs.GreaterEq(&commitTimeVector[i]) {
 			// it possible to get an older version blk from lazy loaded checkpoint
 			logutil.Infof("skip block %v, commitTs %v, new commitTs %v, i %v", blockID.String(), blockEntry.CommitTs.ToString(), commitTimeVector[i].ToString(), i)
-			return
+			continue
 		}
 
 		// the following codes handle block which be inserted or updated by a newer delta location.
