@@ -535,6 +535,7 @@ func (n *ObjectMVCCHandle) VisitDeletes(
 	deltalocStart = deltalocBat.Length()
 	logutil.Infof("VisitDeletes start is %v", start.ToString())
 	for blkOffset, mvcc := range n.deletes {
+		newStart := start
 		n.RLock()
 		blkID1 := objectio.NewBlockidWithObjectID(&n.meta.ID, blkOffset)
 		nodes := mvcc.deltaloc.ClonePreparedInRange(start, end)
@@ -550,11 +551,11 @@ func (n *ObjectMVCCHandle) VisitDeletes(
 			// block has newer delta data on s3, no need to collect data
 			startTS := newest.GetStart()
 			skipData = startTS.GreaterEq(&end)
-			start = newest.GetStart()
+			newStart = newest.GetStart()
 		}
 		if !skipData && !skipInMemory {
 			deletes := n.deletes[blkOffset]
-			delBat, err := deletes.CollectDeleteInRangeAfterDeltalocation(ctx, start, end, false, common.LogtailAllocator)
+			delBat, err := deletes.CollectDeleteInRangeAfterDeltalocation(ctx, newStart, end, false, common.LogtailAllocator)
 			if err != nil {
 				if delBatch != nil {
 					delBatch.Close()
