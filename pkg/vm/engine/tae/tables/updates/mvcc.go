@@ -536,7 +536,7 @@ func (n *ObjectMVCCHandle) VisitDeletes(
 	logutil.Infof("VisitDeletes start is %v", start.ToString())
 	for blkOffset, mvcc := range n.deletes {
 		blkID1 := objectio.NewBlockidWithObjectID(&n.meta.ID, blkOffset)
-		logutil.Infof("VisitDeletes11 blkOffset is %v", blkID1.String())
+		logutil.Infof("VisitDeletes11 blkOffset is %v, is %v", blkID1.String(), mvcc.deltaloc.String())
 		n.RLock()
 		nodes := mvcc.deltaloc.ClonePreparedInRange(start, end)
 		n.RUnlock()
