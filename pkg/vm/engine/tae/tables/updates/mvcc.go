@@ -535,10 +535,10 @@ func (n *ObjectMVCCHandle) VisitDeletes(
 	deltalocStart = deltalocBat.Length()
 	logutil.Infof("VisitDeletes start is %v", start.ToString())
 	for blkOffset, mvcc := range n.deletes {
-		blkID1 := objectio.NewBlockidWithObjectID(&n.meta.ID, blkOffset)
-		logutil.Infof("VisitDeletes11 blkOffset is %v, is %v", blkID1.String(), mvcc.deltaloc.String())
 		n.RLock()
+		blkID1 := objectio.NewBlockidWithObjectID(&n.meta.ID, blkOffset)
 		nodes := mvcc.deltaloc.ClonePreparedInRange(start, end)
+		logutil.Infof("VisitDeletes11 blkOffset is %v, is %v, nodes is %v, start is %v, end is %v", blkID1.String(), mvcc.deltaloc.String(), len(nodes), start.ToString(), end.ToString())
 		n.RUnlock()
 		var skipData bool
 		if len(nodes) != 0 {
