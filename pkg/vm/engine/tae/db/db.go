@@ -239,12 +239,10 @@ func (db *DB) Close() error {
 	DataB, err := db.Catalog.GetDatabaseByID(272505)
 	if err != nil {
 		err = nil
-		return
 	}
 	table2, err := DataB.GetTableEntryByID(272519)
 	if err != nil {
 		err = nil
-		return
 	}
 	logutil.Infof("Close string %v", table2.PPString(common.PPL3, 10, ""))
 	db.Closed.Store(ErrClosed)
