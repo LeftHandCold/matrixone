@@ -17,6 +17,7 @@ package updates
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -532,6 +533,7 @@ func (n *ObjectMVCCHandle) VisitDeletes(
 	tnInsertBat *containers.Batch,
 	skipInMemory bool) (delBatch *containers.Batch, deltalocStart, deltalocEnd int, err error) {
 	deltalocStart = deltalocBat.Length()
+	logutil.Infof("VisitDeletes start is %v", start.ToString())
 	for blkOffset, mvcc := range n.deletes {
 		n.RLock()
 		nodes := mvcc.deltaloc.ClonePreparedInRange(start, end)
@@ -589,6 +591,8 @@ func VisitDeltaloc(bat, tnBatch *containers.Batch, object *catalog.ObjectEntry, 
 	if !object.IsAppendable() && object.GetSchema().HasSortKey() {
 		is_sorted = true
 	}
+
+	logutil.Infof("VisitDeltaloc", "blkID", blkID.String(), "node", node.String(), "commitTS", commitTS, "createTS", node.BaseNode.DeltaLoc.String())
 	bat.GetVectorByName(pkgcatalog.BlockMeta_ID).Append(*blkID, false)
 	bat.GetVectorByName(pkgcatalog.BlockMeta_EntryState).Append(object.IsAppendable(), false)
 	bat.GetVectorByName(pkgcatalog.BlockMeta_Sorted).Append(is_sorted, false)
