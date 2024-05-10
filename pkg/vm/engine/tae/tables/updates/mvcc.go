@@ -535,6 +535,8 @@ func (n *ObjectMVCCHandle) VisitDeletes(
 	deltalocStart = deltalocBat.Length()
 	logutil.Infof("VisitDeletes start is %v", start.ToString())
 	for blkOffset, mvcc := range n.deletes {
+		blkID1 := objectio.NewBlockidWithObjectID(&n.meta.ID, blkOffset)
+		logutil.Infof("VisitDeletes11 blkOffset is %v", blkID1.String())
 		n.RLock()
 		nodes := mvcc.deltaloc.ClonePreparedInRange(start, end)
 		n.RUnlock()
@@ -592,7 +594,7 @@ func VisitDeltaloc(bat, tnBatch *containers.Batch, object *catalog.ObjectEntry, 
 		is_sorted = true
 	}
 
-	logutil.Infof("VisitDeltaloc", "blkID", blkID.String(), "node", node.String(), "commitTS", commitTS, "createTS", node.BaseNode.DeltaLoc.String())
+	logutil.Infof("VisitDeltaloc", "blkID", blkID.String(), "node", node.String(), "commitTS", commitTS.ToString(), "createTS", node.BaseNode.DeltaLoc.String())
 	bat.GetVectorByName(pkgcatalog.BlockMeta_ID).Append(*blkID, false)
 	bat.GetVectorByName(pkgcatalog.BlockMeta_EntryState).Append(object.IsAppendable(), false)
 	bat.GetVectorByName(pkgcatalog.BlockMeta_Sorted).Append(is_sorted, false)
