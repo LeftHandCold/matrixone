@@ -511,6 +511,17 @@ func IncrementalCheckpointDataFactory(start, end types.TS, collectUsage bool, sk
 	return func(c *catalog.Catalog) (data *CheckpointData, err error) {
 		collector := NewIncrementalCollector(start, end, skipLoadObjectStats)
 		defer collector.Close()
+		DataB, err := c.GetDatabaseByID(272505)
+		if err != nil {
+			err = nil
+			return
+		}
+		table2, err := DataB.GetTableEntryByID(272519)
+		if err != nil {
+			err = nil
+			return
+		}
+		logutil.Infof("IncrementalCheckpointDataFactory string %v", table2.PPString(common.PPL3, 10, ""))
 		err = c.RecurLoop(collector)
 		if moerr.IsMoErrCode(err, moerr.OkStopCurrRecur) {
 			err = nil
@@ -529,6 +540,17 @@ func IncrementalCheckpointDataFactory(start, end types.TS, collectUsage bool, sk
 		}
 
 		data = collector.OrphanData()
+		DataB, err = c.GetDatabaseByID(272505)
+		if err != nil {
+			err = nil
+			return
+		}
+		table2, err = DataB.GetTableEntryByID(272519)
+		if err != nil {
+			err = nil
+			return
+		}
+		logutil.Infof("IncrementalCheckpointDataFactory2 string %v", table2.PPString(common.PPL3, 10, ""))
 		return
 	}
 }

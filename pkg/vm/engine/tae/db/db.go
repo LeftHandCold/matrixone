@@ -214,11 +214,13 @@ func (db *DB) Replay(dataFactory *tables.DataFactory, maxTs types.TS, lsn uint64
 	db.usageMemo.EstablishFromCKPs(db.Catalog)
 	DataB, err := db.Catalog.GetDatabaseByID(272505)
 	if err != nil {
-		panic(err)
+		err = nil
+		return
 	}
 	table2, err := DataB.GetTableEntryByID(272519)
 	if err != nil {
-		panic(err)
+		err = nil
+		return
 	}
 	logutil.Infof("replay done2 %v", table2.PPString(common.PPL3, 10, ""))
 	if err != nil {
@@ -234,6 +236,17 @@ func (db *DB) Close() error {
 	if err := db.Closed.Load(); err != nil {
 		panic(err)
 	}
+	DataB, err := db.Catalog.GetDatabaseByID(272505)
+	if err != nil {
+		err = nil
+		return
+	}
+	table2, err := DataB.GetTableEntryByID(272519)
+	if err != nil {
+		err = nil
+		return
+	}
+	logutil.Infof("Close string %v", table2.PPString(common.PPL3, 10, ""))
 	db.Closed.Store(ErrClosed)
 	db.GCManager.Stop()
 	db.BGScanner.Stop()
