@@ -361,7 +361,7 @@ func (p *PartitionState) HandleLogtailEntry(
 					deltaLoc := objectio.Location(mustVectorFromProto(entry.Bat.Vecs[6]).GetBytesAt(y))
 					blockid := blockidVec[y]
 					commitTS := commitTSVec[y]
-					if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+					if blockid.String() == "018f6181-87d6-7e9a-858c-a516b64fe4c8-0-26" {
 						logutil.Infof("HandleLogtailEntry blockid2: %v, deltaLoc: %v, commitTS: %v, length: %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), mustVectorFromProto(entry.Bat.Vecs[2]).Length())
 					}
 				}
@@ -753,7 +753,7 @@ func (p *PartitionState) HandleMetadataInsert(
 			deltaLoc := objectio.Location(mustVectorFromProto(input.Vecs[6]).GetBytesAt(y))
 			blockid := blockidVec[y]
 			commitTS := commitTSVec[y]
-			if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+			if blockid.String() == "018f6181-87d6-7e9a-858c-a516b64fe4c8-0-26" {
 				logutil.Infof("HandleMetadataInsert blockid2: %v, deltaLoc: %v, commitTS: %v, length: %d, y is %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), mustVectorFromProto(input.Vecs[2]).Length(), y)
 				logutil.Infof("blockIDVector is %d", len(blockIDVector))
 			}

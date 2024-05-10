@@ -1456,7 +1456,7 @@ func (data *CNCheckpointData) ReadFromData(
 					deltaLoc := objectio.Location(bat.Vecs[6].GetRawBytesAt(y))
 					blockid := blockidVec[y]
 					commitTS := commitTSVec[y]
-					if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+					if blockid.String() == "018f6181-87d6-7e9a-858c-a516b64fe4c8-0-26" {
 						logutil.Infof("readDelta blockid: %v, deltaLoc: %v, commitTS: %v,  i: %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), i)
 						logutil.Infof("%v", string(debug.Stack()))
 					}
@@ -1474,7 +1474,7 @@ func (data *CNCheckpointData) ReadFromData(
 					deltaLoc := objectio.Location(bat.Vecs[6].GetRawBytesAt(y))
 					blockid := blockidVec[y]
 					commitTS := commitTSVec[y]
-					if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+					if blockid.String() == "018f6181-87d6-7e9a-858c-a516b64fe4c8-0-26" {
 						logutil.Infof("readDelta blockid2: %v, deltaLoc: %v, commitTS: %v, i: %d", blockid.String(), deltaLoc.String(), commitTS.ToString(), i)
 					}
 				}
@@ -1556,7 +1556,7 @@ func (data *CNCheckpointData) GetTableDataFromBats(tid uint64, bats []*batch.Bat
 				deltaLoc := objectio.Location(MustVectorFromProto(ins.Vecs[6]).GetBytesAt(y))
 				blockid := blockidVec[y]
 				commitTS := commitTSVec[y]
-				if blockid.String() == "018f5c41-8124-745c-b336-f87eef02323a-0-40" {
+				if blockid.String() == "018f6181-87d6-7e9a-858c-a516b64fe4c8-0-26" {
 					logutil.Infof("BlockInsert blockid2: %v, deltaLoc: %v, commitTS: %v", blockid.String(), deltaLoc.String(), commitTS.ToString())
 				}
 			}
