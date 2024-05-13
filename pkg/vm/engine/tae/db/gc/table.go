@@ -153,10 +153,16 @@ func (t *GCTable) deleteTombstone(name *objectio.ObjectNameShort) {
 // Merge can merge two GCTables
 func (t *GCTable) Merge(GCTable *GCTable) {
 	for name, entry := range GCTable.objects {
+		if entry == nil {
+			continue
+		}
 		t.addObject(&name, entry, entry.commitTS)
 	}
 
 	for name, entry := range GCTable.tombstones {
+		if entry == nil {
+			continue
+		}
 		t.mergeTombstone(&name, entry)
 	}
 }
