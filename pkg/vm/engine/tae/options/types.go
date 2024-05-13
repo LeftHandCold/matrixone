@@ -41,7 +41,7 @@ const (
 	DefaultCheckpointMinCount           = int64(100)
 	DefaultCheckpointIncremetalInterval = time.Minute
 	DefaultCheckpointGlobalMinCount     = 10
-	DefaultGlobalVersionInterval        = time.Hour
+	DefaultGlobalVersionInterval        = 5 * time.Minute
 	DefaultGCCheckpointInterval         = time.Minute
 	DefaultOverallFlushMemControl       = common.Const1GBytes
 

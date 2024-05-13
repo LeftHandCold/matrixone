@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand"
+	"strconv"
+	"strings"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -41,6 +43,13 @@ func BuildObjectName(segid *Segmentid, num uint16) ObjectName {
 	return unsafe.Slice((*byte)(unsafe.Pointer(&name)), ObjectNameLen)
 }
 
+func BuildObjectNameShort(segid *Segmentid, num uint16) ObjectNameShort {
+	var name [ObjectNameShortLen]byte
+	copy(name[:SegmentIdSize], types.EncodeUuid(segid))
+	copy(name[FileNumOff:FileNumOff+FileNumLen], types.EncodeUint16(&num))
+	return name
+}
+
 func BuildObjectNameWithObjectID(segid *ObjectId) ObjectName {
 	var name [ObjectNameLen]byte
 	copy(name[:ObjectIDSize], segid[:])
@@ -59,6 +68,10 @@ func (s *ObjectNameShort) Num() uint16 {
 
 func (s *ObjectNameShort) Equal(o []byte) bool {
 	return bytes.Equal(s[:], o)
+}
+
+func (s *ObjectNameShort) String() string {
+	return fmt.Sprintf("%v_%05d", s.Segmentid().ToString(), s.Num())
 }
 
 func (o ObjectName) String() string {
@@ -83,6 +96,23 @@ func (o ObjectName) Num() uint16 {
 
 func ShortName(b *Blockid) *ObjectNameShort {
 	return (*ObjectNameShort)(unsafe.Pointer(&b[0]))
+}
+
+func ShortNameWithString(name string) (*ObjectNameShort, error) {
+	info := strings.Split(name, "_")
+	if len(info) != 2 {
+		panic(fmt.Sprintf("info: %v", info))
+	}
+	uid, err := types.ParseUuid(info[0])
+	if err != nil {
+		return nil, err
+	}
+	num, err := strconv.ParseUint(info[1], 10, 32)
+	if err != nil {
+		return nil, err
+	}
+	objectName := BuildObjectNameShort(&uid, uint16(num))
+	return &objectName, nil
 }
 
 func MockObjectName() ObjectName {
