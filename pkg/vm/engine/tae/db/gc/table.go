@@ -140,29 +140,21 @@ func (t *GCTable) deleteObject(name *objectio.ObjectNameShort) {
 		t.objects[*name].blocks[id] = nil
 	}
 	delete(t.objects, *name)
-	t.objects[*name] = nil
 }
 
 func (t *GCTable) deleteTombstone(name *objectio.ObjectNameShort) {
 	t.Lock()
 	defer t.Unlock()
 	delete(t.tombstones, *name)
-	t.tombstones[*name] = nil
 }
 
 // Merge can merge two GCTables
 func (t *GCTable) Merge(GCTable *GCTable) {
 	for name, entry := range GCTable.objects {
-		if entry == nil {
-			continue
-		}
 		t.addObject(&name, entry, entry.commitTS)
 	}
 
 	for name, entry := range GCTable.tombstones {
-		if entry == nil {
-			continue
-		}
 		t.mergeTombstone(&name, entry)
 	}
 }
