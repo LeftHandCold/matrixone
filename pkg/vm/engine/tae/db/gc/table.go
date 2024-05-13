@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	catalog2 "github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
@@ -79,7 +80,7 @@ func (t *GCTable) addObject(name *objectio.ObjectNameShort, objEntry *ObjectEntr
 	}
 }
 
-func (t *GCTable) addTombstone(name *objectio.ObjectNameShort, blockid *types.Blockid, commitTS types.TS) {
+func (t *GCTable) addTombstone(name *objectio.ObjectNameShort, blockid *types.Blockid, commitTS types.TS, tid uint64) {
 	t.Lock()
 	defer t.Unlock()
 	if t.tombstones[*name] == nil {
@@ -87,6 +88,7 @@ func (t *GCTable) addTombstone(name *objectio.ObjectNameShort, blockid *types.Bl
 			createTS: commitTS,
 		}
 	}
+	t.tombstones[*name].table = tid
 	shortName := objectio.ShortName(blockid)
 	if t.objects[*shortName] == nil {
 		panic(fmt.Sprintf("object %s_%05d not found", shortName.Segmentid(), shortName.Num()))
@@ -253,6 +255,18 @@ func (t *GCTable) UpdateTable(data *logtail.CheckpointData) {
 			table:    vector.GetFixedAt[uint64](tid, i),
 		}
 		t.addObject(objectStats.ObjectName().Short(), object, commitTS)
+	}
+
+	tombstone, tombstonTxn, _, _ := data.GetBlkBatchs()
+	tombstoneBlockIDVec := vector.MustFixedCol[types.Blockid](tombstone.GetVectorByName(catalog2.BlockMeta_ID).GetDownstreamVector())
+	tombstoneCommitTSVec := vector.MustFixedCol[types.TS](tombstone.GetVectorByName(catalog2.BlockMeta_CommitTs).GetDownstreamVector())
+	tombstonTidVec := vector.MustFixedCol[uint64](tombstonTxn.GetVectorByName(catalog.SnapshotAttr_TID).GetDownstreamVector())
+	for i := 0; i < tombstone.Length(); i++ {
+		blockID := tombstoneBlockIDVec[i]
+		commitTS := tombstoneCommitTSVec[i]
+		deltaLoc := objectio.Location(tombstone.GetVectorByName(catalog2.BlockMeta_DeltaLoc).Get(i).([]byte))
+		tableID := tombstonTidVec[i]
+		t.addTombstone(deltaLoc.ShortName(), &blockID, commitTS, tableID)
 	}
 }
 
