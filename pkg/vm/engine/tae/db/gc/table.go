@@ -91,7 +91,8 @@ func (t *GCTable) addTombstone(name *objectio.ObjectNameShort, blockid *types.Bl
 	t.tombstones[*name].table = tid
 	shortName := objectio.ShortName(blockid)
 	if t.objects[*shortName] == nil {
-		panic(fmt.Sprintf("object %s_%05d not found", shortName.Segmentid(), shortName.Num()))
+		logutil.Infof("object %s_%05d not found", shortName.Segmentid().ToString(), shortName.Num())
+		return
 	}
 	block := t.objects[*shortName].blocks[blockid.Sequence()]
 	if block == nil {
