@@ -134,6 +134,12 @@ func (t *GCTable) getTombstones() map[string]*TombstoneEntry {
 	return t.tombstones
 }
 
+func (t *GCTable) GetAllObject() (map[string]*ObjectEntry, map[string]*TombstoneEntry) {
+	t.Lock()
+	defer t.Unlock()
+	return t.objects, t.tombstones
+}
+
 // SoftGC is to remove objectentry that can be deleted from GCTable
 func (t *GCTable) SoftGC(
 	table *GCTable,
