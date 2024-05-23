@@ -819,6 +819,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					panic(any(fmt.Sprintf("dataBlocks len > 2: %v - %d", dataBlocks[0].location.String(), len(dataBlocks))))
 				}
 				if objectData.data[0].tombstone != nil {
+					logutil.Infof("applyDelete: %v", dataBlocks[0].data.Vecs[0].Length())
 					applyDelete(dataBlocks[0].data, objectData.data[0].tombstone.data, dataBlocks[0].blockId.String())
 				}
 				sortData := containers.ToTNBatch(dataBlocks[0].data, common.CheckpointAllocator)
@@ -827,6 +828,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					if err != nil {
 						return nil, nil, nil, err
 					}
+					logutil.Infof("sortData: %v", sortData.Vecs[0].Length())
 				}
 				dataBlocks[0].data = containers.ToCNBatch(sortData)
 				result := batch.NewWithSize(len(dataBlocks[0].data.Vecs) - 3)
