@@ -17,6 +17,7 @@ package blockio
 import (
 	"context"
 	"fmt"
+	movec "github.com/matrixorigin/matrixone/pkg/container/vector"
 	"math"
 
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -109,6 +110,23 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		}
 		if w.isSetPK && w.pk == uint16(i) {
 			isPK = true
+		}
+		if vec.GetType().IsVarlen() && vec.Length() < 100 {
+			if !vec.IsConst() {
+				/*logutil.Infof("constructorFactory2, type %v, data is %v, %v, %d, %v %v, class %d",
+				vec.Length(), vec.GetType().String(),
+				vec.IsConstNull(), len(vec.GetArea()), vec.GetType().IsVarlen(), vec.IsConst(), vec.GetClass())*/
+				slice, area := movec.MustVarlenaRawData(vec)
+				slice = slice[0:vec.Length()]
+				if len(area) == 0 {
+					for _, v := range slice {
+						/*logutil.Infof("GetByteSliceTest %v,i %d, InspectVector %d, type %v, data is %v, %v, %d, %v %v, class %d", v[0], im,
+						vec.Length(), vec.GetType().String(),
+						vec.IsConstNull(), len(vec.GetArea()), vec.GetType().IsVarlen(), vec.IsConst(), vec.GetClass())*/
+						v.GetByteSlice(area)
+					}
+				}
+			}
 		}
 		columnData := containers.ToTNVector(vec, common.DefaultAllocator)
 		// update null count and distinct value
