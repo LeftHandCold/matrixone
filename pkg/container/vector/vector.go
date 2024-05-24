@@ -138,6 +138,10 @@ func (v *Vector) Length() int {
 	return v.length
 }
 
+func (v *Vector) GetData() []byte {
+	return v.data
+}
+
 func (v *Vector) Capacity() int {
 	return v.capacity
 }
