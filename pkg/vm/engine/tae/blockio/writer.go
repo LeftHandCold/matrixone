@@ -104,7 +104,7 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		}
 		defer func() {
 			if r := recover(); r != nil {
-				logutil.Infof("\nvec: %v, \nvec2: %v", vec.GetData(), vec2.GetData())
+				logutil.Infof("\nvec: %v, \nvec2: %v", vec.GetData()[:24*vec.Length()], vec2.GetData()[:24*vec2.Length()])
 			}
 		}()
 		if vec.GetType().IsVarlen() && vec.Length() < 100 {
