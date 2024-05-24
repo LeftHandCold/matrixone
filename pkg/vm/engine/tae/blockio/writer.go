@@ -102,10 +102,10 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		if err != nil {
 			return nil, err
 		}
-		if vec2.GetType().IsVarlen() && vec2.Length() < 100 {
-			if !vec2.IsConst() {
-				slice, area := movec.MustVarlenaRawData(vec2)
-				slice = slice[0:vec2.Length()]
+		if vec.GetType().IsVarlen() && vec.Length() < 100 {
+			if !vec.IsConst() {
+				slice, area := movec.MustVarlenaRawData(vec)
+				slice = slice[0:vec.Length()]
 				if len(area) == 0 {
 					for _, v := range slice {
 						v.GetByteSlice(area)
