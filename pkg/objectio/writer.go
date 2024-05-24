@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	movec "github.com/matrixorigin/matrixone/pkg/container/vector"
 	"go.uber.org/zap"
 	"math"
 	"sync"
@@ -627,9 +628,32 @@ func (w *objectWriterV1) addBlock(blocks *[]blockData, blockMeta BlockObject, ba
 		buf.Reset()
 		h := IOEntryHeader{IOET_ColData, IOET_ColumnData_CurrVer}
 		buf.Write(EncodeIOEntryHeader(&h))
-		err := vec.MarshalBinaryWithBuffer(&buf)
+		b, err := vec.MarshalBinary()
 		if err != nil {
 			return 0, err
+		}
+		buf.Write(b)
+
+		if vec.GetType().IsVarlen() && vec.Length() < 100 {
+			if !vec.IsConst() {
+				ve := movec.NewVec(types.Type{})
+				if err = ve.UnmarshalBinary(b); err != nil {
+					return 0, err
+				}
+				/*logutil.Infof("constructorFactory2, type %v, data is %v, %v, %d, %v %v, class %d",
+				vec.Length(), vec.GetType().String(),
+				vec.IsConstNull(), len(vec.GetArea()), vec.GetType().IsVarlen(), vec.IsConst(), vec.GetClass())*/
+				slice, area := movec.MustVarlenaRawData(ve)
+				slice = slice[0:ve.Length()]
+				if len(area) == 0 {
+					for _, v := range slice {
+						/*logutil.Infof("GetByteSliceTest %v,i %d, InspectVector %d, type %v, data is %v, %v, %d, %v %v, class %d", v[0], im,
+						vec.Length(), vec.GetType().String(),
+						vec.IsConstNull(), len(vec.GetArea()), vec.GetType().IsVarlen(), vec.IsConst(), vec.GetClass())*/
+						v.GetByteSlice(area)
+					}
+				}
+			}
 		}
 		var ext Extent
 		if data, ext, err = w.WriteWithCompress(0, buf.Bytes()); err != nil {
