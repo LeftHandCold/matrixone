@@ -103,7 +103,7 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 			return nil, err
 		}
 		if vec.GetType().IsVarlen() && vec.Length() < 100 {
-			slice, area := movec.MustVarlenaRawData(vec2)
+			slice, area := movec.MustVarlenaRawData(vec)
 			slice = slice[0:vec.Length()]
 			if len(area) == 0 {
 				for _, v := range slice {
