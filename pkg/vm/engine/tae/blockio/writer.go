@@ -89,7 +89,7 @@ func (w *BlockWriter) GetObjectStats() []objectio.ObjectStats {
 
 // WriteBatch write a batch whose schema is decribed by seqnum in NewBlockWriterNew
 func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, error) {
-	for i, vec := range batch.Vecs {
+	for _, vec := range batch.Vecs {
 		if vec.GetType().Oid == types.T_Rowid || vec.GetType().Oid == types.T_TS {
 			continue
 		}
