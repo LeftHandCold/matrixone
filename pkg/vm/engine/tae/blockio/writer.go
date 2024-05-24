@@ -107,6 +107,11 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		var ii int
 		defer func() {
 			if r := recover(); r != nil {
+				defer func() {
+					if r1 := recover(); r1 != nil {
+						panic(r1)
+					}
+				}()
 				if vec.GetType().IsVarlen() && vec.Length() < 100 {
 					slice2, area2 := movec.MustVarlenaRawData(vec)
 					slice2 = slice2[0:vec2.Length()]
