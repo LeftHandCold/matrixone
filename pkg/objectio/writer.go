@@ -650,7 +650,7 @@ func (w *objectWriterV1) addBlock(blocks *[]blockData, blockMeta BlockObject, ba
 						/*logutil.Infof("GetByteSliceTest %v,i %d, InspectVector %d, type %v, data is %v, %v, %d, %v %v, class %d", v[0], im,
 						vec.Length(), vec.GetType().String(),
 						vec.IsConstNull(), len(vec.GetArea()), vec.GetType().IsVarlen(), vec.IsConst(), vec.GetClass())*/
-						v.GetByteSlice(area)
+						//v.GetByteSlice(area)
 					}
 				}
 			}
