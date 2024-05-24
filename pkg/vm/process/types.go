@@ -47,7 +47,7 @@ import (
 )
 
 const (
-	VectorLimit = 32
+	VectorLimit = 0
 )
 
 // Analyze analyzes information for operator
