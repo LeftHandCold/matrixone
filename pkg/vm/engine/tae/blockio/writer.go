@@ -97,7 +97,7 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		if err != nil {
 			return nil, err
 		}
-		vec2 := movec.NewVec(types.Type{})
+		vec2 := movec.NewVec(vec.GetType().Oid.ToType())
 		err = vec2.UnmarshalBinary(bb)
 		if err != nil {
 			return nil, err
