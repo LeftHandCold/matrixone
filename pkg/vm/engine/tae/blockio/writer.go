@@ -112,6 +112,7 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 						panic(r1)
 					}
 				}()
+				testV := containers.ToTNVector(vec, common.DebugAllocator)
 				if vec.GetType().IsVarlen() && vec.Length() < 100 {
 					slice2, area2 := movec.MustVarlenaRawData(vec)
 					slice2 = slice2[0:vec2.Length()]
@@ -120,8 +121,8 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 							v.GetByteSlice(area2)
 						}
 					}
-					logutil.Infof(" ii %d, vec: %v, \nvec2: %v, %v  v : %v, v2: %v, v3: %v, %v, %v ",
-						ii, len(slice), len(slice1), len(slice2), slice[ii][0], slice1[ii][0], slice2[ii][0], slice2[ii].GetByteSlice(area2), slice[ii].GetByteSlice(area), len(area), len(area1), len(area2))
+					logutil.Infof(" ii %d, vec: %v, \nvec2: %v, %v  v : %v, v2: %v, v3: %v, %v, %v, %v ",
+						ii, len(slice), len(slice1), len(slice2), slice[ii][0], slice1[ii][0], slice2[ii][0], slice2[ii].GetByteSlice(area2), slice[ii].GetByteSlice(area), testV.PPString(63), len(area), len(area1), len(area2))
 				}
 				panic(r)
 			}
