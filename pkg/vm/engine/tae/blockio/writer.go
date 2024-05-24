@@ -115,11 +115,8 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 							v.GetByteSlice(area2)
 						}
 					}
-					for y, v := range slice {
-						svlen := v[0]
-						if svlen > types.VarlenaInlineSize {
-							logutil.Infof("y %d, ii %d, vec: %v, \nvec2: %v, %v  v : %v, v2: %v, v3: %v", y, ii, len(slice), len(slice1), len(slice2), slice[ii][0], slice1[ii][0], slice2[ii][0], len(area), len(area1), len(area2))
-						}
+					for y := range slice {
+						logutil.Infof("y %d, ii %d, vec: %v, \nvec2: %v, %v  v : %v, v2: %v, v3: %v, %v ", y, ii, len(slice), len(slice1), len(slice2), slice[ii][0], slice1[ii][0], slice2[ii][0], slice2[ii].GetByteSlice(area2), len(area), len(area1), len(area2))
 					}
 				}
 				panic(r)
