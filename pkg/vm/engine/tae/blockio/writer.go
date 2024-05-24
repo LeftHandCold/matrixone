@@ -89,6 +89,31 @@ func (w *BlockWriter) GetObjectStats() []objectio.ObjectStats {
 
 // WriteBatch write a batch whose schema is decribed by seqnum in NewBlockWriterNew
 func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, error) {
+	for i, vec := range batch.Vecs {
+		if vec.GetType().Oid == types.T_Rowid || vec.GetType().Oid == types.T_TS {
+			continue
+		}
+		bb, err := vec.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		vec2 := movec.NewVec(types.Type{})
+		err = vec2.UnmarshalBinary(bb)
+		if err != nil {
+			return nil, err
+		}
+		if vec2.GetType().IsVarlen() && vec2.Length() < 100 {
+			if !vec2.IsConst() {
+				slice, area := movec.MustVarlenaRawData(vec2)
+				slice = slice[0:vec2.Length()]
+				if len(area) == 0 {
+					for _, v := range slice {
+						v.GetByteSlice(area)
+					}
+				}
+			}
+		}
+	}
 	block, err := w.writer.Write(batch)
 	if err != nil {
 		return nil, err
@@ -110,23 +135,6 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		}
 		if w.isSetPK && w.pk == uint16(i) {
 			isPK = true
-		}
-		if vec.GetType().IsVarlen() && vec.Length() < 100 {
-			if !vec.IsConst() {
-				/*logutil.Infof("constructorFactory2, type %v, data is %v, %v, %d, %v %v, class %d",
-				vec.Length(), vec.GetType().String(),
-				vec.IsConstNull(), len(vec.GetArea()), vec.GetType().IsVarlen(), vec.IsConst(), vec.GetClass())*/
-				slice, area := movec.MustVarlenaRawData(vec)
-				slice = slice[0:vec.Length()]
-				if len(area) == 0 {
-					for _, v := range slice {
-						/*logutil.Infof("GetByteSliceTest %v,i %d, InspectVector %d, type %v, data is %v, %v, %d, %v %v, class %d", v[0], im,
-						vec.Length(), vec.GetType().String(),
-						vec.IsConstNull(), len(vec.GetArea()), vec.GetType().IsVarlen(), vec.IsConst(), vec.GetClass())*/
-						v.GetByteSlice(area)
-					}
-				}
-			}
 		}
 		columnData := containers.ToTNVector(vec, common.DefaultAllocator)
 		// update null count and distinct value
