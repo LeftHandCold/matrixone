@@ -117,7 +117,7 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 					}
 					for y := range slice {
 						logutil.Infof("y %d, ii %d, vec: %v, \nvec2: %v, %v  v : %v, v2: %v, v3: %v, %v, %v ",
-							y, ii, len(slice), len(slice1), len(slice2), slice[ii][0], slice1[ii][0], slice2[ii][0], slice2[ii].GetByteSlice(area2), slice[ii].GetString(area), len(area), len(area1), len(area2))
+							y, ii, len(slice), len(slice1), len(slice2), slice[ii][0], slice1[ii][0], slice2[ii][0], slice2[ii].GetByteSlice(area2), slice[ii].GetByteSlice(area), len(area), len(area1), len(area2))
 					}
 				}
 				panic(r)
