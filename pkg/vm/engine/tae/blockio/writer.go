@@ -107,20 +107,20 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 		defer func() {
 			if r := recover(); r != nil {
 				if vec.GetType().IsVarlen() && vec.Length() < 100 {
-					slice, area = movec.MustVarlenaRawData(vec)
-					slice = slice[0:vec2.Length()]
-					if len(area) == 0 {
-						for _, v := range slice {
-							v.GetByteSlice(area)
+					slice2, area2 := movec.MustVarlenaRawData(vec)
+					slice2 = slice2[0:vec2.Length()]
+					if len(area2) == 0 {
+						for _, v := range slice2 {
+							v.GetByteSlice(area2)
 						}
 					}
 				}
-				/*for y, v := range slice {
+				for y, v := range slice {
 					svlen := v[0]
 					if svlen > types.VarlenaInlineSize {
 						logutil.Infof("\nvec: %v, \nvec2: %v, v : %v, v2: %v", len(slice), len(slice1), slice[y][0], slice1[y][0], len(area), len(area1))
 					}
-				}*/
+				}
 				panic(r)
 			}
 		}()
