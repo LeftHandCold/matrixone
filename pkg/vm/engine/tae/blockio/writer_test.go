@@ -16,6 +16,9 @@ package blockio
 
 import (
 	"context"
+	movec "github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"path"
 	"testing"
 
@@ -209,4 +212,29 @@ func TestWriter_WriteBlockAfterAlter(t *testing.T) {
 	require.True(t, zm.Contains(int32(40000)))
 	require.True(t, zm.Contains(int32(79999)))
 	require.False(t, zm.Contains(int32(80000)))
+}
+
+func TestVec(t *testing.T) {
+	vec := movec.NewVec(types.T_varchar.ToType())
+	movec.AppendFixed(vec, []byte(""), true, common.DebugAllocator)
+	movec.AppendFixed(vec, []byte(""), true, common.DebugAllocator)
+	movec.AppendFixed(vec, []byte(""), true, common.DebugAllocator)
+	movec.AppendFixed(vec, []byte(""), true, common.DebugAllocator)
+	movec.AppendFixed(vec, []byte(""), true, common.DebugAllocator)
+	testV := containers.ToTNVector(vec, common.DebugAllocator)
+	logutil.Infof("testV %v", testV.PPString(10))
+	bb, err := vec.MarshalBinary()
+	assert.Nil(t, err)
+	vec2 := movec.NewVec(*vec.GetType())
+	err = vec2.UnmarshalBinary(bb)
+	assert.Nil(t, err)
+	slice2, area2 := movec.MustVarlenaRawData(vec2)
+	slice2 = slice2[0:vec2.Length()]
+	if len(area2) == 0 {
+		for _, v := range slice2 {
+			logutil.Infof("v %v", v[0])
+			v.GetByteSlice(area2)
+		}
+	}
+
 }
