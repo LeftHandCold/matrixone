@@ -704,7 +704,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			for z := 0; z < deletes.Length(); z++ {
 				if z > y {
 					if rowIdVecss[y].Equal(rowIdVecss[i]) && commitTsVecss[y].Equal(&commitTsVecss[i]) {
-						logutil.Warnf("flushAllDeletesFromDelSrc error : %v, %v, i: %d", rowIdVecss[i].String(), commitTsVecss[i].ToString(), i)
+						logutil.Warnf("flushAllDeletesFromDelSrc error : %v, %v, i: %d", rowIdVecss[i].String(), commitTsVecss[i].ToString(), z)
 					}
 					y++
 				}
