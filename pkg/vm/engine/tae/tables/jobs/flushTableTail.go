@@ -681,7 +681,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 
 	logutil.Infof("start task.delSrcMetas %d", len(task.delSrcMetas))
 	for i, obj := range task.delSrcMetas {
-		logutil.Infof("start task.delSrcMetas[%d], %v", i, obj.ID.String())
+		logutil.Infof("task.delSrcMetas[%d], %v, delSrcMetas len %d", i, obj.ID.String(), len(task.delSrcMetas))
 		objData := obj.GetObjectData()
 		var deletes *containers.Batch
 		emptyDelObjs := &bitmap.Bitmap{}
@@ -706,10 +706,10 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			}
 			task.nObjDeletesCnt += deletes.Length()
 			// deletes is closed by Extend
-			bufferBatch.Extend(deletes)
 			if bufferBatch.Length() > 1000000 {
-				logutil.Infof("flushAllDeletesFromDelSrc: %s, %d, bufferBatch.Length() %d", obj.ID.String(), bufferBatch.Length(), deletes.Length())
+				logutil.Infof("flushAllDeletesFromDelSrc: %s, delete len %d, bufferBatch.Length() %d", obj.ID.String(), deletes.Length(), bufferBatch.Length())
 			}
+			bufferBatch.Extend(deletes)
 		}
 		emtpyDelObjIdx[i] = emptyDelObjs
 	}
