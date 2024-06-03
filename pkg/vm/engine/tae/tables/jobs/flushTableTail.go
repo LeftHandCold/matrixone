@@ -694,7 +694,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 				continue
 			}
 			if deletes, err = objData.CollectDeleteInRangeByBlock(
-				ctx, uint16(j), types.TS{}, task.txn.GetStartTS(), true, common.MergeAllocator,
+				ctx, uint16(j), types.TS{}, task.txn.GetStartTS(), true, common.MergeAllocator, row,
 			); err != nil {
 				return
 			}
