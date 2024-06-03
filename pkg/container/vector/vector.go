@@ -1476,7 +1476,6 @@ func GetUnionAllFunction(typ types.Type, mp *mpool.MPool) func(v, w *Vector) err
 		}
 	case types.T_Rowid:
 		return func(v, w *Vector) error {
-			logutil.Infof("appendMultiFixed11: %v, v leng %d", w.length, v.length)
 			if w.IsConstNull() {
 				if err := appendMultiFixed(v, 0, true, w.length, mp); err != nil {
 					return err
@@ -1490,7 +1489,6 @@ func GetUnionAllFunction(typ types.Type, mp *mpool.MPool) func(v, w *Vector) err
 				}
 				return nil
 			}
-			logutil.Infof("appendMultiFixed: %v, v leng %d", w.length, v.length)
 			if err := extend(v, w.length, mp); err != nil {
 				return err
 			}

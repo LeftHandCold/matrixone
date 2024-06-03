@@ -678,7 +678,10 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 		}
 	}()
 	emtpyDelObjIdx = make([]*bitmap.Bitmap, len(task.delSrcMetas))
+
+	logutil.Infof("start task.delSrcMetas %d", len(task.delSrcMetas))
 	for i, obj := range task.delSrcMetas {
+		logutil.Infof("start task.delSrcMetas[%d], %v", i, obj.ID.String())
 		objData := obj.GetObjectData()
 		var deletes *containers.Batch
 		emptyDelObjs := &bitmap.Bitmap{}
@@ -698,16 +701,19 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 				emptyDelObjs.Add(uint64(j))
 				continue
 			}
-			logutil.Infof("flushAllDeletesFromDelSrc: %s, %d", obj.ID.String(), deletes.Length())
 			if bufferBatch == nil {
 				bufferBatch = makeDeletesTempBatch(deletes, task.rt.VectorPool.Transient)
 			}
 			task.nObjDeletesCnt += deletes.Length()
 			// deletes is closed by Extend
 			bufferBatch.Extend(deletes)
+			if bufferBatch.Length() > 1000000 {
+				logutil.Infof("flushAllDeletesFromDelSrc: %s, %d, bufferBatch.Length() %d", obj.ID.String(), bufferBatch.Length(), deletes.Length())
+			}
 		}
 		emtpyDelObjIdx[i] = emptyDelObjs
 	}
+	logutil.Infof("end task.delSrcMetas %d", len(task.delSrcMetas))
 	if bufferBatch != nil {
 		// make sure every batch in deltaloc object is sorted by rowid
 		_, err = mergesort.SortBlockColumns(bufferBatch.Vecs, 0, task.rt.VectorPool.Transient)

@@ -158,7 +158,6 @@ func MustVarlenaRawData(v *Vector) (data []types.Varlena, area []byte) {
 func extend(v *Vector, rows int, m *mpool.MPool) error {
 	if tgtCap := v.length + rows; tgtCap > v.capacity {
 		sz := v.typ.TypeSize()
-		logutil.Infof("extend vector %s, vector len %d from %d to %d", v.typ, v.length, rows, tgtCap)
 		ndata, err := m.Grow(v.data, tgtCap*sz)
 		if err != nil {
 			return err
