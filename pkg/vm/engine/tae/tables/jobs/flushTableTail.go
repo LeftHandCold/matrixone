@@ -759,7 +759,9 @@ func (task *flushTableTailTask) waitFlushAllDeletesFromDelSrc(ctx context.Contex
 func makeDeletesTempBatch(template *containers.Batch, pool *containers.VectorPool) *containers.Batch {
 	bat := containers.NewBatchWithCapacity(len(template.Attrs))
 	for i, name := range template.Attrs {
-		bat.AddVector(name, pool.GetVector(template.Vecs[i].GetType()))
+		vec := pool.GetVector(template.Vecs[i].GetType())
+		logutil.Infof("makeDeletesTempBatch: %s, %d", name, vec.Length())
+		bat.AddVector(name, vec)
 	}
 	return bat
 }
