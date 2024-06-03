@@ -930,7 +930,7 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 	if !minTS.IsEmpty() && currentEnd.Greater(&minTS) {
 		currentEnd = minTS.Prev()
 	}
-	logutil.Infof("CollectDeleteInRangeByBlock is %v-%v-%v", start.ToString(), end.ToString(), currentEnd.ToString())
+	logutil.Debugf("CollectDeleteInRangeByBlock is %v-%v-%v", start.ToString(), end.ToString(), currentEnd.ToString())
 	if deletes != nil {
 		for i := 0; i < deletes.Length(); i++ {
 			rowIDvec := vector.MustFixedCol[types.Rowid](deletes.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
