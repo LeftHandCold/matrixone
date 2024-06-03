@@ -707,7 +707,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			task.nObjDeletesCnt += deletes.Length()
 			// deletes is closed by Extend
 			if bufferBatch.Length() > 1000000 {
-				logutil.Infof("flushAllDeletesFromDelSrc: %s, delete len %d, bufferBatch.Length() %d", obj.ID.String(), deletes.Length(), bufferBatch.Length())
+				logutil.Infof("flushAllDeletesFromDelSrc: %s, id %d, delete len %d, bufferBatch.Length() %d", obj.ID.String(), j, deletes.Length(), bufferBatch.Length())
 			}
 			bufferBatch.Extend(deletes)
 		}
