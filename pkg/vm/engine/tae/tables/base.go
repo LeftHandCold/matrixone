@@ -936,7 +936,6 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 			rowIDvec := vector.MustFixedCol[types.Rowid](deletes.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
 			commitsVec := vector.MustFixedCol[types.TS](deletes.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
 			logutil.Debugf("inMemoryCollectDeleteInRange is %v-%v", rowIDvec[i].String(), commitsVec[i].ToString())
-
 		}
 	}
 	deletes, err = blk.PersistedCollectDeleteInRange(
