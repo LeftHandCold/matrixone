@@ -698,6 +698,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 				emptyDelObjs.Add(uint64(j))
 				continue
 			}
+			logutil.Infof("flushAllDeletesFromDelSrc: %s, %d", obj.ID.String(), deletes.Length())
 			if bufferBatch == nil {
 				bufferBatch = makeDeletesTempBatch(deletes, task.rt.VectorPool.Transient)
 			}
