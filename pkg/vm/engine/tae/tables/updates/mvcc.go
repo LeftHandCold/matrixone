@@ -940,7 +940,7 @@ func (n *MVCCHandle) CollectDeleteLocked(
 							minTS = node.GetEnd()
 						} else {
 							end := node.GetEnd()
-							if minTS.Greater(&end) {
+							if minTS.Less(&end) {
 								minTS = node.GetEnd()
 							}
 						}
