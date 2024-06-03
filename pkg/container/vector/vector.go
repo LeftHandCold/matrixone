@@ -17,6 +17,7 @@ package vector
 import (
 	"bytes"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"slices"
 	"sort"
 	"unsafe"
@@ -1488,6 +1489,7 @@ func GetUnionAllFunction(typ types.Type, mp *mpool.MPool) func(v, w *Vector) err
 				}
 				return nil
 			}
+			logutil.Infof("appendMultiFixed: %v", w.length)
 			if err := extend(v, w.length, mp); err != nil {
 				return err
 			}

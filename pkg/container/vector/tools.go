@@ -16,6 +16,7 @@ package vector
 
 import (
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -157,6 +158,7 @@ func MustVarlenaRawData(v *Vector) (data []types.Varlena, area []byte) {
 func extend(v *Vector, rows int, m *mpool.MPool) error {
 	if tgtCap := v.length + rows; tgtCap > v.capacity {
 		sz := v.typ.TypeSize()
+		logutil.Infof("extend vector %s from %d to %d", v.typ, rows, tgtCap)
 		ndata, err := m.Grow(v.data, tgtCap*sz)
 		if err != nil {
 			return err
