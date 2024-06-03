@@ -1026,6 +1026,7 @@ func (n *MVCCHandle) CollectDeleteInRangeAfterDeltalocation(
 			end,
 			withAborted,
 			mp,
+			0,
 		)
 	}
 	if deletes != nil && deletes.Length() != 0 {

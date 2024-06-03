@@ -152,6 +152,7 @@ type Object interface {
 		start, end types.TS,
 		withAborted bool,
 		mp *mpool.MPool,
+		row int,
 	) (bat *containers.Batch, err error)
 	// GetAppendNodeByRow(row uint32) (an txnif.AppendNode)
 	// GetDeleteNodeByRow(row uint32) (an txnif.DeleteNode)
