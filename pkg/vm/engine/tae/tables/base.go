@@ -516,7 +516,7 @@ func (blk *baseObject) foreachPersistedDeletes(
 		commitTsVecss := vector.MustFixedCol[types.TS](commitTsVec)
 
 		rstart, rend := blockio.FindIntervalForBlock(rowIdVecss, objectio.NewBlockidWithObjectID(&blk.meta.ID, blkID))
-		y := 1
+		y := 0
 		for i := rstart; i < rend; i++ {
 			if skipAbort {
 				abort := vector.GetFixedAt[bool](abortVec, i)
@@ -526,10 +526,11 @@ func (blk *baseObject) foreachPersistedDeletes(
 			}
 			commitTS := vector.GetFixedAt[types.TS](commitTsVec, i)
 			if commitTS.GreaterEq(&start) && commitTS.LessEq(&end) {
-				if y == i {
-					if rowIdVecss[0].Equal(rowIdVecss[i]) && commitTsVecss[0].Equal(&commitTsVecss[i]) {
-						logutil.Warnf("foreachPersistedDeletes error : %v, %v", rowIdVecss[0].String(), commitTsVecss[i].ToString())
+				if i > y {
+					if rowIdVecss[y].Equal(rowIdVecss[i]) && commitTsVecss[y].Equal(&commitTsVecss[i]) {
+						logutil.Warnf("foreachPersistedDeletes error : %v, %v", rowIdVecss[i].String(), commitTsVecss[i].ToString())
 					}
+					y++
 				}
 				loopOp(i, rowIdVec)
 			}
