@@ -539,7 +539,7 @@ func (blk *baseObject) foreachPersistedDeletes(
 			if commitTS.GreaterEq(&start) && commitTS.LessEq(&end) {
 				if deletes.Length() == 6778877 {
 					if y < 50 {
-						logutil.Infof("rowss is %v", rowss[i])
+						logutil.Infof("rowss is %v", rowss[i].String())
 					}
 					y++
 				}
