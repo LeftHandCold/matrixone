@@ -686,6 +686,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 		var deletes *containers.Batch
 		emptyDelObjs := &bitmap.Bitmap{}
 		emptyDelObjs.InitWithSize(int64(obj.BlockCnt()))
+		row := 0
 		for j := 0; j < obj.BlockCnt(); j++ {
 			found, _ := objData.HasDeleteIntentsPreparedInByBlock(uint16(j), types.TS{}, task.txn.GetStartTS())
 			if !found {
@@ -708,6 +709,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			// deletes is closed by Extend
 			if bufferBatch.Length() > 5000000 {
 				logutil.Infof("flushAllDeletesFromDelSrc: %s, id %d, delete len %d, bufferBatch.Length() %d", obj.ID.String(), j, deletes.Length(), bufferBatch.Length())
+				row += bufferBatch.Length()
 			}
 			bufferBatch.Extend(deletes)
 		}

@@ -902,7 +902,8 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 	blkID uint16,
 	start, end types.TS,
 	withAborted bool,
-	mp *mpool.MPool) (*containers.Batch, error) {
+	mp *mpool.MPool,
+	row int) (*containers.Batch, error) {
 	deletes, minTS, _, err := blk.inMemoryCollectDeleteInRange(
 		ctx,
 		blkID,
@@ -921,6 +922,9 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 	if !minTS.IsEmpty() && currentEnd.Greater(&minTS) {
 		currentEnd = minTS.Prev()
 	}
+	if row > 5000000 {
+		logutil.Infof("deletes is %d", deletes.Length())
+	}
 	deletes, err = blk.PersistedCollectDeleteInRange(
 		ctx,
 		deletes,
@@ -930,6 +934,9 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 		withAborted,
 		mp,
 	)
+	if row > 5000000 {
+		logutil.Infof("deletes2 is %d", deletes.Length())
+	}
 	if err != nil {
 		if deletes != nil {
 			deletes.Close()
