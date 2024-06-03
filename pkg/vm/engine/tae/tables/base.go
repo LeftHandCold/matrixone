@@ -930,6 +930,14 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 	if !minTS.IsEmpty() && currentEnd.Greater(&minTS) {
 		currentEnd = minTS.Prev()
 	}
+	if deletes != nil {
+		for i := 0; i < deletes.Length(); i++ {
+			rowIDvec := vector.MustFixedCol[types.Rowid](deletes.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
+			commitsVec := vector.MustFixedCol[types.TS](deletes.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
+			logutil.Infof("inMemoryCollectDeleteInRange is %v-%v", rowIDvec[i].String(), commitsVec[i].ToString())
+
+		}
+	}
 	deletes, err = blk.PersistedCollectDeleteInRange(
 		ctx,
 		deletes,
@@ -1008,6 +1016,16 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 						blk.rt.VectorPool.Transient.GetVector(delBat.Vecs[i].GetType()),
 					)
 				}
+			}
+			if delBat != nil {
+				for i := 0; i < delBat.Length(); i++ {
+					rowIDVec := vector.MustFixedCol[types.Rowid](delBat.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
+					commitsVec := vector.MustFixedCol[types.TS](delBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
+
+					logutil.Infof("PersistedCollectDeleteInRange is %v-%v", rowIDVec[i].String(), commitsVec[i].ToString())
+
+				}
+
 			}
 			for _, name := range bat.Attrs {
 				retVec := bat.GetVectorByName(name)
