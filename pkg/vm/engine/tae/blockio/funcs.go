@@ -16,6 +16,7 @@ package blockio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 
@@ -58,6 +59,9 @@ func LoadColumnsData(
 			return
 		}
 		bat.Vecs[i] = obj.(*vector.Vector)
+		if name.String() == "018fdd26-30b3-701b-9009-b66794bcc2d9_00000" {
+			logutil.Infof("LoadColumnsData: i %d, len %d", i, bat.Vecs[i].Length())
+		}
 		bat.SetRowCount(bat.Vecs[i].Length())
 	}
 	//TODO call CachedData.Release
