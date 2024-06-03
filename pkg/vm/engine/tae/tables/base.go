@@ -528,7 +528,7 @@ func (blk *baseObject) foreachPersistedDeletes(
 			if commitTS.GreaterEq(&start) && commitTS.LessEq(&end) {
 				if i > y {
 					if rowIdVecss[y].Equal(rowIdVecss[i]) && commitTsVecss[y].Equal(&commitTsVecss[i]) {
-						logutil.Warnf("foreachPersistedDeletes error : %v, %v", rowIdVecss[i].String(), commitTsVecss[i].ToString())
+						logutil.Warnf("foreachPersistedDeletes error : %v, %v, i: %d", rowIdVecss[i].String(), commitTsVecss[i].ToString(), i)
 					}
 					y++
 				}
