@@ -910,9 +910,9 @@ func (n *MVCCHandle) CollectDeleteLocked(
 				if in {
 					it := node.mask.Iterator()
 					if node.IsAborted() {
-						it := node.mask.Iterator()
-						for it.HasNext() {
-							row := it.Next()
+						it2 := node.mask.Iterator()
+						for it2.HasNext() {
+							row := it2.Next()
 							nulls.Add(aborts, uint64(row))
 						}
 					}
@@ -940,7 +940,7 @@ func (n *MVCCHandle) CollectDeleteLocked(
 							minTS = node.GetEnd()
 						} else {
 							end := node.GetEnd()
-							if minTS.Less(&end) {
+							if minTS.Greater(&end) {
 								minTS = node.GetEnd()
 							}
 						}
