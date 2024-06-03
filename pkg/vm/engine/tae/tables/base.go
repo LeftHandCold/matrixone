@@ -464,7 +464,7 @@ func (blk *baseObject) foreachPersistedDeletesCommittedInRange(
 		)
 		if row > 5000000 {
 			if bat != nil {
-				logutil.Infof("foreachPersistedDeletesCommittedInRange: %d", bat.Length())
+				logutil.Infof("foreachPersistedDeletesCommittedInRange: %d, location is %v", bat.Length(), location.String())
 			}
 		}
 		return
