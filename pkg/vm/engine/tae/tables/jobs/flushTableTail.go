@@ -703,8 +703,8 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			commitTsVecss := vector.MustFixedCol[types.TS](deletes.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
 			for z := 0; z < deletes.Length(); z++ {
 				if z > y {
-					if rowIdVecss[y].Equal(rowIdVecss[i]) && commitTsVecss[y].Equal(&commitTsVecss[i]) {
-						logutil.Warnf("flushAllDeletesFromDelSrc error : %v, %v, i: %d", rowIdVecss[i].String(), commitTsVecss[i].ToString(), z)
+					if rowIdVecss[y].Equal(rowIdVecss[z]) && commitTsVecss[y].Equal(&commitTsVecss[z]) {
+						logutil.Warnf("flushAllDeletesFromDelSrc error : %v, %v, i: %d", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
 					}
 					y++
 				}
