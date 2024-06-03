@@ -525,8 +525,9 @@ func (blk *baseObject) foreachPersistedDeletes(
 		abortVec := deletes.Vecs[3].GetDownstreamVector()
 		commitTsVec := deletes.Vecs[1].GetDownstreamVector()
 		rowIdVec := deletes.Vecs[0].GetDownstreamVector()
-
-		rstart, rend := blockio.FindIntervalForBlock(vector.MustFixedCol[types.Rowid](rowIdVec), objectio.NewBlockidWithObjectID(&blk.meta.ID, blkID))
+		rowss := vector.MustFixedCol[types.Rowid](rowIdVec)
+		rstart, rend := blockio.FindIntervalForBlock(rowss, objectio.NewBlockidWithObjectID(&blk.meta.ID, blkID))
+		y := 0
 		for i := rstart; i < rend; i++ {
 			if skipAbort {
 				abort := vector.GetFixedAt[bool](abortVec, i)
@@ -536,6 +537,12 @@ func (blk *baseObject) foreachPersistedDeletes(
 			}
 			commitTS := vector.GetFixedAt[types.TS](commitTsVec, i)
 			if commitTS.GreaterEq(&start) && commitTS.LessEq(&end) {
+				if deletes.Length() == 6778877 {
+					if y < 50 {
+						logutil.Infof("rowss is %v", rowss[i])
+					}
+					y++
+				}
 				loopOp(i, rowIdVec)
 			}
 		}
