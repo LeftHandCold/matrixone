@@ -17,7 +17,6 @@ package vector
 import (
 	"bytes"
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"slices"
 	"sort"
 	"unsafe"

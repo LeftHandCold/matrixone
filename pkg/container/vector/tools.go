@@ -16,7 +16,6 @@ package vector
 
 import (
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
