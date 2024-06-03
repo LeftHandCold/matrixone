@@ -681,7 +681,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 
 	logutil.Infof("start task.delSrcMetas %d", len(task.delSrcMetas))
 	for i, obj := range task.delSrcMetas {
-		logutil.Infof("task.delSrcMetas[%d], %v, delSrcMetas len %d", i, obj.ID.String(), len(task.delSrcMetas))
+		logutil.Infof("task.delSrcMetas[%d], %v, blkcount %d, delSrcMetas len %d", i, obj.ID.String(), obj.BlockCnt(), len(task.delSrcMetas))
 		objData := obj.GetObjectData()
 		var deletes *containers.Batch
 		emptyDelObjs := &bitmap.Bitmap{}
