@@ -717,6 +717,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 				bufferBatch = makeDeletesTempBatch(deletes, task.rt.VectorPool.Transient)
 			}
 			task.nObjDeletesCnt += deletes.Length()
+
 			// deletes is closed by Extend
 			bufferBatch.Extend(deletes)
 		}

@@ -432,6 +432,10 @@ func (blk *baseObject) foreachPersistedDeletesCommittedInRange(
 			return
 		}
 
+		if location.Rows() > 5000000 {
+			logutil.Infof("foreachPersistedDeletesCommittedInRange: location.Rows() > 5000000, location: %v", location.String())
+		}
+
 		// quick check for early return.
 		persistedByCN, err = blockio.IsPersistedByCN(ctx, location, blk.rt.Fs.Service)
 		if err != nil {
