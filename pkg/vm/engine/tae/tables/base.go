@@ -933,7 +933,9 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 	if !minTS.IsEmpty() && currentEnd.Greater(&minTS) {
 		currentEnd = minTS.Prev()
 	}
-	logutil.Debugf("CollectDeleteInRangeByBlock is %v-%v-%v", start.ToString(), end.ToString(), currentEnd.ToString())
+	if start.IsEmpty() {
+		logutil.Infof("CollectDeleteInRangeByBlock is %v-%v-%v", start.ToString(), end.ToString(), currentEnd.ToString())
+	}
 	if deletes != nil {
 		inMeory := deletes.CloneWindowWithPool(0, deletes.Length(), blk.rt.VectorPool.Transient)
 		defer inMeory.Close()
