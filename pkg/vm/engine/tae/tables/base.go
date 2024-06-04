@@ -1046,7 +1046,6 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 					logutil.Debugf("PersistedCollectDeleteInRange is %v-%v", rowIDVec[i].String(), commitsVec[i].ToString())
 
 				}
-				p += delBat.Length()
 
 			}
 			for _, name := range bat.Attrs {
@@ -1062,6 +1061,15 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 		},
 		mp,
 	)
+	p += selsVec.Length()
+	test := make(map[uint32]struct{})
+	selsV := vector.MustFixedCol[int32](selsVec)
+	for i := 0; i < selsVec.Length(); i++ {
+		test[uint32(selsV[i])] = struct{}{}
+	}
+	if len(test) != selsVec.Length() {
+		logutil.Warnf("selsVecselsVec dup error : %d - %d, %d ", len(test), selsVec.Length(), blkID)
+	}
 	return bat, p, nil
 }
 

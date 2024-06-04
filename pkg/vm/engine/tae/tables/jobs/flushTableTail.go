@@ -734,7 +734,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			}
 		}
 		if dup > 0 {
-			logutil.Infof("collect delete intents, allD: %d, allIn: %d, allP: %d, dup: %d", allD, allIn, allP, dup)
+			logutil.Infof("collect delete intents, allD: %d, allIn: %d, allP: %d, dup: %d, ts %v", allD, allIn, allP, dup, task.txn.GetStartTS().ToString())
 		}
 		subtask = NewFlushDeletesTask(tasks.WaitableCtx, task.rt.Fs, bufferBatch)
 		if err = task.rt.Scheduler.Schedule(subtask); err != nil {
