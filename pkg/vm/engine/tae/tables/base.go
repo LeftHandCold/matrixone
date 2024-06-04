@@ -1045,7 +1045,7 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 			commitsVec := vector.MustFixedCol[types.TS](delBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
 			y := 0
 			for i := 0; i < bat.Length(); i++ {
-				if i > y {
+				if i > y && i < bat.Length() {
 					if rowIDVec[y].Equal(rowIDVec[i]) && commitsVec[y].Equal(&commitsVec[i]) {
 						logutil.Warnf("foreachPersistedDeletesCommittedInRange error : %v, %v, i: %d, ob %d, rb %d", rowIDVec[i].String(), commitsVec[i].ToString(), i, ob, rb)
 					}
