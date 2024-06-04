@@ -678,31 +678,30 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 		}
 	}()
 	emtpyDelObjIdx = make([]*bitmap.Bitmap, len(task.delSrcMetas))
-	allIn := 0
-	allP := 0
-	allD := 0
+
 	duplicate := 0
 	objDebug := make(map[string]struct{})
+	dupObjectCount := 0
 	for i, obj := range task.delSrcMetas {
 		objData := obj.GetObjectData()
 		var deletes *containers.Batch
 		emptyDelObjs := &bitmap.Bitmap{}
 		emptyDelObjs.InitWithSize(int64(obj.BlockCnt()))
+		dupf := false
+		if _, ok := objDebug[obj.ID.String()]; !ok {
+			objDebug[obj.ID.String()] = struct{}{}
+		} else {
+			logutil.Infof("duplicate obj %s", obj.ID.String())
+			dupf = true
+			dupObjectCount++
+		}
 		for j := 0; j < obj.BlockCnt(); j++ {
-			dupf := false
-			if _, ok := objDebug[obj.ID.String()+fmt.Sprintf("-%d", j)]; !ok {
-				objDebug[obj.ID.String()+fmt.Sprintf("-%d", j)] = struct{}{}
-			} else {
-				logutil.Infof("duplicate obj %s-%d", obj.ID.String(), j)
-				dupf = true
-			}
-			var in, p int
 			found, _ := objData.HasDeleteIntentsPreparedInByBlock(uint16(j), types.TS{}, task.txn.GetStartTS())
 			if !found {
 				emptyDelObjs.Add(uint64(j))
 				continue
 			}
-			if deletes, in, p, err = objData.CollectDeleteInRangeByBlock(
+			if deletes, _, _, err = objData.CollectDeleteInRangeByBlock(
 				ctx, uint16(j), types.TS{}, task.txn.GetStartTS(), true, common.MergeAllocator,
 			); err != nil {
 				return
@@ -711,11 +710,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 				emptyDelObjs.Add(uint64(j))
 				continue
 			}
-			allIn += in
-			allP += p
-			allD += deletes.Length()
 			if dupf {
-				dupf = false
 				duplicate += deletes.Length()
 			}
 			if bufferBatch == nil {
@@ -724,6 +719,10 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			task.nObjDeletesCnt += deletes.Length()
 			// deletes is closed by Extend
 			bufferBatch.Extend(deletes)
+		}
+
+		if dupf {
+			dupf = false
 		}
 		emtpyDelObjIdx[i] = emptyDelObjs
 	}
@@ -741,13 +740,14 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			if z > y {
 				if rowIdVecss[y].Equal(rowIdVecss[z]) && commitTsVecss[y].Equal(&commitTsVecss[z]) {
 					dup++
-					logutil.Warnf("flushAllDeletesFromDelSrc error : %v, %v, i: %d", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
+					//logutil.Warnf("flushAllDeletesFromDelSrc error : %v, %v, i: %d", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
 				}
 				y++
 			}
 		}
 		if dup > 0 {
-			logutil.Infof("collect delete intents, allD: %d, allIn: %d, allP: %d, bufferBatch: %d, dup: %d, duplicate: %d, ts %v", allD, allIn, allP, bufferBatch.Length(), dup, duplicate, task.txn.GetStartTS().ToString())
+			logutil.Infof("collect delete intents, bufferBatch: %d, bufferBatch-duplicate: %d, duplicate: %d, delSrcMetas len %d, dupMetas: %d, srcMeta: %d",
+				bufferBatch.Length(), dup, duplicate, len(task.delSrcMetas), dupObjectCount, len(objDebug))
 		}
 		subtask = NewFlushDeletesTask(tasks.WaitableCtx, task.rt.Fs, bufferBatch)
 		if err = task.rt.Scheduler.Schedule(subtask); err != nil {

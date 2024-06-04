@@ -518,6 +518,7 @@ func (blk *baseObject) foreachPersistedDeletes(
 
 		rstart, rend := blockio.FindIntervalForBlock(rowIdVecss, objectio.NewBlockidWithObjectID(&blk.meta.ID, blkID))
 		y := 0
+		dup := 0
 		for i := rstart; i < rend; i++ {
 			if skipAbort {
 				abort := vector.GetFixedAt[bool](abortVec, i)
@@ -529,12 +530,17 @@ func (blk *baseObject) foreachPersistedDeletes(
 			if commitTS.GreaterEq(&start) && commitTS.LessEq(&end) {
 				if i > y {
 					if rowIdVecss[y].Equal(rowIdVecss[i]) && commitTsVecss[y].Equal(&commitTsVecss[i]) {
-						logutil.Warnf("foreachPersistedDeletes error : %v, %v, i: %d", rowIdVecss[i].String(), commitTsVecss[i].ToString(), i)
+						logutil.Debugf("foreachPersistedDeletes error : %v, %v, i: %d", rowIdVecss[i].String(), commitTsVecss[i].ToString(), i)
+						dup++
 					}
 					y++
 				}
 				loopOp(i, rowIdVec)
 			}
+		}
+
+		if dup > 0 {
+			logutil.Infof("foreachPersistedDeletes error : %d, block %v", dup, blk.meta.ID.String())
 		}
 	}
 	if postOp != nil {
@@ -934,7 +940,7 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 		currentEnd = minTS.Prev()
 	}
 	if start.IsEmpty() {
-		logutil.Infof("CollectDeleteInRangeByBlock is %v-%v-%v", start.ToString(), end.ToString(), currentEnd.ToString())
+		logutil.Debugf("CollectDeleteInRangeByBlock is %v-%v-%v", start.ToString(), end.ToString(), currentEnd.ToString())
 	}
 	if deletes != nil && deletes.Length() > 0 {
 		in = deletes.Length()
@@ -1061,14 +1067,6 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 		mp,
 	)
 	p += selsVec.Length()
-	test := make(map[uint32]struct{})
-	selsV := vector.MustFixedCol[int32](selsVec)
-	for i := 0; i < selsVec.Length(); i++ {
-		test[uint32(selsV[i])] = struct{}{}
-	}
-	if len(test) != selsVec.Length() {
-		logutil.Warnf("selsVecselsVec dup error : %d - %d, %d ", len(test), selsVec.Length(), blkID)
-	}
 	return bat, p, nil
 }
 
