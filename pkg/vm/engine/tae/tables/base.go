@@ -911,7 +911,9 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 	blkID uint16,
 	start, end types.TS,
 	withAborted bool,
-	mp *mpool.MPool) (*containers.Batch, error) {
+	mp *mpool.MPool) (*containers.Batch, int, int, error) {
+	in := 0
+	p := 0
 	deletes, minTS, _, err := blk.inMemoryCollectDeleteInRange(
 		ctx,
 		blkID,
@@ -924,7 +926,7 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 		if deletes != nil {
 			deletes.Close()
 		}
-		return nil, err
+		return nil, 0, 0, err
 	}
 	currentEnd := end
 	if !minTS.IsEmpty() && currentEnd.Greater(&minTS) {
@@ -932,6 +934,7 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 	}
 	logutil.Debugf("CollectDeleteInRangeByBlock is %v-%v-%v", start.ToString(), end.ToString(), currentEnd.ToString())
 	if deletes != nil {
+		in = deletes.Length()
 		for i := 0; i < deletes.Length(); i++ {
 			rowIDvec := vector.MustFixedCol[types.Rowid](deletes.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
 			commitsVec := vector.MustFixedCol[types.TS](deletes.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
@@ -947,13 +950,16 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 		withAborted,
 		mp,
 	)
+	if deletes != nil {
+		p = deletes.Length() - in
+	}
 	if err != nil {
 		if deletes != nil {
 			deletes.Close()
 		}
-		return nil, err
+		return nil, 0, 0, err
 	}
-	return deletes, nil
+	return deletes, in, p, nil
 }
 
 func (blk *baseObject) inMemoryCollectDeleteInRange(
