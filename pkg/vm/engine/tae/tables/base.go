@@ -527,7 +527,7 @@ func (blk *baseObject) foreachPersistedDeletes(
 			}
 			commitTS := vector.GetFixedAt[types.TS](commitTsVec, i)
 			if commitTS.GreaterEq(&start) && commitTS.LessEq(&end) {
-				if rowIdVecss[i].String() != blk.meta.ID.String() {
+				if rowIdVecss[i].Segment().ToString() != blk.meta.ID.Segment().ToString() {
 					logutil.Warnf("blk.meta.ID.String()222 %v error : %v, %v, i: %d", blk.meta.ID.String(), rowIdVecss[i].String(), commitTsVecss[i].ToString(), i)
 				}
 				if i > y {
@@ -954,7 +954,7 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 			if start.IsEmpty() && minTS.Greater(&commitTsVecss[z]) {
 				logutil.Infof("inm is %v-%v-%v", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z, end.ToString(), minTS.ToString())
 			}
-			if blk.meta.ID.String() != rowIdVecss[z].String() {
+			if blk.meta.ID.Segment().ToString() != rowIdVecss[z].Segment().ToString() {
 				logutil.Warnf("blk.meta.ID.String() %v error : %v, %v, i: %d", blk.meta.ID.String(), rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
 			}
 			if z > y {
