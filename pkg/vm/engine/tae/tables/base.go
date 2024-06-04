@@ -937,6 +937,7 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 		logutil.Infof("CollectDeleteInRangeByBlock is %v-%v-%v", start.ToString(), end.ToString(), currentEnd.ToString())
 	}
 	if deletes != nil && deletes.Length() > 0 {
+		in = deletes.Length()
 		inMeory := deletes.CloneWindow(0, deletes.Length())
 		defer inMeory.Close()
 		_, err = mergesort.SortBlockColumns(inMeory.Vecs, 0, blk.rt.VectorPool.Transient)
