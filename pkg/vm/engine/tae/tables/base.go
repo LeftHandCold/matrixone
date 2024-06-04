@@ -527,6 +527,9 @@ func (blk *baseObject) foreachPersistedDeletes(
 			}
 			commitTS := vector.GetFixedAt[types.TS](commitTsVec, i)
 			if commitTS.GreaterEq(&start) && commitTS.LessEq(&end) {
+				if rowIdVecss[i].String() != blk.meta.ID.String() {
+					logutil.Warnf("blk.meta.ID.String()222 %v error : %v, %v, i: %d", blk.meta.ID.String(), rowIDVec[i].String(), commitsVec[i].ToString(), i)
+				}
 				if i > y {
 					if rowIdVecss[y].Equal(rowIdVecss[i]) && commitTsVecss[y].Equal(&commitTsVecss[i]) {
 						logutil.Warnf("foreachPersistedDeletes error : %v, %v, i: %d", rowIdVecss[i].String(), commitTsVecss[i].ToString(), i)
@@ -1045,9 +1048,6 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 				for i := 0; i < delBat.Length(); i++ {
 					rowIDVec := vector.MustFixedCol[types.Rowid](delBat.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
 					commitsVec := vector.MustFixedCol[types.TS](delBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
-					if rowIDVec[i].String() != blk.meta.ID.String() {
-						logutil.Warnf("blk.meta.ID.String()222 %v error : %v, %v, i: %d", blk.meta.ID.String(), rowIDVec[i].String(), commitsVec[i].ToString(), i)
-					}
 					logutil.Debugf("PersistedCollectDeleteInRange is %v-%v", rowIDVec[i].String(), commitsVec[i].ToString())
 
 				}
