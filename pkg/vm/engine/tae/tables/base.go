@@ -1047,7 +1047,7 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 			for i := 0; i < bat.Length(); i++ {
 				if i > y {
 					if rowIDVec[y].Equal(rowIDVec[i]) && commitsVec[y].Equal(&commitsVec[i]) {
-						logutil.Warnf("foreachPersistedDeletes error : %v, %v, i: %d, ob %d, rb %d", rowIDVec[i].String(), commitsVec[i].ToString(), i, ob, rb)
+						logutil.Warnf("foreachPersistedDeletesCommittedInRange error : %v, %v, i: %d, ob %d, rb %d", rowIDVec[i].String(), commitsVec[i].ToString(), i, ob, rb)
 					}
 					y++
 				}
