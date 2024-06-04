@@ -681,6 +681,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 	allIn := 0
 	allP := 0
 	allD := 0
+	duplicate := 0
 	objDebug := make(map[string]struct{})
 	for i, obj := range task.delSrcMetas {
 		objData := obj.GetObjectData()
@@ -688,10 +689,12 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 		emptyDelObjs := &bitmap.Bitmap{}
 		emptyDelObjs.InitWithSize(int64(obj.BlockCnt()))
 		for j := 0; j < obj.BlockCnt(); j++ {
+			dupf := false
 			if _, ok := objDebug[obj.ID.String()+fmt.Sprintf("-%d", j)]; !ok {
 				objDebug[obj.ID.String()+fmt.Sprintf("-%d", j)] = struct{}{}
 			} else {
 				logutil.Infof("duplicate obj %s-%d", obj.ID.String(), j)
+				dupf = true
 			}
 			var in, p int
 			found, _ := objData.HasDeleteIntentsPreparedInByBlock(uint16(j), types.TS{}, task.txn.GetStartTS())
@@ -711,6 +714,10 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			allIn += in
 			allP += p
 			allD += deletes.Length()
+			if dupf {
+				dupf = false
+				duplicate += deletes.Length()
+			}
 			if bufferBatch == nil {
 				bufferBatch = makeDeletesTempBatch(deletes, task.rt.VectorPool.Transient)
 			}
@@ -740,7 +747,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			}
 		}
 		if dup > 0 {
-			logutil.Infof("collect delete intents, allD: %d, allIn: %d, allP: %d, bufferBatch: %d, dup: %d, ts %v", allD, allIn, allP, bufferBatch.Length(), dup, task.txn.GetStartTS().ToString())
+			logutil.Infof("collect delete intents, allD: %d, allIn: %d, allP: %d, bufferBatch: %d, dup: %d, duplicate: %d, ts %v", allD, allIn, allP, bufferBatch.Length(), dup, duplicate, task.txn.GetStartTS().ToString())
 		}
 		subtask = NewFlushDeletesTask(tasks.WaitableCtx, task.rt.Fs, bufferBatch)
 		if err = task.rt.Scheduler.Schedule(subtask); err != nil {
