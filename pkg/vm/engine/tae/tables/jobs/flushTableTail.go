@@ -681,12 +681,18 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 	allIn := 0
 	allP := 0
 	allD := 0
+	objDebug := make(map[string]struct{})
 	for i, obj := range task.delSrcMetas {
 		objData := obj.GetObjectData()
 		var deletes *containers.Batch
 		emptyDelObjs := &bitmap.Bitmap{}
 		emptyDelObjs.InitWithSize(int64(obj.BlockCnt()))
 		for j := 0; j < obj.BlockCnt(); j++ {
+			if _, ok := objDebug[obj.ID.String()+fmt.Sprintf("-%d", j)]; !ok {
+				objDebug[obj.ID.String()+fmt.Sprintf("-%d", j)] = struct{}{}
+			} else {
+				logutil.Infof("duplicate obj %s-%d", obj.ID.String(), j)
+			}
 			var in, p int
 			found, _ := objData.HasDeleteIntentsPreparedInByBlock(uint16(j), types.TS{}, task.txn.GetStartTS())
 			if !found {
