@@ -992,11 +992,8 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 	withAborted bool,
 	mp *mpool.MPool,
 ) (bat *containers.Batch, err error) {
-	ob := 0
-	rb := 0
 	if b != nil {
 		bat = b
-		ob = b.Length()
 	}
 	t := types.T_int32.ToType()
 	sels := blk.rt.VectorPool.Transient.GetVector(&t)
@@ -1034,7 +1031,6 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 					logutil.Debugf("PersistedCollectDeleteInRange is %v-%v", rowIDVec[i].String(), commitsVec[i].ToString())
 
 				}
-				rb = delBat.Length()
 
 			}
 			for _, name := range bat.Attrs {
