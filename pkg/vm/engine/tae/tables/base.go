@@ -959,7 +959,7 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 			}
 		}
 	}
-	deletes, err = blk.PersistedCollectDeleteInRange(
+	deletes, p, err = blk.PersistedCollectDeleteInRange(
 		ctx,
 		deletes,
 		blkID,
@@ -968,9 +968,6 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 		withAborted,
 		mp,
 	)
-	if deletes != nil {
-		p = deletes.Length() - in
-	}
 	if err != nil {
 		if deletes != nil {
 			deletes.Close()
@@ -1009,7 +1006,7 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 	start, end types.TS,
 	withAborted bool,
 	mp *mpool.MPool,
-) (bat *containers.Batch, err error) {
+) (bat *containers.Batch, p int, err error) {
 	if b != nil {
 		bat = b
 	}
@@ -1049,6 +1046,7 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 					logutil.Debugf("PersistedCollectDeleteInRange is %v-%v", rowIDVec[i].String(), commitsVec[i].ToString())
 
 				}
+				p += delBat.Length()
 
 			}
 			for _, name := range bat.Attrs {
@@ -1064,7 +1062,7 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 		},
 		mp,
 	)
-	return bat, nil
+	return bat, p, nil
 }
 
 func (blk *baseObject) OnReplayDelete(blkID uint16, node txnif.DeleteNode) (err error) {

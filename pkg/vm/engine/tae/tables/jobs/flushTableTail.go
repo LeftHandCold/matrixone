@@ -680,6 +680,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 	emtpyDelObjIdx = make([]*bitmap.Bitmap, len(task.delSrcMetas))
 	allIn := 0
 	allP := 0
+	allD := 0
 	for i, obj := range task.delSrcMetas {
 		objData := obj.GetObjectData()
 		var deletes *containers.Batch
@@ -703,6 +704,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			}
 			allIn += in
 			allP += p
+			allD += deletes.Length()
 			if bufferBatch == nil {
 				bufferBatch = makeDeletesTempBatch(deletes, task.rt.VectorPool.Transient)
 			}
@@ -732,7 +734,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			}
 		}
 		if dup > 0 {
-			logutil.Infof("collect delete intents, allIn: %d, allP: %d, dup: %d", allIn, allP, dup)
+			logutil.Infof("collect delete intents, allD: %d, allIn: %d, allP: %d, dup: %d", allD, allIn, allP, dup)
 		}
 		subtask = NewFlushDeletesTask(tasks.WaitableCtx, task.rt.Fs, bufferBatch)
 		if err = task.rt.Scheduler.Schedule(subtask); err != nil {

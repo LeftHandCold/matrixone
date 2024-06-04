@@ -1025,7 +1025,7 @@ func (n *MVCCHandle) CollectDeleteInRangeAfterDeltalocation(
 	// there's another delta location committed.
 	// It includes more deletes than former delta location.
 	if persisted.Greater(&start) {
-		deletes, err = n.meta.GetObjectData().PersistedCollectDeleteInRange(
+		deletes, _, err = n.meta.GetObjectData().PersistedCollectDeleteInRange(
 			ctx,
 			deletes,
 			n.blkID,
