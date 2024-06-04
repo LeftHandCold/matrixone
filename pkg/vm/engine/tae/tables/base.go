@@ -883,7 +883,7 @@ func (blk *baseObject) CollectDeleteInRange(
 	emtpyDelBlkIdx = &bitmap.Bitmap{}
 	emtpyDelBlkIdx.InitWithSize(int64(blk.meta.BlockCnt()))
 	for blkID := uint16(0); blkID < uint16(blk.meta.BlockCnt()); blkID++ {
-		deletes, err := blk.CollectDeleteInRangeByBlock(ctx, blkID, start, end, withAborted, mp)
+		deletes, _, _, err := blk.CollectDeleteInRangeByBlock(ctx, blkID, start, end, withAborted, mp)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1046,20 +1046,6 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 					vector.MustFixedCol[int32](sels.GetDownstreamVector()),
 					retVec.GetAllocator(),
 				)
-			}
-			rowIDVec := vector.MustFixedCol[types.Rowid](bat.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
-			commitsVec := vector.MustFixedCol[types.TS](bat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
-			y := 0
-			dup := 0
-			for i := 0; i < bat.Length(); i++ {
-				if i > y {
-					if rowIDVec[y].Equal(rowIDVec[i]) && commitsVec[y].Equal(&commitsVec[i]) {
-						dup++
-						logutil.Warnf("foreachPersistedDeletesCommittedInRange error : %v, %v, i: %d, ob %d, rb %d, dup %d", rowIDVec[i].String(), commitsVec[i].ToString(), i, ob, rb, dup)
-					}
-					y++
-				}
-
 			}
 		},
 		mp,
