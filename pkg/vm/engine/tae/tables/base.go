@@ -948,6 +948,9 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 		rowIdVecss := vector.MustFixedCol[types.Rowid](inMeory.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
 		commitTsVecss := vector.MustFixedCol[types.TS](inMeory.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
 		for z := 0; z < inMeory.Length(); z++ {
+			if start.IsEmpty() && minTS.Greater(&commitTsVecss[z]) {
+				logutil.Infof("inm is %v-%v-%v", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z, end.ToString(), minTS.ToString())
+			}
 			if z > y {
 				if rowIdVecss[y].Equal(rowIdVecss[z]) && commitTsVecss[y].Equal(&commitTsVecss[z]) {
 					logutil.Warnf("CollectDeleteInRangeByBlock error : %v, %v, i: %d", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
