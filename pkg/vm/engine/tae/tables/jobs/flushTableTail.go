@@ -698,17 +698,6 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 				emptyDelObjs.Add(uint64(j))
 				continue
 			}
-			y := 1
-			rowIdVecss := vector.MustFixedCol[types.Rowid](deletes.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
-			commitTsVecss := vector.MustFixedCol[types.TS](deletes.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
-			for z := 0; z < deletes.Length(); z++ {
-				if z > y {
-					if rowIdVecss[y].Equal(rowIdVecss[z]) && commitTsVecss[y].Equal(&commitTsVecss[z]) {
-						logutil.Warnf("flushAllDeletesFromDelSrc error : %v, %v, i: %d", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
-					}
-					y++
-				}
-			}
 			if bufferBatch == nil {
 				bufferBatch = makeDeletesTempBatch(deletes, task.rt.VectorPool.Transient)
 			}
@@ -723,6 +712,17 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 		_, err = mergesort.SortBlockColumns(bufferBatch.Vecs, 0, task.rt.VectorPool.Transient)
 		if err != nil {
 			return
+		}
+		y := 0
+		rowIdVecss := vector.MustFixedCol[types.Rowid](bufferBatch.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
+		commitTsVecss := vector.MustFixedCol[types.TS](bufferBatch.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
+		for z := 0; z < bufferBatch.Length(); z++ {
+			if z > y {
+				if rowIdVecss[y].Equal(rowIdVecss[z]) && commitTsVecss[y].Equal(&commitTsVecss[z]) {
+					logutil.Warnf("flushAllDeletesFromDelSrc error : %v, %v, i: %d", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
+				}
+				y++
+			}
 		}
 		subtask = NewFlushDeletesTask(tasks.WaitableCtx, task.rt.Fs, bufferBatch)
 		if err = task.rt.Scheduler.Schedule(subtask); err != nil {
