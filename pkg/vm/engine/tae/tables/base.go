@@ -528,7 +528,7 @@ func (blk *baseObject) foreachPersistedDeletes(
 			commitTS := vector.GetFixedAt[types.TS](commitTsVec, i)
 			if commitTS.GreaterEq(&start) && commitTS.LessEq(&end) {
 				if rowIdVecss[i].String() != blk.meta.ID.String() {
-					logutil.Warnf("blk.meta.ID.String()222 %v error : %v, %v, i: %d", blk.meta.ID.String(), rowIDVec[i].String(), commitsVec[i].ToString(), i)
+					logutil.Warnf("blk.meta.ID.String()222 %v error : %v, %v, i: %d", blk.meta.ID.String(), rowIdVecss[i].String(), commitTsVecss[i].ToString(), i)
 				}
 				if i > y {
 					if rowIdVecss[y].Equal(rowIdVecss[i]) && commitTsVecss[y].Equal(&commitTsVecss[i]) {
