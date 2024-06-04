@@ -1041,13 +1041,15 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 					retVec.GetAllocator(),
 				)
 			}
-			rowIDVec := vector.MustFixedCol[types.Rowid](delBat.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
-			commitsVec := vector.MustFixedCol[types.TS](delBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
+			rowIDVec := vector.MustFixedCol[types.Rowid](bat.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
+			commitsVec := vector.MustFixedCol[types.TS](bat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
 			y := 0
+			dup := 0
 			for i := 0; i < bat.Length(); i++ {
-				if i > y && i < bat.Length() {
+				if i > y {
 					if rowIDVec[y].Equal(rowIDVec[i]) && commitsVec[y].Equal(&commitsVec[i]) {
-						logutil.Warnf("foreachPersistedDeletesCommittedInRange error : %v, %v, i: %d, ob %d, rb %d", rowIDVec[i].String(), commitsVec[i].ToString(), i, ob, rb)
+						dup++
+						logutil.Warnf("foreachPersistedDeletesCommittedInRange error : %v, %v, i: %d, ob %d, rb %d, dup %d", rowIDVec[i].String(), commitsVec[i].ToString(), i, ob, rb, dup)
 					}
 					y++
 				}
