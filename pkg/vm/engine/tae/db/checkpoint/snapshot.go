@@ -63,7 +63,14 @@ func ListSnapshotCheckpoint(
 	if len(files) == 0 {
 		return nil, nil
 	}
-	return ListSnapshotCheckpointWithMeta(ctx, fs, files, idx, types.TS{}, false)
+	ckps, err := ListSnapshotCheckpointWithMeta(ctx, fs, files, idx, types.TS{}, false)
+	if err != nil {
+		return nil, err
+	}
+	for _, ckp := range ckps {
+		logutil.Infof("ListSnapshotCheckpoint is %v", ckp.String())
+	}
+	return ckps, err
 }
 
 func ListSnapshotMeta(
