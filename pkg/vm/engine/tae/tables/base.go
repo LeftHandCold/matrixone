@@ -951,6 +951,9 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 			if start.IsEmpty() && minTS.Greater(&commitTsVecss[z]) {
 				logutil.Infof("inm is %v-%v-%v", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z, end.ToString(), minTS.ToString())
 			}
+			if blk.meta.ID.String() != rowIdVecss[z].String() {
+				logutil.Warnf("blk.meta.ID.String() %v error : %v, %v, i: %d", blk.meta.ID.String(), rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
+			}
 			if z > y {
 				if rowIdVecss[y].Equal(rowIdVecss[z]) && commitTsVecss[y].Equal(&commitTsVecss[z]) {
 					logutil.Warnf("CollectDeleteInRangeByBlock error : %v, %v, i: %d", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
@@ -1042,7 +1045,9 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 				for i := 0; i < delBat.Length(); i++ {
 					rowIDVec := vector.MustFixedCol[types.Rowid](delBat.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
 					commitsVec := vector.MustFixedCol[types.TS](delBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
-
+					if rowIDVec[i].String() != blk.meta.ID.String() {
+						logutil.Warnf("blk.meta.ID.String()222 %v error : %v, %v, i: %d", blk.meta.ID.String(), rowIDVec[i].String(), commitsVec[i].ToString(), i)
+					}
 					logutil.Debugf("PersistedCollectDeleteInRange is %v-%v", rowIDVec[i].String(), commitsVec[i].ToString())
 
 				}
