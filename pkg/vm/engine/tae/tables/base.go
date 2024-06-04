@@ -986,8 +986,11 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 	withAborted bool,
 	mp *mpool.MPool,
 ) (bat *containers.Batch, err error) {
+	ob := 0
+	rb := 0
 	if b != nil {
 		bat = b
+		ob = b.Length()
 	}
 	t := types.T_int32.ToType()
 	sels := blk.rt.VectorPool.Transient.GetVector(&t)
@@ -1025,6 +1028,7 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 					logutil.Debugf("PersistedCollectDeleteInRange is %v-%v", rowIDVec[i].String(), commitsVec[i].ToString())
 
 				}
+				rb = delBat.Length()
 
 			}
 			for _, name := range bat.Attrs {
@@ -1036,6 +1040,18 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 					vector.MustFixedCol[int32](sels.GetDownstreamVector()),
 					retVec.GetAllocator(),
 				)
+			}
+			rowIDVec := vector.MustFixedCol[types.Rowid](delBat.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
+			commitsVec := vector.MustFixedCol[types.TS](delBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
+			y := 0
+			for i := 0; i < bat.Length(); i++ {
+				if i > y {
+					if rowIDVec[y].Equal(rowIDVec[i]) && commitsVec[y].Equal(&commitsVec[i]) {
+						logutil.Warnf("foreachPersistedDeletes error : %v, %v, i: %d, ob %d, rb %d", rowIDVec[i].String(), commitsVec[i].ToString(), i, ob, rb)
+					}
+					y++
+				}
+
 			}
 		},
 		mp,
