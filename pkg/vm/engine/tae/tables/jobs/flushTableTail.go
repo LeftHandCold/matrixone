@@ -707,9 +707,14 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			bufferBatch.Close()
 		}
 	}()
+	var HasDeleteIntentsPreparedInByBlockDuration time.Duration
+	var CollectDeleteInRangeByBlockDuration time.Duration
+	var SortBlockColumnsDuration time.Duration
+	var FlushDeletesTaskDuration time.Duration
+
 	emtpyDelObjIdx = make([]*bitmap.Bitmap, len(task.delSrcMetas))
 	var (
-		enableDeltaStat = task.schema.Name == "bmsql_stock"
+		enableDeltaStat = true
 		tbl             *catalog.TableEntry
 		tombstone       data.Tombstone
 		locMap          = make(map[string]int)
@@ -741,7 +746,9 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			dupObjectCount++
 		}
 		for j := 0; j < obj.BlockCnt(); j++ {
+			d1 := time.Now()
 			found, _ := objData.HasDeleteIntentsPreparedInByBlock(uint16(j), types.TS{}, task.txn.GetStartTS())
+			HasDeleteIntentsPreparedInByBlockDuration += time.Since(d1)
 			if !found {
 				emptyDelObjs.Add(uint64(j))
 				continue
@@ -752,11 +759,13 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 					locMap[loc.String()]++
 				}
 			}
+			d2 := time.Now()
 			if deletes, _, _, err = objData.CollectDeleteInRangeByBlock(
 				ctx, uint16(j), types.TS{}, task.txn.GetStartTS(), true, common.MergeAllocator,
 			); err != nil {
 				return
 			}
+			CollectDeleteInRangeByBlockDuration += time.Since(d2)
 			if deletes == nil || deletes.Length() == 0 {
 				emptyDelObjs.Add(uint64(j))
 				continue
@@ -780,15 +789,19 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 	}
 	if enableDeltaStat {
 		cost := time.Since(now)
-		logutil.Infof("[FlushTabletail] task %d collect tombstone for %s cost %v, location distribution(%v):%v",
-			task.ID(), task.schema.Name, cost, len(locMap), locMap)
+		if cost > 2*time.Minute {
+			logutil.Infof("[FlushTabletail] task %d collect tombstone for %s cost %v, location distribution(%v):%v",
+				task.ID(), task.schema.Name, cost, len(locMap), locMap)
+		}
 	}
 	if bufferBatch != nil {
 		// make sure every batch in deltaloc object is sorted by rowid
+		d3 := time.Now()
 		_, err = mergesort.SortBlockColumns(bufferBatch.Vecs, 0, task.rt.VectorPool.Transient)
 		if err != nil {
 			return
 		}
+		SortBlockColumnsDuration += time.Since(d3)
 		y := 0
 		rowIdVecss := vector.MustFixedCol[types.Rowid](bufferBatch.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
 		commitTsVecss := vector.MustFixedCol[types.TS](bufferBatch.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
@@ -806,10 +819,16 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 			logutil.Infof("collect delete intents, bufferBatch: %d, bufferBatch-duplicate: %d, duplicate: %d, delSrcMetas len %d, dupMetas: %d, srcMeta: %d",
 				bufferBatch.Length(), dup, duplicate, len(task.delSrcMetas), dupObjectCount, len(objDebug))
 		}
+		d4 := time.Now()
 		subtask = NewFlushDeletesTask(tasks.WaitableCtx, task.rt.Fs, bufferBatch)
 		if err = task.rt.Scheduler.Schedule(subtask); err != nil {
 			return
 		}
+		FlushDeletesTaskDuration += time.Since(d4)
+	}
+	if time.Since(now) > 5*time.Minute {
+		logutil.Infof("HasDeleteIntentsPreparedInByBlockDuration: %v, CollectDeleteInRangeByBlockDuration: %v, SortBlockColumnsDuration: %v, FlushDeletesTaskDuration: %v cost: %v",
+			HasDeleteIntentsPreparedInByBlockDuration, CollectDeleteInRangeByBlockDuration, SortBlockColumnsDuration, FlushDeletesTaskDuration, time.Since(now))
 	}
 	return
 }
