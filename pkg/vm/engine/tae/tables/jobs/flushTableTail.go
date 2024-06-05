@@ -826,7 +826,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 		}
 		FlushDeletesTaskDuration += time.Since(d4)
 	}
-	if time.Since(now) > 5*time.Minute {
+	if time.Since(now) > 1*time.Minute {
 		logutil.Infof("HasDeleteIntentsPreparedInByBlockDuration: %v, CollectDeleteInRangeByBlockDuration: %v, SortBlockColumnsDuration: %v, FlushDeletesTaskDuration: %v cost: %v",
 			HasDeleteIntentsPreparedInByBlockDuration, CollectDeleteInRangeByBlockDuration, SortBlockColumnsDuration, FlushDeletesTaskDuration, time.Since(now))
 	}
