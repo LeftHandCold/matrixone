@@ -254,7 +254,11 @@ func (task *flushTableTailTask) MarshalLogObject(enc zapcore.ObjectEncoder) (err
 func (task *flushTableTailTask) Execute(ctx context.Context) (err error) {
 	logutil.Info("[Start]", common.OperationField(task.Name()), common.OperandField(task),
 		common.OperandField(len(task.aObjHandles)+len(task.delSrcHandles)))
-
+	var flushAObjsForSnapshotDuration time.Duration
+	var flushAllDeletesFromDelSrcDuration time.Duration
+	var mergeAObjsDuration time.Duration
+	var waitFlushAObjForSnapshotDuration time.Duration
+	var waitFlushAllDeletesFromDelSrcDuration time.Duration
 	phaseDesc := ""
 	defer func() {
 		if err != nil {
@@ -270,11 +274,13 @@ func (task *flushTableTailTask) Execute(ctx context.Context) (err error) {
 	//// phase seperator
 	///////////////////
 
+	duration := time.Now()
 	phaseDesc = "1-flushing appendable blocks for snapshot"
 	snapshotSubtasks, err := task.flushAObjsForSnapshot(ctx)
 	if err != nil {
 		return
 	}
+	flushAObjsForSnapshotDuration = time.Since(duration)
 	defer func() {
 		releaseFlushObjTasks(snapshotSubtasks, err)
 	}()
@@ -282,13 +288,14 @@ func (task *flushTableTailTask) Execute(ctx context.Context) (err error) {
 	/////////////////////
 	//// phase seperator
 	///////////////////
-
+	duration = time.Now()
 	phaseDesc = "1-write all deletes from naobjs"
 	// just collect deletes, do not soft delete it, leave that to merge task.
 	deleteTask, emptyMap, err := task.flushAllDeletesFromDelSrc(ctx)
 	if err != nil {
 		return
 	}
+	flushAllDeletesFromDelSrcDuration = time.Since(duration)
 	defer func() {
 		relaseFlushDelTask(deleteTask, err)
 	}()
@@ -296,6 +303,7 @@ func (task *flushTableTailTask) Execute(ctx context.Context) (err error) {
 	//// phase seperator
 	///////////////////
 
+	duration = time.Now()
 	phaseDesc = "1-merge aobjects"
 	// merge aobjects, no need to wait, it is a sync procedure, that is why put it
 	// after flushAObjsForSnapshot and flushAllDeletesFromNObjs
@@ -307,25 +315,30 @@ func (task *flushTableTailTask) Execute(ctx context.Context) (err error) {
 		err = moerr.NewInternalErrorNoCtx("test merge bail out")
 		return
 	}
-
+	mergeAObjsDuration = time.Since(duration)
 	/////////////////////
 	//// phase seperator
 	///////////////////
+	duration = time.Now()
 	phaseDesc = "1-waiting flushing appendable blocks for snapshot"
 	// wait flush tasks
 	if err = task.waitFlushAObjForSnapshot(ctx, snapshotSubtasks); err != nil {
 		return
 	}
+	waitFlushAObjForSnapshotDuration = time.Since(duration)
 
 	/////////////////////
 	//// phase seperator
 	///////////////////
 
+	duration = time.Now()
 	phaseDesc = "1-wait flushing all deletes from naobjs"
 	if err = task.waitFlushAllDeletesFromDelSrc(ctx, deleteTask, emptyMap); err != nil {
 		return
 	}
+	waitFlushAllDeletesFromDelSrcDuration = time.Since(duration)
 
+	duration = time.Now()
 	phaseDesc = "1-wait LogTxnEntry"
 	txnEntry, err := txnentries.NewFlushTableTailEntry(
 		task.txn,
@@ -356,13 +369,20 @@ func (task *flushTableTailTask) Execute(ctx context.Context) (err error) {
 	}
 	/////////////////////
 
-	duration := time.Since(now)
+	LogTxnEntryDuration := time.Since(duration)
+	duration1 := time.Since(now)
 	logutil.Info("[End]", common.OperationField(task.Name()),
 		common.AnyField("txn-start-ts", task.txn.GetStartTS().ToString()),
 		zap.Int("aobj-deletes", task.aObjDeletesCnt),
 		zap.Int("aobj-merge-rows", task.mergeRowsCnt),
 		zap.Int("nobj-deletes", task.nObjDeletesCnt),
-		common.DurationField(duration),
+		zap.Duration("flushAObjsForSnapshotDuration", flushAObjsForSnapshotDuration),
+		zap.Duration("flushAllDeletesFromDelSrcDuration", flushAllDeletesFromDelSrcDuration),
+		zap.Duration("mergeAObjsDuration", mergeAObjsDuration),
+		zap.Duration("waitFlushAObjForSnapshotDuration", waitFlushAObjForSnapshotDuration),
+		zap.Duration("waitFlushAllDeletesFromDelSrcDuration", waitFlushAllDeletesFromDelSrcDuration),
+		zap.Duration("LogTxnEntryDuration", LogTxnEntryDuration),
+		common.DurationField(duration1),
 		common.OperandField(task))
 
 	v2.TaskFlushTableTailDurationHistogram.Observe(duration.Seconds())
@@ -700,6 +720,10 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 		tbl = task.rel.GetMeta().(*catalog.TableEntry)
 		now = time.Now()
 	}
+
+	duplicate := 0
+	objDebug := make(map[string]struct{})
+	dupObjectCount := 0
 	for i, obj := range task.delSrcMetas {
 		objData := obj.GetObjectData()
 		var deletes *containers.Batch
@@ -707,6 +731,14 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 		emptyDelObjs.InitWithSize(int64(obj.BlockCnt()))
 		if enableDeltaStat {
 			tombstone = tbl.TryGetTombstone(obj.ID)
+		}
+		dupf := false
+		if _, ok := objDebug[obj.ID.String()]; !ok {
+			objDebug[obj.ID.String()] = struct{}{}
+		} else {
+			logutil.Infof("duplicate obj %s", obj.ID.String())
+			dupf = true
+			dupObjectCount++
 		}
 		for j := 0; j < obj.BlockCnt(); j++ {
 			found, _ := objData.HasDeleteIntentsPreparedInByBlock(uint16(j), types.TS{}, task.txn.GetStartTS())
@@ -720,7 +752,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 					locMap[loc.String()]++
 				}
 			}
-			if deletes, err = objData.CollectDeleteInRangeByBlock(
+			if deletes, _, _, err = objData.CollectDeleteInRangeByBlock(
 				ctx, uint16(j), types.TS{}, task.txn.GetStartTS(), true, common.MergeAllocator,
 			); err != nil {
 				return
@@ -729,12 +761,20 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 				emptyDelObjs.Add(uint64(j))
 				continue
 			}
+			if dupf {
+				duplicate += deletes.Length()
+			}
 			if bufferBatch == nil {
 				bufferBatch = makeDeletesTempBatch(deletes, task.rt.VectorPool.Transient)
 			}
 			task.nObjDeletesCnt += deletes.Length()
+
 			// deletes is closed by Extend
 			bufferBatch.Extend(deletes)
+		}
+
+		if dupf {
+			dupf = false
 		}
 		emtpyDelObjIdx[i] = emptyDelObjs
 	}
@@ -748,6 +788,23 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 		_, err = mergesort.SortBlockColumns(bufferBatch.Vecs, 0, task.rt.VectorPool.Transient)
 		if err != nil {
 			return
+		}
+		y := 0
+		rowIdVecss := vector.MustFixedCol[types.Rowid](bufferBatch.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
+		commitTsVecss := vector.MustFixedCol[types.TS](bufferBatch.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
+		dup := 0
+		for z := 0; z < bufferBatch.Length(); z++ {
+			if z > y {
+				if rowIdVecss[y].Equal(rowIdVecss[z]) && commitTsVecss[y].Equal(&commitTsVecss[z]) {
+					dup++
+					//logutil.Warnf("flushAllDeletesFromDelSrc error : %v, %v, i: %d", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
+				}
+				y++
+			}
+		}
+		if dup > 0 {
+			logutil.Infof("collect delete intents, bufferBatch: %d, bufferBatch-duplicate: %d, duplicate: %d, delSrcMetas len %d, dupMetas: %d, srcMeta: %d",
+				bufferBatch.Length(), dup, duplicate, len(task.delSrcMetas), dupObjectCount, len(objDebug))
 		}
 		subtask = NewFlushDeletesTask(tasks.WaitableCtx, task.rt.Fs, bufferBatch)
 		if err = task.rt.Scheduler.Schedule(subtask); err != nil {

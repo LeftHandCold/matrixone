@@ -917,8 +917,15 @@ func (n *MVCCHandle) CollectDeleteLocked(
 							nulls.Add(aborts, uint64(row))
 						}
 					}
+					prv := -1
 					for it.HasNext() {
 						row := it.Next()
+						if prv >= 0 {
+							if int(row) == prv {
+								logutil.Infof("row %d is deleted more than once, id is %v, committs %v", row, id.String(), node.GetEnd().ToString())
+							}
+						}
+						prv = int(row)
 						rowIDVec.Append(*objectio.NewRowid(id, row), false)
 						commitTSVec.Append(node.GetEnd(), false)
 						// for deleteNode V1，rowid2PK is nil after restart
@@ -1019,7 +1026,7 @@ func (n *MVCCHandle) CollectDeleteInRangeAfterDeltalocation(
 	// there's another delta location committed.
 	// It includes more deletes than former delta location.
 	if persisted.Greater(&start) {
-		deletes, err = n.meta.GetObjectData().PersistedCollectDeleteInRange(
+		deletes, _, err = n.meta.GetObjectData().PersistedCollectDeleteInRange(
 			ctx,
 			deletes,
 			n.blkID,

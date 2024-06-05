@@ -17,6 +17,7 @@ package tables
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 	"sync"
 	"sync/atomic"
 
@@ -431,6 +432,10 @@ func (blk *baseObject) foreachPersistedDeletesCommittedInRange(
 			return
 		}
 
+		if location.Rows() > 5000000 {
+			logutil.Infof("foreachPersistedDeletesCommittedInRange: location.Rows() > 5000000, location: %v", location.String())
+		}
+
 		// quick check for early return.
 		persistedByCN, err = blockio.IsPersistedByCN(ctx, location, blk.rt.Fs.Service)
 		if err != nil {
@@ -512,8 +517,12 @@ func (blk *baseObject) foreachPersistedDeletes(
 		abortVec := deletes.Vecs[3].GetDownstreamVector()
 		commitTsVec := deletes.Vecs[1].GetDownstreamVector()
 		rowIdVec := deletes.Vecs[0].GetDownstreamVector()
+		rowIdVecss := vector.MustFixedCol[types.Rowid](rowIdVec)
+		commitTsVecss := vector.MustFixedCol[types.TS](commitTsVec)
 
-		rstart, rend := blockio.FindIntervalForBlock(vector.MustFixedCol[types.Rowid](rowIdVec), objectio.NewBlockidWithObjectID(&blk.meta.ID, blkID))
+		rstart, rend := blockio.FindIntervalForBlock(rowIdVecss, objectio.NewBlockidWithObjectID(&blk.meta.ID, blkID))
+		y := 0
+		dup := 0
 		for i := rstart; i < rend; i++ {
 			if skipAbort {
 				abort := vector.GetFixedAt[bool](abortVec, i)
@@ -523,8 +532,19 @@ func (blk *baseObject) foreachPersistedDeletes(
 			}
 			commitTS := vector.GetFixedAt[types.TS](commitTsVec, i)
 			if commitTS.GreaterEq(&start) && commitTS.LessEq(&end) {
+				if i > y {
+					if rowIdVecss[y].Equal(rowIdVecss[i]) && commitTsVecss[y].Equal(&commitTsVecss[i]) {
+						logutil.Debugf("foreachPersistedDeletes error : %v, %v, i: %d", rowIdVecss[i].String(), commitTsVecss[i].ToString(), i)
+						dup++
+					}
+					y++
+				}
 				loopOp(i, rowIdVec)
 			}
+		}
+
+		if dup > 0 {
+			logutil.Infof("foreachPersistedDeletes error : %d, block %v", dup, blk.meta.ID.String())
 		}
 	}
 	if postOp != nil {
@@ -874,7 +894,7 @@ func (blk *baseObject) CollectDeleteInRange(
 	emtpyDelBlkIdx = &bitmap.Bitmap{}
 	emtpyDelBlkIdx.InitWithSize(int64(blk.meta.BlockCnt()))
 	for blkID := uint16(0); blkID < uint16(blk.meta.BlockCnt()); blkID++ {
-		deletes, err := blk.CollectDeleteInRangeByBlock(ctx, blkID, start, end, withAborted, mp)
+		deletes, _, _, err := blk.CollectDeleteInRangeByBlock(ctx, blkID, start, end, withAborted, mp)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -902,7 +922,9 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 	blkID uint16,
 	start, end types.TS,
 	withAborted bool,
-	mp *mpool.MPool) (*containers.Batch, error) {
+	mp *mpool.MPool) (*containers.Batch, int, int, error) {
+	in := 0
+	p := 0
 	deletes, minTS, _, err := blk.inMemoryCollectDeleteInRange(
 		ctx,
 		blkID,
@@ -915,13 +937,39 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 		if deletes != nil {
 			deletes.Close()
 		}
-		return nil, err
+		return nil, 0, 0, err
 	}
 	currentEnd := end
 	if !minTS.IsEmpty() && currentEnd.Greater(&minTS) {
 		currentEnd = minTS.Prev()
 	}
-	deletes, err = blk.PersistedCollectDeleteInRange(
+	if start.IsEmpty() {
+		logutil.Debugf("CollectDeleteInRangeByBlock is %v-%v-%v", start.ToString(), end.ToString(), currentEnd.ToString())
+	}
+	if deletes != nil && deletes.Length() > 0 {
+		in = deletes.Length()
+		inMeory := deletes.CloneWindow(0, deletes.Length())
+		defer inMeory.Close()
+		_, err = mergesort.SortBlockColumns(inMeory.Vecs, 0, blk.rt.VectorPool.Transient)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		y := 0
+		rowIdVecss := vector.MustFixedCol[types.Rowid](inMeory.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
+		commitTsVecss := vector.MustFixedCol[types.TS](inMeory.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
+		for z := 0; z < inMeory.Length(); z++ {
+			if start.IsEmpty() && minTS.Greater(&commitTsVecss[z]) {
+				logutil.Infof("inm is %v-%v-%v", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z, end.ToString(), minTS.ToString())
+			}
+			if z > y {
+				if rowIdVecss[y].Equal(rowIdVecss[z]) && commitTsVecss[y].Equal(&commitTsVecss[z]) {
+					logutil.Warnf("CollectDeleteInRangeByBlock error : %v, %v, i: %d", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
+				}
+				y++
+			}
+		}
+	}
+	deletes, p, err = blk.PersistedCollectDeleteInRange(
 		ctx,
 		deletes,
 		blkID,
@@ -934,9 +982,9 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 		if deletes != nil {
 			deletes.Close()
 		}
-		return nil, err
+		return nil, 0, 0, err
 	}
-	return deletes, nil
+	return deletes, in, p, nil
 }
 
 func (blk *baseObject) inMemoryCollectDeleteInRange(
@@ -968,7 +1016,7 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 	start, end types.TS,
 	withAborted bool,
 	mp *mpool.MPool,
-) (bat *containers.Batch, err error) {
+) (bat *containers.Batch, p int, err error) {
 	if b != nil {
 		bat = b
 	}
@@ -1000,6 +1048,15 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 					)
 				}
 			}
+			if delBat != nil {
+				for i := 0; i < delBat.Length(); i++ {
+					rowIDVec := vector.MustFixedCol[types.Rowid](delBat.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
+					commitsVec := vector.MustFixedCol[types.TS](delBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
+					logutil.Debugf("PersistedCollectDeleteInRange is %v-%v", rowIDVec[i].String(), commitsVec[i].ToString())
+
+				}
+
+			}
 			for _, name := range bat.Attrs {
 				retVec := bat.GetVectorByName(name)
 				srcVec := delBat.GetVectorByName(name)
@@ -1013,7 +1070,8 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 		},
 		mp,
 	)
-	return bat, nil
+	p += selsVec.Length()
+	return bat, p, nil
 }
 
 func (blk *baseObject) OnReplayDelete(blkID uint16, node txnif.DeleteNode) (err error) {
