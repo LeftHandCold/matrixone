@@ -433,10 +433,6 @@ func (blk *baseObject) foreachPersistedDeletesCommittedInRange(
 			return
 		}
 
-		if location.Rows() > 5000000 {
-			logutil.Infof("foreachPersistedDeletesCommittedInRange: location.Rows() > 5000000, location: %v", location.String())
-		}
-
 		// quick check for early return.
 		persistedByCN, err = blockio.IsPersistedByCN(ctx, location, blk.rt.Fs.Service)
 		if err != nil {
@@ -942,6 +938,9 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 	mp *mpool.MPool) (*containers.Batch, int, int, error) {
 	in := 0
 	p := 0
+	var inMemoryCollectDeleteInRangeDuration time.Duration
+	var persistedCollectDeleteInRangeDuration time.Duration
+	now := time.Now()
 	deletes, minTS, _, err := blk.inMemoryCollectDeleteInRange(
 		ctx,
 		blkID,
@@ -950,6 +949,8 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 		withAborted,
 		mp,
 	)
+	inMemoryCollectDeleteInRangeDuration = time.Since(now)
+	now1 := time.Now()
 	if err != nil {
 		if deletes != nil {
 			deletes.Close()
@@ -965,26 +966,6 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 	}
 	if deletes != nil && deletes.Length() > 0 {
 		in = deletes.Length()
-		inMeory := deletes.CloneWindow(0, deletes.Length())
-		defer inMeory.Close()
-		_, err = mergesort.SortBlockColumns(inMeory.Vecs, 0, blk.rt.VectorPool.Transient)
-		if err != nil {
-			return nil, 0, 0, err
-		}
-		y := 0
-		rowIdVecss := vector.MustFixedCol[types.Rowid](inMeory.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
-		commitTsVecss := vector.MustFixedCol[types.TS](inMeory.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
-		for z := 0; z < inMeory.Length(); z++ {
-			if start.IsEmpty() && minTS.Greater(&commitTsVecss[z]) {
-				logutil.Infof("inm is %v-%v-%v", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z, end.ToString(), minTS.ToString())
-			}
-			if z > y {
-				if rowIdVecss[y].Equal(rowIdVecss[z]) && commitTsVecss[y].Equal(&commitTsVecss[z]) {
-					logutil.Warnf("CollectDeleteInRangeByBlock error : %v, %v, i: %d", rowIdVecss[z].String(), commitTsVecss[z].ToString(), z)
-				}
-				y++
-			}
-		}
 	}
 	deletes, p, err = blk.PersistedCollectDeleteInRange(
 		ctx,
@@ -1000,6 +981,11 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 			deletes.Close()
 		}
 		return nil, 0, 0, err
+	}
+	persistedCollectDeleteInRangeDuration = time.Since(now1)
+	if time.Since(now) > time.Second*5 {
+		logutil.Warnf("CollectDeleteInRangeByBlock is %v-%v-%v, id %v, inMemoryCollectDeleteInRangeDuration %v, persistedCollectDeleteInRangeDuration %v",
+			start.ToString(), end.ToString(), currentEnd.ToString(), inMemoryCollectDeleteInRangeDuration, persistedCollectDeleteInRangeDuration, blk.meta.ID.String())
 	}
 	return deletes, in, p, nil
 }
