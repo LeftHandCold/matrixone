@@ -17,7 +17,6 @@ package tables
 import (
 	"context"
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 	"sync"
 	"sync/atomic"
 	"time"
