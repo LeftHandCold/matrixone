@@ -385,7 +385,7 @@ func (task *flushTableTailTask) Execute(ctx context.Context) (err error) {
 		common.DurationField(duration1),
 		common.OperandField(task))
 
-	v2.TaskFlushTableTailDurationHistogram.Observe(duration.Seconds())
+	v2.TaskFlushTableTailDurationHistogram.Observe(duration1.Seconds())
 
 	sleep, name, exist := fault.TriggerFault("slow_flush")
 	if exist && name == task.schema.Name {
