@@ -20,6 +20,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
@@ -495,10 +496,17 @@ func (blk *baseObject) foreachPersistedDeletes(
 	mp *mpool.MPool,
 ) (err error) {
 	// commitTS of deltalocation is the commitTS of deletes persisted by CN batches
+	var loadFnDuration time.Duration
+	var FindIntervalForBlockDuration time.Duration
+	var postOpDuration time.Duration
+	var loopOpDuration time.Duration
+	now := time.Now()
 	deletes, persistedByCN, deltalocCommitTS, visible, release, err := loadFn()
+	loadFnDuration = time.Since(now)
 	if deletes == nil || err != nil {
 		return
 	}
+	d1 := time.Now()
 	defer release()
 	defer deletes.Close()
 	if persistedByCN {
@@ -521,6 +529,8 @@ func (blk *baseObject) foreachPersistedDeletes(
 		commitTsVecss := vector.MustFixedCol[types.TS](commitTsVec)
 
 		rstart, rend := blockio.FindIntervalForBlock(rowIdVecss, objectio.NewBlockidWithObjectID(&blk.meta.ID, blkID))
+		FindIntervalForBlockDuration = time.Since(d1)
+		d2 := time.Now()
 		y := 0
 		dup := 0
 		for i := rstart; i < rend; i++ {
@@ -542,13 +552,20 @@ func (blk *baseObject) foreachPersistedDeletes(
 				loopOp(i, rowIdVec)
 			}
 		}
+		loopOpDuration = time.Since(d2)
 
 		if dup > 0 {
 			logutil.Infof("foreachPersistedDeletes error : %d, block %v", dup, blk.meta.ID.String())
 		}
 	}
 	if postOp != nil {
+		d3 := time.Now()
 		postOp(deletes)
+		postOpDuration = time.Since(d3)
+	}
+	if time.Since(now) > 10*time.Second {
+		logutil.Infof("foreachPersistedDeletes cost : %v, loadFnDuration: %v, FindIntervalForBlockDuration: %v, loopOpDuration: %v, postOpDuration: %v",
+			time.Since(now), loadFnDuration, FindIntervalForBlockDuration, loopOpDuration, postOpDuration)
 	}
 	return
 }
