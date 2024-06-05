@@ -559,9 +559,9 @@ func (blk *baseObject) foreachPersistedDeletes(
 		postOp(deletes)
 		postOpDuration = time.Since(d3)
 	}
-	if time.Since(now) > 10*time.Second {
-		logutil.Infof("foreachPersistedDeletes cost : %v, loadFnDuration: %v, FindIntervalForBlockDuration: %v, loopOpDuration: %v, postOpDuration: %v",
-			time.Since(now), loadFnDuration, FindIntervalForBlockDuration, loopOpDuration, postOpDuration)
+	if time.Since(now) > 3*time.Second {
+		logutil.Infof("foreachPersistedDeletes cost : %v, loadFnDuration: %v, FindIntervalForBlockDuration: %v, loopOpDuration: %v, postOpDuration: %v, id : %v",
+			time.Since(now), loadFnDuration, FindIntervalForBlockDuration, loopOpDuration, postOpDuration, blk.meta.ID.String())
 	}
 	return
 }
