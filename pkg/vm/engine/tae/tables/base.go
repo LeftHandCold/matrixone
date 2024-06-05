@@ -1065,15 +1065,6 @@ func (blk *baseObject) PersistedCollectDeleteInRange(
 					)
 				}
 			}
-			if delBat != nil {
-				for i := 0; i < delBat.Length(); i++ {
-					rowIDVec := vector.MustFixedCol[types.Rowid](delBat.GetVectorByName(catalog.PhyAddrColumnName).GetDownstreamVector())
-					commitsVec := vector.MustFixedCol[types.TS](delBat.GetVectorByName(catalog.AttrCommitTs).GetDownstreamVector())
-					logutil.Debugf("PersistedCollectDeleteInRange is %v-%v", rowIDVec[i].String(), commitsVec[i].ToString())
-
-				}
-
-			}
 			for _, name := range bat.Attrs {
 				retVec := bat.GetVectorByName(name)
 				srcVec := delBat.GetVectorByName(name)
