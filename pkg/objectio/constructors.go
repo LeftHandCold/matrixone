@@ -43,7 +43,7 @@ func constructorFactory(size int64, algo uint8) CacheConstructor {
 			copy(cacheData.Bytes(), data)
 			return cacheData, nil
 		}
-
+		start := time.Now()
 		now := time.Now()
 		var allocDuration time.Duration
 		var decompressDuration time.Duration
@@ -60,8 +60,9 @@ func constructorFactory(size int64, algo uint8) CacheConstructor {
 		now = time.Now()
 		decompressed = decompressed.Slice(len(bs))
 		SliceDuration = time.Since(now)
-		if len(data) > 10*1024*1024 {
-			logutil.Infof("decompress data size: %d, allocDuration: %v, decompressDuration: %v, SliceDuration: %v", len(data), allocDuration, decompressDuration, SliceDuration)
+		end := time.Since(start)
+		if end > 500*time.Millisecond {
+			logutil.Infof("decompress data size: %d, allocDuration: %v, decompressDuration: %v, SliceDuration: %v, cost: %v", len(data), allocDuration, decompressDuration, SliceDuration, end)
 		}
 		return decompressed, nil
 	}
