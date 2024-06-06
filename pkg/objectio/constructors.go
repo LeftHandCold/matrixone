@@ -15,7 +15,9 @@
 package objectio
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"io"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/compress"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -42,13 +44,25 @@ func constructorFactory(size int64, algo uint8) CacheConstructor {
 			return cacheData, nil
 		}
 
+		now := time.Now()
+		var allocDuration time.Duration
+		var decompressDuration time.Duration
+		var SliceDuration time.Duration
 		// lz4 compress
 		decompressed := allocator.Alloc(int(size))
+		allocDuration = time.Since(now)
+		now = time.Now()
 		bs, err := compress.Decompress(data, decompressed.Bytes(), compress.Lz4)
 		if err != nil {
 			return
 		}
+		decompressDuration = time.Since(now)
+		now = time.Now()
 		decompressed = decompressed.Slice(len(bs))
+		SliceDuration = time.Since(now)
+		if len(data) > 5*1024*1024 {
+			logutil.Infof("decompress data size: %d, allocDuration: %v, decompressDuration: %v, SliceDuration: %v", len(data), allocDuration, decompressDuration, SliceDuration)
+		}
 		return decompressed, nil
 	}
 }
