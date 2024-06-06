@@ -709,9 +709,10 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 	}()
 	var HasDeleteIntentsPreparedInByBlockDuration time.Duration
 	var CollectDeleteInRangeByBlockDuration time.Duration
+	var CollectDeleteInRangeByBlockcount int
 	var SortBlockColumnsDuration time.Duration
 	var FlushDeletesTaskDuration time.Duration
-
+	CollectDeleteInRangeByBlockcount = 0
 	emtpyDelObjIdx = make([]*bitmap.Bitmap, len(task.delSrcMetas))
 	var (
 		enableDeltaStat = true
@@ -766,6 +767,7 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 				return
 			}
 			CollectDeleteInRangeByBlockDuration += time.Since(d2)
+			CollectDeleteInRangeByBlockcount++
 			if deletes == nil || deletes.Length() == 0 {
 				emptyDelObjs.Add(uint64(j))
 				continue
@@ -827,8 +829,8 @@ func (task *flushTableTailTask) flushAllDeletesFromDelSrc(ctx context.Context) (
 		FlushDeletesTaskDuration += time.Since(d4)
 	}
 	if time.Since(now) > 1*time.Minute {
-		logutil.Infof("HasDeleteIntentsPreparedInByBlockDuration: %v, CollectDeleteInRangeByBlockDuration: %v, SortBlockColumnsDuration: %v, FlushDeletesTaskDuration: %v cost: %v",
-			HasDeleteIntentsPreparedInByBlockDuration, CollectDeleteInRangeByBlockDuration, SortBlockColumnsDuration, FlushDeletesTaskDuration, time.Since(now))
+		logutil.Infof("HasDeleteIntentsPreparedInByBlockDuration: %v, CollectDeleteInRangeByBlockDuration: %v, CollectDeleteInRangeByBlockcount: %d, SortBlockColumnsDuration: %v, FlushDeletesTaskDuration: %v cost: %v",
+			HasDeleteIntentsPreparedInByBlockDuration, CollectDeleteInRangeByBlockDuration, CollectDeleteInRangeByBlockcount, SortBlockColumnsDuration, FlushDeletesTaskDuration, time.Since(now))
 	}
 	return
 }

@@ -982,7 +982,8 @@ func (blk *baseObject) CollectDeleteInRangeByBlock(
 		return nil, 0, 0, err
 	}
 	persistedCollectDeleteInRangeDuration = time.Since(now1)
-	if time.Since(now) > time.Second*5 {
+	end1 := time.Since(now)
+	if end1 > time.Second*5 {
 		logutil.Warnf("CollectDeleteInRangeByBlock is %v-%v-%v, id %v, inMemoryCollectDeleteInRangeDuration %v, persistedCollectDeleteInRangeDuration %v",
 			start.ToString(), end.ToString(), currentEnd.ToString(), inMemoryCollectDeleteInRangeDuration, persistedCollectDeleteInRangeDuration, blk.meta.ID.String())
 	}
