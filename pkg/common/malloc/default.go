@@ -38,9 +38,11 @@ func NewDefault(config *Config) (allocator Allocator) {
 		if config.EnableMetrics {
 			allocator = NewMetricsAllocator(allocator, &metrics)
 		}
+		println("Using C allocatorrrrr")
 		return allocator
 
 	case "old":
+		println("Using old allocatorallocatorallocator")
 		return NewShardedAllocator(
 			runtime.GOMAXPROCS(0),
 			func() Allocator {
