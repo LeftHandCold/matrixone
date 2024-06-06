@@ -147,7 +147,7 @@ func LoadTombstoneColumns(
 	location objectio.Location,
 	m *mpool.MPool,
 ) (bat *batch.Batch, release func(), err error) {
-	return LoadColumnsData(ctx, objectio.SchemaTombstone, cols, typs, fs, location, m, fileservice.Policy(0))
+	return LoadColumnsData(ctx, objectio.SchemaTombstone, cols, typs, fs, location, m, fileservice.SkipAllCache)
 }
 
 // LoadColumns2 load columns data from file service for TN
