@@ -56,6 +56,7 @@ func NewDefault(config *Config) (allocator Allocator) {
 		)
 
 	default:
+		println("Using NewShardedAllocator allocatorallocatorallocator")
 		return NewShardedAllocator(
 			runtime.GOMAXPROCS(0),
 			func() Allocator {
