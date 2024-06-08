@@ -157,16 +157,13 @@ func (p *PartitionReader) Read(
 		rowIDs := vector.MustFixedCol[types.Rowid](p.inserts[0].Vecs[0])
 		p.inserts = p.inserts[1:]
 
-		for i, vec := range result.Vecs {
-			uf := vector.GetUnionOneFunction(*vec.GetType(), mp)
+		for i := range result.Vecs {
 
 			for j, k := int64(0), int64(bat.RowCount()); j < k; j++ {
 				if _, ok := p.deletes[rowIDs[j]]; ok {
 					continue
 				}
-				if err = uf(vec, bat.Vecs[i], j); err != nil {
-					return
-				}
+				result.Vecs[i] = bat.Vecs[i]
 			}
 		}
 
