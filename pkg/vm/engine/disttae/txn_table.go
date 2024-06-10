@@ -17,6 +17,8 @@ package disttae
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -65,6 +67,12 @@ const (
 )
 
 var _ engine.Relation = new(txnTable)
+
+var PrPool *containers.VectorPool
+
+func init() {
+	PrPool = dbutils.MakeDefaultSmallPool(("prPool-vector-pool"))
+}
 
 func (tbl *txnTable) getEngine() engine.Engine {
 	return tbl.getTxn().engine

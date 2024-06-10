@@ -136,7 +136,8 @@ func (p *PartitionReader) Read(
 			if pool == nil {
 				result.Clean(mp)
 			} else {
-				pool.PutBatch(result)
+				result.Clean(mp)
+				//pool.PutBatch(result)
 			}
 		}
 	}()
@@ -146,7 +147,8 @@ func (p *PartitionReader) Read(
 		if pool == nil {
 			result.Vecs[i] = vector.NewVec(p.typsMap[name])
 		} else {
-			result.Vecs[i] = pool.GetVector(p.typsMap[name])
+			result.Vecs[i] = vector.NewVec(p.typsMap[name])
+			//result.Vecs[i] = pool.GetVector(p.typsMap[name])
 		}
 	}
 
@@ -157,13 +159,16 @@ func (p *PartitionReader) Read(
 		rowIDs := vector.MustFixedCol[types.Rowid](p.inserts[0].Vecs[0])
 		p.inserts = p.inserts[1:]
 
-		for i := range result.Vecs {
+		for i, vec := range result.Vecs {
+			uf := vector.GetUnionOneFunction(*vec.GetType(), mp)
 
 			for j, k := int64(0), int64(bat.RowCount()); j < k; j++ {
 				if _, ok := p.deletes[rowIDs[j]]; ok {
 					continue
 				}
-				result.Vecs[i] = bat.Vecs[i]
+				if err = uf(vec, bat.Vecs[i], j); err != nil {
+					return
+				}
 			}
 		}
 
@@ -238,7 +243,8 @@ func (p *PartitionReader) Read(
 			if pool == nil {
 				result.Clean(mp)
 			} else {
-				pool.PutBatch(result)
+				result.Clean(mp)
+				//pool.PutBatch(result)
 			}
 			return nil, nil
 		}
