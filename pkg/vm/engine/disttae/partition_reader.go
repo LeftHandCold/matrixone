@@ -136,8 +136,7 @@ func (p *PartitionReader) Read(
 			if pool == nil {
 				result.Clean(mp)
 			} else {
-				result.Clean(mp)
-				//pool.PutBatch(result)
+				pool.PutBatch(result)
 			}
 		}
 	}()
@@ -147,8 +146,7 @@ func (p *PartitionReader) Read(
 		if pool == nil {
 			result.Vecs[i] = vector.NewVec(p.typsMap[name])
 		} else {
-			result.Vecs[i] = vector.NewVec(p.typsMap[name])
-			//result.Vecs[i] = pool.GetVector(p.typsMap[name])
+			result.Vecs[i] = pool.GetVector(p.typsMap[name])
 		}
 	}
 
@@ -243,8 +241,7 @@ func (p *PartitionReader) Read(
 			if pool == nil {
 				result.Clean(mp)
 			} else {
-				result.Clean(mp)
-				//pool.PutBatch(result)
+				pool.PutBatch(result)
 			}
 			return nil, nil
 		}

@@ -334,11 +334,9 @@ func (proc *Process) PutBatch(bat *batch.Batch) {
 			// very large vectors should not put back into pool, which cause these memory can not release.
 			// XXX I left the old logic here. But it's unreasonable to use the number of rows to determine if a vector's size.
 			// use Allocated() may suitable.
-			if vec.IsConst() || vec.NeedDup() || vec.Allocated() > 8192*64 {
-				vec.Free(proc.mp)
-				bat.ReplaceVector(vec, nil)
-				continue
-			}
+			vec.Free(proc.mp)
+			bat.ReplaceVector(vec, nil)
+			continue
 
 			if !proc.vp.putVector(vec) {
 				vec.Free(proc.mp)
@@ -361,16 +359,10 @@ func (proc *Process) FreeVectors() {
 }
 
 func (proc *Process) PutVector(vec *vector.Vector) {
-	if !proc.vp.putVector(vec) {
-		vec.Free(proc.Mp())
-	}
+	vec.Free(proc.Mp())
 }
 
 func (proc *Process) GetVector(typ types.Type) *vector.Vector {
-	if vec := proc.vp.getVector(typ); vec != nil {
-		vec.Reset(typ)
-		return vec
-	}
 	return vector.NewVec(typ)
 }
 
