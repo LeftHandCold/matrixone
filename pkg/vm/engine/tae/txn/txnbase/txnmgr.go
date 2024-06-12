@@ -17,6 +17,7 @@ package txnbase
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -171,6 +172,66 @@ func (mgr *TxnManager) StartTxn(info []byte) (txn txnif.AsyncTxn, err error) {
 	txnId := mgr.IdAlloc.Alloc()
 	startTs := *mgr.MaxCommittedTS.Load()
 	store := mgr.TxnStoreFactory()
+	txn = mgr.TxnFactory(mgr, store, txnId, startTs, types.TS{})
+	store.BindTxn(txn)
+	mgr.IDMap.Store(util.UnsafeBytesToString(txnId), txn)
+	return
+}
+func (mgr *TxnManager) StartTxn2(info []byte) (txn txnif.AsyncTxn, err error) {
+	if exp := mgr.Exception.Load(); exp != nil {
+		err = exp.(error)
+		logutil.Warnf("StartTxn: %v", err)
+		return
+	}
+	txnId := mgr.IdAlloc.Alloc()
+	startTs := *mgr.MaxCommittedTS.Load()
+	store := mgr.TxnStoreFactory()
+	if rand.Intn(10) == 0 {
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+
+	}
+	if rand.Intn(20) == 0 {
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+	}
+	if rand.Intn(50) == 0 {
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+
+	}
 	txn = mgr.TxnFactory(mgr, store, txnId, startTs, types.TS{})
 	store.BindTxn(txn)
 	mgr.IDMap.Store(util.UnsafeBytesToString(txnId), txn)
