@@ -174,9 +174,17 @@ func (mgr *TxnManager) StartTxn(info []byte) (txn txnif.AsyncTxn, err error) {
 	if rand.Intn(1000) == 0 {
 		startTs = startTs.Next()
 		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+		startTs = startTs.Next()
 	}
 
 	if rand.Intn(500) == 0 {
+		startTs = startTs.Next()
+		startTs = startTs.Next()
 		startTs = startTs.Next()
 		startTs = startTs.Next()
 	}
