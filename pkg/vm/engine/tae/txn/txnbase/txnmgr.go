@@ -17,6 +17,7 @@ package txnbase
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -170,7 +171,15 @@ func (mgr *TxnManager) StartTxn(info []byte) (txn txnif.AsyncTxn, err error) {
 	}
 	txnId := mgr.IdAlloc.Alloc()
 	startTs := *mgr.MaxCommittedTS.Load()
+	if rand.Intn(1000) == 0 {
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+	}
 
+	if rand.Intn(500) == 0 {
+		startTs = startTs.Next()
+		startTs = startTs.Next()
+	}
 	store := mgr.TxnStoreFactory()
 	txn = mgr.TxnFactory(mgr, store, txnId, startTs, types.TS{})
 	store.BindTxn(txn)
