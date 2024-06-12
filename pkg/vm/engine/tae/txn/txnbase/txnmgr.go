@@ -17,7 +17,6 @@ package txnbase
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"runtime"
 	"sync"
 	"sync/atomic"
