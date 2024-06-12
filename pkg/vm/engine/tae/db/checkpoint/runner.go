@@ -933,7 +933,26 @@ func (r *runner) tryCompactTree(entry *logtail.DirtyTreeEntry, force bool) {
 		table, asize, dsize := ticket.tbl, ticket.asize, ticket.dsize
 		dirtyTree := entry.GetTree().GetTable(table.ID)
 		_, endTs := entry.GetTimeRange()
+		if rand.Intn(10) == 0 {
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+		}
 
+		if rand.Intn(5) == 0 {
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+			endTs = endTs.Next()
+		}
 		stats := table.Stats
 		stats.Lock()
 		defer stats.Unlock()
