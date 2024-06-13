@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -40,6 +41,7 @@ type ObjectEntry struct {
 	table *TableEntry
 	*ObjectNode
 	objData data.Object
+	HasPrintedPrepareComapct bool
 }
 
 func (entry *ObjectEntry) GetLoaded() bool {
@@ -58,6 +60,51 @@ func (entry *ObjectEntry) SetRemainingRows(rows int) {
 
 func (entry *ObjectEntry) GetRemainingRows() int {
 	return entry.remainingRows.V()
+}
+
+
+func (entry *ObjectEntry) CheckPrintPrepareCompact() bool {
+	entry.RLock()
+	defer entry.RUnlock()
+	return entry.CheckPrintPrepareCompactLocked()
+}
+
+func (entry *ObjectEntry) CheckPrintPrepareCompactLocked() bool {
+	lastNode := entry.GetLatestNodeLocked()
+	startTS := lastNode.GetStart()
+	return true
+	return startTS.Physical() < time.Now().UTC().UnixNano()-(time.Minute*30).Nanoseconds()
+}
+
+func (entry *ObjectEntry) PrintPrepareCompactDebugLog() {
+	if entry.HasPrintedPrepareComapct {
+		return
+	}
+	entry.HasPrintedPrepareComapct = true
+	s := fmt.Sprintf("prepare compact failed, obj %v", entry.PPString(3, 0, ""))
+	lastNode := entry.GetLatestNodeLocked()
+	startTS := lastNode.GetStart()
+	if lastNode.Txn != nil {
+		s = fmt.Sprintf("%s txn is %x.", s, lastNode.Txn.GetID())
+	}
+	it := entry.GetTable().MakeObjectIt(false)
+	for ; it.Valid(); it.Next() {
+		obj := it.Get().GetPayload()
+		obj.RLock()
+		sameTxn := false
+		obj.LoopChainLocked(func(m *MVCCNode[*ObjectMVCCNode]) bool {
+			if m.Start.Equal(&startTS) {
+				sameTxn = true
+				return false
+			}
+			return true
+		})
+		obj.RUnlock()
+		if sameTxn {
+			s = fmt.Sprintf("%s %v.", s, obj.PPString(3, 0, ""))
+		}
+	}
+	logutil.Infof(s)
 }
 
 func (entry *ObjectEntry) GetRows() int {
