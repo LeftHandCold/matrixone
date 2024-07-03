@@ -565,8 +565,9 @@ func (c *checkpointCleaner) getDeleteFile(
 
 	// Due to the characteristics of the checkpoint, the next checkpoint that is snapshot needs to be retained,
 	// so it needs to be processed specially.
-	// For example: [0, 1, 2, 3, 4, 5], if 2 is snapshot ref, then 3 needs to be retained, 4 and 5 need to be deleted
-	deleteCheckpoint = deleteCheckpoint[1:]
+	// For example: [5, 4, 3, 2, 1, 0], if 2 is snapshot ref, then 3 needs to be retained, 4 and 5 need to be deleted
+	// deleteCheckpoint = [5, 4, 3]
+	deleteCheckpoint = deleteCheckpoint[:len(deleteCheckpoint)-1]
 	for i, ckp := range deleteCheckpoint {
 		logutil.Info("[MergeCheckpoint]",
 			common.OperationField("GC checkpoint"),
