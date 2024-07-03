@@ -533,6 +533,7 @@ func (c *checkpointCleaner) getDeleteFile(
 			common.OperandField(ckps[i].String()))
 	}
 
+	deleteCheckpoint := make([]*checkpoint.CheckpointEntry, 0)
 	for i := len(ckps) - 1; i >= 0; i-- {
 		ckp := ckps[i]
 		end := ckp.GetEnd()
@@ -545,38 +546,51 @@ func (c *checkpointCleaner) getDeleteFile(
 					common.OperandField(ckp.String()))
 				break
 			}
-			logutil.Info("[MergeCheckpoint]",
-				common.OperationField("GC checkpoint"),
-				common.OperandField(ckp.String()))
-			nameMeta := blockio.EncodeCheckpointMetadataFileName(
-				checkpoint.CheckpointDir, checkpoint.PrefixMetadata,
-				ckp.GetStart(), ckp.GetEnd())
-			locations, err := logtail.LoadCheckpointLocations(
-				c.ctx, ckp.GetTNLocation(), ckp.GetVersion(), c.fs.Service)
-			if err != nil {
-				if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
-					deleteFiles = append(deleteFiles, nameMeta)
-					continue
-				}
-				return nil, err
-			}
-			deleteFiles = append(deleteFiles, nameMeta)
-			if i == len(ckps)-1 {
-				c.updateCkpGC(&end)
-			}
-			for name := range locations {
-				deleteFiles = append(deleteFiles, name)
-			}
-			deleteFiles = append(deleteFiles, ckp.GetTNLocation().Name().String())
+			deleteCheckpoint = append(deleteCheckpoint, ckp)
+		}
+	}
 
-			if ckp.GetType() == checkpoint.ET_Global {
-				// After the global checkpoint is processed,
-				// subsequent checkpoints need to be processed in the next getDeleteFile
-				logutil.Info("[MergeCheckpoint]",
-					common.OperationField("GC Global checkpoint"),
-					common.OperandField(ckp.String()))
-				break
+	if len(deleteCheckpoint) < 2 {
+		return deleteFiles, nil
+	}
+
+	// Due to the characteristics of the checkpoint, the next checkpoint that is snapshot needs to be retained,
+	// so it needs to be processed specially.
+	// For example: [0, 1, 2, 3, 4, 5], if 2 is snapshot ref, then 3 needs to be retained, 4 and 5 need to be deleted
+	deleteCheckpoint = deleteCheckpoint[1:]
+	for i, ckp := range deleteCheckpoint {
+		logutil.Info("[MergeCheckpoint]",
+			common.OperationField("GC checkpoint"),
+			common.OperandField(ckp.String()))
+		nameMeta := blockio.EncodeCheckpointMetadataFileName(
+			checkpoint.CheckpointDir, checkpoint.PrefixMetadata,
+			ckp.GetStart(), ckp.GetEnd())
+		locations, err := logtail.LoadCheckpointLocations(
+			c.ctx, ckp.GetTNLocation(), ckp.GetVersion(), c.fs.Service)
+		if err != nil {
+			if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+				deleteFiles = append(deleteFiles, nameMeta)
+				continue
 			}
+			return nil, err
+		}
+		deleteFiles = append(deleteFiles, nameMeta)
+		if i == len(deleteCheckpoint)-1 {
+			end := ckp.GetEnd()
+			c.updateCkpGC(&end)
+		}
+		for name := range locations {
+			deleteFiles = append(deleteFiles, name)
+		}
+		deleteFiles = append(deleteFiles, ckp.GetTNLocation().Name().String())
+
+		if ckp.GetType() == checkpoint.ET_Global {
+			// After the global checkpoint is processed,
+			// subsequent checkpoints need to be processed in the next getDeleteFile
+			logutil.Info("[MergeCheckpoint]",
+				common.OperationField("GC Global checkpoint"),
+				common.OperandField(ckp.String()))
+			break
 		}
 	}
 	return deleteFiles, nil
