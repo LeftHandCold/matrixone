@@ -547,6 +547,15 @@ func (c *checkpointCleaner) getDeleteFile(
 				break
 			}
 			deleteCheckpoint = append(deleteCheckpoint, ckp)
+
+			if ckp.GetType() == checkpoint.ET_Global {
+				// After the global checkpoint is processed,
+				// subsequent checkpoints need to be processed in the next getDeleteFile
+				logutil.Info("[MergeCheckpoint]",
+					common.OperationField("GC Global checkpoint"),
+					common.OperandField(ckp.String()))
+				break
+			}
 		}
 	}
 
@@ -583,15 +592,6 @@ func (c *checkpointCleaner) getDeleteFile(
 			deleteFiles = append(deleteFiles, name)
 		}
 		deleteFiles = append(deleteFiles, ckp.GetTNLocation().Name().String())
-
-		if ckp.GetType() == checkpoint.ET_Global {
-			// After the global checkpoint is processed,
-			// subsequent checkpoints need to be processed in the next getDeleteFile
-			logutil.Info("[MergeCheckpoint]",
-				common.OperationField("GC Global checkpoint"),
-				common.OperandField(ckp.String()))
-			break
-		}
 	}
 	return deleteFiles, nil
 }
