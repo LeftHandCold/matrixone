@@ -585,7 +585,7 @@ func (c *checkpointCleaner) getDeleteFile(
 			return nil, err
 		}
 		deleteFiles = append(deleteFiles, nameMeta)
-		if i == len(deleteCheckpoint)-1 {
+		if i == 0 {
 			end := ckp.GetEnd()
 			c.updateCkpGC(&end)
 		}
