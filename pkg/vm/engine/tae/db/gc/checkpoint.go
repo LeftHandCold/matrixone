@@ -534,6 +534,7 @@ func (c *checkpointCleaner) getDeleteFile(
 	}
 
 	deleteCheckpoint := make([]*checkpoint.CheckpointEntry, 0)
+	refers := false
 	for i := len(ckps) - 1; i >= 0; i-- {
 		ckp := ckps[i]
 		end := ckp.GetEnd()
@@ -544,6 +545,7 @@ func (c *checkpointCleaner) getDeleteFile(
 				logutil.Info("[MergeCheckpoint]",
 					common.OperationField("isSnapshotCKPRefers"),
 					common.OperandField(ckp.String()))
+				refers = true
 				break
 			}
 			deleteCheckpoint = append(deleteCheckpoint, ckp)
@@ -552,22 +554,23 @@ func (c *checkpointCleaner) getDeleteFile(
 				// After the global checkpoint is processed,
 				// subsequent checkpoints need to be processed in the next getDeleteFile
 				logutil.Info("[MergeCheckpoint]",
-					common.OperationField("GC Global checkpoint"),
+					common.OperationField("GC Golbal checkpoint"),
 					common.OperandField(ckp.String()))
 				break
 			}
 		}
 	}
 
-	if len(deleteCheckpoint) < 2 {
-		return deleteFiles, nil
-	}
-
 	// Due to the characteristics of the checkpoint, the next checkpoint that is snapshot needs to be retained,
 	// so it needs to be processed specially.
 	// For example: [5, 4, 3, 2, 1, 0], if 2 is snapshot ref, then 3 needs to be retained, 4 and 5 need to be deleted
 	// deleteCheckpoint = [5, 4, 3]
-	deleteCheckpoint = deleteCheckpoint[:len(deleteCheckpoint)-1]
+	if refers {
+		if len(deleteCheckpoint) < 2 {
+			return deleteFiles, nil
+		}
+		deleteCheckpoint = deleteCheckpoint[:len(deleteCheckpoint)-1]
+	}
 	for i, ckp := range deleteCheckpoint {
 		logutil.Info("[MergeCheckpoint]",
 			common.OperationField("GC checkpoint"),
