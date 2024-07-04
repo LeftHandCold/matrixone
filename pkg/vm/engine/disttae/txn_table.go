@@ -654,11 +654,10 @@ func (tbl *txnTable) Ranges(ctx context.Context, exprs []*plan.Expr, txnOffset i
 
 	var blocks objectio.BlockInfoSlice
 	ranges = &blocks
-
 	// get the table's snapshot
 	var part *logtailreplay.PartitionState
-	uid := uuid.New()
-	if part, err = tbl.getPartitionState(ctx, uid.String()); err != nil {
+	uid := fmt.Sprintf("%v-%v", uuid.New().String(), tbl.db.op.Txn().DebugString())
+	if part, err = tbl.getPartitionState(ctx, uid); err != nil {
 		return
 	}
 
@@ -2005,7 +2004,10 @@ func (tbl *txnTable) getPartitionState(
 		if len(uid) > 0 && tbl.tableId == 282758 {
 			logutil.Infof("getPartitionState updateLogtail: %v", uid[0])
 		}
-		return tbl._partState.Load(), nil
+		if tbl._partState.Load().checkpointConsumed.Load() {
+			return tbl._partState.Load(), nil
+		}
+		return nil, nil
 	}
 
 	// for snapshot txnOp
