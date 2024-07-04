@@ -200,6 +200,7 @@ func (p *Partition) ConsumeCheckpoints(
 ) {
 
 	if p.checkpointConsumed.Load() {
+		logutil.Infof("ConsumeCheckpoints ckp consumed %v", p.state.Load().Uuid)
 		return nil
 	}
 	curState := p.state.Load()
