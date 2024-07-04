@@ -1118,7 +1118,7 @@ func ExecuteBlockFilter(
 			}
 
 			if objStats.Rows() == 0 {
-				logutil.Fatalf("object stats has zero rows, isCommitted: %v, detail: %s",
+				logutil.Fatalf("uuid: %v, object stats has zero rows, isCommitted: %v, detail: %s", snapshot.Uuid,
 					isCommitted, obj.String())
 			}
 

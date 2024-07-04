@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/google/uuid"
 	"runtime/trace"
 	"sync"
 	"sync/atomic"
@@ -71,6 +72,8 @@ type PartitionState struct {
 	// blocks deleted before minTS is hard deleted.
 	// partition state can't serve txn with snapshotTS less than minTS
 	minTS types.TS
+
+	Uuid string
 }
 
 // sharedStates is shared among all PartitionStates
@@ -289,6 +292,7 @@ func NewPartitionState(noData bool) *PartitionState {
 		dirtyBlocks:     btree.NewBTreeGOptions((types.Blockid).Less, opts),
 		objectIndexByTS: btree.NewBTreeGOptions((ObjectIndexByTSEntry).Less, opts),
 		shared:          new(sharedStates),
+		Uuid:            uuid.New().String(),
 	}
 }
 
@@ -304,6 +308,7 @@ func (p *PartitionState) Copy() *PartitionState {
 		shared:          p.shared,
 		start:           p.start,
 		end:             p.end,
+		Uuid:            p.Uuid,
 	}
 	if len(p.checkpoints) > 0 {
 		state.checkpoints = make([]string, len(p.checkpoints))
