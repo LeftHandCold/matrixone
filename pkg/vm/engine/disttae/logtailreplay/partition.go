@@ -17,6 +17,7 @@ package logtailreplay
 import (
 	"bytes"
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 	"sync/atomic"
 
@@ -203,6 +204,7 @@ func (p *Partition) ConsumeCheckpoints(
 	}
 	curState := p.state.Load()
 	if len(curState.checkpoints) == 0 {
+		logutil.Infof("ConsumeCheckpoints ckp is 0 %v", curState.Uuid)
 		p.UpdateDuration(types.TS{}, types.MaxTs())
 		return nil
 	}
@@ -215,6 +217,7 @@ func (p *Partition) ConsumeCheckpoints(
 
 	curState = p.state.Load()
 	if len(curState.checkpoints) == 0 {
+		logutil.Infof("ConsumeCheckpoints ckp2	 is 0 %v", curState.Uuid)
 		p.UpdateDuration(types.TS{}, types.MaxTs())
 		return nil
 	}
