@@ -1992,7 +1992,7 @@ func (tbl *txnTable) getPartitionState(
 	}
 	if !tbl.db.op.IsSnapOp() {
 		if tbl._partState.Load() == nil {
-			if err := tbl.updateLogtail(ctx); err != nil {
+			if err := tbl.updateLogtail(ctx, uid...); err != nil {
 				return nil, err
 			}
 			tbl._partState.Store(tbl.getTxn().engine.
