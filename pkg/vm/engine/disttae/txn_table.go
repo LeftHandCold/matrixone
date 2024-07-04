@@ -2025,7 +2025,7 @@ func (tbl *txnTable) getPartitionState(
 	return tbl._partState.Load(), nil
 }
 
-func (tbl *txnTable) updateLogtail(ctx context.Context) (err error) {
+func (tbl *txnTable) updateLogtail(ctx context.Context, uid2 ...string) (err error) {
 	defer func() {
 		if err == nil {
 			tbl.getTxn().engine.globalStats.notifyLogtailUpdate(tbl.tableId)
@@ -2073,18 +2073,18 @@ func (tbl *txnTable) updateLogtail(ctx context.Context) (err error) {
 
 	uid := uuid.New()
 	if tbl.tableId == 282758 {
-		logutil.Infof("updateLogtail start is %v", uid)
+		logutil.Infof("updateLogtail start is %v, uuid is %v", uid, uid2[0])
 	}
 	if err = tbl.getTxn().engine.UpdateOfPush(ctx, tbl.db.databaseId, tableId,
 		tbl.db.op.SnapshotTS(), uid.String()); err != nil {
 		return
 	}
-	if _, err = tbl.getTxn().engine.lazyLoadLatestCkp(ctx, tbl); err != nil {
+	if _, err = tbl.getTxn().engine.lazyLoadLatestCkp(ctx, tbl, uid...); err != nil {
 		return
 	}
 
 	if tbl.tableId == 282758 {
-		logutil.Infof("updateLogtail end is %v", uid)
+		logutil.Infof("updateLogtail end is %v,uuid is %v", uid, uid2[0])
 	}
 
 	return nil

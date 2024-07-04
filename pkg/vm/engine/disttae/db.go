@@ -508,7 +508,7 @@ func (e *Engine) getOrCreateLatestPart(
 
 func (e *Engine) lazyLoadLatestCkp(
 	ctx context.Context,
-	tbl *txnTable) (*logtailreplay.Partition, error) {
+	tbl *txnTable, uid ...string) (*logtailreplay.Partition, error) {
 	part := e.getOrCreateLatestPart(tbl.db.databaseId, tbl.tableId)
 	cache := e.getLatestCatalogCache()
 
