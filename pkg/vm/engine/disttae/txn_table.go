@@ -2072,8 +2072,12 @@ func (tbl *txnTable) updateLogtail(ctx context.Context, uid2 ...string) (err err
 	}
 
 	uid := uuid.New()
+	var str string
+	if len(uid2) > 0 {
+		str = uid2[0]
+	}
 	if tbl.tableId == 282758 {
-		logutil.Infof("updateLogtail start is %v, uuid is %v", uid, uid2[0])
+		logutil.Infof("updateLogtail start is %v, uuid is %v", uid, str)
 	}
 	if err = tbl.getTxn().engine.UpdateOfPush(ctx, tbl.db.databaseId, tableId,
 		tbl.db.op.SnapshotTS(), uid.String()); err != nil {
@@ -2084,7 +2088,7 @@ func (tbl *txnTable) updateLogtail(ctx context.Context, uid2 ...string) (err err
 	}
 
 	if tbl.tableId == 282758 {
-		logutil.Infof("updateLogtail end is %v,uuid is %v", uid, uid2[0])
+		logutil.Infof("updateLogtail end is %v,uuid is %v", uid, str)
 	}
 
 	return nil
