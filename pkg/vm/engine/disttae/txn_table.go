@@ -2004,10 +2004,7 @@ func (tbl *txnTable) getPartitionState(
 		if len(uid) > 0 && tbl.tableId == 282758 {
 			logutil.Infof("getPartitionState updateLogtail: %v", uid[0])
 		}
-		if tbl._partState.Load().checkpointConsumed.Load() {
-			return tbl._partState.Load(), nil
-		}
-		return nil, nil
+		return tbl._partState.Load(), nil
 	}
 
 	// for snapshot txnOp
