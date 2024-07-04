@@ -657,7 +657,8 @@ func (tbl *txnTable) Ranges(ctx context.Context, exprs []*plan.Expr, txnOffset i
 
 	// get the table's snapshot
 	var part *logtailreplay.PartitionState
-	if part, err = tbl.getPartitionState(ctx); err != nil {
+	uid := uuid.New()
+	if part, err = tbl.getPartitionState(ctx, uid.String()); err != nil {
 		return
 	}
 
@@ -671,6 +672,7 @@ func (tbl *txnTable) Ranges(ctx context.Context, exprs []*plan.Expr, txnOffset i
 		&blocks,
 		tbl.proc.Load(),
 		txnOffset,
+		uid.String(),
 	); err != nil {
 		return
 	}
@@ -706,6 +708,7 @@ func (tbl *txnTable) rangesOnePart(
 	outBlocks *objectio.BlockInfoSlice, // output marshaled block list after filtering
 	proc *process.Process, // process of this transaction
 	txnOffset int,
+	uid ...string,
 ) (err error) {
 	var done bool
 	// collect dirty blocks lazily
@@ -725,6 +728,7 @@ func (tbl *txnTable) rangesOnePart(
 		outBlocks,
 		tbl.getTxn().engine.fs,
 		tbl.proc.Load(),
+		uid...,
 	); err != nil {
 		return err
 	} else if done {
@@ -1982,7 +1986,11 @@ func (tbl *txnTable) newReader(
 
 func (tbl *txnTable) getPartitionState(
 	ctx context.Context,
+	uid ...string,
 ) (*logtailreplay.PartitionState, error) {
+	if len(uid) > 0 && tbl.tableId == 282758 {
+		logutil.Infof("getPartitionState start: %v", uid[0])
+	}
 	if !tbl.db.op.IsSnapOp() {
 		if tbl._partState.Load() == nil {
 			if err := tbl.updateLogtail(ctx); err != nil {
@@ -1990,6 +1998,12 @@ func (tbl *txnTable) getPartitionState(
 			}
 			tbl._partState.Store(tbl.getTxn().engine.
 				getOrCreateLatestPart(tbl.db.databaseId, tbl.tableId).Snapshot())
+			if len(uid) > 0 && tbl.tableId == 282758 {
+				logutil.Infof("getPartitionState updateLogtail: %v", uid[0])
+			}
+		}
+		if len(uid) > 0 && tbl.tableId == 282758 {
+			logutil.Infof("getPartitionState updateLogtail: %v", uid[0])
 		}
 		return tbl._partState.Load(), nil
 	}
@@ -2004,6 +2018,9 @@ func (tbl *txnTable) getPartitionState(
 			return nil, err
 		}
 		tbl._partState.Store(p.Snapshot())
+	}
+	if len(uid) > 0 && tbl.tableId == 282758 {
+		logutil.Infof("getPartitionState END: %v", uid[0])
 	}
 	return tbl._partState.Load(), nil
 }

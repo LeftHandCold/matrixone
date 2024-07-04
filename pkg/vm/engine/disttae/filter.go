@@ -992,6 +992,7 @@ func TryFastFilterBlocks(
 	outBlocks *objectio.BlockInfoSlice,
 	fs fileservice.FileService,
 	proc *process.Process,
+	uid ...string,
 ) (ok bool, err error) {
 	fastFilterOp, loadOp, objectFilterOp, blockFilterOp, seekOp, ok, highSelectivityHint := CompileFilterExprs(exprs, proc, tableDef, fs)
 	if !ok {
@@ -1015,6 +1016,7 @@ func TryFastFilterBlocks(
 		fs,
 		proc,
 		highSelectivityHint,
+		uid...,
 	)
 	return true, err
 }
@@ -1036,6 +1038,7 @@ func ExecuteBlockFilter(
 	fs fileservice.FileService,
 	proc *process.Process,
 	highSelectivityHint bool,
+	uid ...string,
 ) (err error) {
 	var (
 		totalBlocks                    float64
@@ -1118,8 +1121,8 @@ func ExecuteBlockFilter(
 			}
 
 			if objStats.Rows() == 0 {
-				logutil.Fatalf("uuid: %v, object stats has zero rows, isCommitted: %v, detail: %s", snapshot.Uuid,
-					isCommitted, obj.String())
+				logutil.Fatalf("uuid: %v, object stats has zero rows, isCommitted: %v, detail: %s, uuid %v", snapshot.Uuid,
+					isCommitted, obj.String(), uid[0])
 			}
 
 			for ; pos < blockCnt; pos++ {
