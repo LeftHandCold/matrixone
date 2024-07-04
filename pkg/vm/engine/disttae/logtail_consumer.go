@@ -1548,6 +1548,9 @@ func updatePartitionOfPush(
 		}
 
 		t0 = time.Now()
+		if tblId == 282758 {
+			logutil.Infof("consume %d-%s log tail start\n", tblId, partition.TableInfo.Name)
+		}
 		err = consumeLogTail(
 			ctx,
 			partition.TableInfo.PrimarySeqnum,
@@ -1555,6 +1558,9 @@ func updatePartitionOfPush(
 			state,
 			tl,
 		)
+		if tblId == 282758 {
+			logutil.Infof("consume %d-%s log tail end\n", tblId, partition.TableInfo.Name)
+		}
 		v2.LogtailUpdatePartitonConsumeLogtailDurationHistogram.Observe(time.Since(t0).Seconds())
 
 	} else {
