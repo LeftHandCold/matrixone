@@ -213,16 +213,18 @@ func (p *Partition) ConsumeCheckpoints(
 		p.UpdateDuration(types.TS{}, types.MaxTs())
 		return nil
 	}
-	if p.TableInfo.ID == 282758 {
-		logutil.Infof("ConsumeCheckpoints ckp1 start %v", curState.Uuid)
-	}
 
 	lockErr := p.Lock(ctx)
 	if lockErr != nil {
+		if p.TableInfo.ID == 282758 {
+			logutil.Infof("ConsumeCheckpoints ckp1 lockErr %v", curState.Uuid)
+		}
 		return lockErr
 	}
 	defer p.Unlock()
-
+	if p.TableInfo.ID == 282758 {
+		logutil.Infof("ConsumeCheckpoints ckp1 start %v", curState.Uuid)
+	}
 	curState = p.state.Load()
 	if len(curState.checkpoints) == 0 {
 		if p.TableInfo.ID == 282758 {
