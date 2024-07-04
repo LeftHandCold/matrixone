@@ -2079,7 +2079,7 @@ func (tbl *txnTable) updateLogtail(ctx context.Context, uid2 ...string) (err err
 		tbl.db.op.SnapshotTS(), uid.String()); err != nil {
 		return
 	}
-	if _, err = tbl.getTxn().engine.lazyLoadLatestCkp(ctx, tbl, uid...); err != nil {
+	if _, err = tbl.getTxn().engine.lazyLoadLatestCkp(ctx, tbl, uid2...); err != nil {
 		return
 	}
 
