@@ -223,8 +223,12 @@ func (p *Partition) ConsumeCheckpoints(
 		return lockErr
 	}
 	defer p.Unlock()
+	var str string
+	if len(uid) > 0 {
+		str = uid[0]
+	}
 	if p.TableInfo.ID == 282758 {
-		logutil.Infof("ConsumeCheckpoints ckp1 start %v, uid %v", curState.Uuid, uid[0])
+		logutil.Infof("ConsumeCheckpoints ckp1 start %v, uid %v", curState.Uuid, str)
 	}
 	curState = p.state.Load()
 	if len(curState.checkpoints) == 0 {
@@ -242,7 +246,7 @@ func (p *Partition) ConsumeCheckpoints(
 	}
 
 	if p.TableInfo.ID == 282758 {
-		logutil.Infof("ConsumeCheckpoints ckp1 end %v, stat %v, , uid %v", curState.Uuid, state.Uuid, uid[0])
+		logutil.Infof("ConsumeCheckpoints ckp1 end %v, stat %v, , uid %v", curState.Uuid, state.Uuid, str)
 	}
 	p.UpdateDuration(state.start, types.MaxTs())
 
