@@ -539,6 +539,7 @@ func (e *Engine) lazyLoadLatestCkp(
 			}
 			return nil
 		},
+		uid...,
 	); err != nil {
 		return nil, err
 	}
