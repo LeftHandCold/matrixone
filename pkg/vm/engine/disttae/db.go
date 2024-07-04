@@ -550,5 +550,5 @@ func (e *Engine) UpdateOfPush(
 	ctx context.Context,
 	databaseId,
 	tableId uint64, ts timestamp.Timestamp, uid string) error {
-	return e.pClient.TryToSubscribeTable(ctx, databaseId, tableId, uid)
+	return e.pClient.TryToSubscribeTable(ctx, databaseId, tableId)
 }
