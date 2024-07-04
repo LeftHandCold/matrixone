@@ -671,7 +671,7 @@ func (tbl *txnTable) Ranges(ctx context.Context, exprs []*plan.Expr, txnOffset i
 		&blocks,
 		tbl.proc.Load(),
 		txnOffset,
-		uid.String(),
+		uid,
 	); err != nil {
 		return
 	}
