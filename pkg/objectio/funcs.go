@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/util"
 	"slices"
 
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -57,10 +56,8 @@ func ReadExtent(
 		return
 	}
 	if ioVec.Entries[0].CachedData == nil {
-		logutil.Errorf("ReadExtent: ioVec.Entries[0].CachedData is nil, name: %s, extent: %v",
+		logutil.Fatalf("ReadExtent: ioVec.Entries[0].CachedData is nil, name: %s, extent: %v",
 			name, extent.String())
-		util.EnableCoreDump()
-		util.CoreDump()
 	}
 	//TODO when to call ioVec.Release?
 	v := ioVec.Entries[0].CachedData.Bytes()

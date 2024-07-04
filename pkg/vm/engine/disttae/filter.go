@@ -27,7 +27,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	plan2 "github.com/matrixorigin/matrixone/pkg/sql/plan"
-	"github.com/matrixorigin/matrixone/pkg/util"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/logtailreplay"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
@@ -1119,10 +1118,8 @@ func ExecuteBlockFilter(
 			}
 
 			if objStats.Rows() == 0 {
-				logutil.Errorf("object stats has zero rows, isCommitted: %v, detail: %s",
+				logutil.Fatalf("object stats has zero rows, isCommitted: %v, detail: %s",
 					isCommitted, obj.String())
-				util.EnableCoreDump()
-				util.CoreDump()
 			}
 
 			for ; pos < blockCnt; pos++ {

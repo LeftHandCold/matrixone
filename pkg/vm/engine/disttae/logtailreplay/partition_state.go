@@ -356,7 +356,7 @@ func (p *PartitionState) HandleLogtailEntry(
 		if IsBlkTable(entry.TableName) {
 			p.HandleMetadataInsert(ctx, fs, entry.Bat)
 		} else if IsObjTable(entry.TableName) {
-			p.HandleObjectInsert(ctx, entry.Bat, fs)
+			p.HandleObjectInsert(ctx, entry.Bat, fs, entry.TableId)
 		} else {
 			p.HandleRowsInsert(ctx, entry.Bat, primarySeqnum, packer)
 		}
@@ -401,7 +401,7 @@ func (p *PartitionState) HandleObjectDelete(
 	}
 }
 
-func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch, fs fileservice.FileService) {
+func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch, fs fileservice.FileService, tid uint64) {
 
 	var numDeleted, blockDeleted, scanCnt int64
 	statsVec := mustVectorFromProto(bat.Vecs[2])
@@ -421,6 +421,9 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 		var objEntry ObjectEntry
 
 		objEntry.ObjectStats = objectio.ObjectStats(statsVec.GetBytesAt(idx))
+		if tid == 282758 {
+			logutil.Infof("HandleObjectInsert282758, %s\n", objEntry.ObjectStats.String())
+		}
 		if objEntry.ObjectStats.BlkCnt() == 0 || objEntry.ObjectStats.Rows() == 0 {
 			logutil.Errorf("skip empty object stats when HandleObjectInsert, %s\n", objEntry.String())
 			continue
@@ -435,6 +438,9 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 		old, exist := p.dataObjects.Get(objEntry)
 		if exist {
 			objEntry.HasDeltaLoc = old.HasDeltaLoc
+		}
+		if objEntry.ObjectStats.ObjectName().String() == "01907b85-eb46-7a24-9a5d-3c96d854b8ee_00000" {
+			logutil.Infof("HandleObjectInsert, %s, old is %v\n", objEntry.ObjectStats.String(), old.ObjectStats.String())
 		}
 		if exist && !old.IsEmpty() {
 			// why check the deleteTime here? consider this situation:
@@ -832,6 +838,10 @@ func (p *PartitionState) HandleMetadataInsert(
 				objectio.SetObjectStatsObjectName(&objPivot.ObjectStats, objName)
 			}
 			objEntry, ok := p.dataObjects.Get(objPivot)
+
+			if objPivot.ObjectStats.ObjectName().String() == "01907b85-eb46-7a24-9a5d-3c96d854b8ee_00000" {
+				logutil.Infof("HandleMetadataInsert is, %s, old is %v\n", objEntry.ObjectStats.String(), objEntry.ObjectStats.String())
+			}
 			if ok {
 				// don't need to update objEntry, except for HasDeltaLoc and blkCnt
 				if !isEmptyDelta {
