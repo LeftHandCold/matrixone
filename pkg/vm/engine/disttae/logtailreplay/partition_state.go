@@ -445,7 +445,7 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 			objEntry.HasDeltaLoc = old.HasDeltaLoc
 		}
 		if objEntry.ObjectStats.ObjectName().String() == "01907b85-eb46-7a24-9a5d-3c96d854b8ee_00000" {
-			logutil.Infof("HandleObjectInsert, %s, old is %v, p is %p\n", objEntry.ObjectStats.String(), old.ObjectStats.String(), p)
+			logutil.Infof("HandleObjectInsert, %s, old is %v, p is %v\n", objEntry.ObjectStats.String(), old.ObjectStats.String(), p.Uuid)
 		}
 		if exist && !old.IsEmpty() {
 			// why check the deleteTime here? consider this situation:
@@ -845,7 +845,7 @@ func (p *PartitionState) HandleMetadataInsert(
 			objEntry, ok := p.dataObjects.Get(objPivot)
 
 			if objPivot.ObjectStats.ObjectName().String() == "01907b85-eb46-7a24-9a5d-3c96d854b8ee_00000" {
-				logutil.Infof("HandleMetadataInsert is, %s, old is %v, p is %p\n", objEntry.ObjectStats.String(), objEntry.ObjectStats.String(), p)
+				logutil.Infof("HandleMetadataInsert is, %s, old is %v, p is %v\n", objEntry.ObjectStats.String(), objEntry.ObjectStats.String(), p.Uuid)
 			}
 			if ok {
 				// don't need to update objEntry, except for HasDeltaLoc and blkCnt
