@@ -17,6 +17,7 @@ package disttae
 import (
 	"context"
 	"fmt"
+	"github.com/google/uuid"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -2053,12 +2054,20 @@ func (tbl *txnTable) updateLogtail(ctx context.Context) (err error) {
 		tableId = tbl.oldTableId
 	}
 
+	uid := uuid.New()
+	if tbl.tableId == 282758 {
+		logutil.Infof("updateLogtail start is %v", uid)
+	}
 	if err = tbl.getTxn().engine.UpdateOfPush(ctx, tbl.db.databaseId, tableId,
 		tbl.db.op.SnapshotTS()); err != nil {
 		return
 	}
 	if _, err = tbl.getTxn().engine.lazyLoadLatestCkp(ctx, tbl); err != nil {
 		return
+	}
+
+	if tbl.tableId == 282758 {
+		logutil.Infof("updateLogtail end is %v", uid)
 	}
 
 	return nil
