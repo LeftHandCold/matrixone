@@ -549,6 +549,6 @@ func (e *Engine) lazyLoadLatestCkp(
 func (e *Engine) UpdateOfPush(
 	ctx context.Context,
 	databaseId,
-	tableId uint64, ts timestamp.Timestamp) error {
-	return e.pClient.TryToSubscribeTable(ctx, databaseId, tableId)
+	tableId uint64, ts timestamp.Timestamp, uid string) error {
+	return e.pClient.TryToSubscribeTable(ctx, databaseId, tableId, uid)
 }

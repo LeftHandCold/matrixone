@@ -2059,7 +2059,7 @@ func (tbl *txnTable) updateLogtail(ctx context.Context) (err error) {
 		logutil.Infof("updateLogtail start is %v", uid)
 	}
 	if err = tbl.getTxn().engine.UpdateOfPush(ctx, tbl.db.databaseId, tableId,
-		tbl.db.op.SnapshotTS()); err != nil {
+		tbl.db.op.SnapshotTS(), uid.String()); err != nil {
 		return
 	}
 	if _, err = tbl.getTxn().engine.lazyLoadLatestCkp(ctx, tbl); err != nil {
