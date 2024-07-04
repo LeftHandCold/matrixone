@@ -823,6 +823,8 @@ func (e *Engine) cleanMemoryTableWithTable(dbId, tblId uint64) {
 	// XXX it's probably not a good way to do that.
 	// after we set it to empty, actually this part of memory was not immediately released.
 	// maybe a very old transaction still using that.
+	part := e.partitions[[2]uint64{dbId, tblId}]
+	logutil.Infof("clean Mem %v", part.Snapshot().Uuid)
 	delete(e.partitions, [2]uint64{dbId, tblId})
 	logutil.Debugf("clean memory table of tbl[dbId: %d, tblId: %d]", dbId, tblId)
 }
