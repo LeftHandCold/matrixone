@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/google/uuid"
-	"math/rand"
 	"strings"
 	"sync"
 	"sync/atomic"
