@@ -233,7 +233,7 @@ func (p *Partition) ConsumeCheckpoints(
 	curState = p.state.Load()
 	if len(curState.checkpoints) == 0 {
 		if p.TableInfo.ID == 282758 {
-			logutil.Infof("ConsumeCheckpoints ckp2	 is 0 %v", curState.Uuid)
+			logutil.Infof("ConsumeCheckpoints ckp2	 is 0 %v", curState.Uuid, str)
 		}
 		p.UpdateDuration(types.TS{}, types.MaxTs())
 		return nil
