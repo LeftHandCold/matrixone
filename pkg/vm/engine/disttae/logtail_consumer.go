@@ -73,7 +73,7 @@ const (
 	unsubscribeTimer         = 1 * time.Hour
 
 	// gc blocks and BlockIndexByTSEntry in partition state
-	gcPartitionStateTicker = 20 * time.Minute
+	gcPartitionStateTicker = 1 * time.Minute
 	gcPartitionStateTimer  = 1 * time.Minute
 
 	// log tail consumer related constants.
