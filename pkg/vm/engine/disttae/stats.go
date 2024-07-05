@@ -638,6 +638,9 @@ func updateInfoFromZoneMap(ctx context.Context, req *updateStatsRequest, info *p
 		}
 		return nil
 	}
+	if req.tableDef.TblId == 282758 {
+		logutil.Infof("ForeachVisibleDataObject: %d", req.approxObjectNum)
+	}
 	if err = ForeachVisibleDataObject(req.partitionState, req.ts, onObjFn); err != nil {
 		return err
 	}
