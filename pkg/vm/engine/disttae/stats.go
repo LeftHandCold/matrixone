@@ -316,7 +316,7 @@ func (gs *GlobalStats) waitLogtailUpdated(tid uint64) {
 		defer gs.logtailUpdate.mu.Unlock()
 		_, ok := gs.logtailUpdate.mu.updated[tid]
 		if ok {
-			if tid == 282627 {
+			if tid == 282764 {
 				logutil.Infof("table %d has been updated", tid)
 			}
 		}
@@ -422,7 +422,7 @@ func (gs *GlobalStats) updateTableStats(key pb.StatsInfoKey) {
 		return
 	}
 
-	if key.TableID == 282627 {
+	if key.TableID == 282764 {
 		time.Sleep(1 * time.Second)
 		logutil.Infof("update table stats for table %d", key.TableID)
 	}
@@ -580,7 +580,7 @@ func updateInfoFromZoneMap(ctx context.Context, req *updateStatsRequest, info *p
 
 	onObjFn := func(obj logtailreplay.ObjectEntry) error {
 		location := obj.Location()
-		if req.tableDef.TblId == 282627 {
+		if req.tableDef.TblId == 282764 {
 			logutil.Infof("location: %v", location.String())
 		}
 		if objMeta, err = objectio.FastLoadObjectMeta(ctx, &location, false, fs); err != nil {
@@ -643,7 +643,7 @@ func updateInfoFromZoneMap(ctx context.Context, req *updateStatsRequest, info *p
 		}
 		return nil
 	}
-	if req.tableDef.TblId == 282627 {
+	if req.tableDef.TblId == 282764 {
 		logutil.Infof("ForeachVisibleDataObject: %d", req.approxObjectNum)
 	}
 	if err = ForeachVisibleDataObject(req.partitionState, req.ts, onObjFn); err != nil {

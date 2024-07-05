@@ -1990,7 +1990,7 @@ func (tbl *txnTable) getPartitionState(
 	ctx context.Context,
 	uid ...string,
 ) (*logtailreplay.PartitionState, error) {
-	if len(uid) > 0 && tbl.tableId == 282627 {
+	if len(uid) > 0 && tbl.tableId == 282764 {
 		logutil.Infof("getPartitionState start: %v", uid[0])
 	}
 	if !tbl.db.op.IsSnapOp() {
@@ -2000,11 +2000,11 @@ func (tbl *txnTable) getPartitionState(
 			}
 			tbl._partState.Store(tbl.getTxn().engine.
 				getOrCreateLatestPart(tbl.db.databaseId, tbl.tableId).Snapshot())
-			if len(uid) > 0 && tbl.tableId == 282627 {
+			if len(uid) > 0 && tbl.tableId == 282764 {
 				logutil.Infof("getPartitionState updateLogtail: %v", uid[0])
 			}
 		}
-		if len(uid) > 0 && tbl.tableId == 282627 {
+		if len(uid) > 0 && tbl.tableId == 282764 {
 			logutil.Infof("getPartitionState updateLogtail: %v", uid[0])
 		}
 		return tbl._partState.Load(), nil
@@ -2021,7 +2021,7 @@ func (tbl *txnTable) getPartitionState(
 		}
 		tbl._partState.Store(p.Snapshot())
 	}
-	if len(uid) > 0 && tbl.tableId == 282627 {
+	if len(uid) > 0 && tbl.tableId == 282764 {
 		logutil.Infof("getPartitionState END: %v", uid[0])
 	}
 	return tbl._partState.Load(), nil
@@ -2078,7 +2078,7 @@ func (tbl *txnTable) updateLogtail(ctx context.Context, uid2 ...string) (err err
 	if len(uid2) > 0 {
 		str = uid2[0]
 	}
-	if tbl.tableId == 282627 {
+	if tbl.tableId == 282764 {
 		logutil.Infof("updateLogtail start is %v, uuid is %v", uid, str)
 	}
 	if err = tbl.getTxn().engine.UpdateOfPush(ctx, tbl.db.databaseId, tableId,
@@ -2089,7 +2089,7 @@ func (tbl *txnTable) updateLogtail(ctx context.Context, uid2 ...string) (err err
 		return
 	}
 
-	if tbl.tableId == 282627 {
+	if tbl.tableId == 282764 {
 		logutil.Infof("updateLogtail end is %v,uuid is %v", uid, str)
 	}
 
