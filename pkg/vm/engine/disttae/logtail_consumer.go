@@ -1550,7 +1550,7 @@ func updatePartitionOfPush(
 
 		t0 = time.Now()
 		id := uuid.New()
-		if tblId == 282758 {
+		if tblId == 282627 {
 			logutil.Infof("partition is %v, consume %d-%s log tail start, uuid %v\n", state.Uuid, tblId, partition.TableInfo.Name, id.String())
 		}
 		err = consumeLogTail(
@@ -1560,7 +1560,7 @@ func updatePartitionOfPush(
 			state,
 			tl,
 		)
-		if tblId == 282758 {
+		if tblId == 282627 {
 			logutil.Infof("partition is %v, consume %d-%s log tail end, uuid %v, state len %d\n", state.Uuid, tblId, partition.TableInfo.Name, id.String(), state.ApproxObjectsNum())
 		}
 
@@ -1577,11 +1577,11 @@ func updatePartitionOfPush(
 			v2.LogtailUpdatePartitonHandleCheckpointDurationHistogram.Observe(time.Since(t0).Seconds())
 		}
 		t0 = time.Now()
-		if tblId == 282758 {
+		if tblId == 282627 {
 			logutil.Infof("consume %d-%s log tail start\n", tblId, partition.TableInfo.Name)
 		}
 		err = consumeCkpsAndLogTail(ctx, partition.TableInfo.PrimarySeqnum, e, state, tl, dbId, tblId, partition.TableInfo.Name)
-		if tblId == 282758 {
+		if tblId == 282627 {
 			logutil.Infof("consume %d-%s log tail end\n", tblId, partition.TableInfo.Name)
 		}
 		v2.LogtailUpdatePartitonConsumeLogtailDurationHistogram.Observe(time.Since(t0).Seconds())

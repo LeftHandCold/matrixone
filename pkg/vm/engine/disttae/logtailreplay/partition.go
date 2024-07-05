@@ -201,14 +201,14 @@ func (p *Partition) ConsumeCheckpoints(
 ) {
 
 	if p.checkpointConsumed.Load() {
-		if p.TableInfo.ID == 282758 {
+		if p.TableInfo.ID == 282627 {
 			logutil.Infof("ConsumeCheckpoints ckp consumed %v", p.state.Load().Uuid)
 		}
 		return nil
 	}
 	curState := p.state.Load()
 	if len(curState.checkpoints) == 0 {
-		if p.TableInfo.ID == 282758 {
+		if p.TableInfo.ID == 282627 {
 			logutil.Infof("ConsumeCheckpoints ckp is 0 %v", curState.Uuid)
 		}
 		p.UpdateDuration(types.TS{}, types.MaxTs())
@@ -217,7 +217,7 @@ func (p *Partition) ConsumeCheckpoints(
 
 	lockErr := p.Lock(ctx)
 	if lockErr != nil {
-		if p.TableInfo.ID == 282758 {
+		if p.TableInfo.ID == 282627 {
 			logutil.Infof("ConsumeCheckpoints ckp1 lockErr %v", curState.Uuid)
 		}
 		return lockErr
@@ -227,12 +227,12 @@ func (p *Partition) ConsumeCheckpoints(
 	if len(uid) > 0 {
 		str = uid[0]
 	}
-	if p.TableInfo.ID == 282758 {
+	if p.TableInfo.ID == 282627 {
 		logutil.Infof("ConsumeCheckpoints ckp1 start %v, uid %v", curState.Uuid, str)
 	}
 	curState = p.state.Load()
 	if len(curState.checkpoints) == 0 {
-		if p.TableInfo.ID == 282758 {
+		if p.TableInfo.ID == 282627 {
 			logutil.Infof("ConsumeCheckpoints ckp2	 is 0 %v", curState.Uuid, str)
 		}
 		p.UpdateDuration(types.TS{}, types.MaxTs())
@@ -245,7 +245,7 @@ func (p *Partition) ConsumeCheckpoints(
 		return err
 	}
 
-	if p.TableInfo.ID == 282758 {
+	if p.TableInfo.ID == 282627 {
 		logutil.Infof("ConsumeCheckpoints ckp1 end %v, stat %v, , uid %v", curState.Uuid, state.Uuid, str)
 	}
 	p.UpdateDuration(state.start, types.MaxTs())

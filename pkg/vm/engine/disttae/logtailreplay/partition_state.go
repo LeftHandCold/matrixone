@@ -431,7 +431,7 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 		var objEntry ObjectEntry
 
 		objEntry.ObjectStats = objectio.ObjectStats(statsVec.GetBytesAt(idx))
-		if tid == 282758 && idx == 0 {
+		if tid == 282627 && idx == 0 {
 			logutil.Debugf("HandleObjectInsert1 object, %s, pis %v\n", objEntry.ObjectStats.String(), p.Uuid)
 		}
 		if objEntry.ObjectStats.BlkCnt() == 0 || objEntry.ObjectStats.Rows() == 0 {
