@@ -449,12 +449,9 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 		if exist {
 			objEntry.HasDeltaLoc = old.HasDeltaLoc
 		}
-		if objEntry.ObjectStats.ObjectName().String() == "01907b85-eb46-7a24-9a5d-3c96d854b8ee_00000" {
-			if sleep {
-				time.Sleep(1 * time.Second)
-				sleep = false
-			}
-			logutil.Infof("HandleObjectInsert, %s, old is %v, p is %v\n", objEntry.ObjectStats.String(), old.ObjectStats.String(), p.Uuid)
+		if sleep {
+			time.Sleep(1 * time.Second)
+			sleep = false
 		}
 		if exist && !old.IsEmpty() {
 			// why check the deleteTime here? consider this situation:
