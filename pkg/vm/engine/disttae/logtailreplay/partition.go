@@ -229,7 +229,7 @@ func (p *Partition) ConsumeCheckpoints(
 		str = uid[0]
 	}
 	if p.TableInfo.ID == 282758 {
-		time.Sleep(5 * time.Second)
+		time.Sleep(3 * time.Second)
 		logutil.Infof("ConsumeCheckpoints ckp1 start %v, uid %v", curState.Uuid, str)
 	}
 	curState = p.state.Load()
