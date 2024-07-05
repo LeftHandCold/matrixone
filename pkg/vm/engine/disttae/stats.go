@@ -315,7 +315,6 @@ func (gs *GlobalStats) waitLogtailUpdated(tid uint64) {
 		gs.logtailUpdate.mu.Lock()
 		defer gs.logtailUpdate.mu.Unlock()
 		_, ok := gs.logtailUpdate.mu.updated[tid]
-
 		return ok
 	}
 
