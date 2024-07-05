@@ -1563,6 +1563,10 @@ func updatePartitionOfPush(
 		if tblId == 282758 {
 			logutil.Infof("partition is %v, consume %d-%s log tail end, uuid %v, state len %d\n", state.Uuid, tblId, partition.TableInfo.Name, id.String(), state.ApproxObjectsNum())
 		}
+
+		if state.ApproxObjectsNum() > 0 {
+			logutil.Infof("partition111 is %v, consume %d-%s log tail end, uuid %v, state len %d\n", state.Uuid, tblId, partition.TableInfo.Name, id.String(), state.ApproxObjectsNum())
+		}
 		v2.LogtailUpdatePartitonConsumeLogtailDurationHistogram.Observe(time.Since(t0).Seconds())
 
 	} else {
