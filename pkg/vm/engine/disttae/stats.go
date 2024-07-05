@@ -422,6 +422,10 @@ func (gs *GlobalStats) updateTableStats(key pb.StatsInfoKey) {
 		return
 	}
 
+	if key.TableID == 282758 {
+		time.Sleep(1 * time.Second)
+		logutil.Infof("update table stats for table %d", key.TableID)
+	}
 	partitionState := gs.engine.getOrCreateLatestPart(key.DatabaseID, key.TableID).Snapshot()
 	var partitionsTableDef []*plan2.TableDef
 	var approxObjectNum int64
