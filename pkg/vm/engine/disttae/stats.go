@@ -296,9 +296,6 @@ func (gs *GlobalStats) notifyLogtailUpdate(tid uint64) {
 	gs.logtailUpdate.mu.Lock()
 	defer gs.logtailUpdate.mu.Unlock()
 	_, ok := gs.logtailUpdate.mu.updated[tid]
-	if tid == 282758 {
-		logutil.Infof("notifyLogtailUpdate %d has been updated", tid)
-	}
 	if ok {
 		return
 	}
