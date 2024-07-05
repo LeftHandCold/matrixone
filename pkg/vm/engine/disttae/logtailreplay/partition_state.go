@@ -22,6 +22,7 @@ import (
 	"runtime/trace"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/tidwall/btree"
@@ -421,6 +422,10 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 	startTSCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[9]))
 	commitTSCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[11]))
 
+	if tid == 282758 {
+		time.Sleep(3 * time.Second)
+		logutil.Infof("HandleObjectInsert start object, pis %v\n", p.Uuid)
+	}
 	for idx := 0; idx < len(stateCol); idx++ {
 		p.shared.Lock()
 		if t := commitTSCol[idx]; t.Greater(&p.shared.lastFlushTimestamp) {
