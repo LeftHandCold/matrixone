@@ -186,6 +186,7 @@ func (o ObjectEntry) IsEmpty() bool {
 func (o *ObjectEntry) Visible(ts types.TS) bool {
 	if o.ObjectStats.ObjectName().String() == "01907b85-eb46-7a24-9a5d-3c96d854b8ee_00000" {
 		logutil.Infof("Visible: %v, %v, %v", o.CreateTime.ToString(), o.DeleteTime.ToString(), ts.ToString())
+		return true
 	}
 	return o.CreateTime.LessEq(&ts) &&
 		(o.DeleteTime.IsEmpty() || ts.Less(&o.DeleteTime))
