@@ -826,6 +826,7 @@ func (e *Engine) cleanMemoryTableWithTable(dbId, tblId uint64) {
 	part := e.partitions[[2]uint64{dbId, tblId}]
 	logutil.Infof("clean Mem %v", part.Snapshot().Uuid)
 	delete(e.partitions, [2]uint64{dbId, tblId})
+	e.globalStats.RemoveTable(tblId)
 	logutil.Debugf("clean memory table of tbl[dbId: %d, tblId: %d]", dbId, tblId)
 }
 
