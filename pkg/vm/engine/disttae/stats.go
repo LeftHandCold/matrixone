@@ -442,6 +442,7 @@ func (gs *GlobalStats) updateTableStats(key pb.StatsInfoKey) {
 
 	if approxObjectNum == 0 {
 		// There are no objects flushed yet.
+		logutil.Infof("no objects flushed for table %v", key.String())
 		return
 	}
 
@@ -674,6 +675,7 @@ func UpdateStats(ctx context.Context, req *updateStatsRequest) error {
 	lenCols := len(req.tableDef.Cols) - 1 /* row-id */
 	info := plan2.NewInfoFromZoneMap(lenCols)
 	if req.approxObjectNum == 0 {
+		logutil.Infof("approximate object number is 0, skip update stats")
 		return nil
 	}
 

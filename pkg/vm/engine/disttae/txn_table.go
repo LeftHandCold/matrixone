@@ -376,7 +376,7 @@ func (tbl *txnTable) MaxAndMinValues(ctx context.Context) ([][2]any, []uint8, er
 
 	if err = ForeachVisibleDataObject(
 		part,
-		types.TS{0},
+		types.TimestampToTS(tbl.db.op.SnapshotTS()),
 		onObjFn); err != nil {
 		return nil, nil, err
 	}
