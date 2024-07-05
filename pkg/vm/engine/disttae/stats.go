@@ -447,7 +447,7 @@ func (gs *GlobalStats) updateTableStats(key pb.StatsInfoKey) {
 
 	if approxObjectNum == 0 {
 		// There are no objects flushed yet.
-		logutil.Infof("no objects flushed for table %v, uuid %v", key.String(), partitionState.Uuid)
+		logutil.Infof("no objects flushed for table %v, uuid %v, len is %d", key.String(), partitionState.Uuid, partitionState.ApproxObjectsNum())
 		return
 	}
 
