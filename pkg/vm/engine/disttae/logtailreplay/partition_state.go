@@ -185,7 +185,7 @@ func (o ObjectEntry) IsEmpty() bool {
 }
 
 func (o *ObjectEntry) Visible(ts types.TS) bool {
-	if o.ObjectStats.ObjectName().String() == "01907b85-eb46-7a24-9a5d-3c96d854b8ee_00000" {
+	if o.ObjectStats.ObjectName().String() == "0190796a-85c8-7762-a3b5-34f2598ef293_00000" {
 		logutil.Infof("Visible: %v, %v, %v", o.CreateTime.ToString(), o.DeleteTime.ToString(), ts.ToString())
 		return true
 	}
@@ -850,7 +850,7 @@ func (p *PartitionState) HandleMetadataInsert(
 			}
 			objEntry, ok := p.dataObjects.Get(objPivot)
 
-			if objPivot.ObjectStats.ObjectName().String() == "01907b85-eb46-7a24-9a5d-3c96d854b8ee_00000" {
+			if objPivot.ObjectStats.ObjectName().String() == "0190796a-85c8-7762-a3b5-34f2598ef293_00000" {
 				logutil.Infof("HandleMetadataInsert is, %s, old is %v, p is %v\n", objEntry.ObjectStats.String(), objEntry.ObjectStats.String(), p.Uuid)
 			}
 			if ok {
