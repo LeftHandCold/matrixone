@@ -575,6 +575,9 @@ func updateInfoFromZoneMap(ctx context.Context, req *updateStatsRequest, info *p
 
 	onObjFn := func(obj logtailreplay.ObjectEntry) error {
 		location := obj.Location()
+		if req.tableDef.TblId == 282758 {
+			logutil.Infof("location: %v", location.String())
+		}
 		if objMeta, err = objectio.FastLoadObjectMeta(ctx, &location, false, fs); err != nil {
 			return err
 		}
