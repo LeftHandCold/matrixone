@@ -421,11 +421,7 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 	deleteTSCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[8]))
 	startTSCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[9]))
 	commitTSCol := vector.MustFixedCol[types.TS](mustVectorFromProto(bat.Vecs[11]))
-
-	if tid == 282758 {
-		time.Sleep(3 * time.Second)
-		logutil.Infof("HandleObjectInsert start object, pis %v\n", p.Uuid)
-	}
+	sleep := true
 	for idx := 0; idx < len(stateCol); idx++ {
 		p.shared.Lock()
 		if t := commitTSCol[idx]; t.Greater(&p.shared.lastFlushTimestamp) {
@@ -454,6 +450,10 @@ func (p *PartitionState) HandleObjectInsert(ctx context.Context, bat *api.Batch,
 			objEntry.HasDeltaLoc = old.HasDeltaLoc
 		}
 		if objEntry.ObjectStats.ObjectName().String() == "01907b85-eb46-7a24-9a5d-3c96d854b8ee_00000" {
+			if sleep {
+				time.Sleep(1 * time.Second)
+				sleep = false
+			}
 			logutil.Infof("HandleObjectInsert, %s, old is %v, p is %v\n", objEntry.ObjectStats.String(), old.ObjectStats.String(), p.Uuid)
 		}
 		if exist && !old.IsEmpty() {
