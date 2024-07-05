@@ -377,6 +377,7 @@ func (gs *GlobalStats) updateTableStats(key pb.StatsInfoKey) {
 
 	ts, ok := gs.statsUpdated.Load(key)
 	if ok && time.Since(ts.(time.Time)) < MinUpdateInterval {
+		logutil.Infof("table %d stats is updated recently, ss %v", key.TableID, time.Since(ts.(time.Time)))
 		return
 	}
 
