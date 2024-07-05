@@ -305,6 +305,9 @@ func ForeachVisibleDataObject(
 	}
 	for iter.Next() {
 		entry := iter.Entry()
+		if entry.ObjectStats.ObjectName().String() == "01907b85-eb46-7a24-9a5d-3c96d854b8ee_00000" {
+			logutil.Infof("entry1111: %v", entry.String())
+		}
 		if err = fn(entry); err != nil {
 			break
 		}
