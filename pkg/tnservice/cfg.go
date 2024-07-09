@@ -125,6 +125,7 @@ type Config struct {
 		ScanGCInterval toml.Duration `toml:"scan-gc-interval"`
 		DisableGC      bool          `toml:"disable-gc"`
 		CheckGC        bool          `toml:"check-gc"`
+		IsRestore      bool          `toml:"is-restore"`
 	}
 
 	Merge struct {

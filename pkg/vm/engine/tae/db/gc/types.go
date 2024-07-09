@@ -166,6 +166,7 @@ type Cleaner interface {
 	EnableGCForTest()
 	DisableGCForTest()
 	SetCheckGC(enable bool)
+	SetRestore(restore bool)
 	GetMPool() *mpool.MPool
 	GetSnapshots() (map[uint32]containers.Vector, error)
 }

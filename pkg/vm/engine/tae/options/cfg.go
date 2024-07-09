@@ -60,6 +60,7 @@ type GCCfg struct {
 	ScanGCInterval time.Duration `toml:"scan-gc-interval"`
 	DisableGC      bool          `toml:"disable-gc"`
 	CheckGC        bool          `toml:"check-gc"`
+	IsRestore      bool          `toml:"is-restore"`
 }
 
 type CatalogCfg struct {

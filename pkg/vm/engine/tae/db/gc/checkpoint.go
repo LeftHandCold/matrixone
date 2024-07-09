@@ -91,6 +91,8 @@ type checkpointCleaner struct {
 	// checkGC is to check the correctness of GC
 	checkGC bool
 
+	isRestore bool
+
 	option struct {
 		sync.RWMutex
 		enableGC bool
@@ -159,6 +161,14 @@ func (c *checkpointCleaner) SetCheckGC(enable bool) {
 
 func (c *checkpointCleaner) isEnableCheckGC() bool {
 	return c.checkGC
+}
+
+func (c *checkpointCleaner) SetRestore(restore bool) {
+	c.isRestore = restore
+}
+
+func (c *checkpointCleaner) IsRestore() bool {
+	return c.isRestore
 }
 
 func (c *checkpointCleaner) Replay() error {
@@ -972,9 +982,24 @@ func (c *checkpointCleaner) createNewInput(
 	for _, candidate := range ckps {
 		data, err = c.collectCkpData(candidate)
 		if err != nil {
-			logutil.Errorf("processing clean %s: %v", candidate.String(), err)
-			// TODO
-			return
+			if !c.isRestore {
+				logutil.Errorf("processing clean %s: %v", candidate.String(), err)
+				// TODO
+				return
+			}
+			maxGCkp := c.ckpClient.MaxGlobalCheckpoint()
+			if maxGCkp == nil {
+				logutil.Errorf("max global checkpoint is nil. processing clean %s: %v", candidate.String(), err)
+				return
+			}
+			gEnd := maxGCkp.GetEnd()
+			end := candidate.GetEnd()
+			if !end.Less(&gEnd) {
+				logutil.Errorf("max global checkpoint:%v, processing clean %s: %v", maxGCkp.String(), candidate.String(), err)
+				return
+			}
+			err = nil
+			continue
 		}
 		defer data.Close()
 		input.UpdateTable(data)
