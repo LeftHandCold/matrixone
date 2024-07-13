@@ -160,12 +160,15 @@ func (catalog *Catalog) GCByTS(ctx context.Context, ts types.TS) {
 		return nil
 	}
 	processor.TombstoneFn = func(t data.Tombstone) error {
-		obj := t.GetObject().(*ObjectEntry).GetLatestNode()
-		needGC := obj.DeleteBefore(ts) && !obj.InMemoryDeletesExistedLocked()
-		needGC = needGC && obj.IsDeletesFlushedBefore(ts)
+		objEntry := t.GetObject().(*ObjectEntry)
+		obj := objEntry.GetLatestNode()
+		needGC := obj == nil ||
+			(obj.DeleteBefore(ts) &&
+				!obj.InMemoryDeletesExistedLocked() &&
+				obj.IsDeletesFlushedBefore(ts))
 		if needGC {
-			tbl := obj.table
-			tbl.GCTombstone(*obj.ID())
+			tbl := objEntry.GetTable()
+			tbl.GCTombstone(*objEntry.ID())
 		}
 		return nil
 	}
