@@ -15,11 +15,18 @@
 package backup
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/stretchr/testify/assert"
 	"testing"
+	"time"
 )
 
 func TestMetas_AppendLaunchconfig(t *testing.T) {
+	test := time.Now()
+	t1 := test.AddDate(0, 0, 19)
+	t2 := t1.AddDate(0, -1, 0)
+	t3 := t1.AddDate(0, -5, 0)
+	logutil.Infof("time is %v, %v, %v ", t1, t2, t3)
 	type fields struct {
 		metas []*Meta
 	}

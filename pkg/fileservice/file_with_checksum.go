@@ -55,7 +55,7 @@ func NewFileWithChecksum[T FileLike](
 	return &FileWithChecksum[T]{
 		ctx:              ctx,
 		underlying:       underlying,
-		blockSize:        blockContentSize,
+		blockSize:        blockContentSize + _ChecksumSize,
 		blockContentSize: blockContentSize,
 		perfCounterSets:  perfCounterSets,
 	}
@@ -93,11 +93,6 @@ var emptyFileWithChecksumOSFile FileWithChecksum[*os.File]
 var _ FileLike = new(FileWithChecksum[*os.File])
 
 func (f *FileWithChecksum[T]) ReadAt(buf []byte, offset int64) (n int, err error) {
-	n, err = f.underlying.ReadAt(buf, offset)
-	if err != nil && err != io.EOF {
-		return 0, err
-	}
-	return
 	defer func() {
 		perfcounter.Update(f.ctx, func(c *perfcounter.CounterSet) {
 			c.FileService.FileWithChecksum.Read.Add(int64(n))
@@ -214,8 +209,8 @@ func (f *FileWithChecksum[T]) Seek(offset int64, whence int) (int64, error) {
 		return 0, err
 	}
 
-	//nBlock := ceilingDiv(fileSize, int64(f.blockSize))
-	contentSize := fileSize
+	nBlock := ceilingDiv(fileSize, int64(f.blockSize))
+	contentSize := fileSize - _ChecksumSize*nBlock
 
 	switch whence {
 	case io.SeekStart:

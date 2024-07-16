@@ -1040,9 +1040,18 @@ func (data *CheckpointData) PrintMetaBatch() {
 		files2[tid].add++
 
 	}
-	for i := 0; i < data.bats[BLKCNMetaInsertIDX].Length(); i++ {
+	for i := 0; i < data.bats[BLKMetaInsertIDX].Length(); i++ {
 		deltaLoc := objectio.Location(
-			data.bats[BLKCNMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte))
+			data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_DeltaLoc).Get(i).([]byte))
+		blockID := data.bats[BLKMetaInsertIDX].GetVectorByName(pkgcatalog.BlockMeta_ID).Get(i).(types.Blockid)
+		tid := data.bats[BLKMetaInsertTxnIDX].GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
+		if i == 0 {
+			logutil.Infof("blockID  is %v %v, tid is %d", blockID.String(), blockID.ShortString(), tid)
+		}
+		blockID.Segment().ToString()
+		if blockID.Segment().ToString() == "0190a48b-9940-76ae-8991-a8cd773ebfda" {
+			logutil.Infof("blockID  is %v", blockID.String())
+		}
 		if deltaLoc.IsEmpty() {
 			panic(fmt.Sprintf("block %v deltaLoc is empty", deltaLoc.String()))
 		}
@@ -1058,6 +1067,7 @@ func (data *CheckpointData) PrintMetaBatch() {
 	files := make(map[uint64]*tableinfo)
 	row := 0
 	for i := data.bats[ObjectInfoIDX].Length() - 1; i > 0; i-- {
+
 		if files[insTableIDs[i]] == nil {
 			files[insTableIDs[i]] = &tableinfo{
 				tid: insTableIDs[i],
@@ -1070,10 +1080,13 @@ func (data *CheckpointData) PrintMetaBatch() {
 		} else {
 			files[insTableIDs[i]].delete++
 		}
+		var objectStats objectio.ObjectStats
+		buf := data.bats[ObjectInfoIDX].GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
+		objectStats.UnMarshal(buf)
+		if objectStats.ObjectName().String() == "0190a48b-9940-76ae-8991-a8cd773ebfda_00000" {
+			logutil.Infof("objectStats  is %v", objectStats.String())
+		}
 		if files2[insTableIDs[i]] != nil && files2[insTableIDs[i]].add > 100 {
-			var objectStats objectio.ObjectStats
-			buf := data.bats[ObjectInfoIDX].GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
-			objectStats.UnMarshal(buf)
 			files2[insTableIDs[i]].block += objectStats.BlkCnt()
 			//if objectStats.Rows() < 2000 {
 			logutil.Debugf("table id: %d, object name: %v, row: %d, block count: %d, ts %v, origin size: %d, isAObject: %v, delete ts: %v",
