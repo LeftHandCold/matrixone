@@ -276,7 +276,7 @@ func logRemoteLockFailed(
 		"failed to lock on remote",
 		getLogOptions(zap.ErrorLevel),
 		txnField(txn),
-		bytesArrayField("rows", rows),
+		//bytesArrayField("rows", rows),
 		zap.String("opts", opts.DebugString()),
 		zap.String("remote", remote.DebugString()),
 		zap.Error(err),
