@@ -15,6 +15,7 @@
 package compile
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -167,9 +168,11 @@ func (s *Scope) canRemote(c *Compile, checkAddr bool) bool {
 	// if it was empty or equal to the current address, return false.
 	if checkAddr {
 		if len(s.NodeInfo.Addr) == 0 || len(c.addr) == 0 {
+			logutil.Infof("canRemotexxxx1, c is %v", c.sql)
 			return false
 		}
 		if isSameCN(c.addr, s.NodeInfo.Addr) {
+			logutil.Infof("canRemotexxxx2, c is %v", c.sql)
 			return false
 		}
 	}
@@ -179,11 +182,13 @@ func (s *Scope) canRemote(c *Compile, checkAddr bool) bool {
 	//  cannot generate this remote pipeline if the operator type is not supported.
 
 	if !canScopeOpRemote(s.RootOp) {
+		logutil.Infof("canRemotexxxx3, c is %v", c.sql)
 		return false
 	}
 
 	for _, pre := range s.PreScopes {
 		if !pre.canRemote(c, false) {
+			logutil.Infof("canRemotexxxx4, c is %v", c.sql)
 			return false
 		}
 	}
