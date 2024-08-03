@@ -17,6 +17,7 @@ package compile
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	goruntime "runtime"
 	"runtime/debug"
 	"strings"
@@ -375,8 +376,9 @@ func (s *Scope) RemoteRun(c *Compile) error {
 		return s.ParallelRun(c)
 	}
 
+	logutil.Infof("remote run pipelinexxxxxx")
 	runtime.ServiceRuntime(s.Proc.GetService()).Logger().
-		Debug("remote run pipeline",
+		Info("remote run pipeline",
 			zap.String("local-address", c.addr),
 			zap.String("remote-address", s.NodeInfo.Addr))
 
