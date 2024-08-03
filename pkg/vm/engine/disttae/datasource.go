@@ -691,15 +691,16 @@ func (rs *RemoteDataSource) GetTombstonesInProgress(
 }
 
 func (rs *RemoteDataSource) SetOrderBy(_ []*plan.OrderBySpec) {
-
+	logutil.Infof("RemoteDataSource.SetOrderBy is not implemented, but running")
 }
 
 func (rs *RemoteDataSource) GetOrderBy() []*plan.OrderBySpec {
+	logutil.Infof("RemoteDataSource.GetOrderBy is not implemented, but running")
 	return nil
 }
 
 func (rs *RemoteDataSource) SetFilterZM(_ objectio.ZoneMap) {
-
+	logutil.Infof("RemoteDataSource.SetFilterZM is not implemented, but running")
 }
 
 // local data source
@@ -815,6 +816,7 @@ func (ls *LocalDataSource) String() string {
 }
 
 func (ls *LocalDataSource) SetOrderBy(orderby []*plan.OrderBySpec) {
+	logutil.Infof("LocalDataSource.SetOrderBy is running")
 	ls.OrderBy = orderby
 }
 
