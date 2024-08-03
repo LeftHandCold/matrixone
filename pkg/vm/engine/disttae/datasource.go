@@ -252,12 +252,12 @@ func (tomb *tombstoneDataWithDeltaLoc) ApplyPersistedTombstones(
 	rowsOffset []int32,
 	mask *nulls.Nulls,
 	apply func(
-	ctx context.Context,
-	loc objectio.Location,
-	cts types.TS,
-	rowsOffset []int32,
-	deleted *nulls.Nulls,
-) (left []int32, err error),
+		ctx context.Context,
+		loc objectio.Location,
+		cts types.TS,
+		rowsOffset []int32,
+		deleted *nulls.Nulls,
+	) (left []int32, err error),
 ) (left []int32, err error) {
 
 	if locs, ok := tomb.blk2UncommitLoc[bid]; ok {
@@ -690,15 +690,16 @@ func (rs *RemoteDataSource) GetTombstonesInProgress(
 }
 
 func (rs *RemoteDataSource) SetOrderBy(_ []*plan.OrderBySpec) {
-
+	logutil.Infof("RemoteDataSource.SetOrderBy is not implemented, but running")
 }
 
 func (rs *RemoteDataSource) GetOrderBy() []*plan.OrderBySpec {
+	logutil.Infof("RemoteDataSource.GetOrderBy is not implemented, but running")
 	return nil
 }
 
 func (rs *RemoteDataSource) SetFilterZM(_ objectio.ZoneMap) {
-
+	logutil.Infof("RemoteDataSource.SetFilterZM is not implemented, but running")
 }
 
 // local data source
