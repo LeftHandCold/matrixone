@@ -816,7 +816,6 @@ func (ls *LocalDataSource) String() string {
 }
 
 func (ls *LocalDataSource) SetOrderBy(orderby []*plan.OrderBySpec) {
-	logutil.Infof("LocalDataSource.SetOrderBy is running")
 	ls.OrderBy = orderby
 }
 

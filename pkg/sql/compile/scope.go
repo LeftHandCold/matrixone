@@ -373,10 +373,11 @@ func (s *Scope) MergeRun(c *Compile) error {
 // RemoteRun send the scope to a remote node for execution.
 func (s *Scope) RemoteRun(c *Compile) error {
 	if !s.canRemote(c, true) {
+		logutil.Infof("parallel run pipelinexxxxxx, c is %v", c.sql)
 		return s.ParallelRun(c)
 	}
 
-	logutil.Infof("remote run pipelinexxxxxx")
+	logutil.Infof("remote run pipelinexxxxxx", c.sql)
 	runtime.ServiceRuntime(s.Proc.GetService()).Logger().
 		Info("remote run pipeline",
 			zap.String("local-address", c.addr),
