@@ -1110,16 +1110,15 @@ func (ls *LocalDataSource) filterInMemUnCommittedInserts(
 		return nil
 	}
 
-	var retainedRowIds []types.Rowid = make([]types.Rowid, maxRows)
+	var retainedRowIds []types.Rowid
 
 	for ; ls.wsCursor < ls.txnOffset &&
 		rows+writes[ls.wsCursor].bat.RowCount() <= maxRows; ls.wsCursor++ {
 		entry := ls.table.getTxn().writes[ls.wsCursor]
 
-		retainedRowIds = retainedRowIds[:0]
-
 		if t := checkWorkspaceEntryType(ls.table, entry); t == batRowsHaveDeletes {
 			leftInserts := ls.table.getTxn().batchSelectList[entry.bat]
+			retainedRowIds = make([]types.Rowid, len(leftInserts))
 			for i := range leftInserts {
 				rowId := vector.GetFixedAt[types.Rowid](entry.bat.Vecs[0], int(leftInserts[i]))
 				retainedRowIds[i] = rowId
@@ -1403,14 +1402,13 @@ func (ls *LocalDataSource) applyWorkspaceEntryDeletes(
 	done := false
 	writes := ls.table.getTxn().writes[:ls.txnOffset]
 
-	var delRowIds []types.Rowid = make([]types.Rowid, options.DefaultBlockMaxRows)
+	var delRowIds []types.Rowid
 
 	for idx := range writes {
-		delRowIds = delRowIds[:0]
-
 		if t := checkWorkspaceEntryType(ls.table, writes[idx]); t == batRowsHaveDeletes {
 			rowIds := vector.MustFixedCol[types.Rowid](writes[idx].bat.Vecs[0])
 			left := ls.table.getTxn().batchSelectList[writes[idx].bat]
+			delRowIds = make([]types.Rowid, 0, len(rowIds)-len(left))
 
 			for i := range rowIds {
 				dd := true
