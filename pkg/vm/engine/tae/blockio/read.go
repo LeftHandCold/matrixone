@@ -16,6 +16,7 @@ package blockio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"math"
 	"time"
 
@@ -57,7 +58,7 @@ func ReadDataByFilter(
 	mp *mpool.MPool,
 	tableName string,
 ) (sels []int64, err error) {
-	bat, release, err := LoadColumns(ctx, columns, colTypes, fs, info.MetaLocation(), mp, fileservice.Policy(0))
+	bat, release, err := LoadColumns(ctx, columns, colTypes, fs, info.MetaLocation(), common.DebugAllocator, fileservice.Policy(0))
 	if err != nil {
 		return
 	}
@@ -427,14 +428,14 @@ func buildRowidColumn(
 			&info.BlockID,
 			0,
 			info.MetaLocation().Rows(),
-			m,
+			common.DebugAllocator,
 		)
 	} else {
 		err = objectio.ConstructRowidColumnToWithSels(
 			col,
 			&info.BlockID,
 			sels,
-			m,
+			common.DebugAllocator,
 		)
 	}
 	if err != nil {
@@ -466,7 +467,7 @@ func readBlockData(
 			return
 		}
 
-		if loaded, release, err = LoadColumns(ctx, cols, typs, fs, info.MetaLocation(), m, policy); err != nil {
+		if loaded, release, err = LoadColumns(ctx, cols, typs, fs, info.MetaLocation(), common.DebugAllocator, policy); err != nil {
 			return
 		}
 		colPos := 0
