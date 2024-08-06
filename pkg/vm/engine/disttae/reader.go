@@ -368,7 +368,7 @@ func (r *reader) Read(
 	if r.scanType == LARGE || r.scanType == NORMAL {
 		policy = fileservice.SkipMemoryCacheWrites
 	}
-
+	bat.Clean(mp)
 	bat, err = blockio.BlockDataRead(
 		statsCtx,
 		r.withFilterMixin.proc.GetService(),
