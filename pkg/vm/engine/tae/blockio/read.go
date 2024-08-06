@@ -276,7 +276,7 @@ func BlockDataReadInner(
 
 	// read block data from storage specified by meta location
 	if loaded, rowidPos, deleteMask, release, err = readBlockData(
-		ctx, columns, colTypes, info, ts, fs, mp, vp, policy,
+		ctx, columns, colTypes, info, ts, fs, common.DebugAllocator, vp, policy,
 	); err != nil {
 		return
 	}
