@@ -316,11 +316,7 @@ func (r *reader) Read(
 
 	var dataState engine.DataState
 	freeBatch := func() {
-		if vp == nil {
-			bat.Clean(mp)
-		} else {
-			vp.PutBatch(bat)
-		}
+		bat.Clean(mp)
 	}
 
 	start := time.Now()
