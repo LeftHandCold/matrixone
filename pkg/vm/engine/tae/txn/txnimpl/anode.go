@@ -16,6 +16,7 @@ package txnimpl
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
@@ -120,6 +121,12 @@ func (n *anode) Append(data *containers.Batch, offset uint32) (an uint32, err er
 		def := schema.ColDefs[schema.GetColIdx(attr)]
 		destVec := n.data.Vecs[def.Idx]
 		// logutil.Infof("destVec: %s, %d, %d", destVec.String(), cnt, data.Length())
+
+		if destVec.GetType().Oid.ToType() != data.Vecs[def.Idx].GetType().Oid.ToType() {
+			logutil.Infof("destVec: %v, data: %v, table: %v", destVec.GetType().Oid.ToType().String(), data.Vecs[def.Idx].GetType().Oid.ToType().String(), schema.Name)
+			logutil.Infof("schema: %v, data is %d %v, n.data is %d %v", schema.String(), len(data.Vecs), data.Attrs, len(n.data.Vecs), n.data.Attrs)
+			panic("destVec and data type mismatch")
+		}
 		destVec.ExtendWithOffset(data.Vecs[def.Idx], int(offset), int(an))
 	}
 	n.rows = uint32(n.data.Length())
