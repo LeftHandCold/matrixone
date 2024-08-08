@@ -114,7 +114,7 @@ func (n *anode) Append(data *containers.Batch, offset uint32) (an uint32, err er
 
 	from := uint32(n.data.Length())
 	an = n.PrepareAppend(data, offset)
-	for _, attr := range data.Attrs {
+	for i, attr := range data.Attrs {
 		if attr == catalog.PhyAddrColumnName {
 			continue
 		}
@@ -124,7 +124,14 @@ func (n *anode) Append(data *containers.Batch, offset uint32) (an uint32, err er
 
 		if destVec.GetType().Oid.ToType() != data.Vecs[def.Idx].GetType().Oid.ToType() {
 			logutil.Infof("destVec: %v, data: %v, table: %v", destVec.GetType().Oid.ToType().String(), data.Vecs[def.Idx].GetType().Oid.ToType().String(), schema.Name)
-			logutil.Infof("schema: %v, data is %d %v, n.data is %d %v", schema.String(), len(data.Vecs), data.Attrs, len(n.data.Vecs), n.data.Attrs)
+			logutil.Infof("i %v, schema: %v, data is %d %v, n.data is %d %v", i, schema.ColDefs, len(data.Vecs), data.Attrs, len(n.data.Vecs), n.data.Attrs)
+			for y, col := range n.data.Vecs {
+				logutil.Infof("col %i, %v, arrt %v", y, col.GetType().String(), n.data.Attrs[y])
+			}
+			for y, col := range data.Vecs {
+				logutil.Infof("col2 %i, %v, arrt2 %v", y, col.GetType().String(), data.Attrs[y])
+
+			}
 			panic("destVec and data type mismatch")
 		}
 		destVec.ExtendWithOffset(data.Vecs[def.Idx], int(offset), int(an))
