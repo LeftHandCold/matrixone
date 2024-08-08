@@ -19,6 +19,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -113,6 +115,14 @@ func (txn *Transaction) WriteBatch(
 	if typ == INSERT {
 		if bat.Vecs[0].GetType().Oid == types.T_Rowid {
 			panic("rowid should not be generated in Insert WriteBatch")
+		}
+		if strings.Contains(tableName, "sbtest") {
+			if bat.Vecs[2].GetType().Oid == types.T_int32 || bat.Vecs[3].GetType().Oid == types.T_int32 {
+				for i, vec := range bat.Vecs {
+					logutil.Infof("vec.GetType().String()sbtestssss %v, i %v, tablename %v", vec.GetType().String(), i, tableName)
+				}
+				logutil.Infof(string(debug.Stack()))
+			}
 		}
 		txn.genBlock()
 		len := bat.RowCount()
