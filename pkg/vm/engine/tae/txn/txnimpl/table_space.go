@@ -290,6 +290,10 @@ func (space *tableSpace) Append(data *containers.Batch) (dur float64, err error)
 	offset := uint32(0)
 	length := uint32(data.Length())
 	schema := space.table.GetLocalSchema()
+	if len(schema.ColDefs) != len(data.Vecs) {
+		logutil.Infof("schema: %v, data: %v, schema.ColDefs %v, data %v table: %v", len(schema.ColDefs), len(data.Vecs), schema.Attrs(), data.Attrs, schema.Name)
+		panic("schema and data column mismatch")
+	}
 	for i, col := range schema.ColDefs {
 		if col.Type.Oid.ToType() != data.Vecs[i].GetType().Oid.ToType() {
 			logutil.Infof("schema: %v, data: %v, table: %v", col.Type.Oid.ToType().String(), data.Vecs[i].GetType().String(), schema.Name)
