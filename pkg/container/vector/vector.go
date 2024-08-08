@@ -17,6 +17,8 @@ package vector
 import (
 	"bytes"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"unsafe"
@@ -405,6 +407,7 @@ func SetFixedAt[T types.FixedSizeT](v *Vector, idx int, t T) error {
 		idx = len(vacol) + idx
 	}
 	if idx < 0 || idx >= len(vacol) {
+		logutil.Infof(string(debug.Stack()))
 		return moerr.NewInternalErrorNoCtx("vector idx out of range: %d > %d", idx, len(vacol))
 	}
 	vacol[idx] = t
