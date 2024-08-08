@@ -123,7 +123,9 @@ func (n *anode) Append(data *containers.Batch, offset uint32) (an uint32, err er
 		// logutil.Infof("destVec: %s, %d, %d", destVec.String(), cnt, data.Length())
 
 		if destVec.GetType().Oid.ToType() != data.Vecs[def.Idx].GetType().Oid.ToType() {
-			logutil.Infof("destVec: %v, data: %v, table: %v", destVec.GetType().Oid.ToType().String(), data.Vecs[def.Idx].GetType().Oid.ToType().String(), schema.Name)
+			logutil.Infof("destVec: %v, data: %v, table: %v, len %d-%d, i %d",
+				destVec.GetType().Oid.ToType().String(), data.Vecs[def.Idx].GetType().Oid.ToType().String(),
+				schema.Name, destVec.Length(), data.Vecs[def.Idx].Length(), i)
 			logutil.Infof("i %v, schema: %v, data is %d %v, n.data is %d %v", i, schema.ColDefs, len(data.Vecs), data.Attrs, len(n.data.Vecs), n.data.Attrs)
 			for y, col := range n.data.Vecs {
 				logutil.Infof("col %i, %v, arrt %v", y, col.GetType().String(), n.data.Attrs[y])
