@@ -369,7 +369,7 @@ func (mp *MPool) Stats() *MPoolStats {
 
 func (mp *MPool) Cap() int64 {
 	if mp.cap == 0 {
-		return PB
+		return TB
 	}
 	return mp.cap
 }
