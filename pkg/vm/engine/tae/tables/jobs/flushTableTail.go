@@ -776,6 +776,12 @@ func (task *flushTableTailTask) flushAObjsForSnapshot(ctx context.Context, isTom
 		if err = tables.RangeScanInMemoryByObject(
 			ctx, obj, dataVers, types.TS{}, task.txn.GetStartTS(), common.MergeAllocator,
 		); err != nil {
+			logutil.Info(
+				"[FLUSH-AOBJ-ERR]",
+				common.AnyField("error", err),
+				zap.String("task", task.Name()),
+				zap.String("obj", obj.ID().String()),
+			)
 			return
 		}
 		if len(dataVers) == 0 {
@@ -819,6 +825,12 @@ func (task *flushTableTailTask) flushAObjsForSnapshot(ctx context.Context, isTom
 			task.Name(),
 		)
 		if err = task.rt.Scheduler.Schedule(aobjectTask); err != nil {
+			logutil.Info(
+				"[FLUSH-AOBJ-ERR]",
+				common.AnyField("error", err),
+				zap.String("task", task.Name()),
+				zap.String("obj", obj.ID().String()),
+			)
 			return
 		}
 		subtasks[i] = aobjectTask
