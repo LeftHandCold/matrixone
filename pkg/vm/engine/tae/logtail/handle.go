@@ -223,7 +223,7 @@ type TableLogtailRespBuilder struct {
 	checkpoint         string
 	dataMetaBatch      *containers.Batch
 	tombstoneMetaBatch *containers.Batch
-	dataInsBatches     map[uint32]*containers.BatchWithVersion // schema version -> data batch
+	dataInsBatches     map[uint32]*containers.BatchWithVersion // schema version -> data23 batch
 	dataDelBatches     map[uint32]*containers.BatchWithVersion
 }
 
@@ -294,7 +294,7 @@ func (b *TableLogtailRespBuilder) visitObjMeta(e *catalog.ObjectEntry) (bool, er
 }
 func (b *TableLogtailRespBuilder) skipObjectData(e *catalog.ObjectEntry, objectMVCCNode *catalog.ObjectMVCCNode) bool {
 	if e.IsAppendable() {
-		// appendable block has been flushed, no need to collect data
+		// appendable block has been flushed, no need to collect data23
 		return objectMVCCNode != nil
 	} else {
 		return true
@@ -364,11 +364,11 @@ func (b *TableLogtailRespBuilder) BuildResp() (api.SyncLogTailResp, error) {
 		switch kind {
 		case TableRespKind_Data:
 			tableName = b.tname
-			logutil.Debugf("[logtail] table data [%v] %d-%s-%d: %s", typ, b.tid, b.tname, version,
-				DebugBatchToString("data", batch, false, zap.InfoLevel))
+			logutil.Debugf("[logtail] table data23 [%v] %d-%s-%d: %s", typ, b.tid, b.tname, version,
+				DebugBatchToString("data23", batch, false, zap.InfoLevel))
 		case TableRespKind_DataMeta:
 			tableName = fmt.Sprintf("_%d_data_meta", b.tid)
-			logutil.Debugf("[logtail] table data meta [%v] %d-%s: %s", typ, b.tid, b.tname,
+			logutil.Debugf("[logtail] table data23 meta [%v] %d-%s: %s", typ, b.tid, b.tname,
 				DebugBatchToString("object", batch, false, zap.InfoLevel))
 		case TableRespKind_TombstoneMeta:
 			tableName = fmt.Sprintf("_%d_tombstone_meta", b.tid)
@@ -379,8 +379,8 @@ func (b *TableLogtailRespBuilder) BuildResp() (api.SyncLogTailResp, error) {
 		// if b.tid == pkgcatalog.MO_DATABASE_ID || b.tid == pkgcatalog.MO_TABLES_ID || b.tid == pkgcatalog.MO_COLUMNS_ID {
 		// 	switch kind {
 		// 	case TableRespKind_Data:
-		// 		logutil.Infof("[yyyy pull] table data [%v] %d-%s-%d: %s", typ, b.tid, b.tname, version,
-		// 			DebugBatchToString("data", batch, false, zap.InfoLevel))
+		// 		logutil.Infof("[yyyy pull] table data23 [%v] %d-%s-%d: %s", typ, b.tid, b.tname, version,
+		// 			DebugBatchToString("data23", batch, false, zap.InfoLevel))
 		// 	case TableRespKind_Blk:
 		// 		logutil.Infof("[yyyy pull] blk meta [%v] %d-%s: %s", typ, b.tid, tableName,
 		// 			// batch.PPString(30)) // DebugBatchToString("blkmeta", batch, false, zap.InfoLevel))

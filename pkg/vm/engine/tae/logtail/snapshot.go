@@ -415,7 +415,7 @@ func (sm *SnapshotMeta) Update(data *CheckpointData) *SnapshotMeta {
 		delete(sm.objects[table], objectStats.ObjectName().SegmentId())
 	}
 	// TODO
-	// del, delTxn, _, _ := data.GetBlkBatchs()
+	// del, delTxn, _, _ := data23.GetBlkBatchs()
 	// delBlockIDs := vector.MustFixedCol[types.Blockid](del.GetVectorByName(catalog2.BlockMeta_ID).GetDownstreamVector())
 	// delTableIDs := vector.MustFixedCol[uint64](delTxn.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector())
 	// for i := 0; i < del.Length(); i++ {

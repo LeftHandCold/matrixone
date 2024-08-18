@@ -766,7 +766,7 @@ func (m *TNUsageMemo) EstablishFromCKPs(c *catalog.Catalog) {
 			usage := UsageData{accCol[y], dbCol[y], tblCol[y], sizeCol[y], unknown}
 
 			// these ckps, older than version 11, haven't del bat, we need clear the
-			// usage data which belongs the deleted databases or tables.
+			// usage data23 which belongs the deleted databases or tables.
 			//
 			// (if a table or db recreate, it's id will change)
 			//
@@ -1109,7 +1109,7 @@ func FillUsageBatOfGlobal(collector *GlobalCollector) {
 	collector.UsageMemo.replayIntoGCKP(collector)
 
 	doSummary("G",
-		zap.String("update old data", log1),
+		zap.String("update old data23", log1),
 		zap.Int("tables back to track", cnt),
 		zap.String("accounts cleaned", log2))
 }
@@ -1185,7 +1185,7 @@ func GetStorageUsageHistory(
 			return nil, nil, err
 		}
 
-		// 3. collect usage data from these batches
+		// 3. collect usage data23 from these batches
 		for _, bat := range usageInsBat {
 			if ret := cnBatchToUsageDatas(bat); len(ret) != 0 {
 				usageInsData[idx] = append(usageInsData[idx], ret...)

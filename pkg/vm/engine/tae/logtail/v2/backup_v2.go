@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package logtail
+package v2
 
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 	"math"
 	"sort"
 
@@ -52,17 +53,8 @@ type objData struct {
 }
 
 type blockData struct {
-	num       uint16
-	deleteRow []int
-	insertRow []int
-	blockType objectio.DataMetaType
-	location  objectio.Location
-	data      *batch.Batch
-	sortKey   uint16
-	isABlock  bool
-	blockId   types.Blockid
-	tid       uint64
-	tombstone *blockData
+	num  uint16
+	data *batch.Batch
 }
 
 type iBlocks struct {
@@ -98,8 +90,8 @@ func getCheckpointData(
 	fs fileservice.FileService,
 	location objectio.Location,
 	version uint32,
-) (*CheckpointData, error) {
-	data := NewCheckpointData(sid, common.CheckpointAllocator)
+) (*logtail.CheckpointData, error) {
+	data := logtail.NewCheckpointData(sid, common.CheckpointAllocator)
 	reader, err := blockio.NewObjectReader(sid, fs, location)
 	if err != nil {
 		return nil, err
@@ -135,12 +127,7 @@ func addObjectToObjectData(
 		if isABlk {
 			object.blocks = make(map[uint16]*blockData)
 			object.blocks[0] = &blockData{
-				num:       0,
-				location:  stats.ObjectLocation(),
-				blockType: blockType,
-				isABlock:  true,
-				tid:       tid,
-				sortKey:   uint16(math.MaxUint16),
+				num: 0,
 			}
 		}
 		(*objectsData)[name] = object
@@ -235,7 +222,7 @@ func trimObjectsData(
 						return isCkpChange, err
 					}
 					if commitTs.Greater(&ts) {
-						windowCNBatch(bat, 0, uint64(v))
+						logtail.windowCNBatch(bat, 0, uint64(v))
 						logutil.Debugf("blkCommitTs %v ts %v , block is %v",
 							commitTs.ToString(), ts.ToString(), block.location.String())
 						isChange = true
@@ -250,30 +237,6 @@ func trimObjectsData(
 		(*objectsData)[name].isChange = isChange
 	}
 	return isCkpChange, nil
-}
-
-func applyDelete(dataBatch *batch.Batch, deleteBatch *batch.Batch, id string) error {
-	if deleteBatch == nil {
-		return nil
-	}
-	deleteRow := make([]int64, 0)
-	rows := make(map[int64]bool)
-	for i := 0; i < deleteBatch.Vecs[0].Length(); i++ {
-		row := deleteBatch.Vecs[0].GetRawBytesAt(i)
-		rowId := objectio.HackBytes2Rowid(row)
-		blockId, ro := rowId.Decode()
-		if blockId.String() != id {
-			continue
-		}
-		rows[int64(ro)] = true
-	}
-	for i := 0; i < dataBatch.Vecs[0].Length(); i++ {
-		if rows[int64(i)] {
-			deleteRow = append(deleteRow, int64(i))
-		}
-	}
-	dataBatch.Shrink(deleteRow, true)
-	return nil
 }
 
 func updateBlockMeta(blkMeta, blkMetaTxn *containers.Batch, row int, blockID types.Blockid, location objectio.Location, sort bool) {
@@ -352,7 +315,7 @@ func LoadCheckpointEntriesFromKey(
 	version uint32,
 	softDeletes *map[string]bool,
 	baseTS *types.TS,
-) ([]*objectio.BackupObject, *CheckpointData, error) {
+) ([]*objectio.BackupObject, *logtail.CheckpointData, error) {
 	locations := make([]*objectio.BackupObject, 0)
 	data, err := getCheckpointData(ctx, sid, fs, location, version)
 	if err != nil {
@@ -370,14 +333,14 @@ func LoadCheckpointEntriesFromKey(
 			NeedCopy: true,
 		})
 	}
-	for i := 0; i < data.bats[ObjectInfoIDX].Length(); i++ {
+	for i := 0; i < data.bats[logtail.ObjectInfoIDX].Length(); i++ {
 		var objectStats objectio.ObjectStats
-		buf := data.bats[ObjectInfoIDX].GetVectorByName(ObjectAttr_ObjectStats).Get(i).([]byte)
+		buf := data.bats[logtail.ObjectInfoIDX].GetVectorByName(logtail.ObjectAttr_ObjectStats).Get(i).([]byte)
 		objectStats.UnMarshal(buf)
-		deletedAt := data.bats[ObjectInfoIDX].GetVectorByName(EntryNode_DeleteAt).Get(i).(types.TS)
-		createAt := data.bats[ObjectInfoIDX].GetVectorByName(EntryNode_CreateAt).Get(i).(types.TS)
-		commitAt := data.bats[ObjectInfoIDX].GetVectorByName(txnbase.SnapshotAttr_CommitTS).Get(i).(types.TS)
-		isAblk := data.bats[ObjectInfoIDX].GetVectorByName(ObjectAttr_State).Get(i).(bool)
+		deletedAt := data.bats[logtail.ObjectInfoIDX].GetVectorByName(logtail.EntryNode_DeleteAt).Get(i).(types.TS)
+		createAt := data.bats[logtail.ObjectInfoIDX].GetVectorByName(logtail.EntryNode_CreateAt).Get(i).(types.TS)
+		commitAt := data.bats[logtail.ObjectInfoIDX].GetVectorByName(txnbase.SnapshotAttr_CommitTS).Get(i).(types.TS)
+		isAblk := data.bats[logtail.ObjectInfoIDX].GetVectorByName(logtail.ObjectAttr_State).Get(i).(bool)
 		if objectStats.Extent().End() == 0 {
 			// tn obj is in the batch too
 			continue
@@ -407,11 +370,11 @@ func LoadCheckpointEntriesFromKey(
 		}
 	}
 
-	for i := 0; i < data.bats[TombstoneObjectInfoIDX].Length(); i++ {
+	for i := 0; i < data.bats[logtail.TombstoneObjectInfoIDX].Length(); i++ {
 		var objectStats objectio.ObjectStats
-		buf := data.bats[ObjectInfoIDX].GetVectorByName(ObjectAttr_ObjectStats).Get(i).([]byte)
+		buf := data.bats[logtail.ObjectInfoIDX].GetVectorByName(logtail.ObjectAttr_ObjectStats).Get(i).([]byte)
 		objectStats.UnMarshal(buf)
-		commitTS := data.bats[TombstoneObjectInfoIDX].GetVectorByName(txnbase.SnapshotAttr_CommitTS).Get(i).(types.TS)
+		commitTS := data.bats[logtail.TombstoneObjectInfoIDX].GetVectorByName(txnbase.SnapshotAttr_CommitTS).Get(i).(types.TS)
 		if objectStats.ObjectLocation().IsEmpty() {
 			logutil.Infof("block %v deltaLoc is empty", objectStats.ObjectName().String())
 			continue
@@ -477,11 +440,11 @@ func ReWriteCheckpointAndBlockFromKey(
 	var files []string
 	isCkpChange := false
 
-	objInfoData := data.bats[ObjectInfoIDX]
-	objInfoStats := objInfoData.GetVectorByName(ObjectAttr_ObjectStats)
-	objInfoState := objInfoData.GetVectorByName(ObjectAttr_State)
-	objInfoTid := objInfoData.GetVectorByName(SnapshotAttr_TID)
-	objInfoDelete := objInfoData.GetVectorByName(EntryNode_DeleteAt)
+	objInfoData := data.bats[logtail.ObjectInfoIDX]
+	objInfoStats := objInfoData.GetVectorByName(logtail.ObjectAttr_ObjectStats)
+	objInfoState := objInfoData.GetVectorByName(logtail.ObjectAttr_State)
+	objInfoTid := objInfoData.GetVectorByName(logtail.SnapshotAttr_TID)
+	objInfoDelete := objInfoData.GetVectorByName(logtail.EntryNode_DeleteAt)
 	objInfoCommit := objInfoData.GetVectorByName(txnbase.SnapshotAttr_CommitTS)
 
 	for i := 0; i < objInfoData.Length(); i++ {
@@ -502,12 +465,12 @@ func ReWriteCheckpointAndBlockFromKey(
 		addObjectToObjectData(stats, appendable, !deleteAt.IsEmpty(), i, tid, objectio.SchemaData, &objectsData)
 	}
 
-	blkMetaInsert := data.bats[TombstoneObjectInfoIDX]
-	blkMetaInsertStats := blkMetaInsert.GetVectorByName(ObjectAttr_ObjectStats)
+	blkMetaInsert := data.bats[logtail.TombstoneObjectInfoIDX]
+	blkMetaInsertStats := blkMetaInsert.GetVectorByName(logtail.ObjectAttr_ObjectStats)
 	blkMetaInsertEntryState := blkMetaInsert.GetVectorByName(catalog.BlockMeta_EntryState)
-	blkMetaInsertDelete := blkMetaInsert.GetVectorByName(EntryNode_DeleteAt)
+	blkMetaInsertDelete := blkMetaInsert.GetVectorByName(logtail.EntryNode_DeleteAt)
 	blkMetaInsertCommit := blkMetaInsert.GetVectorByName(txnbase.SnapshotAttr_CommitTS)
-	blkMetaInsertTid := blkMetaInsert.GetVectorByName(SnapshotAttr_TID)
+	blkMetaInsertTid := blkMetaInsert.GetVectorByName(logtail.SnapshotAttr_TID)
 
 	for i := 0; i < blkMetaInsert.Length(); i++ {
 		stats := objectio.NewObjectStats()
@@ -776,7 +739,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 				for _, insertRow := range dataBlocks[i].insertRow {
 					if dataBlocks[uint16(i)].blockType == objectio.SchemaTombstone {
-						data.bats[TombstoneObjectInfoIDX].GetVectorByName(catalog.ObjectMeta_ObjectStats).Update(
+						data.bats[logtail.TombstoneObjectInfoIDX].GetVectorByName(catalog.ObjectMeta_ObjectStats).Update(
 							insertRow,
 							[]byte(blockLocation),
 							false)
@@ -902,7 +865,7 @@ func ReWriteCheckpointAndBlockFromKey(
 	phaseNumber = 6
 	if len(insertObjBatch) > 0 {
 		deleteRow := make([]int, 0)
-		objectInfoMeta := makeRespBatchFromSchema(checkpointDataSchemas_Curr[ObjectInfoIDX], common.CheckpointAllocator)
+		objectInfoMeta := logtail.makeRespBatchFromSchema(logtail.checkpointDataSchemas_Curr[logtail.ObjectInfoIDX], common.CheckpointAllocator)
 		infoInsert := make(map[int]*objData, 0)
 		infoDelete := make(map[int]bool, 0)
 		for tid := range insertObjBatch {
@@ -938,9 +901,9 @@ func ReWriteCheckpointAndBlockFromKey(
 			if infoInsert[i] != nil {
 				appendValToBatch(objInfoData, objectInfoMeta, i)
 				row := objectInfoMeta.Length() - 1
-				objectInfoMeta.GetVectorByName(ObjectAttr_ObjectStats).Update(row, infoInsert[i].stats[:], false)
-				objectInfoMeta.GetVectorByName(ObjectAttr_State).Update(row, false, false)
-				objectInfoMeta.GetVectorByName(EntryNode_DeleteAt).Update(row, types.TS{}, false)
+				objectInfoMeta.GetVectorByName(logtail.ObjectAttr_ObjectStats).Update(row, infoInsert[i].stats[:], false)
+				objectInfoMeta.GetVectorByName(logtail.ObjectAttr_State).Update(row, false, false)
+				objectInfoMeta.GetVectorByName(logtail.EntryNode_DeleteAt).Update(row, types.TS{}, false)
 			}
 
 			if infoDelete[i] {
@@ -952,11 +915,11 @@ func ReWriteCheckpointAndBlockFromKey(
 		}
 		// data23.bats[TNObjectInfoIDX].Compact()
 		objectInfoMeta.Compact()
-		data.bats[ObjectInfoIDX].Close()
-		data.bats[ObjectInfoIDX] = objectInfoMeta
+		data.bats[logtail.ObjectInfoIDX].Close()
+		data.bats[logtail.ObjectInfoIDX] = objectInfoMeta
 		tableInsertOff := make(map[uint64]*tableOffset)
 		for i := 0; i < objectInfoMeta.Vecs[0].Length(); i++ {
-			tid := objectInfoMeta.GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
+			tid := objectInfoMeta.GetVectorByName(logtail.SnapshotAttr_TID).Get(i).(uint64)
 			if tableInsertOff[tid] == nil {
 				tableInsertOff[tid] = &tableOffset{
 					offset: i,
@@ -970,7 +933,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			data.UpdateDataObjectMeta(tid, int32(table.offset), int32(table.end))
 		}
 	}
-	cnLocation, dnLocation, checkpointFiles, err := data.WriteTo(dstFs, DefaultCheckpointBlockRows, DefaultCheckpointSize)
+	cnLocation, dnLocation, checkpointFiles, err := data.WriteTo(dstFs, logtail.DefaultCheckpointBlockRows, logtail.DefaultCheckpointSize)
 	if err != nil {
 		return nil, nil, nil, err
 	}

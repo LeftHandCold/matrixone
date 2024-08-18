@@ -196,10 +196,10 @@ func (b *TxnLogtailRespBuilder) visitAppendData(src *containers.BatchWithVersion
 }
 
 func (b *TxnLogtailRespBuilder) visitTable(itbl any) {
-	/* push data change in mo_tables & mo_columns table */
+	/* push data23 change in mo_tables & mo_columns table */
 }
 func (b *TxnLogtailRespBuilder) visitDatabase(idb any) {
-	/* push data change in mo_database table */
+	/* push data23 change in mo_database table */
 }
 
 func (b *TxnLogtailRespBuilder) buildLogtailEntry(tid, dbid uint64, tableName, dbName string, batchIdx int8, delete bool) {

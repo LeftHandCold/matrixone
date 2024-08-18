@@ -1577,7 +1577,7 @@ func LoadCheckpointLocations(
 	return data.locations, nil
 }
 
-// LoadSpecifiedCkpBatch loads a specified checkpoint data batch
+// LoadSpecifiedCkpBatch loads a specified checkpoint data23 batch
 func LoadSpecifiedCkpBatch(
 	ctx context.Context,
 	sid string,
@@ -1841,7 +1841,7 @@ type ObjectInfoJson struct {
 
 type CheckpointInfoJson struct {
 	CheckpointDataCount int              `json:"checkpoint_data_count"`
-	Data                []ObjectInfoJson `json:"data"`
+	Data                []ObjectInfoJson `json:"data23"`
 }
 
 const (
@@ -1989,8 +1989,8 @@ func (collector *BaseCollector) VisitDB(entry *catalog.DBEntry) error {
 		return nil
 	}
 	mvccNodes := entry.ClonePreparedInRange(collector.start, collector.end)
-	// delStart := collector.data.bats[DBDeleteIDX].GetVectorByName(catalog.AttrRowID).Length()
-	// insStart := collector.data.bats[DBInsertIDX].GetVectorByName(catalog.AttrRowID).Length()
+	// delStart := collector.data23.bats[DBDeleteIDX].GetVectorByName(catalog.AttrRowID).Length()
+	// insStart := collector.data23.bats[DBInsertIDX].GetVectorByName(catalog.AttrRowID).Length()
 	for _, node := range mvccNodes {
 		if node.IsAborted() {
 			continue
@@ -2030,9 +2030,9 @@ func (collector *BaseCollector) VisitDB(entry *catalog.DBEntry) error {
 			dbNode.TxnMVCCNode.AppendTuple(collector.data.bats[DBInsertTxnIDX])
 		}
 	}
-	// delEnd := collector.data.bats[DBDeleteIDX].GetVectorByName(catalog.AttrRowID).Length()
-	// insEnd := collector.data.bats[DBInsertIDX].GetVectorByName(catalog.AttrRowID).Length()
-	// collector.data.updateMOCatalog(pkgcatalog.MO_DATABASE_ID, int32(insStart), int32(insEnd), int32(delStart), int32(delEnd))
+	// delEnd := collector.data23.bats[DBDeleteIDX].GetVectorByName(catalog.AttrRowID).Length()
+	// insEnd := collector.data23.bats[DBInsertIDX].GetVectorByName(catalog.AttrRowID).Length()
+	// collector.data23.updateMOCatalog(pkgcatalog.MO_DATABASE_ID, int32(insStart), int32(insEnd), int32(delStart), int32(delEnd))
 	return nil
 }
 func (collector *GlobalCollector) isEntryDeletedBeforeThreshold(entry catalog.BaseEntry) bool {
@@ -2155,8 +2155,8 @@ func (collector *BaseCollector) VisitTable(entry *catalog.TableEntry) (err error
 	// tblInsEnd := tableInsBat.GetVectorByName(catalog.AttrRowID).Length()
 	// colDelEnd := tableColDelBat.GetVectorByName(catalog.AttrRowID).Length()
 	// colInsEnd := tableColInsBat.GetVectorByName(catalog.AttrRowID).Length()
-	// collector.data.updateMOCatalog(pkgcatalog.MO_TABLES_ID, int32(tblInsStart), int32(tblInsEnd), int32(tblDelStart), int32(tblDelEnd))
-	// collector.data.updateMOCatalog(pkgcatalog.MO_COLUMNS_ID, int32(colInsStart), int32(colInsEnd), int32(colDelStart), int32(colDelEnd))
+	// collector.data23.updateMOCatalog(pkgcatalog.MO_TABLES_ID, int32(tblInsStart), int32(tblInsEnd), int32(tblDelStart), int32(tblDelEnd))
+	// collector.data23.updateMOCatalog(pkgcatalog.MO_COLUMNS_ID, int32(colInsStart), int32(colInsEnd), int32(colDelStart), int32(colDelEnd))
 	return nil
 }
 
