@@ -589,8 +589,8 @@ func ReWriteCheckpointAndBlockFromKey(
 				return nil, nil, nil, err
 			}
 			if bat.Vecs[0].Length() == 0 {
-				logutil.Infof("%v block is empty , stat is %v, delete is %v,  ts %v, tid %d, block is empty",
-					objectData.stats.ObjectName().String(), objectData.appendable, objectData.delete, ts.ToString(), objectData.tid)
+				logutil.Infof("%v block is empty , stat is %v,  ts %v, tid %d, block is empty",
+					objectData.stats.ObjectName().String(), objectData.appendable, ts.ToString(), objectData.tid)
 				continue
 			}
 			objectData.sortKey = sortKey
