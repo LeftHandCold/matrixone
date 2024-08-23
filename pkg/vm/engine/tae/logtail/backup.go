@@ -93,9 +93,9 @@ func (d *BackupDeltaLocDataSource) Close() {
 }
 
 func (d *BackupDeltaLocDataSource) ApplyTombstones(
-	ctx context.Context,
-	bid objectio.Blockid,
-	rowsOffset []int64,
+	_ context.Context,
+	_ objectio.Blockid,
+	_ []int64,
 ) ([]int64, error) {
 	panic("Not Support ApplyTombstones")
 }
@@ -133,16 +133,11 @@ func GetTombstonesByBlockId(
 	scanOp func(func(tombstone *objData) (bool, error)) error,
 ) (err error) {
 
-	var (
-		totalBlk int
-	)
-
 	onTombstone := func(oData *objData) (bool, error) {
 		obj := oData.stats
 		if !oData.appendable {
 			return true, nil
 		}
-		logutil.Infof("onTombstone %v,rows from block %s, oData.data %d", oData.stats.ObjectName().String(), bid.String(), oData.data[0].Vecs[0].Length())
 		if !obj.ZMIsEmpty() {
 			objZM := obj.SortKeyZoneMap()
 			if skip := !objZM.PrefixEq(bid[:]); skip {
@@ -150,7 +145,6 @@ func GetTombstonesByBlockId(
 			}
 		}
 
-		totalBlk += int(obj.BlkCnt())
 		for idx := 0; idx < int(obj.BlkCnt()); idx++ {
 			rowids := vector.MustFixedCol[types.Rowid](oData.data[idx].Vecs[0])
 			start, end := blockio.FindIntervalForBlock(rowids, &bid)
@@ -161,11 +155,12 @@ func GetTombstonesByBlockId(
 			for i := start; i < end; i++ {
 				row := rowids[i].GetRowOffset()
 				deleteMask.Add(uint64(row))
-				logutil.Infof("Delete row %d from block %s", rowids[i].String(), bid.String())
 				deleteRows = append(deleteRows, int64(i))
 			}
+
+			// Shrink the tombstone batch, Because the rowid in the tombstone is no longer needed after apply,
+			// it cannot be written to disk
 			oData.data[idx].Shrink(deleteRows, true)
-			logutil.Infof("oData %v, Delete %d rows from block %s, oData.data %d", oData.stats.ObjectName().String(), len(deleteRows), bid.String(), oData.data[0].Vecs[0].Length())
 		}
 		return true, nil
 	}
@@ -175,7 +170,7 @@ func GetTombstonesByBlockId(
 }
 
 func (d *BackupDeltaLocDataSource) GetTombstones(
-	ctx context.Context, bid objectio.Blockid,
+	_ context.Context, bid objectio.Blockid,
 ) (deletedRows *nulls.Nulls, err error) {
 	deletedRows = &nulls.Nulls{}
 	deletedRows.InitWithSize(8192)
@@ -241,7 +236,7 @@ func addObjectToObjectData(
 
 }
 
-func trimObjectsData(
+func trimTombstoneData(
 	ctx context.Context,
 	fs fileservice.FileService,
 	ts types.TS,
@@ -253,7 +248,6 @@ func trimObjectsData(
 		if !(*objectsData)[name].appendable {
 			continue
 		}
-
 		if (*objectsData)[name].dataType != objectio.SchemaTombstone {
 			panic("Invalid data type")
 		}
@@ -264,14 +258,11 @@ func trimObjectsData(
 			return isCkpChange, err
 		}
 		dataMeta := meta.MustDataMeta()
-		sortKey := uint16(math.MaxUint16)
-		if dataMeta.BlockHeader().Appendable() {
-			sortKey = meta.MustDataMeta().BlockHeader().SortKey()
-			logutil.Infof(fmt.Sprintf(".Appendable %s hs, %d", name, sortKey))
+		if meta.MustDataMeta().BlockHeader().SortKey() != 0 {
+			panic("sort key should be 0")
 		}
-		dataM2 := meta.MustGetMeta(objectio.SchemaData)
-		if dataM2.BlockHeader().ColumnCount() > 3 {
-			logutil.Infof(fmt.Sprintf("object %s has more than 3 columns, %d, %d, sortKey is %d", name, dataM2.BlockHeader().ColumnCount(), dataMeta.BlockHeader().ColumnCount(), sortKey))
+		if dataMeta.BlockHeader().ColumnCount() > 3 {
+			logutil.Infof(fmt.Sprintf("object %s has more than 3 columns, %d, %d", name, dataMeta.BlockHeader().ColumnCount(), dataMeta.BlockHeader().ColumnCount()))
 		}
 		for id := uint32(0); id < dataMeta.BlockCount(); id++ {
 			var bat *batch.Batch
@@ -538,7 +529,7 @@ func ReWriteCheckpointAndBlockFromKey(
 
 	phaseNumber = 3
 	// Trim object files based on timestamp
-	isCkpChange, err = trimObjectsData(ctx, fs, ts, &tombstonesData)
+	isCkpChange, err = trimTombstoneData(ctx, fs, ts, &tombstonesData)
 	if err != nil {
 		return nil, nil, nil, err
 	}
