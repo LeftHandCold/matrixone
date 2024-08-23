@@ -125,7 +125,7 @@ func (task *flushObjTask) Execute(ctx context.Context) (err error) {
 		return err
 	}
 	if task.meta.IsTombstone {
-		logutil.Infof("[FLUSH-TOMBSTONE] len vector %d, tombstone %v", len(cnBatch.Vecs), name)
+		logutil.Infof("[FLUSH-TOMBSTONE] len vector %d, tombstone %v, attr %v", len(cnBatch.Vecs), name, cnBatch.Attrs)
 	}
 	if task.delta != nil {
 		cnBatch := containers.ToCNBatch(task.delta)
