@@ -43,18 +43,11 @@ type objData struct {
 	stats      *objectio.ObjectStats
 	data       []*batch.Batch
 	sortKey    uint16
-	infoRow    []int
 	infoDel    []int
 	tid        uint64
-	delete     bool
 	appendable bool
 	dataType   objectio.DataMetaType
 	isChange   bool
-}
-
-type blockData struct {
-	num  uint16
-	data *batch.Batch
 }
 
 type iObjects struct {
@@ -63,7 +56,6 @@ type iObjects struct {
 
 type insertObject struct {
 	deleteRow int
-	apply     bool
 	data      *objData
 }
 
@@ -117,12 +109,24 @@ func (d *BackupDeltaLocDataSource) ApplyTombstones(
 	panic("Not Support ApplyTombstones")
 }
 
+func (d *BackupDeltaLocDataSource) SetOrderBy(orderby []*plan.OrderBySpec) {
+	panic("Not Support order by")
+}
+
+func (d *BackupDeltaLocDataSource) GetOrderBy() []*plan.OrderBySpec {
+	panic("Not Support order by")
+}
+
+func (d *BackupDeltaLocDataSource) SetFilterZM(zm objectio.ZoneMap) {
+	panic("Not Support order by")
+}
+
 func ForeachTombstoneObject(
 	onTombstone func(tombstone *objData) (next bool, err error),
 	ds map[string]*objData,
 ) error {
 	for _, d := range ds {
-		if d.delete && d.appendable && d.data[0].Vecs[0].Length() > 0 {
+		if d.appendable && d.data[0].Vecs[0].Length() > 0 {
 			if next, err := onTombstone(d); !next || err != nil {
 				return err
 			}
@@ -198,18 +202,6 @@ func (d *BackupDeltaLocDataSource) GetTombstones(
 	return
 }
 
-func (d *BackupDeltaLocDataSource) SetOrderBy(orderby []*plan.OrderBySpec) {
-	panic("Not Support order by")
-}
-
-func (d *BackupDeltaLocDataSource) GetOrderBy() []*plan.OrderBySpec {
-	panic("Not Support order by")
-}
-
-func (d *BackupDeltaLocDataSource) SetFilterZM(zm objectio.ZoneMap) {
-	panic("Not Support order by")
-}
-
 func getCheckpointData(
 	ctx context.Context,
 	sid string,
@@ -235,37 +227,26 @@ func getCheckpointData(
 
 func addObjectToObjectData(
 	stats *objectio.ObjectStats,
-	isABlk, isDelete bool,
+	isABlk bool,
 	row int, tid uint64,
 	blockType objectio.DataMetaType,
 	objectsData *map[string]*objData,
 ) {
 	name := stats.ObjectName().String()
-	if (*objectsData)[name] == nil {
-		object := &objData{
-			stats:      stats,
-			delete:     isDelete,
-			isChange:   false,
-			appendable: isABlk,
-			tid:        tid,
-			dataType:   blockType,
-			sortKey:    uint16(math.MaxUint16),
-		}
-		(*objectsData)[name] = object
-		if isDelete {
-			(*objectsData)[name].infoDel = []int{row}
-		} else {
-			(*objectsData)[name].infoRow = []int{row}
-		}
-		return
+	if (*objectsData)[name] != nil {
+		panic("object already exists")
 	}
-
-	if isDelete {
-		(*objectsData)[name].delete = true
-		(*objectsData)[name].infoDel = append((*objectsData)[name].infoDel, row)
-	} else {
-		(*objectsData)[name].infoRow = append((*objectsData)[name].infoRow, row)
+	object := &objData{
+		stats:      stats,
+		isChange:   false,
+		appendable: isABlk,
+		tid:        tid,
+		dataType:   blockType,
+		sortKey:    uint16(math.MaxUint16),
 	}
+	(*objectsData)[name] = object
+	(*objectsData)[name].infoDel = []int{row}
+	return
 
 }
 
@@ -280,12 +261,6 @@ func trimObjectsData(
 		isChange := false
 		if !(*objectsData)[name].appendable {
 			continue
-		}
-		if (*objectsData)[name] != nil {
-			if !(*objectsData)[name].delete {
-				logutil.Infof(fmt.Sprintf("object %s is not a delete batch", name))
-				continue
-			}
 		}
 
 		if (*objectsData)[name].dataType != objectio.SchemaTombstone {
@@ -536,7 +511,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		//if deleteAt.IsEmpty() {
 		//	continue
 		//}
-		addObjectToObjectData(stats, appendable, !deleteAt.IsEmpty(), i, tid, objectio.SchemaData, &objectsData)
+		addObjectToObjectData(stats, appendable, i, tid, objectio.SchemaData, &objectsData)
 	}
 
 	tombstoneInfoData := data.bats[TombstoneObjectInfoIDX]
@@ -567,7 +542,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			panic(any(fmt.Sprintf("createAt equal to ts: %v-%v", createAt.ToString(), ts.ToString())))
 		}
 		logutil.Infof("tombstone %v deleteAt is not null , stat is %v, delete is %v, create ts is %v, ts %v, tid %d", stats.ObjectName().String(), appendable, deleteAt.ToString(), createAt.ToString(), ts.ToString(), tid)
-		addObjectToObjectData(stats, appendable, !deleteAt.IsEmpty(), i, tid, objectio.SchemaTombstone, &tombstonesData)
+		addObjectToObjectData(stats, appendable, i, tid, objectio.SchemaTombstone, &tombstonesData)
 	}
 
 	phaseNumber = 3
@@ -588,124 +563,6 @@ func ReWriteCheckpointAndBlockFromKey(
 	phaseNumber = 4
 	// Rewrite object file
 	for _, objectData := range objectsData {
-		if !objectData.delete {
-			panic(any("objectData is not change and not delete"))
-		}
-		if objectData.delete {
-			if !objectData.appendable {
-				if insertObjBatch[objectData.tid] == nil {
-					insertObjBatch[objectData.tid] = &iObjects{
-						rowObjects: make([]*insertObject, 0),
-					}
-				}
-				io := &insertObject{
-					apply:     false,
-					deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
-					data:      objectData,
-				}
-				insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
-
-			} else {
-				ds := NewBackupDeltaLocDataSource(ctx, fs, ts, tombstonesData)
-				location := objectData.stats.ObjectLocation()
-				name := objectData.stats.ObjectName()
-				l := objectio.BuildLocation(name, location.Extent(), 0, uint16(0))
-				blk := objectio.BlockInfo{
-					BlockID: *objectio.BuildObjectBlockid(name, uint16(0)),
-					MetaLoc: objectio.ObjectLocation(l),
-				}
-				bat, sortKey, err := blockio.BlockDataReadBackup(ctx, sid, &blk, ds, ts, fs)
-				if err != nil {
-					return nil, nil, nil, err
-				}
-				if bat.Vecs[0].Length() == 0 {
-					logutil.Infof("%v block is empty , stat is %v, delete is %v,  ts %v, tid %d, block is empty",
-						objectData.stats.ObjectName().String(), objectData.appendable, objectData.delete, ts.ToString(), objectData.tid)
-					continue
-				}
-				objectData.sortKey = sortKey
-				bat = formatData(bat)
-				objectData.data = make([]*batch.Batch, 0, 1)
-				objectData.data = append(objectData.data, bat)
-				objectData.isChange = true
-				if objectData.isChange &&
-					!objectData.delete {
-					// Rewrite the insert block/delete block file.
-					panic(any("rewrite insert block/delete block file"))
-				}
-				objectName := objectData.stats.ObjectName()
-				var blockLocation objectio.Location
-				// For the aBlock that needs to be retained,
-				// the corresponding NBlock is generated and inserted into the corresponding batch.
-				if len(objectData.data) > 2 {
-					panic(any(fmt.Sprintf("dataBlocks len > 2: %v - %d",
-						objectData.stats.ObjectLocation().String(), len(objectData.data))))
-				}
-
-				if objectData.data[0].Vecs[0].Length() == 0 {
-					panic(any(fmt.Sprintf("dataBlocks[0] len == 0: %v", objectData.stats.ObjectLocation().String())))
-				}
-
-				sortData := containers.ToTNBatch(objectData.data[0], common.CheckpointAllocator)
-
-				if objectData.sortKey != math.MaxUint16 {
-					_, err = mergesort.SortBlockColumns(sortData.Vecs, int(objectData.sortKey), backupPool)
-					if err != nil {
-						return nil, nil, nil, err
-					}
-				}
-				objectData.data[0] = containers.ToCNBatch(sortData)
-				result := batch.NewWithSize(len(objectData.data[0].Vecs) - 2)
-				for i := range result.Vecs {
-					result.Vecs[i] = objectData.data[0].Vecs[i]
-				}
-				objectData.data[0] = result
-
-				fileNum := uint16(1000) + objectName.Num()
-				segment := objectName.SegmentId()
-				name = objectio.BuildObjectName(&segment, fileNum)
-
-				writer, err := blockio.NewBlockWriter(dstFs, name.String())
-				if err != nil {
-					return nil, nil, nil, err
-				}
-				if objectData.sortKey != math.MaxUint16 {
-					writer.SetPrimaryKey(objectData.sortKey)
-					logutil.Infof("SetPrimaryKeyWithType SchemaData %v", name)
-				}
-				_, err = writer.WriteBatch(objectData.data[0])
-				if err != nil {
-					return nil, nil, nil, err
-				}
-				blocks, extent, err := writer.Sync(ctx)
-				if err != nil {
-					panic("sync error")
-				}
-				files = append(files, name.String())
-				blockLocation = objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
-				objectData.stats = &writer.GetObjectStats()[objectio.SchemaData]
-				objectio.SetObjectStatsLocation(objectData.stats, blockLocation)
-				logutil.Infof("delete object %v len blk %v is not  0, row is %v ,extent is %v, dataBlocks is %d", objectData.stats.String(), blockLocation.String(), blocks[0].GetRows(), extent.String(), len(objectData.data))
-				if insertObjBatch[objectData.tid] == nil {
-					insertObjBatch[objectData.tid] = &iObjects{
-						rowObjects: make([]*insertObject, 0),
-					}
-				}
-				io := &insertObject{
-					apply:     false,
-					deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
-					data:      objectData,
-				}
-				insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
-			}
-		}
-	}
-
-	for _, objectData := range tombstonesData {
-		objectName := objectData.stats.ObjectName()
-		if !objectData.delete {
-			panic(any("rewrite tombstone block file"))
-		}
 		if !objectData.appendable {
 			if insertObjBatch[objectData.tid] == nil {
 				insertObjBatch[objectData.tid] = &iObjects{
@@ -713,7 +570,109 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 			}
 			io := &insertObject{
-				apply:     false,
+				deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
+				data:      objectData,
+			}
+			insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
+
+		} else {
+			ds := NewBackupDeltaLocDataSource(ctx, fs, ts, tombstonesData)
+			location := objectData.stats.ObjectLocation()
+			name := objectData.stats.ObjectName()
+			l := objectio.BuildLocation(name, location.Extent(), 0, uint16(0))
+			blk := objectio.BlockInfo{
+				BlockID: *objectio.BuildObjectBlockid(name, uint16(0)),
+				MetaLoc: objectio.ObjectLocation(l),
+			}
+			bat, sortKey, err := blockio.BlockDataReadBackup(ctx, sid, &blk, ds, ts, fs)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if bat.Vecs[0].Length() == 0 {
+				logutil.Infof("%v block is empty , stat is %v, delete is %v,  ts %v, tid %d, block is empty",
+					objectData.stats.ObjectName().String(), objectData.appendable, objectData.delete, ts.ToString(), objectData.tid)
+				continue
+			}
+			objectData.sortKey = sortKey
+			bat = formatData(bat)
+			objectData.data = make([]*batch.Batch, 0, 1)
+			objectData.data = append(objectData.data, bat)
+			objectData.isChange = true
+			objectName := objectData.stats.ObjectName()
+			var blockLocation objectio.Location
+			// For the aBlock that needs to be retained,
+			// the corresponding NBlock is generated and inserted into the corresponding batch.
+			if len(objectData.data) > 2 {
+				panic(any(fmt.Sprintf("dataBlocks len > 2: %v - %d",
+					objectData.stats.ObjectLocation().String(), len(objectData.data))))
+			}
+
+			if objectData.data[0].Vecs[0].Length() == 0 {
+				panic(any(fmt.Sprintf("dataBlocks[0] len == 0: %v", objectData.stats.ObjectLocation().String())))
+			}
+
+			sortData := containers.ToTNBatch(objectData.data[0], common.CheckpointAllocator)
+
+			if objectData.sortKey != math.MaxUint16 {
+				_, err = mergesort.SortBlockColumns(sortData.Vecs, int(objectData.sortKey), backupPool)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+			}
+			objectData.data[0] = containers.ToCNBatch(sortData)
+			result := batch.NewWithSize(len(objectData.data[0].Vecs) - 2)
+			for i := range result.Vecs {
+				result.Vecs[i] = objectData.data[0].Vecs[i]
+			}
+			objectData.data[0] = result
+
+			fileNum := uint16(1000) + objectName.Num()
+			segment := objectName.SegmentId()
+			name = objectio.BuildObjectName(&segment, fileNum)
+
+			writer, err := blockio.NewBlockWriter(dstFs, name.String())
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if objectData.sortKey != math.MaxUint16 {
+				writer.SetPrimaryKey(objectData.sortKey)
+				logutil.Infof("SetPrimaryKeyWithType SchemaData %v", name)
+			}
+			_, err = writer.WriteBatch(objectData.data[0])
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			blocks, extent, err := writer.Sync(ctx)
+			if err != nil {
+				panic("sync error")
+			}
+			files = append(files, name.String())
+			blockLocation = objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
+			objectData.stats = &writer.GetObjectStats()[objectio.SchemaData]
+			objectio.SetObjectStatsLocation(objectData.stats, blockLocation)
+			logutil.Infof("delete object %v len blk %v is not  0, row is %v ,extent is %v, dataBlocks is %d", objectData.stats.String(), blockLocation.String(), blocks[0].GetRows(), extent.String(), len(objectData.data))
+			if insertObjBatch[objectData.tid] == nil {
+				insertObjBatch[objectData.tid] = &iObjects{
+					rowObjects: make([]*insertObject, 0),
+				}
+			}
+			io := &insertObject{
+				deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
+				data:      objectData,
+			}
+			insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
+		}
+	}
+
+	for _, objectData := range tombstonesData {
+		objectName := objectData.stats.ObjectName()
+		if !objectData.appendable {
+			if insertObjBatch[objectData.tid] == nil {
+				insertObjBatch[objectData.tid] = &iObjects{
+					rowObjects: make([]*insertObject, 0),
+				}
+			}
+			io := &insertObject{
 				deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
 				data:      objectData,
 			}
@@ -777,7 +736,6 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 			}
 			io := &insertObject{
-				apply:     false,
 				deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
 				data:      objectData,
 			}
@@ -794,9 +752,6 @@ func ReWriteCheckpointAndBlockFromKey(
 		infoInsertTombstone := make(map[int]*objData, 0)
 		for tid := range insertObjBatch {
 			for i := range insertObjBatch[tid].rowObjects {
-				if insertObjBatch[tid].rowObjects[i].apply {
-					continue
-				}
 				obj := insertObjBatch[tid].rowObjects[i].data
 				if obj.dataType == objectio.SchemaData {
 					if infoInsert[obj.infoDel[0]] != nil {
