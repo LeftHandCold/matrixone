@@ -576,31 +576,6 @@ func ReWriteCheckpointAndBlockFromKey(
 		if !objectData.delete {
 			panic(any("objectData is not change and not delete"))
 		}
-		ds := NewBackupDeltaLocDataSource(ctx, fs, ts, tombstonesData)
-		location := objectData.stats.ObjectLocation()
-		name := objectData.stats.ObjectName()
-		l := objectio.BuildLocation(name, location.Extent(), 0, uint16(0))
-		blk := objectio.BlockInfo{
-			BlockID: *objectio.BuildObjectBlockid(name, uint16(0)),
-			MetaLoc: objectio.ObjectLocation(l),
-		}
-		bat, change, err := blockio.BlockDataReadBackup(ctx, sid, &blk, ds, ts, fs)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		if bat.Vecs[0].Length() == 0 {
-			continue
-		}
-		bat = formatData(bat)
-		objectData.data = make([]*batch.Batch, 0, 1)
-		objectData.data = append(objectData.data, bat)
-		objectData.isChange = change
-		if objectData.isChange &&
-			!objectData.delete {
-			// Rewrite the insert block/delete block file.
-			panic(any("rewrite insert block/delete block file"))
-		}
-		objectName := objectData.stats.ObjectName()
 		if objectData.delete {
 			if !objectData.appendable {
 				if insertObjBatch[objectData.tid] == nil {
@@ -616,6 +591,31 @@ func ReWriteCheckpointAndBlockFromKey(
 				insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
 
 			} else {
+				ds := NewBackupDeltaLocDataSource(ctx, fs, ts, tombstonesData)
+				location := objectData.stats.ObjectLocation()
+				name := objectData.stats.ObjectName()
+				l := objectio.BuildLocation(name, location.Extent(), 0, uint16(0))
+				blk := objectio.BlockInfo{
+					BlockID: *objectio.BuildObjectBlockid(name, uint16(0)),
+					MetaLoc: objectio.ObjectLocation(l),
+				}
+				bat, _, err := blockio.BlockDataReadBackup(ctx, sid, &blk, ds, ts, fs)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+				if bat.Vecs[0].Length() == 0 {
+					continue
+				}
+				bat = formatData(bat)
+				objectData.data = make([]*batch.Batch, 0, 1)
+				objectData.data = append(objectData.data, bat)
+				objectData.isChange = true
+				if objectData.isChange &&
+					!objectData.delete {
+					// Rewrite the insert block/delete block file.
+					panic(any("rewrite insert block/delete block file"))
+				}
+				objectName := objectData.stats.ObjectName()
 				var blockLocation objectio.Location
 				// For the aBlock that needs to be retained,
 				// the corresponding NBlock is generated and inserted into the corresponding batch.
@@ -645,25 +645,14 @@ func ReWriteCheckpointAndBlockFromKey(
 
 				fileNum := uint16(1000) + objectName.Num()
 				segment := objectName.SegmentId()
-				name := objectio.BuildObjectName(&segment, fileNum)
+				name = objectio.BuildObjectName(&segment, fileNum)
 
 				writer, err := blockio.NewBlockWriter(dstFs, name.String())
 				if err != nil {
 					return nil, nil, nil, err
 				}
 				if objectData.sortKey != math.MaxUint16 {
-					if objectData.dataType == objectio.SchemaData {
-						writer.SetPrimaryKey(objectData.sortKey)
-					}
-				}
-				if objectData.dataType == objectio.SchemaTombstone {
-					writer.SetDataType(objectio.SchemaTombstone)
-					writer.SetPrimaryKeyWithType(
-						uint16(catalog.TombstonePrimaryKeyIdx),
-						index.HBF,
-						index.ObjectPrefixFn,
-						index.BlockPrefixFn,
-					)
+					writer.SetPrimaryKey(objectData.sortKey)
 				}
 				_, err = writer.WriteBatch(objectData.data[0])
 				if err != nil {
@@ -747,20 +736,13 @@ func ReWriteCheckpointAndBlockFromKey(
 			if err != nil {
 				return nil, nil, nil, err
 			}
-			if objectData.sortKey != math.MaxUint16 {
-				if objectData.dataType == objectio.SchemaData {
-					writer.SetPrimaryKey(objectData.sortKey)
-				}
-			}
-			if objectData.dataType == objectio.SchemaTombstone {
-				writer.SetDataType(objectio.SchemaTombstone)
-				writer.SetPrimaryKeyWithType(
-					uint16(catalog.TombstonePrimaryKeyIdx),
-					index.HBF,
-					index.ObjectPrefixFn,
-					index.BlockPrefixFn,
-				)
-			}
+			writer.SetDataType(objectio.SchemaTombstone)
+			writer.SetPrimaryKeyWithType(
+				uint16(catalog.TombstonePrimaryKeyIdx),
+				index.HBF,
+				index.ObjectPrefixFn,
+				index.BlockPrefixFn,
+			)
 			_, err = writer.WriteBatch(objectData.data[0])
 			if err != nil {
 				return nil, nil, nil, err
