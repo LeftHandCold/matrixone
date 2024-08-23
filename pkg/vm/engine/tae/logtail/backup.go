@@ -169,7 +169,7 @@ func GetTombstonesByBlockId(
 				deleteRows = append(deleteRows, int64(i))
 			}
 			oData.data[idx].Shrink(deleteRows, true)
-			logutil.Infof("oData %v, Delete %d rows from block %s", oData.stats.ObjectName().String(), len(deleteRows), blockId.String())
+			logutil.Infof("oData %v, Delete %d rows from block %s", oData.stats.ObjectName().String(), len(deleteRows), bid.String())
 		}
 		return true, nil
 	}
