@@ -314,7 +314,7 @@ func trimObjectsData(
 			isCkpChange = true
 			commitTs := types.TS{}
 			location.SetID(uint16(id))
-			bat, err = blockio.LoadOneBlock(ctx, fs, location, objectio.SchemaData)
+			bat, _, err = blockio.LoadOneBlock(ctx, fs, location, objectio.SchemaData)
 			if err != nil {
 				return isCkpChange, err
 			}
