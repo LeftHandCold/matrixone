@@ -305,7 +305,7 @@ func BlockDataReadBackup(
 	if !ts.IsEmpty() {
 		commitTs := types.TS{}
 		for v := 0; v < loaded.Vecs[0].Length(); v++ {
-			err = commitTs.Unmarshal(loaded.Vecs[len(loaded.Vecs)-2].GetRawBytesAt(v))
+			err = commitTs.Unmarshal(loaded.Vecs[len(loaded.Vecs)-1].GetRawBytesAt(v))
 			if err != nil {
 				return
 			}
