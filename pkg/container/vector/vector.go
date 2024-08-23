@@ -405,6 +405,7 @@ func SetFixedAt[T types.FixedSizeT](v *Vector, idx int, t T) error {
 		idx = len(vacol) + idx
 	}
 	if idx < 0 || idx >= len(vacol) {
+		panic(fmt.Sprintf("vector idx out of range: %d > %d", idx, len(vacol)))
 		return moerr.NewInternalErrorNoCtx("vector idx out of range: %d > %d", idx, len(vacol))
 	}
 	vacol[idx] = t

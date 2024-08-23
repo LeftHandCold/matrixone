@@ -827,12 +827,29 @@ func (data *CNCheckpointData) ReadFromData(
 					}
 				}
 				dataBats[uint32(i)] = cnBatch
+				if idx == ObjectInfoIDX || idx == TombstoneObjectInfoIDX {
+					deleteTSCol := vector.MustFixedCol[types.TS](cnBatch.Vecs[8])
+					createTSCol := vector.MustFixedCol[types.TS](cnBatch.Vecs[7])
+					for y := 0; y < cnBatch.Vecs[2].Length(); y++ {
+						stats := objectio.NewObjectStats()
+						stats.UnMarshal(cnBatch.Vecs[2].GetBytesAt(y))
+						logutil.Info("ReadFromData4", zap.String("stats", stats.ObjectName().String()), zap.Uint64("tid", tableID), zap.String("delete", deleteTSCol[y].ToString()), zap.String("create", createTSCol[y].ToString()))
+					}
+				}
 			} else {
 				dataBats[uint32(i)], err = dataBats[uint32(i)].Append(ctx, m, bat)
 				if err != nil {
 					return
 				}
+				if idx == ObjectInfoIDX || idx == TombstoneObjectInfoIDX {
+					for y := 0; y < bat.Vecs[2].Length(); y++ {
+						stats := objectio.NewObjectStats()
+						stats.UnMarshal(bat.Vecs[2].GetBytesAt(y))
+						logutil.Info("ReadFromData5", zap.String("stats", stats.ObjectName().String()), zap.Uint64("tid", tableID), zap.Uint64("start", uint64(block.GetStartOffset())), zap.Uint64("end", block.GetStartOffset()))
+					}
+				}
 			}
+
 		}
 	}
 
@@ -1021,6 +1038,11 @@ func (data *CheckpointData) resetTableMeta(tid uint64, metaIdx int, start, end i
 		meta = NewCheckpointMeta()
 		data.meta[tid] = meta
 	}
+	defer func() {
+		if metaIdx == DataObject || metaIdx == TombstoneObject {
+			logutil.Infof("updateTableMeta tid %d, metaIdx %d, start %d, end %d, metaIdx %d, meta %v", tid, metaIdx, start, end, metaIdx, meta.tables[metaIdx].String())
+		}
+	}()
 	if end > start {
 		if meta.tables[metaIdx] == nil {
 			meta.tables[metaIdx] = NewTableMeta()
@@ -2246,6 +2268,7 @@ func (collector *BaseCollector) VisitObjForBackup(entry *catalog.ObjectEntry) (e
 	if createTS.Greater(&collector.start) {
 		return nil
 	}
+	logutil.Infof("VisitObjForBackup visit object %v, %v, %v, %v", entry.GetTable().ID, entry.ObjectStats.ObjectName(), entry.IsAppendable(), entry.IsTombstone)
 	return collector.visitObjectEntry(entry)
 }
 

@@ -300,6 +300,11 @@ func trimObjectsData(
 		sortKey := uint16(math.MaxUint16)
 		if dataMeta.BlockHeader().Appendable() {
 			sortKey = meta.MustDataMeta().BlockHeader().SortKey()
+			logutil.Infof(fmt.Sprintf(".Appendable %s hs, %d", name, sortKey))
+		}
+		dataM2 := meta.MustGetMeta(objectio.SchemaData)
+		if dataM2.BlockHeader().ColumnCount() > 3 {
+			logutil.Infof(fmt.Sprintf("object %s has more than 3 columns, %d, %d, sortKey is %d", name, dataM2.BlockHeader().ColumnCount(), dataMeta.BlockHeader().ColumnCount(), sortKey))
 		}
 		for id := uint32(0); id < dataMeta.BlockCount(); id++ {
 			var bat *batch.Batch
@@ -434,6 +439,7 @@ func LoadCheckpointEntriesFromKey(
 		objectStats.UnMarshal(buf)
 		commitTS := data.bats[TombstoneObjectInfoIDX].GetVectorByName(txnbase.SnapshotAttr_CommitTS).Get(i).(types.TS)
 		if objectStats.ObjectLocation().IsEmpty() {
+			logutil.Infof("block %v deltaLoc is empty", objectStats.ObjectName().String())
 			continue
 		}
 		bo := &objectio.BackupObject{
@@ -511,18 +517,24 @@ func ReWriteCheckpointAndBlockFromKey(
 		stats.UnMarshal(objInfoStats.Get(i).([]byte))
 		appendable := objInfoState.Get(i).(bool)
 		deleteAt := objInfoDelete.Get(i).(types.TS)
-		createAt := objInfoCreate.Get(i).(types.TS)
 		commitTS := objInfoCommit.Get(i).(types.TS)
+		createAT := objInfoCreate.Get(i).(types.TS)
 		tid := objInfoTid.Get(i).(uint64)
 		if commitTS.Less(&ts) {
 			panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
 		}
 		if deleteAt.IsEmpty() {
+			logutil.Infof("block %v deleteAt is empty, stat is %v, create ts is %v, ts %v, tid %d", stats.ObjectName().String(), appendable, createAT.ToString(), ts.ToString(), tid)
 			continue
 		}
-		if createAt.Greater(&ts) {
-			panic(any(fmt.Sprintf("createAt Greater to ts: %v-%v", createAt.ToString(), ts.ToString())))
-		}
+		logutil.Infof("block %v deleteAt is not null , stat is %v, delete is %v, create ts is %v, ts %v, tid %d", stats.ObjectName().String(), appendable, deleteAt.ToString(), createAT.ToString(), ts.ToString(), tid)
+		//if appendable && deleteAt.IsEmpty() {
+		//	logutil.Infof("block %v deleteAt is empty", stats.ObjectName().String())
+		//	continue
+		//}
+		//if deleteAt.IsEmpty() {
+		//	continue
+		//}
 		addObjectToObjectData(stats, appendable, !deleteAt.IsEmpty(), i, tid, objectio.SchemaData, &objectsData)
 	}
 
@@ -546,12 +558,14 @@ func ReWriteCheckpointAndBlockFromKey(
 			panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
 		}
 		if deleteAt.IsEmpty() {
+			logutil.Infof("tombstone %v deleteAt is empty, stat is %v, create ts is %v, ts %v, tid %d", stats.ObjectName().String(), appendable, createAt.ToString(), ts.ToString(), tid)
 			continue
 		}
 
-		if createAt.Greater(&ts) {
-			panic(any(fmt.Sprintf("createAt Greater to ts: %v-%v", createAt.ToString(), ts.ToString())))
+		if createAt.Equal(&ts) {
+			panic(any(fmt.Sprintf("createAt equal to ts: %v-%v", createAt.ToString(), ts.ToString())))
 		}
+		logutil.Infof("tombstone %v deleteAt is not null , stat is %v, delete is %v, create ts is %v, ts %v, tid %d", stats.ObjectName().String(), appendable, deleteAt.ToString(), createAt.ToString(), ts.ToString(), tid)
 		addObjectToObjectData(stats, appendable, !deleteAt.IsEmpty(), i, tid, objectio.SchemaTombstone, &tombstonesData)
 	}
 
@@ -617,12 +631,16 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 				objectName := objectData.stats.ObjectName()
 				var blockLocation objectio.Location
+				if objectData.isChange && dataBlocks[0].data.Vecs[0].Length() == 0 {
+					logutil.Infof("delete object %v len is 0", objectName.String())
+				}
 				// For the aBlock that needs to be retained,
 				// the corresponding NBlock is generated and inserted into the corresponding batch.
 				if len(objectData.data) > 2 {
 					panic(any(fmt.Sprintf("dataBlocks len > 2: %v - %d",
 						objectData.stats.ObjectLocation().String(), len(objectData.data))))
 				}
+<<<<<<< HEAD
 
 				if objectData.data[0].Vecs[0].Length() == 0 {
 					panic(any(fmt.Sprintf("dataBlocks[0] len == 0: %v", objectData.stats.ObjectLocation().String())))
@@ -653,6 +671,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 				if objectData.sortKey != math.MaxUint16 {
 					writer.SetPrimaryKey(objectData.sortKey)
+					logutil.Infof("SetPrimaryKeyWithType SchemaData %v", name)
 				}
 				_, err = writer.WriteBatch(objectData.data[0])
 				if err != nil {
@@ -666,6 +685,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				blockLocation = objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
 				objectData.stats = &writer.GetObjectStats()[objectio.SchemaData]
 				objectio.SetObjectStatsLocation(objectData.stats, blockLocation)
+				logutil.Infof("delete object %v len blk %v is not  0, row is %v ,extent is %v, dataBlocks is %d", objectData.stats.ObjectLocation().String(), blockLocation.String(), blocks[0].GetRows(), extent.String(), len(objectData.data))
 				if insertObjBatch[objectData.tid] == nil {
 					insertObjBatch[objectData.tid] = &iObjects{
 						rowObjects: make([]*insertObject, 0),
@@ -837,6 +857,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			tid := objectInfoMeta.GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
 			stats := objectio.NewObjectStats()
 			stats.UnMarshal(objectInfoMeta.GetVectorByName(ObjectAttr_ObjectStats).Get(i).([]byte))
+			logutil.Infof("object tid %d stats %v, row %d", tid, stats.ObjectName().String(), i)
 			if tableInsertOff[tid] == nil {
 				tableInsertOff[tid] = &tableOffset{
 					offset: i,
@@ -850,6 +871,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			tid := tombstoneInfoMeta.GetVectorByName(SnapshotAttr_TID).Get(i).(uint64)
 			stats := objectio.NewObjectStats()
 			stats.UnMarshal(tombstoneInfoMeta.GetVectorByName(ObjectAttr_ObjectStats).Get(i).([]byte))
+			logutil.Infof("tombstone tid %d stats %v, row %d", tid, stats.ObjectName().String(), i)
 			if tableTombstoneOff[tid] == nil {
 				tableTombstoneOff[tid] = &tableOffset{
 					offset: i,
@@ -860,9 +882,11 @@ func ReWriteCheckpointAndBlockFromKey(
 		}
 
 		for tid, table := range tableInsertOff {
+			logutil.Infof("object tid %d offset %d end %d", tid, table.offset, table.end)
 			data.UpdateObjectInsertMeta(tid, int32(table.offset), int32(table.end))
 		}
 		for tid, table := range tableTombstoneOff {
+			logutil.Infof("tombstone tid %d offset %d end %d", tid, table.offset, table.end)
 			data.UpdateTombstoneInsertMeta(tid, int32(table.offset), int32(table.end))
 		}
 	}
