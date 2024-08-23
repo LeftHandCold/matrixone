@@ -139,27 +139,26 @@ func GetTombstonesByBlockId(
 ) (err error) {
 
 	var (
-		totalBlk     int
-		zmBreak      int
-		totalScanned int
+		totalBlk int
 	)
 
 	onTombstone := func(oData *objData) (bool, error) {
-		totalScanned++
 		obj := oData.stats
+		if !oData.appendable {
+			return true, nil
+		}
+		logutil.Infof("onTombstone %v,rows from block %s", oData.stats.ObjectName().String(), bid.String())
 		if !obj.ZMIsEmpty() {
 			objZM := obj.SortKeyZoneMap()
 			if skip := !objZM.PrefixEq(bid[:]); skip {
-				zmBreak++
 				return true, nil
 			}
 		}
 
 		totalBlk += int(obj.BlkCnt())
 		for idx := 0; idx < int(obj.BlkCnt()); idx++ {
-			blockId := objectio.BuildObjectBlockid(obj.ObjectName(), uint16(idx))
 			rowids := vector.MustFixedCol[types.Rowid](oData.data[idx].Vecs[0])
-			start, end := blockio.FindIntervalForBlock(rowids, blockId)
+			start, end := blockio.FindIntervalForBlock(rowids, &bid)
 			if start == end {
 				continue
 			}
