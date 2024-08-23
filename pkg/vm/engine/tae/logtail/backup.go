@@ -293,7 +293,6 @@ func trimTombstoneData(
 			if len(deleteRow) != bat.Vecs[0].Length() {
 				bat.Shrink(deleteRow, false)
 			}
-			(*objectsData)[name].sortKey = sortKey
 			bat = formatData(bat)
 			(*objectsData)[name].data = make([]*batch.Batch, 0)
 			(*objectsData)[name].data = append((*objectsData)[name].data, bat)
