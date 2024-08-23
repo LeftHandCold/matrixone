@@ -311,7 +311,7 @@ func BlockDataReadBackup(
 			}
 			if commitTs.Greater(&ts) {
 				windowCNBatch(loaded, 0, uint64(v))
-				logutil.Debugf("blkCommitTs %v ts %v , block is %v",
+				logutil.Infof("blkCommitTs %v ts %v , block is %v",
 					commitTs.ToString(), ts.ToString(), info.MetaLocation().String())
 				change = true
 				break
@@ -326,6 +326,7 @@ func BlockDataReadBackup(
 	if len(rows) > 0 {
 		loaded.Shrink(rows, true)
 	}
+	logutil.Infof("read block %s, ts %v, change %v, delete %v", info.BlockID.String(), ts.ToString(), loaded.Vecs[0].Length(), len(rows))
 	return
 }
 
