@@ -147,7 +147,7 @@ func GetTombstonesByBlockId(
 		if !oData.appendable {
 			return true, nil
 		}
-		logutil.Infof("onTombstone %v,rows from block %s", oData.stats.ObjectName().String(), bid.String())
+		logutil.Infof("onTombstone %v,rows from block %s, oData.data %d", oData.stats.ObjectName().String(), bid.String(), oData.data[0].Vecs[0].Length())
 		if !obj.ZMIsEmpty() {
 			objZM := obj.SortKeyZoneMap()
 			if skip := !objZM.PrefixEq(bid[:]); skip {
@@ -166,10 +166,11 @@ func GetTombstonesByBlockId(
 			for i := start; i < end; i++ {
 				row := rowids[i].GetRowOffset()
 				deleteMask.Add(uint64(row))
+				logutil.Infof("Delete row %d from block %s", row.String(), bid.String())
 				deleteRows = append(deleteRows, int64(i))
 			}
 			oData.data[idx].Shrink(deleteRows, true)
-			logutil.Infof("oData %v, Delete %d rows from block %s", oData.stats.ObjectName().String(), len(deleteRows), bid.String())
+			logutil.Infof("oData %v, Delete %d rows from block %s, oData.data %d", oData.stats.ObjectName().String(), len(deleteRows), bid.String(), oData.data[0].Vecs[0].Length())
 		}
 		return true, nil
 	}
@@ -772,8 +773,8 @@ func ReWriteCheckpointAndBlockFromKey(
 			files = append(files, name.String())
 			blockLocation = objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
 			objectData.stats = &writer.GetObjectStats()[objectio.SchemaData]
-			logutil.Infof("tombstone ddddd object %v len blk %v is not  0, row is %v ,extent is %v, dataBlocks is %d", objectData.stats.ObjectLocation().String(), blockLocation.String(), blocks[0].GetRows(), extent.String(), len(objectData.data))
 			objectio.SetObjectStatsLocation(objectData.stats, blockLocation)
+			logutil.Infof("tombstone ddddd object %v len blk %v is not  0, row is %v ,extent is %v, dataBlocks is %d", objectData.stats.ObjectLocation().String(), blockLocation.String(), blocks[0].GetRows(), extent.String(), len(objectData.data))
 			if insertObjBatch[objectData.tid] == nil {
 				insertObjBatch[objectData.tid] = &iObjects{
 					rowObjects: make([]*insertObject, 0),
