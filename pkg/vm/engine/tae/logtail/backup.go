@@ -614,7 +614,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					BlockID: *objectio.BuildObjectBlockid(name, uint16(0)),
 					MetaLoc: objectio.ObjectLocation(l),
 				}
-				bat, _, err := blockio.BlockDataReadBackup(ctx, sid, &blk, ds, ts, fs)
+				bat, sortKey, err := blockio.BlockDataReadBackup(ctx, sid, &blk, ds, ts, fs)
 				if err != nil {
 					return nil, nil, nil, err
 				}
@@ -623,6 +623,7 @@ func ReWriteCheckpointAndBlockFromKey(
 						objectData.stats.ObjectName().String(), objectData.appendable, objectData.delete, ts.ToString(), objectData.tid)
 					continue
 				}
+				objectData.sortKey = sortKey
 				bat = formatData(bat)
 				objectData.data = make([]*batch.Batch, 0, 1)
 				objectData.data = append(objectData.data, bat)

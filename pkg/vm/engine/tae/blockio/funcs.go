@@ -16,6 +16,7 @@ package blockio
 
 import (
 	"context"
+	"math"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 
@@ -175,18 +176,17 @@ func LoadOneBlock(
 	fs fileservice.FileService,
 	key objectio.Location,
 	metaType objectio.DataMetaType,
-) (*batch.Batch, error) {
+) (*batch.Batch, uint16, error) {
 	meta, err := objectio.FastLoadObjectMeta(ctx, &key, false, fs)
 	if err != nil {
-		return nil, err
+		return nil, math.MaxUint16, err
 	}
 	data := meta.MustGetMeta(metaType)
-
 	idxes := make([]uint16, data.BlockHeader().ColumnCount())
 	for i := range idxes {
 		idxes[i] = uint16(i)
 	}
 	bat, err := objectio.ReadOneBlockAllColumns(ctx, &data, key.Name().String(),
 		uint32(key.ID()), idxes, fileservice.SkipAllCache, fs)
-	return bat, err
+	return bat, meta.MustDataMeta().BlockHeader().SortKey(), err
 }
