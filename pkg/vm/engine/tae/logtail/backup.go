@@ -591,6 +591,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		if bat.Vecs[0].Length() == 0 {
 			continue
 		}
+		objectData.data = make([]*batch.Batch, 0, 1)
 		objectData.data = append(objectData.data, bat)
 		objectData.isChange = change
 		if objectData.isChange &&
