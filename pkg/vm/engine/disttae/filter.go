@@ -1126,6 +1126,10 @@ func ExecuteBlockFilter(
 						quickBreak, ok2 bool
 					)
 					blkMeta = dataMeta.GetBlockMeta(uint32(pos))
+					tbf := bf.GetBloomFilter(uint32(pos))
+					if len(tbf) == 0 {
+						logutil.Infof("bloom filter is empty, object: %s, block: %d", objStats.String(), pos)
+					}
 					if quickBreak, ok2, err2 = blockFilterOp(pos, blkMeta, bf); err2 != nil {
 						return
 
