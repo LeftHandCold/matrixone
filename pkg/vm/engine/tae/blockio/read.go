@@ -16,7 +16,6 @@ package blockio
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"time"
 
@@ -313,7 +312,6 @@ func BlockDataReadBackup(
 				windowCNBatch(loaded, 0, uint64(v))
 				logutil.Infof("blkCommitTs %v ts %v , block is %v",
 					commitTs.ToString(), ts.ToString(), info.MetaLocation().String())
-				change = true
 				break
 			}
 		}
