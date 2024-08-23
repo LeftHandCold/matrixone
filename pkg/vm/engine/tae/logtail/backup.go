@@ -170,6 +170,7 @@ func GetTombstonesByBlockId(
 				deleteRows = append(deleteRows, int64(i))
 			}
 			oData.data[idx].Shrink(deleteRows, true)
+			logutil.Infof("oData %v, Delete %d rows from block %s", oData.stats.ObjectName().String(), len(deleteRows), blockId.String())
 		}
 		return true, nil
 	}
@@ -770,6 +771,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			files = append(files, name.String())
 			blockLocation = objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
 			objectData.stats = &writer.GetObjectStats()[objectio.SchemaData]
+			logutil.Infof("tombstone ddddd object %v len blk %v is not  0, row is %v ,extent is %v, dataBlocks is %d", objectData.stats.ObjectLocation().String(), blockLocation.String(), blocks[0].GetRows(), extent.String(), len(objectData.data))
 			objectio.SetObjectStatsLocation(objectData.stats, blockLocation)
 			if insertObjBatch[objectData.tid] == nil {
 				insertObjBatch[objectData.tid] = &iObjects{
