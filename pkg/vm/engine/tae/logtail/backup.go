@@ -43,20 +43,11 @@ type objData struct {
 	stats      *objectio.ObjectStats
 	data       []*batch.Batch
 	sortKey    uint16
-	infoDel    []int
+	ckpRow     int
 	tid        uint64
 	appendable bool
 	dataType   objectio.DataMetaType
 	isChange   bool
-}
-
-type iObjects struct {
-	rowObjects []*insertObject
-}
-
-type insertObject struct {
-	deleteRow int
-	data      *objData
 }
 
 type tableOffset struct {
@@ -245,7 +236,7 @@ func addObjectToObjectData(
 		sortKey:    uint16(math.MaxUint16),
 	}
 	(*objectsData)[name] = object
-	(*objectsData)[name].infoDel = []int{row}
+	(*objectsData)[name].ckpRow = row
 	return
 
 }
@@ -558,22 +549,16 @@ func ReWriteCheckpointAndBlockFromKey(
 	backupPool := dbutils.MakeDefaultSmallPool("backup-vector-pool")
 	defer backupPool.Destory()
 
-	insertObjBatch := make(map[uint64]*iObjects)
+	insertObjBatch := make(map[uint64][]*objData)
 
 	phaseNumber = 4
 	// Rewrite object file
 	for _, objectData := range objectsData {
+		if insertObjBatch[objectData.tid] == nil {
+			insertObjBatch[objectData.tid] = make([]*objData, 0)
+		}
 		if !objectData.appendable {
-			if insertObjBatch[objectData.tid] == nil {
-				insertObjBatch[objectData.tid] = &iObjects{
-					rowObjects: make([]*insertObject, 0),
-				}
-			}
-			io := &insertObject{
-				deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
-				data:      objectData,
-			}
-			insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
+			insertObjBatch[objectData.tid] = append(insertObjBatch[objectData.tid], objectData)
 
 		} else {
 			ds := NewBackupDeltaLocDataSource(ctx, fs, ts, tombstonesData)
@@ -651,32 +636,17 @@ func ReWriteCheckpointAndBlockFromKey(
 			objectData.stats = &writer.GetObjectStats()[objectio.SchemaData]
 			objectio.SetObjectStatsLocation(objectData.stats, blockLocation)
 			logutil.Infof("delete object %v len blk %v is not  0, row is %v ,extent is %v, dataBlocks is %d", objectData.stats.String(), blockLocation.String(), blocks[0].GetRows(), extent.String(), len(objectData.data))
-			if insertObjBatch[objectData.tid] == nil {
-				insertObjBatch[objectData.tid] = &iObjects{
-					rowObjects: make([]*insertObject, 0),
-				}
-			}
-			io := &insertObject{
-				deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
-				data:      objectData,
-			}
-			insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
+			insertObjBatch[objectData.tid] = append(insertObjBatch[objectData.tid], objectData)
 		}
 	}
 
 	for _, objectData := range tombstonesData {
 		objectName := objectData.stats.ObjectName()
+		if insertObjBatch[objectData.tid] == nil {
+			insertObjBatch[objectData.tid] = make([]*objData, 0)
+		}
 		if !objectData.appendable {
-			if insertObjBatch[objectData.tid] == nil {
-				insertObjBatch[objectData.tid] = &iObjects{
-					rowObjects: make([]*insertObject, 0),
-				}
-			}
-			io := &insertObject{
-				deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
-				data:      objectData,
-			}
-			insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
+			insertObjBatch[objectData.tid] = append(insertObjBatch[objectData.tid], objectData)
 
 		} else {
 			var blockLocation objectio.Location
@@ -730,16 +700,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			objectData.stats = &writer.GetObjectStats()[objectio.SchemaData]
 			objectio.SetObjectStatsLocation(objectData.stats, blockLocation)
 			logutil.Infof("tombstone ddddd object %v len blk %v is not  0, row is %v ,extent is %v, dataBlocks is %d", objectData.stats.ObjectLocation().String(), blockLocation.String(), blocks[0].GetRows(), extent.String(), len(objectData.data))
-			if insertObjBatch[objectData.tid] == nil {
-				insertObjBatch[objectData.tid] = &iObjects{
-					rowObjects: make([]*insertObject, 0),
-				}
-			}
-			io := &insertObject{
-				deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
-				data:      objectData,
-			}
-			insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
+			insertObjBatch[objectData.tid] = append(insertObjBatch[objectData.tid], objectData)
 		}
 	}
 
@@ -751,18 +712,18 @@ func ReWriteCheckpointAndBlockFromKey(
 		infoInsert := make(map[int]*objData, 0)
 		infoInsertTombstone := make(map[int]*objData, 0)
 		for tid := range insertObjBatch {
-			for i := range insertObjBatch[tid].rowObjects {
-				obj := insertObjBatch[tid].rowObjects[i].data
+			for i := range insertObjBatch[tid] {
+				obj := insertObjBatch[tid][i]
 				if obj.dataType == objectio.SchemaData {
-					if infoInsert[obj.infoDel[0]] != nil {
+					if infoInsert[obj.ckpRow] != nil {
 						panic("should not have info insert")
 					}
-					infoInsert[obj.infoDel[0]] = insertObjBatch[tid].rowObjects[i].data
+					infoInsert[obj.ckpRow] = obj
 				} else {
-					if infoInsertTombstone[obj.infoDel[0]] != nil {
+					if infoInsertTombstone[obj.ckpRow] != nil {
 						panic("should not have info insert")
 					}
-					infoInsertTombstone[obj.infoDel[0]] = insertObjBatch[tid].rowObjects[i].data
+					infoInsertTombstone[obj.ckpRow] = obj
 				}
 			}
 
