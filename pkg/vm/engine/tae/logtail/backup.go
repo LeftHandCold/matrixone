@@ -631,16 +631,12 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 				objectName := objectData.stats.ObjectName()
 				var blockLocation objectio.Location
-				if objectData.isChange && dataBlocks[0].data.Vecs[0].Length() == 0 {
-					logutil.Infof("delete object %v len is 0", objectName.String())
-				}
 				// For the aBlock that needs to be retained,
 				// the corresponding NBlock is generated and inserted into the corresponding batch.
 				if len(objectData.data) > 2 {
 					panic(any(fmt.Sprintf("dataBlocks len > 2: %v - %d",
 						objectData.stats.ObjectLocation().String(), len(objectData.data))))
 				}
-<<<<<<< HEAD
 
 				if objectData.data[0].Vecs[0].Length() == 0 {
 					panic(any(fmt.Sprintf("dataBlocks[0] len == 0: %v", objectData.stats.ObjectLocation().String())))
