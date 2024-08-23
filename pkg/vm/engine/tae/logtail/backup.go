@@ -694,94 +694,96 @@ func ReWriteCheckpointAndBlockFromKey(
 
 	for _, objectData := range tombstonesData {
 		objectName := objectData.stats.ObjectName()
-		if objectData.delete {
-			if !objectData.appendable {
-				if insertObjBatch[objectData.tid] == nil {
-					insertObjBatch[objectData.tid] = &iObjects{
-						rowObjects: make([]*insertObject, 0),
-					}
+		if !objectData.delete {
+			panic(any("rewrite tombstone block file"))
+		}
+		if !objectData.appendable {
+			if insertObjBatch[objectData.tid] == nil {
+				insertObjBatch[objectData.tid] = &iObjects{
+					rowObjects: make([]*insertObject, 0),
 				}
-				io := &insertObject{
-					apply:     false,
-					deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
-					data:      objectData,
-				}
-				insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
-
-			} else {
-				var blockLocation objectio.Location
-				// For the aBlock that needs to be retained,
-				// the corresponding NBlock is generated and inserted into the corresponding batch.
-				if len(objectData.data) > 2 {
-					panic(any(fmt.Sprintf("dataBlocks len > 2: %v - %d",
-						objectData.stats.ObjectLocation().String(), len(objectData.data))))
-				}
-
-				if objectData.data[0].Vecs[0].Length() == 0 {
-					panic(any(fmt.Sprintf("dataBlocks[0] len == 0: %v", objectData.stats.ObjectLocation().String())))
-				}
-
-				sortData := containers.ToTNBatch(objectData.data[0], common.CheckpointAllocator)
-
-				if objectData.sortKey != math.MaxUint16 {
-					_, err = mergesort.SortBlockColumns(sortData.Vecs, int(objectData.sortKey), backupPool)
-					if err != nil {
-						return nil, nil, nil, err
-					}
-				}
-				objectData.data[0] = containers.ToCNBatch(sortData)
-				result := batch.NewWithSize(len(objectData.data[0].Vecs) - 2)
-				for i := range result.Vecs {
-					result.Vecs[i] = objectData.data[0].Vecs[i]
-				}
-				objectData.data[0] = result
-
-				fileNum := uint16(1000) + objectName.Num()
-				segment := objectName.SegmentId()
-				name := objectio.BuildObjectName(&segment, fileNum)
-
-				writer, err := blockio.NewBlockWriter(dstFs, name.String())
-				if err != nil {
-					return nil, nil, nil, err
-				}
-				if objectData.sortKey != math.MaxUint16 {
-					if objectData.dataType == objectio.SchemaData {
-						writer.SetPrimaryKey(objectData.sortKey)
-					}
-				}
-				if objectData.dataType == objectio.SchemaTombstone {
-					writer.SetDataType(objectio.SchemaTombstone)
-					writer.SetPrimaryKeyWithType(
-						uint16(catalog.TombstonePrimaryKeyIdx),
-						index.HBF,
-						index.ObjectPrefixFn,
-						index.BlockPrefixFn,
-					)
-				}
-				_, err = writer.WriteBatch(objectData.data[0])
-				if err != nil {
-					return nil, nil, nil, err
-				}
-				blocks, extent, err := writer.Sync(ctx)
-				if err != nil {
-					panic("sync error")
-				}
-				files = append(files, name.String())
-				blockLocation = objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
-				objectData.stats = &writer.GetObjectStats()[objectio.SchemaData]
-				objectio.SetObjectStatsLocation(objectData.stats, blockLocation)
-				if insertObjBatch[objectData.tid] == nil {
-					insertObjBatch[objectData.tid] = &iObjects{
-						rowObjects: make([]*insertObject, 0),
-					}
-				}
-				io := &insertObject{
-					apply:     false,
-					deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
-					data:      objectData,
-				}
-				insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
 			}
+			io := &insertObject{
+				apply:     false,
+				deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
+				data:      objectData,
+			}
+			insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
+
+		} else {
+			var blockLocation objectio.Location
+			// For the aBlock that needs to be retained,
+			// the corresponding NBlock is generated and inserted into the corresponding batch.
+			if len(objectData.data) > 2 {
+				panic(any(fmt.Sprintf("dataBlocks len > 2: %v - %d",
+					objectData.stats.ObjectLocation().String(), len(objectData.data))))
+			}
+
+			if objectData.data[0].Vecs[0].Length() == 0 {
+				logutil.Infof("dataBlocks[0] len == 0: %v", objectData.stats.ObjectLocation().String())
+				continue
+			}
+
+			sortData := containers.ToTNBatch(objectData.data[0], common.CheckpointAllocator)
+
+			if objectData.sortKey != math.MaxUint16 {
+				_, err = mergesort.SortBlockColumns(sortData.Vecs, int(objectData.sortKey), backupPool)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+			}
+			objectData.data[0] = containers.ToCNBatch(sortData)
+			result := batch.NewWithSize(len(objectData.data[0].Vecs) - 2)
+			for i := range result.Vecs {
+				result.Vecs[i] = objectData.data[0].Vecs[i]
+			}
+			objectData.data[0] = result
+
+			fileNum := uint16(1000) + objectName.Num()
+			segment := objectName.SegmentId()
+			name := objectio.BuildObjectName(&segment, fileNum)
+
+			writer, err := blockio.NewBlockWriter(dstFs, name.String())
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if objectData.sortKey != math.MaxUint16 {
+				if objectData.dataType == objectio.SchemaData {
+					writer.SetPrimaryKey(objectData.sortKey)
+				}
+			}
+			if objectData.dataType == objectio.SchemaTombstone {
+				writer.SetDataType(objectio.SchemaTombstone)
+				writer.SetPrimaryKeyWithType(
+					uint16(catalog.TombstonePrimaryKeyIdx),
+					index.HBF,
+					index.ObjectPrefixFn,
+					index.BlockPrefixFn,
+				)
+			}
+			_, err = writer.WriteBatch(objectData.data[0])
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			blocks, extent, err := writer.Sync(ctx)
+			if err != nil {
+				panic("sync error")
+			}
+			files = append(files, name.String())
+			blockLocation = objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
+			objectData.stats = &writer.GetObjectStats()[objectio.SchemaData]
+			objectio.SetObjectStatsLocation(objectData.stats, blockLocation)
+			if insertObjBatch[objectData.tid] == nil {
+				insertObjBatch[objectData.tid] = &iObjects{
+					rowObjects: make([]*insertObject, 0),
+				}
+			}
+			io := &insertObject{
+				apply:     false,
+				deleteRow: objectData.infoDel[len(objectData.infoDel)-1],
+				data:      objectData,
+			}
+			insertObjBatch[objectData.tid].rowObjects = append(insertObjBatch[objectData.tid].rowObjects, io)
 		}
 	}
 
