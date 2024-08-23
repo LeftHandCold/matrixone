@@ -166,7 +166,7 @@ func GetTombstonesByBlockId(
 			for i := start; i < end; i++ {
 				row := rowids[i].GetRowOffset()
 				deleteMask.Add(uint64(row))
-				logutil.Infof("Delete row %d from block %s", row.String(), bid.String())
+				logutil.Infof("Delete row %d from block %s", rowids[i].String(), bid.String())
 				deleteRows = append(deleteRows, int64(i))
 			}
 			oData.data[idx].Shrink(deleteRows, true)
