@@ -654,7 +654,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					}
 				}
 				objectData.data[0] = containers.ToCNBatch(sortData)
-				result := batch.NewWithSize(len(objectData.data[0].Vecs) - 2)
+				result := batch.NewWithSize(len(objectData.data[0].Vecs) - 1)
 				for i := range result.Vecs {
 					result.Vecs[i] = objectData.data[0].Vecs[i]
 				}
@@ -684,7 +684,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				blockLocation = objectio.BuildLocation(name, extent, blocks[0].GetRows(), blocks[0].GetID())
 				objectData.stats = &writer.GetObjectStats()[objectio.SchemaData]
 				objectio.SetObjectStatsLocation(objectData.stats, blockLocation)
-				logutil.Infof("delete object %v len blk %v is not  0, row is %v ,extent is %v, dataBlocks is %d", objectData.stats.ObjectLocation().String(), blockLocation.String(), blocks[0].GetRows(), extent.String(), len(objectData.data))
+				logutil.Infof("delete object %v len blk %v is not  0, row is %v ,extent is %v, dataBlocks is %d", objectData.stats.String(), blockLocation.String(), blocks[0].GetRows(), extent.String(), len(objectData.data))
 				if insertObjBatch[objectData.tid] == nil {
 					insertObjBatch[objectData.tid] = &iObjects{
 						rowObjects: make([]*insertObject, 0),
