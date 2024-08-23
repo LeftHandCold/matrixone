@@ -275,6 +275,60 @@ func BlockCompactionRead(
 	return result, nil
 }
 
+func windowCNBatch(bat *batch.Batch, start, end uint64) {
+	var err error
+	for i, vec := range bat.Vecs {
+		bat.Vecs[i], err = vec.Window(int(start), int(end))
+		if err != nil {
+			panic(err)
+		}
+	}
+}
+
+func BlockDataReadBackup(
+	ctx context.Context,
+	sid string,
+	info *objectio.BlockInfo,
+	ds engine.DataSource,
+	ts types.TS,
+	fs fileservice.FileService,
+) (loaded *batch.Batch, change bool, err error) {
+	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
+		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String())
+	}
+
+	// read block data from storage specified by meta location
+	loaded, err = LoadOneBlock(ctx, fs, info.MetaLocation(), objectio.SchemaData)
+	if err != nil {
+		return
+	}
+	if !ts.IsEmpty() {
+		commitTs := types.TS{}
+		for v := 0; v < loaded.Vecs[0].Length(); v++ {
+			err = commitTs.Unmarshal(loaded.Vecs[len(loaded.Vecs)-2].GetRawBytesAt(v))
+			if err != nil {
+				return
+			}
+			if commitTs.Greater(&ts) {
+				windowCNBatch(loaded, 0, uint64(v))
+				logutil.Debugf("blkCommitTs %v ts %v , block is %v",
+					commitTs.ToString(), ts.ToString(), info.MetaLocation().String())
+				change = true
+				break
+			}
+		}
+	}
+	tombstones, err := ds.GetTombstones(ctx, info.BlockID)
+	if err != nil {
+		return
+	}
+	rows := tombstones.ToI64Arrary()
+	if len(rows) > 0 {
+		loaded.Shrink(rows, true)
+	}
+	return
+}
+
 // BlockDataReadInner only read data,don't apply deletes.
 func BlockDataReadInner(
 	ctx context.Context,
