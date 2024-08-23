@@ -122,7 +122,7 @@ func ForeachTombstoneObject(
 	ds map[string]*objData,
 ) error {
 	for _, d := range ds {
-		if d.delete {
+		if d.delete && d.appendable && d.data[0].Vecs[0].Length() > 0 {
 			if next, err := onTombstone(d); !next || err != nil {
 				return err
 			}
