@@ -741,11 +741,6 @@ func ReWriteCheckpointAndBlockFromKey(
 				}
 			}
 			objectData.data[0] = containers.ToCNBatch(sortData)
-			result := batch.NewWithSize(len(objectData.data[0].Vecs) - 2)
-			for i := range result.Vecs {
-				result.Vecs[i] = objectData.data[0].Vecs[i]
-			}
-			objectData.data[0] = result
 
 			fileNum := uint16(1000) + objectName.Num()
 			segment := objectName.SegmentId()
