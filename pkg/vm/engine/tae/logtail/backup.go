@@ -501,7 +501,7 @@ func ReWriteCheckpointAndBlockFromKey(
 
 	insertBatchFun := func(
 		objsData map[string]*objData,
-		initData func(*objData, *blockio.BlockWriter) error,
+		initData func(*objData, *blockio.BlockWriter) (bool, error),
 	) error {
 		for _, objectData := range objsData {
 			if insertObjBatch[objectData.tid] == nil {
@@ -520,6 +520,16 @@ func ReWriteCheckpointAndBlockFromKey(
 			if err != nil {
 				return err
 			}
+			isEmpty := true
+			isEmpty, err = initData(objectData, writer)
+			if err != nil {
+				return err
+			}
+
+			if isEmpty {
+				continue
+			}
+
 			// For the aBlock that needs to be retained,
 			// the corresponding NBlock is generated and inserted into the corresponding batch.
 			if len(objectData.data) > 2 {
@@ -529,11 +539,6 @@ func ReWriteCheckpointAndBlockFromKey(
 
 			if objectData.data[0].Vecs[0].Length() == 0 {
 				panic(any(fmt.Sprintf("data rows is 0: %v", objectData.stats.ObjectLocation().String())))
-			}
-
-			err = initData(objectData, writer)
-			if err != nil {
-				return err
 			}
 
 			sortData := containers.ToTNBatch(objectData.data[0], common.DebugAllocator)
@@ -565,7 +570,7 @@ func ReWriteCheckpointAndBlockFromKey(
 
 	err = insertBatchFun(
 		objectsData,
-		func(oData *objData, writer *blockio.BlockWriter) error {
+		func(oData *objData, writer *blockio.BlockWriter) (bool, error) {
 			ds := NewBackupDeltaLocDataSource(ctx, fs, ts, tombstonesData)
 			location := oData.stats.ObjectLocation()
 			name := oData.stats.ObjectName()
@@ -576,13 +581,13 @@ func ReWriteCheckpointAndBlockFromKey(
 			}
 			bat, sortKey, err := blockio.BlockDataReadBackup(ctx, sid, &blk, ds, ts, fs)
 			if err != nil {
-				return err
+				return true, err
 			}
 			if bat.Vecs[0].Length() == 0 {
 				logutil.Info("[Data Empty] ReWrite Checkpoint",
 					zap.String("object", oData.stats.ObjectName().String()),
 					zap.Uint64("tid", oData.tid))
-				return nil
+				return true, nil
 			}
 			oData.sortKey = sortKey
 			oData.data = make([]*batch.Batch, 0, 1)
@@ -597,7 +602,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			}
 			result = formatData(result)
 			oData.data[0] = result
-			return nil
+			return false, nil
 		})
 
 	if err != nil {
@@ -606,7 +611,7 @@ func ReWriteCheckpointAndBlockFromKey(
 
 	err = insertBatchFun(
 		tombstonesData,
-		func(oData *objData, writer *blockio.BlockWriter) error {
+		func(oData *objData, writer *blockio.BlockWriter) (bool, error) {
 			writer.SetDataType(objectio.SchemaTombstone)
 			writer.SetPrimaryKeyWithType(
 				uint16(catalog.TombstonePrimaryKeyIdx),
@@ -614,7 +619,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				index.ObjectPrefixFn,
 				index.BlockPrefixFn,
 			)
-			return nil
+			return false, nil
 		})
 
 	if err != nil {
