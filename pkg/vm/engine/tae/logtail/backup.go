@@ -595,7 +595,6 @@ func ReWriteCheckpointAndBlockFromKey(
 				return nil
 			}
 			oData.sortKey = sortKey
-			bat = formatData(bat)
 			oData.data = make([]*batch.Batch, 0, 1)
 			oData.data = append(oData.data, bat)
 			oData.isChange = true
@@ -607,6 +606,7 @@ func ReWriteCheckpointAndBlockFromKey(
 			for i := range result.Vecs {
 				result.Vecs[i] = oData.data[0].Vecs[i]
 			}
+			result = formatData(result)
 			oData.data[0] = result
 			return nil
 		})
