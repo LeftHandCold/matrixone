@@ -282,6 +282,9 @@ func (tbl *txnTable) TransferDeletes(ts types.TS, phase string) (err error) {
 			return
 		}
 	}
+	if len(transferd.ToI64Arrary()) > deletes.Length() {
+		panic(fmt.Sprintf("logic errsssss, transferd %v, deletes %v", transferd.ToI64Arrary(), deletes.Length()))
+	}
 	deletes.Deletes = transferd
 	deletes.Compact()
 	return
