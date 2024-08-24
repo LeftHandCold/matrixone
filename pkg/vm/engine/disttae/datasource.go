@@ -1281,7 +1281,6 @@ func GetTombstonesByBlockId(
 
 	onTombstone := func(obj logtailreplay.ObjectEntry) (bool, error) {
 		totalScanned++
-		logutil.Infof("GetTombstonesByBlockId blockid %v tombstones %v", bid.String(), obj.String())
 		if !obj.ZMIsEmpty() {
 			objZM := obj.SortKeyZoneMap()
 			if skip := !objZM.PrefixEq(bid[:]); skip {
@@ -1298,9 +1297,6 @@ func GetTombstonesByBlockId(
 		totalBlk += int(obj.BlkCnt())
 		for idx := 0; idx < int(obj.BlkCnt()); idx++ {
 			buf := bf.GetBloomFilter(uint32(idx))
-			if len(buf) == 0 {
-				logutil.Infof("empty bloom filter for block %d, loaction %v", idx, obj.Location().String())
-			}
 			bfIndex = index.NewEmptyBloomFilterWithType(index.HBF)
 			if err = index.DecodeBloomFilter(bfIndex, buf); err != nil {
 				return false, err
@@ -1313,7 +1309,6 @@ func GetTombstonesByBlockId(
 				blBreak++
 				continue
 			}
-			logutil.Infof("PrefixMayContainsKey blockid %v exist %v", bid.String(), exist)
 
 			loaded++
 			location = catalog2.BuildLocation(obj.ObjectStats, uint16(idx), options.DefaultBlockMaxRows)
@@ -1322,8 +1317,6 @@ func GetTombstonesByBlockId(
 				ctx, fs, bid, location, snapshot); err != nil {
 				return false, err
 			}
-
-			logutil.Infof("loadBlockDeletesByLocation blockid %v location %v, mask is %v", bid.String(), location.String(), mask.String())
 
 			deleteMask.Merge(mask)
 		}

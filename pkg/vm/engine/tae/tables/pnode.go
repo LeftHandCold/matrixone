@@ -280,9 +280,6 @@ func (node *persistedNode) FillBlockTombstones(
 	}
 	for tombstoneBlkID := 0; tombstoneBlkID < node.object.meta.Load().BlockCnt(); tombstoneBlkID++ {
 		buf := bf.GetBloomFilter(uint32(tombstoneBlkID))
-		if len(buf) == 0 {
-			logutil.Infof("tombstoneBlkID: %d, name is %v", tombstoneBlkID, node.object.meta.Load().GetLocation().String())
-		}
 		bfIndex := index.NewEmptyBloomFilterWithType(index.HBF)
 		if err := index.DecodeBloomFilter(bfIndex, buf); err != nil {
 			return err

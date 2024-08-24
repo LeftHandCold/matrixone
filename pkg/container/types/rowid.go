@@ -73,7 +73,6 @@ func NewRowid(blkid *Blockid, offset uint32) *Rowid {
 	size := BlockidSize
 	copy(rowid[:size], blkid[:])
 	copy(rowid[size:size+4], EncodeUint32(&offset))
-	blkid.Sequence()
 	return &rowid
 }
 
@@ -152,10 +151,6 @@ func (r Rowid) GetObject() ObjectBytes {
 	return *(*ObjectBytes)(r[:ObjectBytesSize])
 }
 
-func (r Rowid) Update() ObjectBytes {
-	return *(*ObjectBytes)(r[:ObjectBytesSize])
-}
-
 func (r *Rowid) BorrowObjectID() *Objectid {
 	return (*Objectid)(unsafe.Pointer(&r[0]))
 }
@@ -169,10 +164,6 @@ func (r Rowid) GetRowOffset() uint32 {
 
 func (r Rowid) GetBlockOffset() uint16 {
 	return DecodeUint16(r[ObjectBytesSize:BlockidSize])
-}
-
-func (r Rowid) GetObjectOffset() uint16 {
-	return DecodeUint16(r[UuidSize:ObjectBytesSize])
 }
 
 func (r Rowid) GetObjectString() string {

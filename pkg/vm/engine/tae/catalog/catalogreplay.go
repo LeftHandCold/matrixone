@@ -499,7 +499,6 @@ func (catalog *Catalog) onReplayCheckpointObject(
 				entryNode.String(), isTombstone, objNode.String(),
 				txnNode.String(), rel.StringWithLevel(3)))
 		}
-		logutil.Infof("obj %v, tbl %v-%d create %v, delete %v, end %v", objid.String())
 	}
 	if obj.objData == nil {
 		obj.objData = dataFactory.MakeObjectFactory()(obj)
