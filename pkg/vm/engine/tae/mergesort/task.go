@@ -17,6 +17,7 @@ package mergesort
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -170,6 +171,13 @@ func DoMergeAndWrite(
 			obj.ObjectName().ObjectId().ShortStringEx(),
 			obj.BlkCnt(),
 			obj.Rows())
+	}
+
+	if rand.Intn(10) < 2 {
+		time.Sleep(30 * time.Second)
+		logutil.Info(
+			"[MERGE-SLeep]",
+			zap.String("task", mergehost.Name()))
 	}
 
 	logutil.Info(
