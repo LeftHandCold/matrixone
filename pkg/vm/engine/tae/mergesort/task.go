@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -173,7 +174,7 @@ func DoMergeAndWrite(
 			obj.Rows())
 	}
 
-	if rand.Intn(10) < 2 {
+	if strings.Contains(mergehost.Name(), "bmsql") && rand.Intn(5) < 2 {
 		time.Sleep(30 * time.Second)
 		logutil.Info(
 			"[MERGE-SLeep]",
