@@ -337,7 +337,9 @@ func (h *Handle) HandleCommit(
 
 	v2.TxnBeforeCommitDurationHistogram.Observe(time.Since(start).Seconds())
 
+	now := time.Now()
 	err = txn.Commit(ctx)
+	logutil.Infof("txn commit duration: %v, txn is %v", time.Since(now), txn.String())
 	cts = txn.GetCommitTS().ToTimestamp()
 	if cts.PhysicalTime == txnif.UncommitTS.Physical() {
 		panic("bad committs causing hung")
