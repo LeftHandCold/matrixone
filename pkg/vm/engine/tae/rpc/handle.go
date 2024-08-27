@@ -633,7 +633,6 @@ func (h *Handle) HandleWrite(
 			req.Cancel()
 		}
 	}()
-	now5 := time.Now()
 	ctx = perfcounter.WithCounterSetFrom(ctx, h.db.Opts.Ctx)
 	switch req.PkCheck {
 	case db.FullDedup:
@@ -670,11 +669,6 @@ func (h *Handle) HandleWrite(
 	if err != nil {
 		return
 	}
-	logutil.Infof("HandleWrite222 %v, txn %v", time.Since(now5), txn.String())
-	now := time.Now()
-	defer func() {
-		logutil.Infof("HandleWrite %v, txn %v", time.Since(now5), txn.String())
-	}()
 	if req.Type == db.EntryInsert {
 		//Add blocks which had been bulk-loaded into S3 into table.
 		if req.FileName != "" {
@@ -704,10 +698,7 @@ func (h *Handle) HandleWrite(
 				err = moerr.NewInternalError(ctx, "object stats doesn't match meta locations")
 				return
 			}
-			logutil.Infof("AddObjsWithMetaLoc before %v, txn is %v", time.Since(now), txn.String())
-			t2 := time.Now()
 			err = tb.AddObjsWithMetaLoc(ctx, statsVec)
-			logutil.Infof("AddObjsWithMetaLoc en %v, txn is %v", time.Since(t2), txn.String())
 			return
 		}
 		//check the input batch passed by cn is valid.
@@ -744,16 +735,11 @@ func (h *Handle) HandleWrite(
 		}
 		//Appends a batch of data into table.
 		err = AppendDataToTable(ctx, tb, req.Batch)
-		logutil.Infof("AppendDataToTable en %v, txn %v", time.Since(now), txn.String())
 		return
 	}
 
 	//handle delete
 	if req.FileName != "" {
-		now2 := time.Now()
-		defer func() {
-			logutil.Infof("DeleteObjsWithMetaLoc en %v, txn %v", time.Since(now2), txn.String())
-		}()
 		//wait for loading deleted row-id done.
 		nctx := context.Background()
 		if deadline, ok := ctx.Deadline(); ok {
@@ -814,10 +800,6 @@ func (h *Handle) HandleWrite(
 		}
 		return
 	}
-	now3 := time.Now()
-	defer func() {
-		logutil.Infof("DeleteObjsWithMetaLoc22222 en %v, txn %v", time.Since(now3), txn.String())
-	}()
 	if len(req.Batch.Vecs) != 2 {
 		panic(fmt.Sprintf("req.Batch.Vecs length is %d, should be 2", len(req.Batch.Vecs)))
 	}
