@@ -667,7 +667,7 @@ func (h *Handle) HandleWrite(
 	if err != nil {
 		return
 	}
-
+	now := time.Now()
 	if req.Type == db.EntryInsert {
 		//Add blocks which had been bulk-loaded into S3 into table.
 		if req.FileName != "" {
@@ -697,7 +697,10 @@ func (h *Handle) HandleWrite(
 				err = moerr.NewInternalError(ctx, "object stats doesn't match meta locations")
 				return
 			}
+			logutil.Infof("AddObjsWithMetaLoc before %v, txn is %v", time.Since(now), txn.String())
+			t2 := time.Now()
 			err = tb.AddObjsWithMetaLoc(ctx, statsVec)
+			logutil.Infof("AddObjsWithMetaLoc en %v, txn is %v", time.Since(t2), txn.String())
 			return
 		}
 		//check the input batch passed by cn is valid.
@@ -734,6 +737,7 @@ func (h *Handle) HandleWrite(
 		}
 		//Appends a batch of data into table.
 		err = AppendDataToTable(ctx, tb, req.Batch)
+		logutil.Infof("AppendDataToTable en %v, txn %v", time.Since(now), txn.String())
 		return
 	}
 

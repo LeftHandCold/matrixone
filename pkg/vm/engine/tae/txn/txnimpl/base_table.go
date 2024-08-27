@@ -113,32 +113,6 @@ func (tbl *baseTable) addObjsWithMetaLoc(ctx context.Context, stats objectio.Obj
 
 		metaLocs = append(metaLocs, metaloc)
 	}
-	schema := tbl.schema
-	if schema.HasPK() && !tbl.schema.IsSecondaryIndexTable() {
-		for _, loc := range metaLocs {
-			var vectors []containers.Vector
-			var closeFunc func()
-			vectors, closeFunc, err = blockio.LoadColumns2(
-				ctx,
-				[]uint16{uint16(schema.GetSingleSortKeyIdx())},
-				nil,
-				tbl.txnTable.store.rt.Fs.Service,
-				loc,
-				fileservice.Policy(0),
-				false,
-				nil,
-			)
-			if err != nil {
-				return err
-			}
-			closeFuncs = append(closeFuncs, closeFunc)
-			pkVecs = append(pkVecs, vectors[0])
-			err = tbl.txnTable.dedup(ctx, vectors[0], tbl.isTombstone)
-			if err != nil {
-				return
-			}
-		}
-	}
 	if tbl.tableSpace == nil {
 		tbl.tableSpace = newTableSpace(tbl.txnTable, tbl.isTombstone)
 	}
