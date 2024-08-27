@@ -594,6 +594,7 @@ func (w *S3Writer) Sync(proc *process.Process) ([]objectio.BlockInfo, []objectio
 		)
 	}
 	st := w.writer.GetObjectStats()[objectio.SchemaData]
-	logutil.Infof("write s3 table %s,name is %s ", w.tablename, st.ObjectName().String(), st.Rows())
+	logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d",
+		w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt())
 	return blkInfos, w.writer.GetObjectStats(), err
 }
