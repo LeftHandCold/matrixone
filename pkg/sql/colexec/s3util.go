@@ -16,6 +16,7 @@ package colexec
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -583,8 +584,12 @@ func (w *S3Writer) FillBlockInfoBat(blkInfos []objectio.BlockInfo, stats []objec
 // Sync writes batches in buffer to fileservice(aka s3 in this feature) and get metadata about block on fileservice and put it into metaLocBat
 // For more information, please refer to the comment about func WriteEnd in Writer interface
 func (w *S3Writer) Sync(proc *process.Process) ([]objectio.BlockInfo, []objectio.ObjectStats, error) {
+	now := time.Now()
 	blocks, _, err := w.writer.Sync(proc.Ctx)
 	if err != nil {
+		st := w.writer.GetObjectStats()[objectio.SchemaData]
+		logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d, time %v, err %v",
+			w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now), err)
 		return nil, nil, err
 	}
 	blkInfos := make([]objectio.BlockInfo, 0, len(blocks))
@@ -594,7 +599,7 @@ func (w *S3Writer) Sync(proc *process.Process) ([]objectio.BlockInfo, []objectio
 		)
 	}
 	st := w.writer.GetObjectStats()[objectio.SchemaData]
-	logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d",
-		w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt())
+	logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d, time %v",
+		w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now))
 	return blkInfos, w.writer.GetObjectStats(), err
 }
