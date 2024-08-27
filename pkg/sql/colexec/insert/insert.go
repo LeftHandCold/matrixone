@@ -93,6 +93,16 @@ func (insert *Insert) Call(proc *process.Process) (vm.CallResult, error) {
 	return insert.insert_table(proc, anal)
 }
 
+var count int
+var size int
+var row int
+
+func init() {
+	count = 0
+	size = 0
+	row = 0
+}
+
 func (insert *Insert) insert_s3(proc *process.Process, anal process.Analyze) (vm.CallResult, error) {
 	start := time.Now()
 	defer func() {
@@ -130,6 +140,9 @@ func (insert *Insert) insert_s3(proc *process.Process, anal process.Analyze) (vm
 
 				// write partition data to s3.
 				for pidx, writer := range insert.ctr.partitionS3Writers {
+					count++
+					size += bat.Size()
+					row += bat.RowCount()
 					if err = writer.WriteS3Batch(proc, insertBatches[pidx]); err != nil {
 						insert.ctr.state = vm.End
 						insertBatches[pidx].Clean(proc.Mp())
@@ -142,6 +155,9 @@ func (insert *Insert) insert_s3(proc *process.Process, anal process.Analyze) (vm
 				s3Writer := insert.ctr.s3Writer
 				// write to s3.
 				bat.Attrs = append(bat.Attrs[:0], insert.InsertCtx.Attrs...)
+				count++
+				size += bat.Size()
+				row += bat.RowCount()
 				if err := s3Writer.WriteS3Batch(proc, bat); err != nil {
 					insert.ctr.state = vm.End
 					return result, err
