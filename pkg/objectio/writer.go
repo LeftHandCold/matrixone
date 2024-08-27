@@ -586,6 +586,7 @@ func (w *objectWriterV1) Sync(ctx context.Context, items ...WriteOptions) error 
 		if err = w.object.fs.Delete(ctx, w.fileName); err != nil {
 			return err
 		}
+		logutil.Infof("delete file %s", w.fileName)
 		_, err = fileservice.DoWithRetry(
 			"ObjectSync",
 			func() (int, error) {
