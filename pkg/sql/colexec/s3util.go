@@ -687,7 +687,6 @@ func (w *S3Writer) writeEndBlocks(proc *process.Process) error {
 // For more information, please refer to the comment about func WriteEnd in Writer interface
 func (w *S3Writer) WriteEndBlocks(proc *process.Process) ([]objectio.BlockInfo, []objectio.ObjectStats, error) {
 	blocks, _, err := w.writer.Sync(proc.Ctx)
-	logutil.Debugf("write s3 table %q: %v, %v", w.tablename, w.seqnums, w.attrs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -723,6 +722,8 @@ func (w *S3Writer) WriteEndBlocks(proc *process.Process) ([]objectio.BlockInfo, 
 			stats[i].SetCNCreated()
 		}
 	}
+	st := stats[objectio.SchemaData]
+	logutil.Infof("write s3 table %s,name is %s ", w.tablename, st.ObjectName().String(), st.Rows())
 
 	return blkInfos, stats, err
 }
