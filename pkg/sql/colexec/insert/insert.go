@@ -16,6 +16,7 @@ package insert
 
 import (
 	"bytes"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -93,14 +94,14 @@ func (insert *Insert) Call(proc *process.Process) (vm.CallResult, error) {
 	return insert.insert_table(proc, anal)
 }
 
-var count int
-var size int
-var row int
+var InsertCount int
+var InsertSize int
+var InsertRow int
 
 func init() {
-	count = 0
-	size = 0
-	row = 0
+	InsertCount = 0
+	InsertSize = 0
+	InsertRow = 0
 }
 
 func (insert *Insert) insert_s3(proc *process.Process, anal process.Analyze) (vm.CallResult, error) {
@@ -140,9 +141,11 @@ func (insert *Insert) insert_s3(proc *process.Process, anal process.Analyze) (vm
 
 				// write partition data to s3.
 				for pidx, writer := range insert.ctr.partitionS3Writers {
-					count++
-					size += bat.Size()
-					row += bat.RowCount()
+					if strings.Contains(writer.GetTableName(), "lineitem") {
+						InsertCount++
+						InsertSize += bat.Size()
+						InsertRow += bat.RowCount()
+					}
 					if err = writer.WriteS3Batch(proc, insertBatches[pidx]); err != nil {
 						insert.ctr.state = vm.End
 						insertBatches[pidx].Clean(proc.Mp())
@@ -155,9 +158,11 @@ func (insert *Insert) insert_s3(proc *process.Process, anal process.Analyze) (vm
 				s3Writer := insert.ctr.s3Writer
 				// write to s3.
 				bat.Attrs = append(bat.Attrs[:0], insert.InsertCtx.Attrs...)
-				count++
-				size += bat.Size()
-				row += bat.RowCount()
+				if strings.Contains(s3Writer.GetTableName(), "lineitem") {
+					InsertCount++
+					InsertSize += bat.Size()
+					InsertRow += bat.RowCount()
+				}
 				if err := s3Writer.WriteS3Batch(proc, bat); err != nil {
 					insert.ctr.state = vm.End
 					return result, err

@@ -28,6 +28,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sort"
+	"github.com/matrixorigin/matrixone/pkg/sql/colexec/insert"
 	"github.com/matrixorigin/matrixone/pkg/sql/util"
 	db_holder "github.com/matrixorigin/matrixone/pkg/util/export/etl/db"
 	"github.com/matrixorigin/matrixone/pkg/vm"
@@ -36,6 +37,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/options"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 	"go.uber.org/zap"
+	"strings"
 	"time"
 )
 
@@ -121,6 +123,10 @@ func (w *S3Writer) SetSchemaVer(ver uint32) {
 
 func (w *S3Writer) SetTableName(name string) {
 	w.tablename = name
+}
+
+func (w *S3Writer) GetTableName() string {
+	return w.tablename
 }
 
 func (w *S3Writer) SetSeqnums(seqnums []uint16) {
@@ -691,8 +697,10 @@ func (w *S3Writer) WriteEndBlocks(proc *process.Process) ([]objectio.BlockInfo, 
 	blocks, _, err := w.writer.Sync(proc.Ctx)
 	if err != nil {
 		st := w.writer.GetObjectStats()[objectio.SchemaData]
-		logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d, time %v",
-			w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now))
+		if strings.Contains(w.tablename, "lineitem") {
+			logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d, time %v, count %d, size %d, row %d",
+				w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now), insert.InsertCount, insert.InsertSize, insert.InsertRow)
+		}
 		return nil, nil, err
 	}
 	blkInfos := make([]objectio.BlockInfo, 0, len(blocks))
@@ -728,8 +736,10 @@ func (w *S3Writer) WriteEndBlocks(proc *process.Process) ([]objectio.BlockInfo, 
 		}
 	}
 	st := stats[objectio.SchemaData]
-	logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d, time %v",
-		w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now))
+	if strings.Contains(w.tablename, "lineitem") {
+		logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d, time %v, count %d, size %d, row %d",
+			w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now), insert.InsertCount, insert.InsertSize, insert.InsertRow)
+	}
 
 	return blkInfos, stats, err
 }
