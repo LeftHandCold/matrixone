@@ -334,10 +334,6 @@ func (space *tableSpace) AddObjsWithMetaLoc(
 	stats objectio.ObjectStats,
 ) (err error) {
 	space.registerStats(stats)
-	now := time.Now()
-	defer func() {
-		logutil.Infof("(space *tableSpace) AddObjsWithMetaLoc: %v, %d rows,", time.Since(now), space.table.store.txn.String())
-	}()
 	for i := range pkVecs {
 		dedupType := space.table.store.txn.GetDedupType()
 		//insert primary keys into space.index

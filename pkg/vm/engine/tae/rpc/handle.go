@@ -631,6 +631,7 @@ func (h *Handle) HandleWrite(
 			req.Cancel()
 		}
 	}()
+	now5 := time.Now()
 	ctx = perfcounter.WithCounterSetFrom(ctx, h.db.Opts.Ctx)
 	switch req.PkCheck {
 	case db.FullDedup:
@@ -667,7 +668,11 @@ func (h *Handle) HandleWrite(
 	if err != nil {
 		return
 	}
+	logutil.Infof("HandleWrite222 %v, txn %v", time.Since(now5), txn.String())
 	now := time.Now()
+	defer func() {
+		logutil.Infof("HandleWrite %v, txn %v", time.Since(now5), txn.String())
+	}()
 	if req.Type == db.EntryInsert {
 		//Add blocks which had been bulk-loaded into S3 into table.
 		if req.FileName != "" {
