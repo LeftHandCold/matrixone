@@ -36,6 +36,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/options"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 	"go.uber.org/zap"
+	"time"
 )
 
 // S3Writer is used to write table data to S3 and package a series of `BlockWriter` write operations
@@ -686,8 +687,12 @@ func (w *S3Writer) writeEndBlocks(proc *process.Process) error {
 // WriteEndBlocks writes batches in buffer to fileservice(aka s3 in this feature) and get meta data about block on fileservice and put it into metaLocBat
 // For more information, please refer to the comment about func WriteEnd in Writer interface
 func (w *S3Writer) WriteEndBlocks(proc *process.Process) ([]objectio.BlockInfo, []objectio.ObjectStats, error) {
+	now := time.Now()
 	blocks, _, err := w.writer.Sync(proc.Ctx)
 	if err != nil {
+		st := w.writer.GetObjectStats()[objectio.SchemaData]
+		logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d, time %v",
+			w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now))
 		return nil, nil, err
 	}
 	blkInfos := make([]objectio.BlockInfo, 0, len(blocks))
@@ -723,8 +728,8 @@ func (w *S3Writer) WriteEndBlocks(proc *process.Process) ([]objectio.BlockInfo, 
 		}
 	}
 	st := stats[objectio.SchemaData]
-	logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d",
-		w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt())
+	logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d, time %v",
+		w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now))
 
 	return blkInfos, stats, err
 }
