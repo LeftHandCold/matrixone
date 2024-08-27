@@ -2917,7 +2917,7 @@ func (c *Compile) compileInsert(ns []*plan.Node, n *plan.Node, ss []*Scope) ([]*
 		float64(DistributedThreshold) || c.anal.qry.LoadWriteS3
 
 	if toWriteS3 {
-		c.proc.Debugf(c.proc.Ctx, "insert of '%s' write s3\n", c.sql)
+		c.proc.Infof(c.proc.Ctx, "insert of '%s' write s3\n", c.sql)
 		if !haveSinkScanInPlan(ns, n.Children[0]) && len(ss) != 1 {
 			currentFirstFlag := c.anal.isFirst
 			c.anal.isFirst = false
@@ -2934,7 +2934,6 @@ func (c *Compile) compileInsert(ns []*plan.Node, n *plan.Node, ss []*Scope) ([]*
 			mergeInsertArg := constructMergeblock(c.e, n)
 			mergeInsertArg.SetAnalyzeControl(c.anal.curNodeIdx, currentFirstFlag)
 			rs.setRootOperator(mergeInsertArg)
-
 			ss = []*Scope{rs}
 		} else {
 			currentFirstFlag := c.anal.isFirst
@@ -2946,6 +2945,7 @@ func (c *Compile) compileInsert(ns []*plan.Node, n *plan.Node, ss []*Scope) ([]*
 				dataScope.Proc.Reg.MergeReceivers[0].Ch = make(chan *process.RegisterMessage, dataScope.NodeInfo.Mcpu)
 			}
 			parallelSize := c.getParallelSizeForExternalScan(n, ncpu)
+			logutil.Infof("parallelSize: %d, sql is %v\n", parallelSize, c.sql)
 			scopes := make([]*Scope, 0, parallelSize)
 			regs := make([]*process.WaitRegister, 0, parallelSize)
 			for i := 0; i < parallelSize; i++ {

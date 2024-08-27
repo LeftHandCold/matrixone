@@ -28,7 +28,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sort"
-	"github.com/matrixorigin/matrixone/pkg/sql/colexec/insert"
 	"github.com/matrixorigin/matrixone/pkg/sql/util"
 	db_holder "github.com/matrixorigin/matrixone/pkg/util/export/etl/db"
 	"github.com/matrixorigin/matrixone/pkg/vm"
@@ -542,6 +541,11 @@ func (w *S3Writer) SortAndFlush(proc *process.Process) error {
 // we will trigger write s3.
 func (w *S3Writer) WriteS3Batch(proc *process.Process, bat *batch.Batch) error {
 	w.InitBuffers(proc, bat)
+	if strings.Contains(w.GetTableName(), "lineitem") {
+		InsertCount++
+		InsertSize += bat.Size()
+		InsertRow += bat.RowCount()
+	}
 	if w.Put(bat, proc) {
 		w.SortAndFlush(proc)
 	}
@@ -690,6 +694,16 @@ func (w *S3Writer) writeEndBlocks(proc *process.Process) error {
 	return nil
 }
 
+var InsertCount int
+var InsertSize int
+var InsertRow int
+
+func init() {
+	InsertCount = 0
+	InsertSize = 0
+	InsertRow = 0
+}
+
 // WriteEndBlocks writes batches in buffer to fileservice(aka s3 in this feature) and get meta data about block on fileservice and put it into metaLocBat
 // For more information, please refer to the comment about func WriteEnd in Writer interface
 func (w *S3Writer) WriteEndBlocks(proc *process.Process) ([]objectio.BlockInfo, []objectio.ObjectStats, error) {
@@ -699,7 +713,7 @@ func (w *S3Writer) WriteEndBlocks(proc *process.Process) ([]objectio.BlockInfo, 
 		st := w.writer.GetObjectStats()[objectio.SchemaData]
 		if strings.Contains(w.tablename, "lineitem") {
 			logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d, time %v, count %d, size %d, row %d",
-				w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now), insert.InsertCount, insert.InsertSize, insert.InsertRow)
+				w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now), InsertCount, InsertSize, InsertRow)
 		}
 		return nil, nil, err
 	}
@@ -738,7 +752,7 @@ func (w *S3Writer) WriteEndBlocks(proc *process.Process) ([]objectio.BlockInfo, 
 	st := stats[objectio.SchemaData]
 	if strings.Contains(w.tablename, "lineitem") {
 		logutil.Infof("write s3 table %s,name is %s,rows is %d, osize is %d, size is %d, block count is %d, time %v, count %d, size %d, row %d",
-			w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now), insert.InsertCount, insert.InsertSize, insert.InsertRow)
+			w.tablename, st.ObjectName().String(), st.Rows(), st.OriginSize(), st.Size(), st.BlkCnt(), time.Since(now), InsertCount, InsertSize, InsertRow)
 	}
 
 	return blkInfos, stats, err
