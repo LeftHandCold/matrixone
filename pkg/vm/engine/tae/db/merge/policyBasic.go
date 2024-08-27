@@ -294,7 +294,7 @@ func (o *basic) optimize(objs []*catalog.ObjectEntry) []*catalog.ObjectEntry {
 	acc := o.accBuf
 
 	isBigGap := func(small, big int) bool {
-		if big < int(o.schema.BlockMaxRows) {
+		if big < int(o.schema.Extra.BlockMaxRows) {
 			return false
 		}
 		return big-small > 3*small
@@ -308,7 +308,7 @@ func (o *basic) optimize(objs []*catalog.ObjectEntry) []*catalog.ObjectEntry {
 	readyToMergeRows := acc[i]
 
 	// avoid frequent small object merge
-	if readyToMergeRows < int(o.schema.BlockMaxRows) &&
+	if readyToMergeRows < int(o.schema.Extra.BlockMaxRows) &&
 		!o.hist.IsLastBefore(constSmallMergeGap) &&
 		i < o.config.MergeMaxOneRun {
 		return nil

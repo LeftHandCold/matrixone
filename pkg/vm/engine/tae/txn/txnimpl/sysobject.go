@@ -153,6 +153,8 @@ func FillTableRow(table *catalog.TableEntry, node *catalog.MVCCNode[*catalog.Tab
 		packer.Close()
 	case pkgcatalog.Row_ID:
 		// fill outside of this func
+	case pkgcatalog.SystemRelAttr_ExtraInfo:
+		colData.Append(schema.MustGetExtraBytes(), false)
 	default:
 		panic(fmt.Sprintf("unexpected colname %q. if add new catalog def, fill it in this switch", attr))
 	}

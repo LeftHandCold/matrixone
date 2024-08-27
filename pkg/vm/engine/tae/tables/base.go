@@ -161,7 +161,7 @@ func (obj *baseObject) buildMetalocation(bid uint16) (objectio.Location, error) 
 	if err != nil {
 		return nil, err
 	}
-	blkMaxRows := obj.meta.Load().GetSchema().BlockMaxRows
+	blkMaxRows := obj.meta.Load().GetSchema().Extra.BlockMaxRows
 	return catalog.BuildLocation(stats, bid, blkMaxRows), nil
 }
 

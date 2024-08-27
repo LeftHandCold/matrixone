@@ -290,8 +290,8 @@ func TestReplay1(t *testing.T) {
 
 	tae := testutil.InitTestDB(ctx, ModuleName, t, nil)
 	schema := catalog.MockSchema(2, 1)
-	schema.BlockMaxRows = 1000
-	schema.ObjectMaxBlocks = 2
+	schema.Extra.BlockMaxRows = 1000
+	schema.Extra.ObjectMaxBlocks = 2
 	txn, _ := tae.StartTxn(nil)
 	assert.Nil(t, txn.Commit(context.Background()))
 
@@ -394,8 +394,8 @@ func TestReplay2(t *testing.T) {
 
 	tae := testutil.InitTestDB(ctx, ModuleName, t, nil)
 	schema := catalog.MockSchema(2, 1)
-	schema.BlockMaxRows = 1000
-	schema.ObjectMaxBlocks = 2
+	schema.Extra.BlockMaxRows = 1000
+	schema.Extra.ObjectMaxBlocks = 2
 	bat := catalog.MockBatch(schema, 10000)
 	defer bat.Close()
 	bats := bat.Split(2)
@@ -538,8 +538,8 @@ func TestReplay3(t *testing.T) {
 	tae := testutil.NewTestEngine(ctx, ModuleName, t, nil)
 	defer tae.Close()
 	schema := catalog.MockSchema(2, 1)
-	schema.BlockMaxRows = 1000
-	schema.ObjectMaxBlocks = 2
+	schema.Extra.BlockMaxRows = 1000
+	schema.Extra.ObjectMaxBlocks = 2
 	tae.BindSchema(schema)
 	bat := catalog.MockBatch(schema, 1)
 	defer bat.Close()
@@ -614,8 +614,8 @@ func TestReplayTableRows(t *testing.T) {
 
 	tae := testutil.InitTestDB(ctx, ModuleName, t, nil)
 	schema := catalog.MockSchema(2, 1)
-	schema.BlockMaxRows = 1000
-	schema.ObjectMaxBlocks = 2
+	schema.Extra.BlockMaxRows = 1000
+	schema.Extra.ObjectMaxBlocks = 2
 	bat := catalog.MockBatch(schema, 4800)
 	defer bat.Close()
 	bats := bat.Split(3)
@@ -737,9 +737,9 @@ func TestReplay4(t *testing.T) {
 	tae := testutil.InitTestDB(ctx, ModuleName, t, opts)
 
 	schema := catalog.MockSchemaAll(18, 16)
-	schema.BlockMaxRows = 10
-	schema.ObjectMaxBlocks = 2
-	bat := catalog.MockBatch(schema, int(schema.BlockMaxRows*uint32(schema.ObjectMaxBlocks+1)+1))
+	schema.Extra.BlockMaxRows = 10
+	schema.Extra.ObjectMaxBlocks = 2
+	bat := catalog.MockBatch(schema, int(schema.Extra.BlockMaxRows*uint32(schema.Extra.ObjectMaxBlocks+1)+1))
 	defer bat.Close()
 	bats := bat.Split(4)
 
@@ -802,9 +802,9 @@ func TestReplay5(t *testing.T) {
 	tae := testutil.InitTestDB(ctx, ModuleName, t, opts)
 
 	schema := catalog.MockSchemaAll(18, 16)
-	schema.BlockMaxRows = 10
-	schema.ObjectMaxBlocks = 2
-	bat := catalog.MockBatch(schema, int(schema.BlockMaxRows*uint32(schema.ObjectMaxBlocks+1)+1))
+	schema.Extra.BlockMaxRows = 10
+	schema.Extra.ObjectMaxBlocks = 2
+	bat := catalog.MockBatch(schema, int(schema.Extra.BlockMaxRows*uint32(schema.Extra.ObjectMaxBlocks+1)+1))
 	defer bat.Close()
 	bats := bat.Split(8)
 
@@ -932,9 +932,9 @@ func TestReplay6(t *testing.T) {
 	opts := config.WithLongScanAndCKPOpts(nil)
 	tae := testutil.InitTestDB(ctx, ModuleName, t, opts)
 	schema := catalog.MockSchemaAll(18, 15)
-	schema.BlockMaxRows = 10
-	schema.ObjectMaxBlocks = 2
-	bat := catalog.MockBatch(schema, int(schema.BlockMaxRows*10-1))
+	schema.Extra.BlockMaxRows = 10
+	schema.Extra.ObjectMaxBlocks = 2
+	bat := catalog.MockBatch(schema, int(schema.Extra.BlockMaxRows*10-1))
 	defer bat.Close()
 	bats := bat.Split(4)
 
@@ -994,10 +994,10 @@ func TestReplay7(t *testing.T) {
 	opts := config.WithQuickScanAndCKPOpts(nil)
 	tae := testutil.InitTestDB(ctx, ModuleName, t, opts)
 	schema := catalog.MockSchemaAll(18, 14)
-	schema.BlockMaxRows = 10
-	schema.ObjectMaxBlocks = 5
+	schema.Extra.BlockMaxRows = 10
+	schema.Extra.ObjectMaxBlocks = 5
 
-	bat := catalog.MockBatch(schema, int(schema.BlockMaxRows*15+1))
+	bat := catalog.MockBatch(schema, int(schema.Extra.BlockMaxRows*15+1))
 	defer bat.Close()
 	testutil.CreateRelationAndAppend(t, 0, tae, testutil.DefaultTestDB, schema, bat, true)
 	testutil.CompactBlocks(t, 0, tae, testutil.DefaultTestDB, schema, true)
@@ -1023,11 +1023,11 @@ func TestReplay8(t *testing.T) {
 	tae := testutil.NewTestEngine(ctx, ModuleName, t, opts)
 	defer tae.Close()
 	schema := catalog.MockSchemaAll(18, 13)
-	schema.BlockMaxRows = 10
-	schema.ObjectMaxBlocks = 2
+	schema.Extra.BlockMaxRows = 10
+	schema.Extra.ObjectMaxBlocks = 2
 	tae.BindSchema(schema)
 
-	bat := catalog.MockBatch(schema, int(schema.BlockMaxRows*3+1))
+	bat := catalog.MockBatch(schema, int(schema.Extra.BlockMaxRows*3+1))
 	defer bat.Close()
 	bats := bat.Split(4)
 
@@ -1178,10 +1178,10 @@ func TestReplay9(t *testing.T) {
 	tae := testutil.NewTestEngine(ctx, ModuleName, t, opts)
 	defer tae.Close()
 	schema := catalog.MockSchemaAll(18, 3)
-	schema.BlockMaxRows = 10
-	schema.ObjectMaxBlocks = 2
+	schema.Extra.BlockMaxRows = 10
+	schema.Extra.ObjectMaxBlocks = 2
 	tae.BindSchema(schema)
-	bat := catalog.MockBatch(schema, int(schema.BlockMaxRows*3+2))
+	bat := catalog.MockBatch(schema, int(schema.Extra.BlockMaxRows*3+2))
 	defer bat.Close()
 	bats := bat.Split(4)
 
@@ -1275,8 +1275,8 @@ func TestReplay10(t *testing.T) {
 	opts := config.WithQuickScanAndCKPOpts(nil)
 	tae := testutil.InitTestDB(ctx, ModuleName, t, opts)
 	schema := catalog.MockSchemaAll(3, 2)
-	schema.BlockMaxRows = 10
-	schema.ObjectMaxBlocks = 5
+	schema.Extra.BlockMaxRows = 10
+	schema.Extra.ObjectMaxBlocks = 5
 	expr := &plan.Expr{}
 	exprbuf, err := expr.Marshal()
 	assert.NoError(t, err)
@@ -1296,7 +1296,7 @@ func TestReplay10(t *testing.T) {
 		Expr: nil,
 	})
 
-	bat := catalog.MockBatch(schema, int(schema.BlockMaxRows))
+	bat := catalog.MockBatch(schema, int(schema.Extra.BlockMaxRows))
 	defer bat.Close()
 	testutil.CreateRelationAndAppend(t, 0, tae, testutil.DefaultTestDB, schema, bat, true)
 	time.Sleep(time.Millisecond * 100)

@@ -82,7 +82,7 @@ func (obj *aobject) IsAppendable() bool {
 		return false
 	}
 	rows, _ := node.Rows()
-	return rows < obj.meta.Load().GetSchema().BlockMaxRows
+	return rows < obj.meta.Load().GetSchema().Extra.BlockMaxRows
 }
 
 func (obj *aobject) PrepareCompactInfo() (result bool, reason string) {

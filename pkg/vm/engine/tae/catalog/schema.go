@@ -158,8 +158,8 @@ func NewEmptySchema(name string) *Schema {
 		SeqnumMap: make(map[uint16]int),
 		Extra:     &apipb.SchemaExtra{},
 	}
-	schema.BlockMaxRows = options.DefaultBlockMaxRows
-	schema.ObjectMaxBlocks = options.DefaultBlocksPerObject
+	schema.Extra.BlockMaxRows = options.DefaultBlockMaxRows
+	schema.Extra.ObjectMaxBlocks = uint32(options.DefaultBlocksPerObject)
 	return schema
 }
 
@@ -780,6 +780,7 @@ func ColDefFromAttribute(attr engine.Attribute) (*ColDef, error) {
 		ClusterBy:     attr.ClusterBy,
 		Default:       []byte(""),
 		OnUpdate:      []byte(""),
+		SeqNum:        attr.Seqnum,
 		EnumValues:    attr.EnumVlaues,
 	}
 	if attr.Default != nil {
@@ -1142,8 +1143,8 @@ func MockSchemaAll(colCnt int, pkIdx int, from ...int) *Schema {
 		schema.ColDefs[len(schema.ColDefs)-1].NullAbility = true
 	}
 
-	schema.BlockMaxRows = 1000
-	schema.ObjectMaxBlocks = 10
+	schema.Extra.BlockMaxRows = 1000
+	schema.Extra.ObjectMaxBlocks = 10
 	schema.Constraint, _ = constraintDef.MarshalBinary()
 	_ = schema.Finalize(false)
 	return schema

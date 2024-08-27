@@ -42,8 +42,8 @@ func WithTestAllPKType(t *testing.T, tae *db.DB, test func(*testing.T, *db.DB, *
 	defer pool.Release()
 	for i := 0; i < 17; i++ {
 		schema := catalog.MockSchemaAll(18, i)
-		schema.BlockMaxRows = 10
-		schema.ObjectMaxBlocks = 2
+		schema.Extra.BlockMaxRows = 10
+		schema.Extra.ObjectMaxBlocks = 2
 		wg.Add(1)
 		_ = pool.Submit(func() {
 			defer wg.Done()
