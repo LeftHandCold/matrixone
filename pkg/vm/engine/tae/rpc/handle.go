@@ -743,6 +743,10 @@ func (h *Handle) HandleWrite(
 
 	//handle delete
 	if req.FileName != "" {
+		now2 := time.Now()
+		defer func() {
+			logutil.Infof("DeleteObjsWithMetaLoc en %v, txn %v", time.Since(now2), txn.String())
+		}()
 		//wait for loading deleted row-id done.
 		nctx := context.Background()
 		if deadline, ok := ctx.Deadline(); ok {
@@ -803,6 +807,10 @@ func (h *Handle) HandleWrite(
 		}
 		return
 	}
+	now3 := time.Now()
+	defer func() {
+		logutil.Infof("DeleteObjsWithMetaLoc22222 en %v, txn %v", time.Since(now3), txn.String())
+	}()
 	if len(req.Batch.Vecs) != 2 {
 		panic(fmt.Sprintf("req.Batch.Vecs length is %d, should be 2", len(req.Batch.Vecs)))
 	}
