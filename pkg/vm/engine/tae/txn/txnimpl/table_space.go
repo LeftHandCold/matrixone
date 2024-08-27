@@ -17,7 +17,6 @@ package txnimpl
 import (
 	"context"
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
