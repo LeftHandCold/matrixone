@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -127,6 +128,7 @@ func NewTAEHandle(ctx context.Context, path string, opt *options.Options) *Handl
 			},
 		),
 	)
+	h.UpdateInterceptMatchRegexp("sbtest")
 	h.GCManager.Start()
 
 	return h
