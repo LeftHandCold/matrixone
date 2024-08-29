@@ -729,6 +729,7 @@ func (h *Handle) HandleWrite(
 						zap.String("start-ts", txn.GetStartTS().ToString()),
 						zap.Int32("pk", pks[i]),
 						zap.Int32("val", v2[i]),
+						zap.Uint64("tid", tb.ID()),
 					)
 				}
 			}
@@ -814,6 +815,7 @@ func (h *Handle) HandleWrite(
 					zap.String("start-ts", txn.GetStartTS().ToString()),
 					zap.Int32("pk", pks[i]),
 					zap.String("rowid", rowID.String()),
+					zap.Uint64("tid", tb.ID()),
 				)
 			}
 		}
