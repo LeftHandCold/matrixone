@@ -722,13 +722,13 @@ func (h *Handle) HandleWrite(
 			pks := vector.MustFixedCol[int32](req.Batch.Vecs[0])
 			v2 := vector.MustFixedCol[int32](req.Batch.Vecs[1])
 			if tb.Schema(false).(*catalog.Schema).HasPK() {
-				idx := tb.Schema(false).(*catalog.Schema).GetSingleSortKeyIdx()
+				//idx := tb.Schema(false).(*catalog.Schema).GetSingleSortKeyIdx()
 				for i := 0; i < req.Batch.Vecs[0].Length(); i++ {
 					logutil.Info(
 						"op1",
 						zap.String("start-ts", txn.GetStartTS().ToString()),
-						zap.Int("pk", pks[i]),
-						zap.Int("val", v2[i]),
+						zap.Int32("pk", pks[i]),
+						zap.Int32("val", v2[i]),
 					)
 				}
 			}
@@ -812,7 +812,7 @@ func (h *Handle) HandleWrite(
 				logutil.Info(
 					"op2",
 					zap.String("start-ts", txn.GetStartTS().ToString()),
-					zap.String("pk", pks[i]),
+					zap.Int32("pk", pks[i]),
 					zap.String("rowid", rowID.String()),
 				)
 			}
