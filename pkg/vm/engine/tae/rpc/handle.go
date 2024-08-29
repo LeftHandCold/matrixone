@@ -17,6 +17,7 @@ package rpc
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"os"
 	"reflect"
 	"regexp"
@@ -718,13 +719,16 @@ func (h *Handle) HandleWrite(
 		}
 		// TODO: debug for #13342, remove me later
 		if h.IsInterceptTable(tb.Schema(false).(*catalog.Schema).Name) {
+			pks := vector.MustFixedCol[int32](req.Batch.Vecs[0])
+			v2 := vector.MustFixedCol[int32](req.Batch.Vecs[1])
 			if tb.Schema(false).(*catalog.Schema).HasPK() {
 				idx := tb.Schema(false).(*catalog.Schema).GetSingleSortKeyIdx()
 				for i := 0; i < req.Batch.Vecs[0].Length(); i++ {
 					logutil.Info(
 						"op1",
 						zap.String("start-ts", txn.GetStartTS().ToString()),
-						zap.String("pk", common.MoVectorToString(req.Batch.Vecs[idx], i)),
+						zap.Int("pk", pks[i]),
+						zap.Int("val", v2[i]),
 					)
 				}
 			}
@@ -801,13 +805,14 @@ func (h *Handle) HandleWrite(
 	//defer pkVec.Close()
 	// TODO: debug for #13342, remove me later
 	if h.IsInterceptTable(tb.Schema(false).(*catalog.Schema).Name) {
+		pks := vector.MustFixedCol[int32](req.Batch.Vecs[1])
 		if tb.Schema(false).(*catalog.Schema).HasPK() {
 			for i := 0; i < rowIDVec.Length(); i++ {
 				rowID := objectio.HackBytes2Rowid(req.Batch.Vecs[0].GetRawBytesAt(i))
 				logutil.Info(
 					"op2",
 					zap.String("start-ts", txn.GetStartTS().ToString()),
-					zap.String("pk", common.MoVectorToString(req.Batch.Vecs[1], i)),
+					zap.String("pk", pks[i]),
 					zap.String("rowid", rowID.String()),
 				)
 			}
