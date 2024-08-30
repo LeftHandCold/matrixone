@@ -1,0 +1,83 @@
+goroutine 235 [running]:
+runtime/pprof.writeGoroutineStacks({0x1057d3368, 0xc000081100})
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/runtime/pprof/pprof.go:743 +0x74
+runtime/pprof.writeGoroutine({0x1057d3368, 0xc000081100}, 0x2)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/runtime/pprof/pprof.go:732 +0x44
+runtime/pprof.(*Profile).WriteTo(0x1065b7060, {0x1057d3368, 0xc000081100}, 0x2)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/runtime/pprof/pprof.go:369 +0x138
+github.com/matrixorigin/matrixone/pkg/util/profile.ProfileRuntime({0x103bf3d8c, 0x9}, {0x1057d3368, 0xc000081100}, 0x2)
+	/Users/shenjiangwei/Work/local/tae/matrixone/pkg/util/profile/profile.go:70 +0x54
+github.com/matrixorigin/matrixone/pkg/util/trace/impl/motrace.(*MOSpan).doProfileRuntime(0xc0006aefc0, {0x1057ec4a0, 0xc000fdf980}, {0x103bf3d8c, 0x9}, 0x2)
+	/Users/shenjiangwei/Work/local/tae/matrixone/pkg/util/trace/impl/motrace/mo_trace.go:316 +0x15c
+github.com/matrixorigin/matrixone/pkg/util/trace/impl/motrace.(*MOSpan).doProfile(0xc0006aefc0)
+	/Users/shenjiangwei/Work/local/tae/matrixone/pkg/util/trace/impl/motrace/mo_trace.go:384 +0x114
+github.com/matrixorigin/matrixone/pkg/util/trace/impl/motrace.(*MOSpan).End(0xc0006aefc0, {0x0, 0x0, 0xc000541eb8?})
+	/Users/shenjiangwei/Work/local/tae/matrixone/pkg/util/trace/impl/motrace/mo_trace.go:299 +0x2e4
+github.com/matrixorigin/matrixone/pkg/util/trace/impl/motrace.TestMOSpan_doProfile.func2(0xc002020340)
+	/Users/shenjiangwei/Work/local/tae/matrixone/pkg/util/trace/impl/motrace/mo_trace_test.go:481 +0x170
+testing.tRunner(0xc002020340, 0xc0005d8fc0)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/testing/testing.go:1689 +0x184
+created by testing.(*T).Run in goroutine 233
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/testing/testing.go:1742 +0x5e8
+
+goroutine 1 [chan receive]:
+testing.(*T).Run(0xc0000d0b60, {0x103c05b8f, 0x14}, 0x1057c5eb0)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/testing/testing.go:1750 +0x604
+testing.runTests.func1(0xc0000d0b60)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/testing/testing.go:2161 +0x84
+testing.tRunner(0xc0000d0b60, 0xc0010c7b08)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/testing/testing.go:1689 +0x184
+testing.runTests(0xc00018a690, {0x1065c4580, 0x2a, 0x2a}, {0x103baa9dc?, 0x0?, 0xc0004d68c0?})
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/testing/testing.go:2159 +0x6e4
+testing.(*M).Run(0xc0006cf4a0)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/testing/testing.go:2027 +0xb78
+main.main()
+	_testmain.go:143 +0x298
+
+goroutine 3 [select]:
+github.com/panjf2000/ants/v2.(*Pool).purgeStaleWorkers(0xc0004f8320, {0x1057ec4d8, 0xc0002017c0})
+	/Users/shenjiangwei/Work/local/tae/matrixone/vendor/github.com/panjf2000/ants/v2/pool.go:83 +0x14c
+created by github.com/panjf2000/ants/v2.(*Pool).goPurge in goroutine 1
+	/Users/shenjiangwei/Work/local/tae/matrixone/vendor/github.com/panjf2000/ants/v2/pool.go:148 +0x160
+
+goroutine 4 [select]:
+github.com/panjf2000/ants/v2.(*Pool).ticktock(0xc0004f8320, {0x1057ec4d8, 0xc000201810})
+	/Users/shenjiangwei/Work/local/tae/matrixone/vendor/github.com/panjf2000/ants/v2/pool.go:126 +0x164
+created by github.com/panjf2000/ants/v2.(*Pool).goTicktock in goroutine 1
+	/Users/shenjiangwei/Work/local/tae/matrixone/vendor/github.com/panjf2000/ants/v2/pool.go:155 +0x170
+
+goroutine 123 [IO wait]:
+internal/poll.runtime_pollWait(0x12f7588d0, 0x72)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/runtime/netpoll.go:345 +0xa0
+internal/poll.(*pollDesc).wait(0xc0001fcca0, 0x72, 0x0)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/internal/poll/fd_poll_runtime.go:84 +0xb8
+internal/poll.(*pollDesc).waitRead(...)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Accept(0xc0001fcc80)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/internal/poll/fd_unix.go:611 +0x3a8
+net.(*netFD).accept(0xc0001fcc80)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/net/fd_unix.go:172 +0x38
+net.(*TCPListener).accept(0xc0001ad4c0)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/net/tcpsock_posix.go:159 +0x3c
+net.(*TCPListener).Accept(0xc0001ad4c0)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/net/tcpsock.go:327 +0x68
+github.com/google/gops/agent.listen({0x1057e52c0, 0xc0001ad4c0})
+	/Users/shenjiangwei/Work/local/tae/matrixone/vendor/github.com/google/gops/agent/agent.go:130 +0x54
+created by github.com/google/gops/agent.Listen in goroutine 1
+	/Users/shenjiangwei/Work/local/tae/matrixone/vendor/github.com/google/gops/agent/agent.go:123 +0x39c
+
+goroutine 122 [chan receive]:
+github.com/matrixorigin/matrixone/pkg/common/mpool.init.0.func1()
+	/Users/shenjiangwei/Work/local/tae/matrixone/pkg/common/mpool/alloc_tracing.go:34 +0x50
+created by github.com/matrixorigin/matrixone/pkg/common/mpool.init.0 in goroutine 1
+	/Users/shenjiangwei/Work/local/tae/matrixone/pkg/common/mpool/alloc_tracing.go:31 +0x2c
+
+goroutine 233 [chan receive]:
+testing.(*T).Run(0xc002020000, {0x103bf3d8c, 0x9}, 0xc0005d8fc0)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/testing/testing.go:1750 +0x604
+github.com/matrixorigin/matrixone/pkg/util/trace/impl/motrace.TestMOSpan_doProfile(0xc002020000)
+	/Users/shenjiangwei/Work/local/tae/matrixone/pkg/util/trace/impl/motrace/mo_trace_test.go:473 +0x738
+testing.tRunner(0xc002020000, 0x1057c5eb0)
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/testing/testing.go:1689 +0x184
+created by testing.(*T).Run in goroutine 1
+	/Users/shenjiangwei/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.3.darwin-arm64/src/testing/testing.go:1742 +0x5e8

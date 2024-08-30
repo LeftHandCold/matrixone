@@ -265,7 +265,7 @@ func (r *BlockReader) LoadAllDeleteColumns(
 	if err != nil {
 		return nil, err
 	}
-	dataMeta := meta.MustTombstoneMeta()
+	dataMeta := meta.MustDataMeta()
 	if dataMeta.BlockHeader().MetaLocation().End() == 0 {
 		return nil, nil
 	}

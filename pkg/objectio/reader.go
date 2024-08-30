@@ -236,7 +236,7 @@ func (r *objectReaderV1) ReadDeleteAll(
 	if metaHeader, err = r.ReadMeta(ctx, m); err != nil {
 		return
 	}
-	meta := metaHeader.MustTombstoneMeta()
+	meta := metaHeader.MustDataMeta()
 	return ReadAllBlocksWithMeta(ctx, &meta, r.name, idxs, r.dataReadPolicy, m, r.fs, constructorFactory)
 }
 
