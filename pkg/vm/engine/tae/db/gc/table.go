@@ -152,6 +152,7 @@ func (t *GCTable) SoftGC(
 		objectEntry := table.objects[name]
 		tsList := meta.GetSnapshotList(snapList, entry.table)
 		if tsList == nil {
+			logutil.Infof("tsList is nil name is %v, table is %d", name, entry.table)
 			if objectEntry == nil && entry.commitTS.Less(&ts) {
 				gc = append(gc, name)
 				t.deleteObject(name)
@@ -214,7 +215,7 @@ func isSnapshotRefers(obj *ObjectEntry, snapVec []types.TS, name string) bool {
 		mid := left + (right-left)/2
 		snapTS := snapVec[mid]
 		if snapTS.GreaterEq(&obj.createTS) && (obj.dropTS.IsEmpty() || snapTS.Less(&obj.dropTS)) {
-			logutil.Debug("[soft GC]Snapshot Refers", zap.String("name", name), zap.String("snapTS", snapTS.ToString()),
+			logutil.Info("[soft GC]Snapshot Refers", zap.String("name", name), zap.String("snapTS", snapTS.ToString()),
 				zap.String("createTS", obj.createTS.ToString()), zap.String("dropTS", obj.dropTS.ToString()))
 			return true
 		} else if snapTS.Less(&obj.createTS) {
