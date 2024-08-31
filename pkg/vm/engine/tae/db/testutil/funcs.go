@@ -19,6 +19,7 @@ import (
 	"sync"
 	"testing"
 
+	pkgcatalog "github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -32,8 +33,11 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables/jobs"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnimpl"
+
 	"github.com/panjf2000/ants/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func WithTestAllPKType(t *testing.T, tae *db.DB, test func(*testing.T, *db.DB, *catalog.Schema)) {
@@ -104,6 +108,181 @@ func CreateRelationNoCommit(t *testing.T, e *db.DB, dbName string, schema *catal
 	return
 }
 
+func makeRespBatchFromSchema(schema *catalog.Schema) *containers.Batch {
+	bat := containers.NewBatch()
+	typs := schema.AllTypes()
+	attrs := schema.AllNames()
+	for i, attr := range attrs {
+		if attr == catalog.PhyAddrColumnName {
+			continue
+		}
+		bat.AddVector(attr, containers.MakeVector(typs[i], common.CheckpointAllocator))
+	}
+	return bat
+}
+
+func DropDatabase2(ctx context.Context, txn txnif.AsyncTxn, dbName string) error {
+	db, err := txn.DropDatabase(dbName)
+	if err != nil {
+		return err
+	}
+
+	packer := types.NewPacker()
+	defer packer.Close()
+	packer.EncodeUint32(txn.GetTenantID())
+	packer.EncodeStringType([]byte(db.GetName()))
+
+	catalogdb, err := txn.GetDatabaseByID(pkgcatalog.MO_CATALOG_ID)
+	if err != nil {
+		return err
+	}
+	dbHandle, err := catalogdb.GetRelationByID(pkgcatalog.MO_DATABASE_ID)
+	if err != nil {
+		return err
+	}
+	return dbHandle.DeleteByFilter(ctx, handle.NewEQFilter(packer.Bytes()))
+}
+
+func CreateDatabase2Ext(ctx context.Context, txn txnif.AsyncTxn, dbName, createsql, dattype string) (handle.Database, error) {
+	db, err := txn.CreateDatabase(dbName, createsql, dattype)
+	if err != nil {
+		return nil, err
+	}
+	catalogdb, err := txn.GetDatabaseByID(pkgcatalog.MO_CATALOG_ID)
+	if err != nil {
+		return nil, err
+	}
+	dbHandle, err := catalogdb.GetRelationByID(pkgcatalog.MO_DATABASE_ID)
+	if err != nil {
+		return nil, err
+	}
+	bat := makeRespBatchFromSchema(catalog.SystemDBSchema)
+	for _, def := range catalog.SystemDBSchema.ColDefs {
+		if def.IsPhyAddr() {
+			continue
+		}
+		txnimpl.FillDBRow(db.GetMeta().(*catalog.DBEntry), def.Name, bat.Vecs[def.Idx])
+	}
+
+	if err := dbHandle.Append(ctx, bat); err != nil {
+		return nil, err
+	}
+	return db, nil
+}
+
+func CreateDatabase2(ctx context.Context, txn txnif.AsyncTxn, dbName string) (handle.Database, error) {
+	return CreateDatabase2Ext(ctx, txn, dbName, "", "")
+}
+
+func DropRelation2(ctx context.Context, txn txnif.AsyncTxn, db handle.Database, tblName string) error {
+	rel, err := db.DropRelationByName(tblName)
+	if err != nil {
+		return err
+	}
+	catalogdb, err := txn.GetDatabaseByID(pkgcatalog.MO_CATALOG_ID)
+	if err != nil {
+		return err
+	}
+	tblHandle, err := catalogdb.GetRelationByID(pkgcatalog.MO_TABLES_ID)
+	if err != nil {
+		return err
+	}
+	colHandle, err := catalogdb.GetRelationByID(pkgcatalog.MO_COLUMNS_ID)
+	if err != nil {
+		return err
+	}
+	packer := types.NewPacker()
+	defer packer.Close()
+	packer.EncodeUint32(txn.GetTenantID())
+	packer.EncodeStringType([]byte(db.GetName()))
+	packer.EncodeStringType([]byte(tblName))
+	if err := tblHandle.DeleteByFilter(ctx, handle.NewEQFilter(packer.Bytes())); err != nil {
+		return err
+	}
+
+	for _, col := range rel.Schema(false).(*catalog.Schema).ColDefs {
+		packer.Reset()
+		packer.EncodeUint32(txn.GetTenantID())
+		packer.EncodeStringType([]byte(db.GetName()))
+		packer.EncodeStringType([]byte(tblName))
+		packer.EncodeStringType([]byte(col.Name))
+		if err := colHandle.DeleteByFilter(ctx, handle.NewEQFilter(packer.Bytes())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func CreateRelation2(ctx context.Context, txn txnif.AsyncTxn, db handle.Database, schema *catalog.Schema) (handle.Relation, error) {
+	rel, err := db.CreateRelation(schema)
+	if err != nil {
+		return nil, err
+	}
+	relEntry := rel.GetMeta().(*catalog.TableEntry)
+	catalogdb, err := txn.GetDatabaseByID(pkgcatalog.MO_CATALOG_ID)
+	if err != nil {
+		return nil, err
+	}
+	tblHandle, err := catalogdb.GetRelationByID(pkgcatalog.MO_TABLES_ID)
+	if err != nil {
+		return nil, err
+	}
+	colHandle, err := catalogdb.GetRelationByID(pkgcatalog.MO_COLUMNS_ID)
+	if err != nil {
+		return nil, err
+	}
+
+	bat := makeRespBatchFromSchema(catalog.SystemTableSchema)
+	for _, def := range catalog.SystemTableSchema.ColDefs {
+		if def.IsPhyAddr() {
+			continue
+		}
+		txnimpl.FillTableRow(relEntry, schema, def.Name, bat.Vecs[def.Idx])
+	}
+	if err := tblHandle.Append(ctx, bat); err != nil {
+		return nil, err
+	}
+	colBat := makeRespBatchFromSchema(catalog.SystemColumnSchema)
+	for _, def := range catalog.SystemColumnSchema.ColDefs {
+		if def.IsPhyAddr() {
+			continue
+		}
+		txnimpl.FillColumnRow(relEntry, schema, def.Name, colBat.Vecs[def.Idx])
+	}
+
+	if err := colHandle.Append(ctx, colBat); err != nil {
+		return nil, err
+	}
+	return rel, nil
+}
+
+func CreateRelationAndAppend2(
+	t *testing.T,
+	tenantID uint32,
+	e *db.DB,
+	dbName string,
+	schema *catalog.Schema,
+	bat *containers.Batch,
+	createDB bool) {
+	ctx := context.Background()
+	txn, err := e.StartTxn(nil)
+	txn.BindAccessInfo(tenantID, 0, 0)
+	require.NoError(t, err)
+	var db handle.Database
+	if createDB {
+		db, err = CreateDatabase2(ctx, txn, dbName)
+		require.NoError(t, err)
+	} else {
+		db, err = txn.GetDatabase(dbName)
+		require.NoError(t, err)
+	}
+	rel, err := CreateRelation2(ctx, txn, db, schema)
+	require.NoError(t, err)
+	err = rel.Append(context.Background(), bat)
+	require.NoError(t, err)
+	require.Nil(t, txn.Commit(context.Background()))
+}
+
 func CreateRelationAndAppend(
 	t *testing.T,
 	tenantID uint32,
@@ -111,10 +290,11 @@ func CreateRelationAndAppend(
 	dbName string,
 	schema *catalog.Schema,
 	bat *containers.Batch,
-	createDB bool) (db handle.Database, rel handle.Relation) {
+	createDB bool) {
 	txn, err := e.StartTxn(nil)
 	txn.BindAccessInfo(tenantID, 0, 0)
 	assert.NoError(t, err)
+	var db handle.Database
 	if createDB {
 		db, err = txn.CreateDatabase(dbName, "", "")
 		assert.NoError(t, err)
@@ -122,7 +302,7 @@ func CreateRelationAndAppend(
 		db, err = txn.GetDatabase(dbName)
 		assert.NoError(t, err)
 	}
-	rel, err = db.CreateRelation(schema)
+	rel, err := db.CreateRelation(schema)
 	assert.NoError(t, err)
 	err = rel.Append(context.Background(), bat)
 	assert.NoError(t, err)
@@ -132,6 +312,7 @@ func CreateRelationAndAppend(
 
 func GetRelation(t *testing.T, tenantID uint32, e *db.DB, dbName, tblName string) (txn txnif.AsyncTxn, rel handle.Relation) {
 	txn, err := e.StartTxn(nil)
+	require.NoError(t, err)
 	txn.BindAccessInfo(tenantID, 0, 0)
 	assert.NoError(t, err)
 	db, err := txn.GetDatabase(dbName)

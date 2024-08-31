@@ -125,9 +125,14 @@ func (e *TestEngine) Close() error {
 	return err
 }
 
-func (e *TestEngine) CreateRelAndAppend(bat *containers.Batch, createDB bool) (handle.Database, handle.Relation) {
+func (e *TestEngine) CreateRelAndAppend(bat *containers.Batch, createDB bool) {
 	clonedSchema := e.schema.Clone()
-	return CreateRelationAndAppend(e.T, e.tenantID, e.DB, DefaultTestDB, clonedSchema, bat, createDB)
+	CreateRelationAndAppend(e.T, e.tenantID, e.DB, DefaultTestDB, clonedSchema, bat, createDB)
+}
+
+func (e *TestEngine) CreateRelAndAppend2(bat *containers.Batch, createDB bool) {
+	clonedSchema := e.schema.Clone()
+	CreateRelationAndAppend2(e.T, e.tenantID, e.DB, DefaultTestDB, clonedSchema, bat, createDB)
 }
 
 func (e *TestEngine) CheckRowsByScan(exp int, applyDelete bool) {
@@ -296,15 +301,15 @@ func (e *TestEngine) IncrementalCheckpoint(
 			return flushed
 		})
 		flushed := e.DB.BGCheckpointRunner.IsAllChangesFlushed(types.TS{}, end, true)
-		assert.True(e.T, flushed)
+		require.True(e.T, flushed)
 	}
 	err := e.DB.BGCheckpointRunner.ForceIncrementalCheckpoint(end, false)
-	assert.NoError(e.T, err)
+	require.NoError(e.T, err)
 	if truncate {
 		lsn := e.DB.BGCheckpointRunner.MaxLSNInRange(end)
 		entry, err := e.DB.Wal.RangeCheckpoint(1, lsn)
-		assert.NoError(e.T, err)
-		assert.NoError(e.T, entry.WaitDone())
+		require.NoError(e.T, err)
+		require.NoError(e.T, entry.WaitDone())
 		testutils.WaitExpect(1000, func() bool {
 			return e.Runtime.Scheduler.GetPenddingLSNCnt() == 0
 		})
@@ -381,6 +386,7 @@ func InitTestDB(
 	t *testing.T,
 	opts *options.Options,
 ) *db.DB {
+	blockio.Start("")
 	dir := testutils.InitTestEnv(moduleName, t)
 	db, _ := db.Open(ctx, dir, opts)
 	// only ut executes this checker

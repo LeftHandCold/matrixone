@@ -1670,14 +1670,6 @@ func (data *CheckpointData) GetBatches() []*containers.Batch {
 	return data.bats[:]
 }
 
-func (data *CheckpointData) GetTblBatchs() (
-	*containers.Batch,
-	*containers.Batch,
-	*containers.Batch,
-	*containers.Batch,
-	*containers.Batch) {
-	panic("implement me")
-}
 func (data *CheckpointData) GetTombstoneObjectBatchs() *containers.Batch {
 	return data.bats[TombstoneObjectInfoIDX]
 }
