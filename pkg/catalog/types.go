@@ -155,6 +155,10 @@ const (
 	MO_RETENTION = "mo_retention"
 )
 
+func IsSystemTable(id uint64) bool {
+	return id == MO_DATABASE_ID || id == MO_TABLES_ID || id == MO_COLUMNS_ID
+}
+
 const (
 	// Metrics and Trace related
 

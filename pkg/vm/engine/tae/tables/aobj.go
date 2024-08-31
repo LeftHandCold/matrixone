@@ -49,7 +49,7 @@ func newAObject(
 ) *aobject {
 	obj := &aobject{}
 	obj.baseObject = newBaseObject(obj, meta, rt)
-	if obj.meta.Load().HasDropCommitted() {
+	if meta.IsForcePNode() || obj.meta.Load().HasDropCommitted() {
 		pnode := newPersistedNode(obj.baseObject)
 		node := NewNode(pnode)
 		node.Ref()
