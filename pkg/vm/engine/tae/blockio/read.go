@@ -18,6 +18,7 @@ import (
 	"context"
 	"math"
 	"math/rand"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -184,9 +185,9 @@ func BlockDataRead(
 	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
 		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
 	}
-	if rand.Intn(50000) == 1 {
+	if rand.Intn(50) == 1 && strings.Contains(tableName, "task") {
 		time.Sleep(5 * time.Minute)
-		logutil.Infof("read block %s, sleep 30s", info.BlockID.String())
+		logutil.Infof("read block %s, sleep 5m", info.BlockID.String())
 	}
 	var (
 		sels []int64
