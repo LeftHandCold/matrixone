@@ -516,7 +516,7 @@ func (op *operator) waitHAKeeperReadyLocked() (logservice.CNHAKeeperClient, erro
 		return client, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 	defer cancel()
 	for {
 		select {

@@ -308,7 +308,7 @@ type objsPruneTask struct {
 
 func (c *objsPruneTask) PruneLocked() {
 	for id, task := range c.memos {
-		if time.Since(task.insertAt) > 5*time.Minute {
+		if time.Since(task.insertAt) > time.Second*15 {
 			delete(c.memos, id)
 		}
 	}

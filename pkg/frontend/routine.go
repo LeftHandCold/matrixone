@@ -247,7 +247,7 @@ func (rt *Routine) handleRequest(req *Request) error {
 	routineCtx, span = trace.Start(rt.getCancelRoutineCtx(), "Routine.handleRequest",
 		trace.WithHungThreshold(30*time.Minute),
 		trace.WithProfileGoroutine(),
-		trace.WithConstBackOff(5*time.Minute),
+		trace.WithConstBackOff(time.Second*15),
 		trace.WithProfileSystemStatus(func() ([]byte, error) {
 			ss, ok := runtime.ServiceRuntime(ses.GetService()).GetGlobalVariables(runtime.StatusServer)
 			if !ok {

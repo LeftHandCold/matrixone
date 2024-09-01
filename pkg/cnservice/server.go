@@ -886,7 +886,7 @@ func (s *service) bootstrap() error {
 		s.options.bootstrapOptions...,
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 	ctx = context.WithValue(ctx, config.ParameterUnitKey, s.pu)
 	defer cancel()
 

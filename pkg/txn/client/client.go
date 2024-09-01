@@ -448,7 +448,7 @@ func (client *txnClient) GetLatestCommitTS() timestamp.Timestamp {
 func (client *txnClient) SyncLatestCommitTS(ts timestamp.Timestamp) {
 	client.updateLastCommitTS(TxnEvent{Txn: txn.TxnMeta{CommitTS: ts}})
 	if client.timestampWaiter != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute*5)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 		defer cancel()
 		for {
 			_, err := client.timestampWaiter.GetTimestamp(ctx, ts)

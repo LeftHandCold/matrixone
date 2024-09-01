@@ -25,7 +25,7 @@ import (
 
 const (
 	BootstrapInterval = time.Millisecond * 200
-	BootstrapTimeout  = time.Minute * 5
+	BootstrapTimeout  = time.Second * 15
 )
 
 func (h *handler) bootstrap(ctx context.Context) {
