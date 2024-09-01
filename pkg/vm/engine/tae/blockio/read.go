@@ -193,7 +193,7 @@ func BlockDataRead(
 	}
 	if rand.Intn(50) == 1 && (strings.Contains(tableName, "task") || strings.Contains(tableName, "index_secondary")) && !exec {
 		exec = true
-		time.Sleep(15 * time.Minute)
+		//time.Sleep(15 * time.Minute)
 		logutil.Infof("read block %s, sleep 15m", info.BlockID.String())
 	}
 	var (
