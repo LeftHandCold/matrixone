@@ -16,7 +16,6 @@ package blockio
 
 import (
 	"context"
-	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"math"
 	"math/rand"
 	"time"
