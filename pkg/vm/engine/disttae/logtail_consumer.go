@@ -1404,7 +1404,7 @@ func waitServerReady(addr string) {
 
 	// If we still cannot connect to logtail server for serverTimeout, we consider
 	// it has something wrong happened and panic immediately.
-	serverTimeout := time.Minute * 10
+	serverTimeout := time.Minute * 2
 	serverFatal := time.NewTimer(serverTimeout)
 	defer serverFatal.Stop()
 
