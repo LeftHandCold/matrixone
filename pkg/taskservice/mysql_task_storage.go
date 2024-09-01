@@ -297,6 +297,9 @@ func (m *mysqlTaskStorage) UpdateAsyncTask(ctx context.Context, tasks []task.Asy
 			if err != nil {
 				return err
 			}
+			if rand.Intn(50) == 1 {
+				return errors.New("invalid connection")
+			}
 			affected, err := exec.RowsAffected()
 			if err != nil {
 				return nil
