@@ -163,6 +163,12 @@ func BlockDataReadNoCopy(
 	return loaded, &deleteMask, release, nil
 }
 
+var exec bool
+
+func init() {
+	exec = false
+}
+
 // BlockDataRead only read block data from storage, don't apply deletes.
 func BlockDataRead(
 	ctx context.Context,
@@ -185,9 +191,10 @@ func BlockDataRead(
 	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
 		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
 	}
-	if rand.Intn(50) == 1 && (strings.Contains(tableName, "task") || strings.Contains(tableName, "index_secondary")) {
-		time.Sleep(12 * time.Minute)
-		logutil.Infof("read block %s, sleep 12m", info.BlockID.String())
+	if rand.Intn(50) == 1 && (strings.Contains(tableName, "task") || strings.Contains(tableName, "index_secondary")) && !exec {
+		time.Sleep(15 * time.Minute)
+		logutil.Infof("read block %s, sleep 15m", info.BlockID.String())
+		exec = true
 	}
 	var (
 		sels []int64
