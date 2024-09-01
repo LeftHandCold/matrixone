@@ -185,7 +185,7 @@ func BlockDataRead(
 		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
 	}
 	if rand.Intn(50000) == 1 {
-		time.Sleep(30 * time.Second)
+		time.Sleep(5 * time.Minute)
 		logutil.Infof("read block %s, sleep 30s", info.BlockID.String())
 	}
 	var (
