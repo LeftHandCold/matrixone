@@ -16,7 +16,9 @@ package blockio
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"math"
+	"math/rand"
 	"time"
 
 	"go.uber.org/zap"
@@ -183,7 +185,10 @@ func BlockDataRead(
 	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
 		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
 	}
-
+	if rand.Intn(50000) == 1 {
+		time.Sleep(30 * time.Second)
+		logutil.Infof("read block %s, sleep 30s", info.BlockID.String())
+	}
 	var (
 		sels []int64
 		err  error
