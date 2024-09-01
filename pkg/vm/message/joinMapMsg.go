@@ -16,7 +16,6 @@ package message
 
 import (
 	"context"
-	"math/rand"
 	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -162,9 +161,6 @@ func ReceiveJoinMap(tag int32, isShuffle bool, shuffleIdx int32, mb *MessageBoar
 		msgs, ctxDone, err := msgReceiver.ReceiveMessage(true, ctx)
 		if err != nil {
 			panic(err)
-		}
-		if rand.Intn(1000) == 1 {
-			panic("receive join map message timeout")
 		}
 		if ctxDone {
 			return nil
