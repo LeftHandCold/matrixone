@@ -211,6 +211,7 @@ func (mr *MessageReceiver) ReceiveMessage(needBlock bool, ctx context.Context) (
 		}
 		timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), messageTimeout)
 		if rand.Intn(5000) == 1 {
+			time.Sleep(30 * time.Second)
 			timeoutCancel()
 			return nil, false, moerr.NewInternalErrorNoCtx("wait message timeout")
 		}
