@@ -16,7 +16,6 @@ package message
 
 import (
 	"context"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -208,9 +207,6 @@ func (mr *MessageReceiver) ReceiveMessage(needBlock bool, ctx context.Context) (
 		result = mr.receiveMessageNonBlock()
 		if len(result) > 0 {
 			break
-		}
-		if rand.Intn(1000) == 1 {
-			time.Sleep(30 * time.Second)
 		}
 		timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), messageTimeout)
 		select {
