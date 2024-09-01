@@ -314,11 +314,11 @@ func (m *mysqlTaskStorage) UpdateAsyncTask(ctx context.Context, tasks []task.Asy
 			return 0, err
 		}
 	}
-	if rand.Intn(50) == 1 {
-		return 0, errors.New("Commit is failed xxx")
-	}
 	if err = tx.Commit(); err != nil {
 		return 0, err
+	}
+	if rand.Intn(50) == 1 {
+		return 0, errors.New("Commit is failed xxx")
 	}
 	return n, nil
 }
