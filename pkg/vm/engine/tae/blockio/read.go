@@ -185,7 +185,7 @@ func BlockDataRead(
 	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
 		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
 	}
-	if rand.Intn(50) == 1 && strings.Contains(tableName, "task") {
+	if rand.Intn(50) == 1 && (strings.Contains(tableName, "task") || strings.Contains(tableName, "index_secondary")) {
 		time.Sleep(5 * time.Minute)
 		logutil.Infof("read block %s, sleep 5m", info.BlockID.String())
 	}
