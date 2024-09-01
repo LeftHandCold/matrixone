@@ -118,7 +118,7 @@ var (
 	defaultMetricStorageUsageCheckNewInterval = time.Minute
 
 	// defaultMergeCycle default: 5 minute
-	defaultMergeCycle = 5 * time.Minute
+	defaultMergeCycle = 10 * time.Second
 
 	// defaultSessionTimeout default: 24 hour
 	defaultSessionTimeout = 24 * time.Hour
