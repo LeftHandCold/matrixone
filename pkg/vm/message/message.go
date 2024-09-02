@@ -16,6 +16,8 @@ package message
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/util"
 	"sync"
 	"time"
 
@@ -212,6 +214,9 @@ func (mr *MessageReceiver) ReceiveMessage(needBlock bool, ctx context.Context) (
 		select {
 		case <-timeoutCtx.Done():
 			timeoutCancel()
+			logutil.Errorf("wait message timeout ")
+			util.EnableCoreDump()
+			util.CoreDump()
 			return nil, false, moerr.NewInternalErrorNoCtx("wait message timeout")
 		case <-mr.waiter:
 			timeoutCancel()
