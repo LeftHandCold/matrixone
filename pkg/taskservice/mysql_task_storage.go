@@ -19,6 +19,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/tests/txn"
 	"math/rand"
 	"strings"
 	"time"
@@ -298,7 +300,7 @@ func (m *mysqlTaskStorage) UpdateAsyncTask(ctx context.Context, tasks []task.Asy
 				return err
 			}
 			if rand.Intn(50) == 1 {
-				return errors.New("invalid connection")
+				return errors.New(fmt.Sprintf("txn invalid connection %v", t.DebugString()))
 			}
 			affected, err := exec.RowsAffected()
 			if err != nil {
@@ -316,9 +318,6 @@ func (m *mysqlTaskStorage) UpdateAsyncTask(ctx context.Context, tasks []task.Asy
 	}
 	if err = tx.Commit(); err != nil {
 		return 0, err
-	}
-	if rand.Intn(50) == 1 {
-		return 0, errors.New("Commit is failed xxx")
 	}
 	return n, nil
 }
