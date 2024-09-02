@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/tests/txn"
 	"math/rand"
 	"strings"
@@ -280,7 +281,7 @@ func (m *mysqlTaskStorage) UpdateAsyncTask(ctx context.Context, tasks []task.Asy
 			if err != nil {
 				return err
 			}
-
+			now := time.Now()
 			exec, err := prepare.ExecContext(ctx,
 				t.Metadata.Executor,
 				t.Metadata.Context,
@@ -296,8 +297,14 @@ func (m *mysqlTaskStorage) UpdateAsyncTask(ctx context.Context, tasks []task.Asy
 				t.CompletedAt,
 				t.ID,
 			)
+
+			s := time.Since(now)
 			if err != nil {
 				return err
+			}
+
+			if s > 5*time.Second {
+				logutil.Infof("slow updateAsyncTask: %v, %v", s, t.DebugString())
 			}
 			if rand.Intn(50) == 1 {
 				return errors.New(fmt.Sprintf("txn invalid connection %v", t.DebugString()))
