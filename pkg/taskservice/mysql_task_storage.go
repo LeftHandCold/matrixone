@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
-	"github.com/matrixorigin/matrixone/pkg/tests/txn"
 	"math/rand"
 	"strings"
 	"time"
