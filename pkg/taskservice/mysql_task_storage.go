@@ -304,10 +304,10 @@ func (m *mysqlTaskStorage) UpdateAsyncTask(ctx context.Context, tasks []task.Asy
 			}
 
 			if s > 5*time.Second {
-				logutil.Infof("slow updateAsyncTask: %v, %v", s, t.DebugString())
+				logutil.Infof("slow updateAsyncTask: %v, %v", s, fmt.Sprintf("%s/%d", t.Metadata.ID, t.Metadata.Executor))
 			}
 			if rand.Intn(50) == 1 {
-				return errors.New(fmt.Sprintf("txn invalid connection %v", t.DebugString()))
+				return errors.New(fmt.Sprintf("txn invalid connection %v", fmt.Sprintf("%s/%d", t.Metadata.ID, t.Metadata.Executor)))
 			}
 			affected, err := exec.RowsAffected()
 			if err != nil {
