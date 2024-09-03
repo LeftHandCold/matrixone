@@ -354,6 +354,10 @@ func (sm *SnapshotMeta) GetSnapshot(ctx context.Context, fs fileservice.FileServ
 					nil, nil, blockio.BlockReadFilter{}, fs, mp, nil, fileservice.Policy(0))
 				if err != nil {
 					if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+						logutil.Warn(
+							"[GetSnapshot] block not found",
+							zap.Uint64("table id", tid),
+							zap.String("object name", name.String()))
 						delete(objectMap, key)
 						err = nil
 						continue
