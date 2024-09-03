@@ -256,19 +256,35 @@ type objectInfo struct {
 	createAt types.TS
 	deleteAt types.TS
 }
+
 type tableInfo struct {
-	accID    uint32
-	dbID     uint64
-	tid      uint64
+	accountID uint32
+	dbID      uint64
+	tid       uint64
 	createAt types.TS
 	deleteAt types.TS
 }
+
 type SnapshotMeta struct {
 	sync.RWMutex
+
+	// all objects&tombstones in the mo_snapshots table, because there
+	// will be multiple mo_snapshots, so here is a map, the key is tid.
 	objects     map[uint64]map[objectio.Segmentid]*objectInfo
 	tombstones  map[uint64]map[objectio.Segmentid]*objectInfo
+
+	// tables records all the table information of mo, the key is account id,
+	// and the map is the mapping of table id and table information.
+	//
+	// tables is used to facilitate the use of an account id to obtain
+	// all table information under the account.
 	tables      map[uint32]map[uint64]*tableInfo
+
+	// acctIndexes records all the index information of mo, the key is
+	// account id, and the value is the index information.
 	acctIndexes map[uint64]*tableInfo
+
+	// tides is used to consume the object and tombstone of the checkpoint.
 	tides       map[uint64]struct{}
 }
 
@@ -281,7 +297,7 @@ func NewSnapshotMeta() *SnapshotMeta {
 	}
 }
 
-func (sm *SnapshotMeta) CopyObjectsLocked() map[uint64]map[objectio.Segmentid]*objectInfo {
+func (sm *SnapshotMeta) copyObjectsLocked() map[uint64]map[objectio.Segmentid]*objectInfo {
 	objects := make(map[uint64]map[objectio.Segmentid]*objectInfo)
 	for k, v := range sm.objects {
 		objects[k] = make(map[objectio.Segmentid]*objectInfo)
@@ -292,7 +308,7 @@ func (sm *SnapshotMeta) CopyObjectsLocked() map[uint64]map[objectio.Segmentid]*o
 	return objects
 }
 
-func (sm *SnapshotMeta) CopyTablesLocked() map[uint32]map[uint64]*tableInfo {
+func (sm *SnapshotMeta) copyTablesLocked() map[uint32]map[uint64]*tableInfo {
 	tables := make(map[uint32]map[uint64]*tableInfo)
 	for k, v := range sm.tables {
 		tables[k] = make(map[uint64]*tableInfo)
@@ -304,41 +320,80 @@ func (sm *SnapshotMeta) CopyTablesLocked() map[uint32]map[uint64]*tableInfo {
 }
 
 func (sm *SnapshotMeta) updateTableInfo(data *CheckpointData) {
+	var objects map[uint64]map[objectio.Segmentid]*objectInfo
+	var tombstones map[uint64]map[objectio.Segmentid]*objectInfo
+	objects = make(map[uint64]map[objectio.Segmentid]*objectInfo, 1)
+	tombstones = make(map[uint64]map[objectio.Segmentid]*objectInfo, 1)
+	objects[catalog2.MO_TABLES_ID] = make(map[objectio.Segmentid]*objectInfo)
+	tombstones[catalog2.MO_TABLES_ID] = make(map[objectio.Segmentid]*objectInfo)
+	collector := func(
+		objects *map[uint64]map[objectio.Segmentid]*objectInfo,
+		tid uint64,
+		stats objectio.ObjectStats,
+		createTS types.TS, deleteTS types.TS,
+	) {
+		if !isMoTable(tid) {
+			return
+		}
+		if !stats.GetAppendable() {
+			// mo_table only consumes appendable object
+			return
+		}
+		id := stats.ObjectName().SegmentId()
+		if deleteTS.IsEmpty() {
+			return
+		}
+		moTable := (*objects)[tid]
+		if moTable[id] != nil {
+			// mo_table only consumes  appendable object that is
+			// soft deleted once, otherwise panic
+			panic(fmt.Sprintf("duplicate object %v", id.String()))
+		}
+		moTable[id] = &objectInfo{
+			stats: stats,
+			createAt: createTS,
+			deleteAt: deleteTS,
+		}
+		return
+	}
+	collectObjects(&objects, data.GetObjectBatchs(), collector)
+	collectObjects(&tombstones, data.GetTombstoneObjectBatchs(), collector)
+	moTable *map[objectio.Segmentid]*objectInfo,
 	insTable, insTableTxn, _, _, delTableTxn := data.GetTblBatchs()
-	insAccIDs := vector.MustFixedCol[uint32](insTable.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector())
-	insTIDs := vector.MustFixedCol[uint64](insTable.GetVectorByName(catalog2.SystemRelAttr_ID).GetDownstreamVector())
-	insDBIDs := vector.MustFixedCol[uint64](insTable.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector())
-	insCreateAts := vector.MustFixedCol[types.TS](insTableTxn.GetVectorByName(txnbase.SnapshotAttr_CommitTS).GetDownstreamVector())
+	insAccIDs := vector.MustFixedCol[uint32](
+		insTable.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector())
+	insTIDs := vector.MustFixedCol[uint64](
+		insTable.GetVectorByName(catalog2.SystemRelAttr_ID).GetDownstreamVector())
+	insDBIDs := vector.MustFixedCol[uint64](
+		insTable.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector())
+	insCreateAts := vector.MustFixedCol[types.TS](
+		insTableTxn.GetVectorByName(txnbase.SnapshotAttr_CommitTS).GetDownstreamVector())
 	insTableNameVec := insTable.GetVectorByName(catalog2.SystemRelAttr_Name).GetDownstreamVector()
 	insTableArea := insTableNameVec.GetArea()
 	insTableNames := vector.MustFixedCol[types.Varlena](insTableNameVec)
 	for i := 0; i < insTable.Length(); i++ {
 		tid := insTIDs[i]
 		name := string(insTableNames[i].GetByteSlice(insTableArea))
-		if name == "mo_snapshots" {
-			if sm.tid == 0 {
-				//for ut
-				sm.SetTid(tid)
-			}
+		if name == catalog2.MO_SNAPSHOTS {
 			logutil.Info("[UpdateSnapTable]", zap.Uint64("tid", tid))
 			sm.tides[tid] = struct{}{}
 		}
-		accID := insAccIDs[i]
-		if sm.tables[accID] == nil {
-			sm.tables[accID] = make(map[uint64]*tableInfo)
+		account := insAccIDs[i]
+		if sm.tables[account] == nil {
+			sm.tables[account] = make(map[uint64]*tableInfo)
 		}
-		dbid := insDBIDs[i]
+		db := insDBIDs[i]
 		createAt := insCreateAts[i]
-		if sm.tables[accID][tid] != nil {
+		if sm.tables[account][tid] != nil {
 			continue
 		}
 		table := &tableInfo{
-			accID:    accID,
-			dbID:     dbid,
-			tid:      tid,
-			createAt: createAt,
+			accountID: account,
+			dbID:      db,
+			tid:       tid,
+			createAt:  createAt,
 		}
-		sm.tables[accID][tid] = table
+		sm.tables[account][tid] = table
 
 		if sm.acctIndexes[tid] == nil {
 			sm.acctIndexes[tid] = table
@@ -358,14 +413,23 @@ func (sm *SnapshotMeta) updateTableInfo(data *CheckpointData) {
 		table := sm.acctIndexes[tid]
 		table.deleteAt = dropAt
 		sm.acctIndexes[tid] = table
-		sm.tables[table.accID][tid] = table
+		sm.tables[table.accountID][tid] = table
 	}
 }
 
-func updateObjectInfo(
+func isMoTable(tid uint64) bool {
+	return tid == catalog2.MO_TABLES_ID
+}
+
+func collectObjects (
 	objects *map[uint64]map[objectio.Segmentid]*objectInfo,
 	ins *containers.Batch,
-	tides map[uint64]struct{},
+	collector func(
+		*map[uint64]map[objectio.Segmentid]*objectInfo,
+		uint64,
+		objectio.ObjectStats,
+		types.TS, types.TS,
+		),
 ) {
 	insDeleteTSs := vector.MustFixedCol[types.TS](
 		ins.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
@@ -377,37 +441,10 @@ func updateObjectInfo(
 
 	for i := 0; i < ins.Length(); i++ {
 		table := insTableIDs[i]
-		if _, ok := tides[table]; !ok {
-			continue
-		}
-		objectStats := (objectio.ObjectStats)insStats.GetBytesAt(i)
 		deleteTS := insDeleteTSs[i]
 		createTS := insCreateTSs[i]
-		if (*objects)[table] == nil {
-			(*objects)[table] = make(map[objectio.Segmentid]*objectInfo)
-		}
-		if (*objects)[table][objectStats.ObjectName().SegmentId()] == nil {
-			if !deleteTS.IsEmpty() {
-				continue
-			}
-			(*objects)[table][objectStats.ObjectName().SegmentId()] = &objectInfo{
-				stats:    objectStats,
-				createAt: createTS,
-			}
-			logutil.Info("[UpdateSnapshot] Add object",
-				zap.Uint64("table id", table),
-				zap.String("object name", objectStats.ObjectName().String()),
-				zap.String("create at", createTS.ToString()))
-
-			continue
-		}
-		if deleteTS.IsEmpty() {
-			panic(any("deleteTS is empty"))
-		}
-		logutil.Info("[UpdateSnapshot] Delete object",
-			zap.Uint64("table id", table),
-			zap.String("object name", objectStats.ObjectName().String()))
-		delete((*objects)[table], objectStats.ObjectName().SegmentId())
+		objectStats := (objectio.ObjectStats)insStats.GetBytesAt(i)
+		collector(objects, table, objectStats, createTS, deleteTS)
 	}
 }
 
@@ -422,8 +459,47 @@ func (sm *SnapshotMeta) Update(data *CheckpointData) *SnapshotMeta {
 	if len(sm.tides) == 0 {
 		return sm
 	}
-	updateObjectInfo(&sm.objects, data.GetObjectBatchs(), sm.tides)
-	updateObjectInfo(&sm.tombstones, data.GetTombstoneObjectBatchs(), sm.tides)
+
+	collector := func(
+		objects *map[uint64]map[objectio.Segmentid]*objectInfo,
+		tid uint64,
+		stats objectio.ObjectStats,
+		createTS types.TS, deleteTS types.TS,
+		) {
+		if _, ok := sm.tides[tid]; !ok {
+			return
+		}
+		id := stats.ObjectName().SegmentId()
+		oMap := (*objects)[tid]
+		if oMap == nil {
+			oMap = make(map[objectio.Segmentid]*objectInfo)
+		}
+		if oMap[id] == nil {
+			if !deleteTS.IsEmpty() {
+				return
+			}
+			oMap[id] = &objectInfo{
+				stats:    stats,
+				createAt: createTS,
+			}
+			logutil.Info("[UpdateSnapshot] Add object",
+				zap.Uint64("table id", tid),
+				zap.String("object name", id.String()),
+				zap.String("create at", createTS.ToString()))
+
+			return
+		}
+		if deleteTS.IsEmpty() {
+			panic(any("deleteTS is empty"))
+		}
+		logutil.Info("[UpdateSnapshot] Delete object",
+			zap.Uint64("table id", tid),
+			zap.String("object name", id.String()))
+			zap.String("delete at", deleteTS.ToString())
+		delete(oMap, id)
+	}
+	collectObjects(&sm.objects, data.GetObjectBatchs(), collector)
+	collectObjects(&sm.tombstones, data.GetTombstoneObjectBatchs(), collector)
 	return nil
 }
 
@@ -433,8 +509,8 @@ func (sm *SnapshotMeta) GetSnapshot(ctx context.Context, sid string, fs fileserv
 		logutil.Infof("[GetSnapshot] cost %v", time.Since(now))
 	}()
 	sm.RLock()
-	objects := sm.CopyObjectsLocked()
-	tables := sm.CopyTablesLocked()
+	objects := sm.copyObjectsLocked()
+	tables := sm.copyTablesLocked()
 	sm.RUnlock()
 	snapshotList := make(map[uint32]containers.Vector)
 	idxes := []uint16{ColTS, ColLevel, ColObjId}
@@ -601,7 +677,7 @@ func (sm *SnapshotMeta) SaveTableInfo(name string, fs fileservice.FileService) (
 		for _, table := range entry {
 			vector.AppendFixed[uint32](
 				bat.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector(),
-				table.accID, false, common.DebugAllocator)
+				table.accountID, false, common.DebugAllocator)
 			vector.AppendFixed[uint64](
 				bat.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector(),
 				table.dbID, false, common.DebugAllocator)
@@ -618,7 +694,7 @@ func (sm *SnapshotMeta) SaveTableInfo(name string, fs fileservice.FileService) (
 			if _, ok := sm.tides[table.tid]; ok {
 				vector.AppendFixed[uint32](
 					snapTableBat.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector(),
-					table.accID, false, common.DebugAllocator)
+					table.accountID, false, common.DebugAllocator)
 				vector.AppendFixed[uint64](
 					snapTableBat.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector(),
 					table.dbID, false, common.DebugAllocator)
@@ -673,11 +749,11 @@ func (sm *SnapshotMeta) RebuildTableInfo(ins *containers.Batch) {
 			sm.tables[accid] = make(map[uint64]*tableInfo)
 		}
 		table := &tableInfo{
-			tid:      tid,
-			dbID:     dbid,
-			accID:    accid,
-			createAt: createTS,
-			deleteAt: deleteTS,
+			tid:       tid,
+			dbID:      dbid,
+			accountID: accid,
+			createAt:  createTS,
+			deleteAt:  deleteTS,
 		}
 		sm.tables[accid][tid] = table
 		sm.acctIndexes[tid] = table
@@ -894,7 +970,7 @@ func (sm *SnapshotMeta) GetSnapshotList(SnapshotList map[uint32][]types.TS, tid 
 	if sm.acctIndexes[tid] == nil {
 		return nil
 	}
-	accID := sm.acctIndexes[tid].accID
+	accID := sm.acctIndexes[tid].accountID
 	return SnapshotList[accID]
 }
 
@@ -902,7 +978,7 @@ func (sm *SnapshotMeta) GetSnapshotListLocked(SnapshotList map[uint32][]types.TS
 	if sm.acctIndexes[tid] == nil {
 		return nil
 	}
-	accID := sm.acctIndexes[tid].accID
+	accID := sm.acctIndexes[tid].accountID
 	return SnapshotList[accID]
 }
 
