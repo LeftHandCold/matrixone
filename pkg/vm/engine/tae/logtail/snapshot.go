@@ -322,6 +322,15 @@ func (sm *SnapshotMeta) GetSnapshot(ctx context.Context, fs fileservice.FileServ
 			name := object.stats.ObjectName()
 			meta, err := objectio.FastLoadObjectMeta(ctx, &location, false, fs)
 			if err != nil {
+				if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+					logutil.Warn(
+						"[GetSnapshot] block not found",
+						zap.Uint64("table id", tid),
+						zap.String("object name", name.String()))
+					delete(objectMap, key)
+					err = nil
+					continue
+				}
 				return nil, err
 			}
 			dataMeta, ok := meta.DataMeta()
@@ -353,15 +362,6 @@ func (sm *SnapshotMeta) GetSnapshot(ctx context.Context, fs fileservice.FileServ
 				bat, err := blockio.BlockRead(ctx, &blk, nil, idxes, colTypes, checkpointTS.ToTimestamp(),
 					nil, nil, blockio.BlockReadFilter{}, fs, mp, nil, fileservice.Policy(0))
 				if err != nil {
-					if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
-						logutil.Warn(
-							"[GetSnapshot] block not found",
-							zap.Uint64("table id", tid),
-							zap.String("object name", name.String()))
-						delete(objectMap, key)
-						err = nil
-						continue
-					}
 					return nil, err
 				}
 				defer bat.Clean(mp)
