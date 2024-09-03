@@ -317,7 +317,7 @@ func (sm *SnapshotMeta) GetSnapshot(ctx context.Context, fs fileservice.FileServ
 		snapshotSchemaTypes[ColObjId],
 	}
 	for tid, objectMap := range objects {
-		for _, object := range objectMap {
+		for key, object := range objectMap {
 			location := object.stats.ObjectLocation()
 			name := object.stats.ObjectName()
 			meta, err := objectio.FastLoadObjectMeta(ctx, &location, false, fs)
@@ -354,6 +354,7 @@ func (sm *SnapshotMeta) GetSnapshot(ctx context.Context, fs fileservice.FileServ
 					nil, nil, blockio.BlockReadFilter{}, fs, mp, nil, fileservice.Policy(0))
 				if err != nil {
 					if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+						delete(objectMap, key)
 						err = nil
 						continue
 					}
