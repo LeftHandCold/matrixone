@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnbase"
 	"sort"
 	"sync"
 	"time"
@@ -133,15 +132,7 @@ func NewOMapDeltaSource(objectMeta map[objectio.Segmentid]*objectInfo) DeltaSour
 }
 
 func (m *ObjectMapDeltaSource) GetDeltaLoc(bid objectio.Blockid) (objectio.Location, types.TS) {
-	segment := bid.Segment()
-	oInfo, ok := m.objectMeta[*segment]
-	if !ok {
-		return objectio.Location{}, types.TS{}
-	}
-	if oInfo.deltaLocation == nil {
-		return objectio.Location{}, types.TS{}
-	}
-	return *oInfo.deltaLocation[uint32(bid.Sequence())], types.TS{}
+	return nil, types.TS{}
 }
 
 func (m *ObjectMapDeltaSource) SetTS(ts types.TS) {
@@ -264,8 +255,8 @@ type tableInfo struct {
 	tid       uint64
 	name      string
 	dbName    string
-	createAt types.TS
-	deleteAt types.TS
+	createAt  types.TS
+	deleteAt  types.TS
 }
 
 type SnapshotMeta struct {
@@ -273,15 +264,15 @@ type SnapshotMeta struct {
 
 	// all objects&tombstones in the mo_snapshots table, because there
 	// will be multiple mo_snapshots, so here is a map, the key is tid.
-	objects     map[uint64]map[objectio.Segmentid]*objectInfo
-	tombstones  map[uint64]map[objectio.Segmentid]*objectInfo
+	objects    map[uint64]map[objectio.Segmentid]*objectInfo
+	tombstones map[uint64]map[objectio.Segmentid]*objectInfo
 
 	// tables records all the table information of mo, the key is account id,
 	// and the map is the mapping of table id and table information.
 	//
 	// tables is used to facilitate the use of an account id to obtain
 	// all table information under the account.
-	tables      map[uint32]map[uint64]*tableInfo
+	tables map[uint32]map[uint64]*tableInfo
 
 	// acctIndexes records all the index information of mo, the key is
 	// account id, and the value is the index information.
@@ -292,7 +283,7 @@ type SnapshotMeta struct {
 	pkIndexes map[any][]*tableInfo
 
 	// tides is used to consume the object and tombstone of the checkpoint.
-	tides       map[uint64]struct{}
+	tides map[uint64]struct{}
 }
 
 func NewSnapshotMeta() *SnapshotMeta {
@@ -331,8 +322,8 @@ func isMoTable(tid uint64) bool {
 }
 
 type tombstone struct {
-	pk 	 any
-	ts 	 types.TS
+	pk any
+	ts types.TS
 }
 
 func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.FileService, data *CheckpointData) error {
@@ -399,7 +390,7 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 			account := accoutVecs[i]
 			db := dbVecs[i]
 			createAt := createVecs[i]
-			pk,_,_,err := types.DecodeTuple(objectBat.Vecs[len(objectBat.Vecs)-3].GetRawBytesAt(i))
+			pk, _, _, err := types.DecodeTuple(objectBat.Vecs[len(objectBat.Vecs)-3].GetRawBytesAt(i))
 			if err != nil {
 				return err
 			}
@@ -415,9 +406,9 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 			}
 			table := sm.tables[account][tid]
 			if table != nil {
-				if table.createAt.Greater(createAt) {
+				if table.createAt.Greater(&createAt) {
 					panic(fmt.Sprintf("table %v create at %v is greater than %v",
-						tid, table.createAt, createAt))
+						tid, table.createAt.ToString(), createAt.ToString()))
 				}
 				sm.pkIndexes[pk] = append(sm.pkIndexes[pk], table)
 				continue
@@ -491,7 +482,7 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 	return nil
 }
 
-func collectObjects (
+func collectObjects(
 	objects *map[uint64]map[objectio.Segmentid]*objectInfo,
 	ins *containers.Batch,
 	collector func(
@@ -499,7 +490,7 @@ func collectObjects (
 		uint64,
 		objectio.ObjectStats,
 		types.TS, types.TS,
-		),
+	),
 ) {
 	insDeleteTSs := vector.MustFixedCol[types.TS](
 		ins.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
@@ -513,7 +504,7 @@ func collectObjects (
 		table := insTableIDs[i]
 		deleteTS := insDeleteTSs[i]
 		createTS := insCreateTSs[i]
-		objectStats := (objectio.ObjectStats)insStats.GetBytesAt(i)
+		objectStats := (objectio.ObjectStats)(insStats.GetBytesAt(i))
 		collector(objects, table, objectStats, createTS, deleteTS)
 	}
 }
@@ -522,16 +513,20 @@ func (sm *SnapshotMeta) Update(
 	ctx context.Context,
 	fs fileservice.FileService,
 	data *CheckpointData,
-	) *SnapshotMeta {
+) (*SnapshotMeta, error) {
 	sm.Lock()
 	defer sm.Unlock()
 	now := time.Now()
 	defer func() {
 		logutil.Infof("[UpdateSnapshot] cost %v", time.Since(now))
 	}()
-	sm.updateTableInfo(ctx, fs, data)
+	err := sm.updateTableInfo(ctx, fs, data)
+	if err != nil {
+		logutil.Errorf("[UpdateSnapshot] updateTableInfo failed %v", err)
+		return sm, err
+	}
 	if len(sm.tides) == 0 {
-		return sm
+		return sm, nil
 	}
 
 	collector := func(
@@ -539,7 +534,7 @@ func (sm *SnapshotMeta) Update(
 		tid uint64,
 		stats objectio.ObjectStats,
 		createTS types.TS, deleteTS types.TS,
-		) {
+	) {
 		if _, ok := sm.tides[tid]; !ok {
 			return
 		}
@@ -569,12 +564,12 @@ func (sm *SnapshotMeta) Update(
 		logutil.Info("[UpdateSnapshot] Delete object",
 			zap.Uint64("table id", tid),
 			zap.String("object name", id.String()))
-			zap.String("delete at", deleteTS.ToString())
+		zap.String("delete at", deleteTS.ToString())
 		delete(oMap, id)
 	}
 	collectObjects(&sm.objects, data.GetObjectBatchs(), collector)
 	collectObjects(&sm.tombstones, data.GetTombstoneObjectBatchs(), collector)
-	return nil
+	return nil, nil
 }
 
 func (sm *SnapshotMeta) GetSnapshot(ctx context.Context, sid string, fs fileservice.FileService, mp *mpool.MPool) (map[uint32]containers.Vector, error) {
@@ -672,7 +667,6 @@ func (sm *SnapshotMeta) GetSnapshot(ctx context.Context, sid string, fs fileserv
 }
 
 func (sm *SnapshotMeta) SetTid(tid uint64) {
-	sm.tid = tid
 }
 
 func (sm *SnapshotMeta) SaveMeta(name string, fs fileservice.FileService) (uint32, error) {
@@ -698,16 +692,6 @@ func (sm *SnapshotMeta) SaveMeta(name string, fs fileservice.FileService) (uint3
 			vector.AppendFixed[types.TS](
 				bat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
 				entry.deleteAt, false, common.DebugAllocator)
-			for id, delta := range entry.deltaLocation {
-				blockID := objectio.BuildObjectBlockid(entry.stats.ObjectName(), uint16(id))
-				vector.AppendFixed[types.Blockid](deltaBat.GetVectorByName(catalog2.BlockMeta_ID).GetDownstreamVector(),
-					*blockID, false, common.DebugAllocator)
-				vector.AppendBytes(deltaBat.GetVectorByName(catalog2.BlockMeta_DeltaLoc).GetDownstreamVector(),
-					[]byte(*delta), false, common.DebugAllocator)
-				vector.AppendFixed[uint64](
-					deltaBat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
-					tid, false, common.DebugAllocator)
-			}
 			vector.AppendFixed[uint64](
 				bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
 				tid, false, common.DebugAllocator)
@@ -866,12 +850,6 @@ func (sm *SnapshotMeta) Rebuild(ins *containers.Batch) {
 		objectStats.UnMarshal(buf)
 		createTS := insCreateTSs[i]
 		tid := insTides[i]
-		if sm.tid == 0 {
-			if tid == 0 {
-				panic("tid is 0")
-			}
-			sm.SetTid(tid)
-		}
 		if _, ok := sm.tides[tid]; !ok {
 			sm.tides[tid] = struct{}{}
 			logutil.Info("[RebuildSnapTable]", zap.Uint64("tid", tid))
@@ -896,25 +874,6 @@ func (sm *SnapshotMeta) Rebuild(ins *containers.Batch) {
 func (sm *SnapshotMeta) RebuildDelta(ins *containers.Batch) {
 	sm.Lock()
 	defer sm.Unlock()
-	insBlockIDs := vector.MustFixedCol[types.Blockid](ins.GetVectorByName(catalog2.BlockMeta_ID).GetDownstreamVector())
-	insTides := vector.MustFixedCol[uint64](ins.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector())
-	for i := 0; i < ins.Length(); i++ {
-		blockID := insBlockIDs[i]
-		tid := insTides[i]
-		deltaLoc := objectio.Location(ins.GetVectorByName(catalog2.BlockMeta_DeltaLoc).Get(i).([]byte))
-		if sm.objects[tid] == nil {
-			panic(any(fmt.Sprintf("tableID %d not found", tid)))
-		}
-		if sm.objects[tid][*blockID.Segment()] != nil {
-			if sm.objects[tid][*blockID.Segment()].deltaLocation == nil {
-				sm.objects[tid][*blockID.Segment()].deltaLocation = make(map[uint32]*objectio.Location)
-			}
-			logutil.Infof("RebuildDelta: %v, loc is %v", blockID.String(), deltaLoc.String())
-			sm.objects[tid][*blockID.Segment()].deltaLocation[uint32(blockID.Sequence())] = &deltaLoc
-		} else {
-			panic(any(fmt.Sprintf("blockID %s not found", blockID.String())))
-		}
-	}
 }
 
 func (sm *SnapshotMeta) ReadMeta(ctx context.Context, name string, fs fileservice.FileService) error {
@@ -1018,10 +977,10 @@ func (sm *SnapshotMeta) ReadTableInfo(ctx context.Context, name string, fs files
 	return nil
 }
 
-func (sm *SnapshotMeta) InitTableInfo(data *CheckpointData) {
+func (sm *SnapshotMeta) InitTableInfo(ctx context.Context, fs fileservice.FileService, data *CheckpointData) {
 	sm.Lock()
 	defer sm.Unlock()
-	sm.updateTableInfo(data)
+	sm.updateTableInfo(ctx, fs, data)
 }
 
 func (sm *SnapshotMeta) TableInfoString() string {
