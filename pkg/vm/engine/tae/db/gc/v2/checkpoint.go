@@ -1003,7 +1003,7 @@ func (c *checkpointCleaner) createNewInput(
 		}
 		defer data.Close()
 		input.UpdateTable(data)
-		c.updateSnapshot(data)
+		c.updateSnapshot(c.ctx, c.fs.Service, data)
 	}
 	name := blockio.EncodeSnapshotMetadataFileName(GCMetaDir,
 		PrefixSnapMeta, ckps[0].GetStart(), ckps[len(ckps)-1].GetEnd())
@@ -1033,8 +1033,12 @@ func (c *checkpointCleaner) createNewInput(
 	return
 }
 
-func (c *checkpointCleaner) updateSnapshot(data *logtail.CheckpointData) error {
-	c.snapshotMeta.Update(data)
+func (c *checkpointCleaner) updateSnapshot(
+	ctx context.Context,
+	fs fileservice.FileService,
+	data *logtail.CheckpointData,
+) error {
+	c.snapshotMeta.Update(ctx, fs, data)
 	return nil
 }
 

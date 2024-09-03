@@ -262,6 +262,7 @@ func (node *persistedNode) FillBlockTombstones(
 	txn txnif.TxnReader,
 	blkID *objectio.Blockid,
 	deletes **nulls.Nulls,
+	deleteStartOffset uint64,
 	mp *mpool.MPool) error {
 	startTS := txn.GetStartTS()
 	if !node.object.meta.Load().IsAppendable() {
@@ -336,7 +337,7 @@ func (node *persistedNode) FillBlockTombstones(
 					*deletes = &nulls.Nulls{}
 				}
 				offset := rowID.GetRowOffset()
-				(*deletes).Add(uint64(offset))
+				(*deletes).Add(uint64(offset) + deleteStartOffset)
 			}
 		}
 	}

@@ -127,6 +127,7 @@ type Object interface {
 		txn txnif.TxnReader,
 		blkID *objectio.Blockid,
 		deletes **nulls.Nulls,
+		deleteStartOffset uint64,
 		mp *mpool.MPool) error
 	CollectObjectTombstoneInRange(
 		ctx context.Context,

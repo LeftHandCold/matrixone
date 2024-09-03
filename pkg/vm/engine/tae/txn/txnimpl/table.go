@@ -182,7 +182,7 @@ func (tbl *txnTable) TransferDeletes(ts types.TS, phase string) (err error) {
 	for _, stats := range tbl.tombstoneTable.tableSpace.stats {
 		hasConflict := false
 		for blkID := range stats.BlkCnt() {
-			loc := catalog.BuildLocation(stats, uint16(blkID), tbl.dataTable.schema.BlockMaxRows)
+			loc := catalog.BuildLocation(stats, uint16(blkID), tbl.dataTable.schema.Extra.BlockMaxRows)
 			vectors, closeFunc, err := blockio.LoadColumns2(
 				tbl.store.ctx,
 				[]uint16{0, 1},
@@ -997,7 +997,7 @@ func (tbl *txnTable) DoPrecommitDedupByNode(ctx context.Context, stats objectio.
 	blkCount := stats.BlkCnt()
 	totalRow := stats.Rows()
 	schema := tbl.getBaseTable(isTombstone).schema
-	blkMaxRows := schema.BlockMaxRows
+	blkMaxRows := schema.Extra.BlockMaxRows
 	for i := uint16(0); i < uint16(blkCount); i++ {
 		var blkRow uint32
 		if totalRow > blkMaxRows {
@@ -1391,7 +1391,7 @@ func (tbl *txnTable) contains(
 	for _, stats := range tbl.tombstoneTable.tableSpace.stats {
 		blkCount := stats.BlkCnt()
 		totalRow := stats.Rows()
-		blkMaxRows := tbl.tombstoneTable.schema.BlockMaxRows
+		blkMaxRows := tbl.tombstoneTable.schema.Extra.BlockMaxRows
 		tombStoneZM := stats.SortKeyZoneMap()
 		var skip bool
 		if skip = !tombStoneZM.FastIntersect(keysZM); skip {
@@ -1516,7 +1516,7 @@ func (tbl *txnTable) deltaloc2ObjectStat(loc objectio.Location, fs fileservice.F
 	return stats
 }
 
-func (tbl *txnTable) FillInWorkspaceDeletes(blkID types.Blockid, deletes **nulls.Nulls) error {
+func (tbl *txnTable) FillInWorkspaceDeletes(blkID types.Blockid, deletes **nulls.Nulls, deleteStartOffset uint64) error {
 	if tbl.tombstoneTable == nil || tbl.tombstoneTable.tableSpace == nil {
 		return nil
 	}
@@ -1529,7 +1529,7 @@ func (tbl *txnTable) FillInWorkspaceDeletes(blkID types.Blockid, deletes **nulls
 				if *deletes == nil {
 					*deletes = &nulls.Nulls{}
 				}
-				(*deletes).Add(uint64(row))
+				(*deletes).Add(uint64(row) + deleteStartOffset)
 			}
 		}
 	}
@@ -1537,7 +1537,7 @@ func (tbl *txnTable) FillInWorkspaceDeletes(blkID types.Blockid, deletes **nulls
 		metaLocs := make([]objectio.Location, 0)
 		blkCount := stats.BlkCnt()
 		totalRow := stats.Rows()
-		blkMaxRows := tbl.tombstoneTable.schema.BlockMaxRows
+		blkMaxRows := tbl.tombstoneTable.schema.Extra.BlockMaxRows
 		for i := uint16(0); i < uint16(blkCount); i++ {
 			var blkRow uint32
 			if totalRow > blkMaxRows {
@@ -1571,7 +1571,7 @@ func (tbl *txnTable) FillInWorkspaceDeletes(blkID types.Blockid, deletes **nulls
 					if *deletes == nil {
 						*deletes = &nulls.Nulls{}
 					}
-					(*deletes).Add(uint64(row))
+					(*deletes).Add(uint64(row) + deleteStartOffset)
 				}
 			}
 			closeFunc()
@@ -1599,7 +1599,7 @@ func (tbl *txnTable) IsDeletedInWorkSpace(blkID objectio.Blockid, row uint32) (b
 		metaLocs := make([]objectio.Location, 0)
 		blkCount := stats.BlkCnt()
 		totalRow := stats.Rows()
-		blkMaxRows := tbl.tombstoneTable.schema.BlockMaxRows
+		blkMaxRows := tbl.tombstoneTable.schema.Extra.BlockMaxRows
 		for i := uint16(0); i < uint16(blkCount); i++ {
 			var blkRow uint32
 			if totalRow > blkMaxRows {

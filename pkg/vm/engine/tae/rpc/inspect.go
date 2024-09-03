@@ -833,8 +833,10 @@ func (c *mergePolicyArg) Run() error {
 		common.RuntimeMinCNMergeSize.Store(cnsize)
 		if c.maxMergeObjN == 0 && c.minOsizeQualified == 0 {
 			merge.StopMerge.Store(true)
+			c.ctx.resp.Payload = []byte("auto merge is disabled")
 		} else {
 			merge.StopMerge.Store(false)
+			c.ctx.resp.Payload = []byte("general setting has been refreshed")
 		}
 	} else {
 		c.ctx.db.MergeHandle.ConfigPolicy(c.tbl, &merge.BasicPolicyConfig{
@@ -844,8 +846,8 @@ func (c *mergePolicyArg) Run() error {
 			MinCNMergeSize:    cnsize,
 			MergeHints:        c.hints,
 		})
+		c.ctx.resp.Payload = []byte("success")
 	}
-	c.ctx.resp.Payload = []byte("<empty>")
 	return nil
 }
 

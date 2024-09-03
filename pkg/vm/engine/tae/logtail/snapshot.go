@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnbase"
+	"sort"
 	"sync"
 	"time"
 
@@ -39,7 +41,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnbase"
 )
 
 const (
@@ -261,6 +262,8 @@ type tableInfo struct {
 	accountID uint32
 	dbID      uint64
 	tid       uint64
+	name      string
+	dbName    string
 	createAt types.TS
 	deleteAt types.TS
 }
@@ -283,6 +286,10 @@ type SnapshotMeta struct {
 	// acctIndexes records all the index information of mo, the key is
 	// account id, and the value is the index information.
 	acctIndexes map[uint64]*tableInfo
+
+	// pkIndexes records all the index information of mo, the key is
+	// the mo_table pk, and the value is the index information.
+	pkIndexes map[any][]*tableInfo
 
 	// tides is used to consume the object and tombstone of the checkpoint.
 	tides       map[uint64]struct{}
@@ -319,7 +326,16 @@ func (sm *SnapshotMeta) copyTablesLocked() map[uint32]map[uint64]*tableInfo {
 	return tables
 }
 
-func (sm *SnapshotMeta) updateTableInfo(data *CheckpointData) {
+func isMoTable(tid uint64) bool {
+	return tid == catalog2.MO_TABLES_ID
+}
+
+type tombstone struct {
+	pk 	 any
+	ts 	 types.TS
+}
+
+func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.FileService, data *CheckpointData) error {
 	var objects map[uint64]map[objectio.Segmentid]*objectInfo
 	var tombstones map[uint64]map[objectio.Segmentid]*objectInfo
 	objects = make(map[uint64]map[objectio.Segmentid]*objectInfo, 1)
@@ -350,7 +366,7 @@ func (sm *SnapshotMeta) updateTableInfo(data *CheckpointData) {
 			panic(fmt.Sprintf("duplicate object %v", id.String()))
 		}
 		moTable[id] = &objectInfo{
-			stats: stats,
+			stats:    stats,
 			createAt: createTS,
 			deleteAt: deleteTS,
 		}
@@ -358,67 +374,121 @@ func (sm *SnapshotMeta) updateTableInfo(data *CheckpointData) {
 	}
 	collectObjects(&objects, data.GetObjectBatchs(), collector)
 	collectObjects(&tombstones, data.GetTombstoneObjectBatchs(), collector)
-	moTable *map[objectio.Segmentid]*objectInfo,
-	insTable, insTableTxn, _, _, delTableTxn := data.GetTblBatchs()
-	insAccIDs := vector.MustFixedCol[uint32](
-		insTable.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector())
-	insTIDs := vector.MustFixedCol[uint64](
-		insTable.GetVectorByName(catalog2.SystemRelAttr_ID).GetDownstreamVector())
-	insDBIDs := vector.MustFixedCol[uint64](
-		insTable.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector())
-	insCreateAts := vector.MustFixedCol[types.TS](
-		insTableTxn.GetVectorByName(txnbase.SnapshotAttr_CommitTS).GetDownstreamVector())
-	insTableNameVec := insTable.GetVectorByName(catalog2.SystemRelAttr_Name).GetDownstreamVector()
-	insTableArea := insTableNameVec.GetArea()
-	insTableNames := vector.MustFixedCol[types.Varlena](insTableNameVec)
-	for i := 0; i < insTable.Length(); i++ {
-		tid := insTIDs[i]
-		name := string(insTableNames[i].GetByteSlice(insTableArea))
-		if name == catalog2.MO_SNAPSHOTS {
-			logutil.Info("[UpdateSnapTable]", zap.Uint64("tid", tid))
-			sm.tides[tid] = struct{}{}
+	tObjects := objects[catalog2.MO_TABLES_ID]
+	tTombstones := tombstones[catalog2.MO_TABLES_ID]
+	for _, info := range tObjects {
+		if info.stats.BlkCnt() != 1 {
+			panic(fmt.Sprintf("mo_table object %v blk cnt %v",
+				info.stats.ObjectName(), info.stats.BlkCnt()))
 		}
-		account := insAccIDs[i]
-		if sm.tables[account] == nil {
-			sm.tables[account] = make(map[uint64]*tableInfo)
+		objectBat, _, err := blockio.LoadOneBlock(
+			ctx, fs, info.stats.ObjectLocation(), objectio.SchemaData)
+		if err != nil {
+			return err
 		}
-		db := insDBIDs[i]
-		createAt := insCreateAts[i]
-		if sm.tables[account][tid] != nil {
-			continue
-		}
-		table := &tableInfo{
-			accountID: account,
-			dbID:      db,
-			tid:       tid,
-			createAt:  createAt,
-		}
-		sm.tables[account][tid] = table
-
-		if sm.acctIndexes[tid] == nil {
-			sm.acctIndexes[tid] = table
+		// 0 is table id, 1 is table name, 11 is account id, len(objectBat.Vecs)-1 is commit ts
+		idVecs := vector.MustFixedCol[uint64](objectBat.Vecs[0])
+		nameVecs := vector.MustFixedCol[types.Varlena](objectBat.Vecs[1])
+		nameArea := objectBat.Vecs[1].GetArea()
+		dbVecs := vector.MustFixedCol[uint64](objectBat.Vecs[3])
+		accoutVecs := vector.MustFixedCol[uint32](objectBat.Vecs[11])
+		createVecs := vector.MustFixedCol[types.TS](objectBat.Vecs[len(objectBat.Vecs)-1])
+		for i := 0; i < len(idVecs); i++ {
+			name := string(nameVecs[i].GetByteSlice(nameArea))
+			tid := idVecs[i]
+			account := accoutVecs[i]
+			db := dbVecs[i]
+			createAt := createVecs[i]
+			pk,_,_,err := types.DecodeTuple(objectBat.Vecs[len(objectBat.Vecs)-3].GetRawBytesAt(i))
+			if err != nil {
+				return err
+			}
+			if name == catalog2.MO_SNAPSHOTS {
+				sm.tides[tid] = struct{}{}
+				logutil.Info("[UpdateSnapTable]",
+					zap.Uint64("tid", tid),
+					zap.Uint32("account id", account),
+					zap.String("create at", createAt.ToString()))
+			}
+			if sm.tables[account] == nil {
+				sm.tables[account] = make(map[uint64]*tableInfo)
+			}
+			table := sm.tables[account][tid]
+			if table != nil {
+				if table.createAt.Greater(createAt) {
+					panic(fmt.Sprintf("table %v create at %v is greater than %v",
+						tid, table.createAt, createAt))
+				}
+				sm.pkIndexes[pk] = append(sm.pkIndexes[pk], table)
+				continue
+			}
+			table = &tableInfo{
+				accountID: account,
+				dbID:      db,
+				tid:       tid,
+				createAt:  createAt,
+			}
+			sm.tables[account][tid] = table
+			if sm.acctIndexes[tid] == nil {
+				sm.acctIndexes[tid] = table
+			}
+			if sm.pkIndexes[pk] == nil {
+				sm.pkIndexes[pk] = make([]*tableInfo, 0)
+			}
+			sm.pkIndexes[pk] = append(sm.pkIndexes[pk], table)
 		}
 	}
 
-	delTableIDs := vector.MustFixedCol[uint64](delTableTxn.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector())
-	delDropAts := vector.MustFixedCol[types.TS](delTableTxn.GetVectorByName(txnbase.SnapshotAttr_CommitTS).GetDownstreamVector())
-	for i := 0; i < delTableTxn.Length(); i++ {
-		tid := delTableIDs[i]
-		dropAt := delDropAts[i]
-		if sm.acctIndexes[tid] == nil {
+	deletes := make([]tombstone, 0)
+	for _, info := range tTombstones {
+		if info.stats.BlkCnt() != 1 {
+			panic(fmt.Sprintf("mo_table tombstone %v blk cnt %v",
+				info.stats.ObjectName(), info.stats.BlkCnt()))
+		}
+
+		objectBat, _, err := blockio.LoadOneBlock(
+			ctx, fs, info.stats.ObjectLocation(), objectio.SchemaData)
+		if err != nil {
+			return err
+		}
+
+		commitTsVecs := vector.MustFixedCol[types.TS](objectBat.Vecs[len(objectBat.Vecs)-1])
+		for i := 0; i < len(commitTsVecs); i++ {
+			pk, _, _, _ := types.DecodeTuple(objectBat.Vecs[1].GetRawBytesAt(i))
+			commitTs := commitTsVecs[i]
+			deletes = append(deletes, tombstone{
+				pk: pk,
+				ts: commitTs,
+			})
+		}
+	}
+	sort.Slice(deletes, func(i, j int) bool {
+		ts2 := deletes[j].ts
+		return deletes[i].ts.Less(&ts2)
+	})
+
+	for _, delete := range deletes {
+		if sm.pkIndexes[delete.pk] == nil {
+			continue
+		}
+		if len(sm.pkIndexes[delete.pk]) == 0 {
+			panic(fmt.Sprintf("delete table %v not found", delete.pk.(types.Tuple).SQLStrings(nil)))
+		}
+		table := sm.pkIndexes[delete.pk][0]
+		if !table.deleteAt.IsEmpty() && table.deleteAt.Greater(&delete.ts) {
+			panic(fmt.Sprintf("table %v delete at %v is greater than %v", table.tid, table.deleteAt, delete.ts))
+		}
+		table.deleteAt = delete.ts
+		sm.pkIndexes[delete.pk] = sm.pkIndexes[delete.pk][1:]
+		if sm.acctIndexes[table.tid] == nil {
 			//In the upgraded cluster, because the inc checkpoint is consumed halfway,
 			// there may be no record of the create table entry, only the delete entry
 			continue
 		}
-		table := sm.acctIndexes[tid]
-		table.deleteAt = dropAt
-		sm.acctIndexes[tid] = table
-		sm.tables[table.accountID][tid] = table
+		sm.acctIndexes[table.tid] = table
+		sm.tables[table.accountID][table.tid] = table
 	}
-}
-
-func isMoTable(tid uint64) bool {
-	return tid == catalog2.MO_TABLES_ID
+	return nil
 }
 
 func collectObjects (
@@ -448,14 +518,18 @@ func collectObjects (
 	}
 }
 
-func (sm *SnapshotMeta) Update(data *CheckpointData) *SnapshotMeta {
+func (sm *SnapshotMeta) Update(
+	ctx context.Context,
+	fs fileservice.FileService,
+	data *CheckpointData,
+	) *SnapshotMeta {
 	sm.Lock()
 	defer sm.Unlock()
 	now := time.Now()
 	defer func() {
 		logutil.Infof("[UpdateSnapshot] cost %v", time.Since(now))
 	}()
-	sm.updateTableInfo(data)
+	sm.updateTableInfo(ctx, fs, data)
 	if len(sm.tides) == 0 {
 		return sm
 	}

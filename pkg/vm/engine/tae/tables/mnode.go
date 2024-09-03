@@ -369,6 +369,7 @@ func (node *memoryNode) FillBlockTombstones(
 	txn txnif.TxnReader,
 	blkID *objectio.Blockid,
 	deletes **nulls.Nulls,
+	deleteStartOffset uint64,
 	mp *mpool.MPool) error {
 	node.object.RLock()
 	defer node.object.RUnlock()
@@ -386,7 +387,7 @@ func (node *memoryNode) FillBlockTombstones(
 				*deletes = &nulls.Nulls{}
 			}
 			offset := rowID.GetRowOffset()
-			(*deletes).Add(uint64(offset))
+			(*deletes).Add(uint64(offset) + deleteStartOffset)
 		}
 	}
 	return nil
