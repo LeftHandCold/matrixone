@@ -391,7 +391,9 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 	collectObjects(&tombstones, data.GetTombstoneObjectBatchs(), collector)
 	tObjects := objects[catalog2.MO_TABLES_ID]
 	tTombstones := tombstones[catalog2.MO_TABLES_ID]
+	logutil.Infof("mo_table object count %v, tombstone object count %v", len(tObjects), len(tTombstones))
 	for _, info := range tObjects {
+		logutil.Infof("mo_table object %v", info.stats.ObjectName().String())
 		if info.stats.BlkCnt() != 1 {
 			panic(fmt.Sprintf("mo_table object %v blk cnt %v",
 				info.stats.ObjectName(), info.stats.BlkCnt()))
