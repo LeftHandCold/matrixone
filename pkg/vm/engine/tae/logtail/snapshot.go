@@ -599,6 +599,7 @@ func (sm *SnapshotMeta) Update(
 		delete(oMap, id)
 	}
 	collectObjects(&sm.objects, data.GetObjectBatchs(), collector)
+	logutil.Infof("[UpdateSnapshot] objects %v", len(sm.objects))
 	collectObjects(&sm.tombstones, data.GetTombstoneObjectBatchs(), collector)
 	return nil, nil
 }
