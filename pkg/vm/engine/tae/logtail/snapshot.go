@@ -253,10 +253,22 @@ type tableInfo struct {
 	accountID uint32
 	dbID      uint64
 	tid       uint64
-	name      string
-	dbName    string
 	createAt  types.TS
 	deleteAt  types.TS
+}
+
+func NewBackupDeltaLocDataSource2(
+	ctx context.Context,
+	fs fileservice.FileService,
+	ts types.TS,
+	ds map[uint64]map[objectio.Segmentid]*objectInfo,
+) *BackupDeltaLocDataSource {
+	return &BackupDeltaLocDataSource{
+		ctx: ctx,
+		fs:  fs,
+		ts:  ts,
+		ds2: ds,
+	}
 }
 
 type SnapshotMeta struct {
@@ -298,6 +310,17 @@ func NewSnapshotMeta() *SnapshotMeta {
 func (sm *SnapshotMeta) copyObjectsLocked() map[uint64]map[objectio.Segmentid]*objectInfo {
 	objects := make(map[uint64]map[objectio.Segmentid]*objectInfo)
 	for k, v := range sm.objects {
+		objects[k] = make(map[objectio.Segmentid]*objectInfo)
+		for kk, vv := range v {
+			objects[k][kk] = vv
+		}
+	}
+	return objects
+}
+
+func (sm *SnapshotMeta) copyTombstonesLocked() map[uint64]map[objectio.Segmentid]*objectInfo {
+	objects := make(map[uint64]map[objectio.Segmentid]*objectInfo)
+	for k, v := range sm.tombstones {
 		objects[k] = make(map[objectio.Segmentid]*objectInfo)
 		for kk, vv := range v {
 			objects[k][kk] = vv

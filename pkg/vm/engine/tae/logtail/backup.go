@@ -61,6 +61,7 @@ type BackupDeltaLocDataSource struct {
 	fs  fileservice.FileService
 	ts  types.TS
 	ds  map[string]*objData
+	ds2 map[uint64]map[objectio.Segmentid]*objectInfo
 }
 
 func NewBackupDeltaLocDataSource(
