@@ -500,6 +500,7 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 		if !table.deleteAt.IsEmpty() && table.deleteAt.Greater(&delete.ts) {
 			panic(fmt.Sprintf("table %v delete at %v is greater than %v", table.tid, table.deleteAt, delete.ts))
 		}
+		logutil.Infof("mo_table delete %v %v", table.tid, delete.ts.ToString())
 		table.deleteAt = delete.ts
 		sm.pkIndexes[pk] = sm.pkIndexes[pk][1:]
 		if sm.acctIndexes[table.tid] == nil {
@@ -604,7 +605,12 @@ func (sm *SnapshotMeta) Update(
 	return nil, nil
 }
 
-func (sm *SnapshotMeta) GetSnapshot(ctx context.Context, sid string, fs fileservice.FileService, mp *mpool.MPool) (map[uint32]containers.Vector, error) {
+func (sm *SnapshotMeta) GetSnapshot(
+	ctx context.Context,
+	sid string,
+	fs fileservice.FileService,
+	mp *mpool.MPool,
+) (map[uint32]containers.Vector, error) {
 	now := time.Now()
 	defer func() {
 		logutil.Infof("[GetSnapshot] cost %v", time.Since(now))
