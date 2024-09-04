@@ -384,6 +384,7 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 			createAt: createTS,
 			deleteAt: deleteTS,
 		}
+		logutil.Infof("mo_table object %v", id.String())
 		return
 	}
 	collectObjects(&objects, data.GetObjectBatchs(), collector)
@@ -450,6 +451,7 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 				sm.pkIndexes[pk] = make([]*tableInfo, 0)
 			}
 			sm.pkIndexes[pk] = append(sm.pkIndexes[pk], table)
+			logutil.Infof("mo_table add %v %v %v %v %v %v", tid, name, account, db, createAt.ToString(), pk.SQLStrings(nil))
 		}
 	}
 
