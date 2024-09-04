@@ -569,11 +569,11 @@ func (sm *SnapshotMeta) Update(
 		if _, ok := sm.tides[tid]; !ok {
 			return
 		}
-		id := stats.ObjectName().SegmentId()
-		oMap := (*objects)[tid]
-		if oMap == nil {
-			oMap = make(map[objectio.Segmentid]*objectInfo)
+		if (*objects)[tid] == nil {
+			(*objects)[tid] = make(map[objectio.Segmentid]*objectInfo)
 		}
+		oMap := (*objects)[tid]
+		id := stats.ObjectName().SegmentId()
 		if oMap[id] == nil {
 			if !deleteTS.IsEmpty() {
 				return
