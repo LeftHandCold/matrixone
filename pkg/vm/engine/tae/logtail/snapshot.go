@@ -421,6 +421,7 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 			if err != nil {
 				return err
 			}
+			logutil.Infof("mo_table add %v %v %v %v %v %v", tid, name, account, db, createAt.ToString(), pks.SQLStrings(nil))
 			pk := any(pks)
 			if name == catalog2.MO_SNAPSHOTS {
 				sm.tides[tid] = struct{}{}
@@ -455,7 +456,6 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 				sm.pkIndexes[pk] = make([]*tableInfo, 0)
 			}
 			sm.pkIndexes[pk] = append(sm.pkIndexes[pk], table)
-			logutil.Infof("mo_table add %v %v %v %v %v %v", tid, name, account, db, createAt.ToString(), pk.SQLStrings(nil))
 		}
 	}
 
