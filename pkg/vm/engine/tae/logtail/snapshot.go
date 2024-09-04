@@ -292,7 +292,7 @@ type SnapshotMeta struct {
 
 	// pkIndexes records all the index information of mo, the key is
 	// the mo_table pk, and the value is the index information.
-	pkIndexes map[any][]*tableInfo
+	pkIndexes map[string][]*tableInfo
 
 	// tides is used to consume the object and tombstone of the checkpoint.
 	tides map[uint64]struct{}
@@ -304,7 +304,7 @@ func NewSnapshotMeta() *SnapshotMeta {
 		tables:      make(map[uint32]map[uint64]*tableInfo),
 		acctIndexes: make(map[uint64]*tableInfo),
 		tides:       make(map[uint64]struct{}),
-		pkIndexes:   make(map[any][]*tableInfo),
+		pkIndexes:   make(map[string][]*tableInfo),
 	}
 }
 
@@ -346,7 +346,7 @@ func isMoTable(tid uint64) bool {
 }
 
 type tombstone struct {
-	pk any
+	pk types.Tuple
 	ts types.TS
 }
 
@@ -422,7 +422,8 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 				return err
 			}
 			logutil.Infof("mo_table add %v %v %v %v %v %v", tid, name, account, db, createAt.ToString(), pks.SQLStrings(nil))
-			pk := any(pks)
+			pks.String()
+			pk := pks.String()
 			if name == catalog2.MO_SNAPSHOTS {
 				sm.tides[tid] = struct{}{}
 				logutil.Info("[UpdateSnapTable]",
@@ -488,18 +489,19 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 	})
 
 	for _, delete := range deletes {
-		if sm.pkIndexes[delete.pk] == nil {
+		pk := delete.pk.String()
+		if sm.pkIndexes[pk] == nil {
 			continue
 		}
-		if len(sm.pkIndexes[delete.pk]) == 0 {
-			panic(fmt.Sprintf("delete table %v not found", delete.pk.(types.Tuple).SQLStrings(nil)))
+		if len(sm.pkIndexes[pk]) == 0 {
+			panic(fmt.Sprintf("delete table %v not found", delete.pk.SQLStrings(nil)))
 		}
-		table := sm.pkIndexes[delete.pk][0]
+		table := sm.pkIndexes[pk][0]
 		if !table.deleteAt.IsEmpty() && table.deleteAt.Greater(&delete.ts) {
 			panic(fmt.Sprintf("table %v delete at %v is greater than %v", table.tid, table.deleteAt, delete.ts))
 		}
 		table.deleteAt = delete.ts
-		sm.pkIndexes[delete.pk] = sm.pkIndexes[delete.pk][1:]
+		sm.pkIndexes[pk] = sm.pkIndexes[pk][1:]
 		if sm.acctIndexes[table.tid] == nil {
 			//In the upgraded cluster, because the inc checkpoint is consumed halfway,
 			// there may be no record of the create table entry, only the delete entry
