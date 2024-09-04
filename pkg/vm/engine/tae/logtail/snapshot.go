@@ -304,6 +304,7 @@ func NewSnapshotMeta() *SnapshotMeta {
 		tables:      make(map[uint32]map[uint64]*tableInfo),
 		acctIndexes: make(map[uint64]*tableInfo),
 		tides:       make(map[uint64]struct{}),
+		pkIndexes:   make(map[any][]*tableInfo),
 	}
 }
 
