@@ -417,10 +417,11 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 			account := accoutVecs[i]
 			db := dbVecs[i]
 			createAt := createVecs[i]
-			pk, _, _, err := types.DecodeTuple(objectBat.Vecs[len(objectBat.Vecs)-3].GetRawBytesAt(i))
+			pks, _, _, err := types.DecodeTuple(objectBat.Vecs[len(objectBat.Vecs)-3].GetRawBytesAt(i))
 			if err != nil {
 				return err
 			}
+			pk := any(pks)
 			if name == catalog2.MO_SNAPSHOTS {
 				sm.tides[tid] = struct{}{}
 				logutil.Info("[UpdateSnapTable]",
