@@ -4080,25 +4080,6 @@ func TestDirtyWatchRace(t *testing.T) {
 	wg.Wait()
 }
 
-type TestBlockReadDeltaSource struct {
-	deltaLoc objectio.Location
-	testTs   types.TS
-}
-
-func (b *TestBlockReadDeltaSource) SetTS(ts types.TS) {
-	b.testTs = ts
-}
-
-func (b *TestBlockReadDeltaSource) GetDeltaLoc(bid objectio.Blockid) (objectio.Location, types.TS) {
-	return b.deltaLoc, b.testTs
-}
-
-func NewTestBlockReadSource(deltaLoc objectio.Location) logtail.DeltaSource {
-	return &TestBlockReadDeltaSource{
-		deltaLoc: deltaLoc,
-	}
-}
-
 func TestBlockRead(t *testing.T) {
 	blockio.RunPipelineTest(
 		func() {
@@ -4138,8 +4119,7 @@ func TestBlockRead(t *testing.T) {
 			tombstoneObjectEntry := testutil.GetOneTombstoneMeta(rel)
 			objectEntry := testutil.GetOneBlockMeta(rel)
 			objStats := tombstoneObjectEntry.ObjectMVCCNode
-			testDS := NewTestBlockReadSource(objStats.ObjectLocation())
-			ds := logtail.NewDeltaLocDataSource(ctx, tae.DB.Runtime.Fs.Service, beforeDel, testDS)
+			ds := logtail.NewSnapshotDataSource(ctx, tae.DB.Runtime.Fs.Service, beforeDel, []objectio.ObjectStats{objStats.ObjectStats})
 			bid, _ := blkEntry.ID(), blkEntry.ID()
 
 			info := &objectio.BlockInfo{
@@ -4192,7 +4172,7 @@ func TestBlockRead(t *testing.T) {
 			assert.Equal(t, len(columns), len(b1.Vecs))
 			assert.Equal(t, 20, b1.Vecs[0].Length())
 
-			testDS.SetTS(afterFirstDel)
+			ds.SetTS(afterFirstDel)
 
 			b2 := buildBatch(colTyps)
 			err = blockio.BlockDataReadInner(
@@ -4202,7 +4182,7 @@ func TestBlockRead(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, 19, b2.Vecs[0].Length())
 
-			testDS.SetTS(afterSecondDel)
+			ds.SetTS(afterSecondDel)
 
 			b3 := buildBatch(colTyps)
 			err = blockio.BlockDataReadInner(
