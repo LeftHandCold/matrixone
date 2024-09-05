@@ -276,6 +276,7 @@ type SnapshotMeta struct {
 func NewSnapshotMeta() *SnapshotMeta {
 	return &SnapshotMeta{
 		objects:     make(map[uint64]map[objectio.Segmentid]*objectInfo),
+		tombstones:  make(map[uint64]map[objectio.Segmentid]*objectInfo),
 		tables:      make(map[uint32]map[uint64]*tableInfo),
 		acctIndexes: make(map[uint64]*tableInfo),
 		tides:       make(map[uint64]struct{}),
