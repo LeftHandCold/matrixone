@@ -222,16 +222,13 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 			createAt: createTS,
 			deleteAt: deleteTS,
 		}
-		logutil.Infof("mo_table object %v", id.String())
 		return
 	}
 	collectObjects(&objects, data.GetObjectBatchs(), collector)
 	collectObjects(&tombstones, data.GetTombstoneObjectBatchs(), collector)
 	tObjects := objects[catalog2.MO_TABLES_ID]
 	tTombstones := tombstones[catalog2.MO_TABLES_ID]
-	logutil.Infof("mo_table object count %v, tombstone object count %v", len(tObjects), len(tTombstones))
 	for _, info := range tObjects {
-		logutil.Infof("mo_table object %v", info.stats.ObjectName().String())
 		if info.stats.BlkCnt() != 1 {
 			panic(fmt.Sprintf("mo_table object %v blk cnt %v",
 				info.stats.ObjectName(), info.stats.BlkCnt()))
@@ -262,7 +259,6 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 			if err != nil {
 				return err
 			}
-			logutil.Infof("mo_table add %v %v %v %v %v %v", tid, name, account, db, createAt.ToString(), tuple.SQLStrings(nil))
 			pk := tuple.String()
 			if name == catalog2.MO_SNAPSHOTS {
 				sm.tides[tid] = struct{}{}
@@ -338,7 +334,6 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 		if !table.deleteAt.IsEmpty() && table.deleteAt.Greater(&del.ts) {
 			panic(fmt.Sprintf("table %v delete at %v is greater than %v", table.tid, table.deleteAt, del.ts))
 		}
-		logutil.Infof("mo_table delete %v %v", table.tid, del.ts.ToString())
 		table.deleteAt = del.ts
 		sm.pkIndexes[pk] = sm.pkIndexes[pk][1:]
 		if sm.acctIndexes[table.tid] == nil {
@@ -438,7 +433,6 @@ func (sm *SnapshotMeta) Update(
 		delete(oMap, id)
 	}
 	collectObjects(&sm.objects, data.GetObjectBatchs(), collector)
-	logutil.Infof("[UpdateSnapshot] objects %v", len(sm.objects))
 	collectObjects(&sm.tombstones, data.GetTombstoneObjectBatchs(), collector)
 	return nil, nil
 }
@@ -482,7 +476,6 @@ func (sm *SnapshotMeta) GetSnapshot(
 		snapshotSchemaTypes[ColLevel],
 		snapshotSchemaTypes[ColObjId],
 	}
-	logutil.Infof("[GetSnapshot] tables %v objects %v", len(tables), len(objects))
 	for tid, objectMap := range objects {
 		tombstonesStats := make([]objectio.ObjectStats, 0)
 		for ttid, tombstoneMap := range tombstones {
@@ -498,7 +491,6 @@ func (sm *SnapshotMeta) GetSnapshot(
 		ds := NewSnapshotDataSource(ctx, fs, checkpointTS, tombstonesStats)
 		for _, object := range objectMap {
 			location := object.stats.ObjectLocation()
-			logutil.Infof("[GetSnapshot] object %v", object.stats.ObjectName().String())
 			name := object.stats.ObjectName()
 			for i := uint32(0); i < object.stats.BlkCnt(); i++ {
 				loc := objectio.BuildLocation(name, location.Extent(), 0, uint16(i))
@@ -618,7 +610,6 @@ func (sm *SnapshotMeta) SaveMeta(name string, fs fileservice.FileService) (uint3
 		return 0, err
 	}
 	if deltaBat.Length() > 0 {
-		logutil.Infof("deltaBat length is %d", deltaBat.Length())
 		if _, err = writer.WriteWithoutSeqnum(containers.ToCNBatch(deltaBat)); err != nil {
 			return 0, err
 		}

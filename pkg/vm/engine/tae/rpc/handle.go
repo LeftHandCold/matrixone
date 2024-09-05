@@ -729,14 +729,14 @@ func (h *Handle) HandleWrite(
 					if isCompositeKey {
 						pkbuf := req.Batch.Vecs[idx].GetBytesAt(i)
 						tuple, _ := types.Unpack(pkbuf)
-						logutil.Debug(
+						logutil.Info(
 							"op1",
 							zap.String("txn", txn.String()),
 							zap.String("pk", common.TypeStringValue(*req.Batch.Vecs[idx].GetType(), pkbuf, false)),
 							zap.Any("detail", tuple.SQLStrings(nil)),
 						)
 					} else {
-						logutil.Debug(
+						logutil.Info(
 							"op1",
 							zap.String("txn", txn.String()),
 							zap.String("pk", common.MoVectorToString(req.Batch.Vecs[idx], i)),
@@ -826,7 +826,7 @@ func (h *Handle) HandleWrite(
 				if isCompositeKey {
 					pkbuf := req.Batch.Vecs[1].GetBytesAt(i)
 					tuple, _ := types.Unpack(pkbuf)
-					logutil.Debug(
+					logutil.Info(
 						"op2",
 						zap.String("txn", txn.String()),
 						zap.String("pk", common.TypeStringValue(*req.Batch.Vecs[1].GetType(), pkbuf, false)),
@@ -834,7 +834,7 @@ func (h *Handle) HandleWrite(
 						zap.Any("detail", tuple.SQLStrings(nil)),
 					)
 				} else {
-					logutil.Debug(
+					logutil.Info(
 						"op2",
 						zap.String("txn", txn.String()),
 						zap.String("pk", common.MoVectorToString(req.Batch.Vecs[1], i)),
