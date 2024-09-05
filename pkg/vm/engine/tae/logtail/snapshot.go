@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -73,18 +74,6 @@ var (
 		types.New(types.T_TS, types.MaxVarcharLen, 0),
 		types.New(types.T_TS, types.MaxVarcharLen, 0),
 		types.New(types.T_varchar, 5000, 0),
-		types.New(types.T_uint64, 0, 0),
-	}
-
-	objectDeltaSchemaAttr = []string{
-		catalog2.BlockMeta_ID,
-		catalog2.BlockMeta_DeltaLoc,
-		SnapshotAttr_TID,
-	}
-
-	objectDeltaSchemaTypes = []types.Type{
-		types.New(types.T_Blockid, 0, 0),
-		types.New(types.T_varchar, types.MaxVarcharLen, 0),
 		types.New(types.T_uint64, 0, 0),
 	}
 
@@ -255,20 +244,6 @@ type tableInfo struct {
 	tid       uint64
 	createAt  types.TS
 	deleteAt  types.TS
-}
-
-func NewBackupDeltaLocDataSource2(
-	ctx context.Context,
-	fs fileservice.FileService,
-	ts types.TS,
-	ds map[uint64]map[objectio.Segmentid]*objectInfo,
-) *BackupDeltaLocDataSource {
-	return &BackupDeltaLocDataSource{
-		ctx: ctx,
-		fs:  fs,
-		ts:  ts,
-		ds2: ds,
-	}
 }
 
 type SnapshotMeta struct {
@@ -488,20 +463,20 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 		return deletes[i].ts.Less(&ts2)
 	})
 
-	for _, delete := range deletes {
-		pk := delete.pk.String()
+	for _, del := range deletes {
+		pk := del.pk.String()
 		if sm.pkIndexes[pk] == nil {
 			continue
 		}
 		if len(sm.pkIndexes[pk]) == 0 {
-			panic(fmt.Sprintf("delete table %v not found", delete.pk.SQLStrings(nil)))
+			panic(fmt.Sprintf("delete table %v not found", del.pk.SQLStrings(nil)))
 		}
 		table := sm.pkIndexes[pk][0]
-		if !table.deleteAt.IsEmpty() && table.deleteAt.Greater(&delete.ts) {
-			panic(fmt.Sprintf("table %v delete at %v is greater than %v", table.tid, table.deleteAt, delete.ts))
+		if !table.deleteAt.IsEmpty() && table.deleteAt.Greater(&del.ts) {
+			panic(fmt.Sprintf("table %v delete at %v is greater than %v", table.tid, table.deleteAt, del.ts))
 		}
-		logutil.Infof("mo_table delete %v %v", table.tid, delete.ts.ToString())
-		table.deleteAt = delete.ts
+		logutil.Infof("mo_table delete %v %v", table.tid, del.ts.ToString())
+		table.deleteAt = del.ts
 		sm.pkIndexes[pk] = sm.pkIndexes[pk][1:]
 		if sm.acctIndexes[table.tid] == nil {
 			//In the upgraded cluster, because the inc checkpoint is consumed halfway,
@@ -618,6 +593,7 @@ func (sm *SnapshotMeta) GetSnapshot(
 	sm.RLock()
 	objects := sm.copyObjectsLocked()
 	tables := sm.copyTablesLocked()
+	tombstones := sm.copyTombstonesLocked()
 	sm.RUnlock()
 	snapshotList := make(map[uint32]containers.Vector)
 	idxes := []uint16{ColTS, ColLevel, ColObjId}
@@ -627,9 +603,29 @@ func (sm *SnapshotMeta) GetSnapshot(
 		snapshotSchemaTypes[ColObjId],
 	}
 	logutil.Infof("[GetSnapshot] tables %v objects %v", len(tables), len(objects))
+	tombstonesData := make(map[string]*objData, 0)
+	for tid, objectMap := range tombstones {
+		for _, object := range objectMap {
+			name := object.stats.ObjectName()
+			bat, _, err := blockio.LoadOneBlock(ctx, fs, object.stats.ObjectLocation(), objectio.SchemaData)
+			if err != nil {
+				return nil, err
+			}
+			tombstonesData[name.String()] = &objData{
+				stats:    &object.stats,
+				tid:      tid,
+				dataType: objectio.SchemaData,
+				sortKey:  uint16(math.MaxUint16),
+				data:     make([]*batch.Batch, 0),
+			}
+			tombstonesData[name.String()].data = append(tombstonesData[name.String()].data, bat)
+		}
+
+	}
 	for _, objectMap := range objects {
 		checkpointTS := types.BuildTS(time.Now().UTC().UnixNano(), 0)
-		ds := NewDeltaLocDataSource(ctx, fs, checkpointTS, NewOMapDeltaSource(objectMap))
+		ds := NewBackupDeltaLocDataSource(ctx, fs, checkpointTS, tombstonesData)
+		ds.needShrink = false
 		for _, object := range objectMap {
 			location := object.stats.ObjectLocation()
 			logutil.Infof("[GetSnapshot] object %v", object.stats.ObjectName().String())
@@ -656,8 +652,7 @@ func (sm *SnapshotMeta) GetSnapshot(
 
 				bat := buildBatch()
 				defer bat.Clean(mp)
-				err := blockio.BlockDataRead(ctx, sid, &blk, ds, idxes, colTypes, checkpointTS.ToTimestamp(),
-					nil, nil, blockio.BlockReadFilter{}, fs, mp, nil, fileservice.Policy(0), "", bat)
+				bat, _, err := blockio.BlockDataReadBackup(ctx, sid, &blk, ds, idxes, checkpointTS, fs)
 				if err != nil {
 					return nil, err
 				}
@@ -718,10 +713,27 @@ func (sm *SnapshotMeta) SaveMeta(name string, fs fileservice.FileService) (uint3
 		bat.AddVector(attr, containers.MakeVector(objectInfoSchemaTypes[i], common.DebugAllocator))
 	}
 	deltaBat := containers.NewBatch()
-	for i, attr := range objectDeltaSchemaAttr {
-		deltaBat.AddVector(attr, containers.MakeVector(objectDeltaSchemaTypes[i], common.DebugAllocator))
+	for i, attr := range objectInfoSchemaAttr {
+		deltaBat.AddVector(attr, containers.MakeVector(objectInfoSchemaTypes[i], common.DebugAllocator))
 	}
 	for tid, objectMap := range sm.objects {
+		for _, entry := range objectMap {
+			vector.AppendBytes(
+				bat.GetVectorByName(catalog.ObjectAttr_ObjectStats).GetDownstreamVector(),
+				entry.stats[:], false, common.DebugAllocator)
+			vector.AppendFixed[types.TS](
+				bat.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector(),
+				entry.createAt, false, common.DebugAllocator)
+			vector.AppendFixed[types.TS](
+				bat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
+				entry.deleteAt, false, common.DebugAllocator)
+			vector.AppendFixed[uint64](
+				bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
+				tid, false, common.DebugAllocator)
+		}
+	}
+
+	for tid, objectMap := range sm.tombstones {
 		for _, entry := range objectMap {
 			vector.AppendBytes(
 				bat.GetVectorByName(catalog.ObjectAttr_ObjectStats).GetDownstreamVector(),
@@ -879,7 +891,7 @@ func (sm *SnapshotMeta) RebuildTid(ins *containers.Batch) {
 	}
 }
 
-func (sm *SnapshotMeta) Rebuild(ins *containers.Batch) {
+func (sm *SnapshotMeta) Rebuild(ins *containers.Batch, objects *map[uint64]map[objectio.Segmentid]*objectInfo) {
 	sm.Lock()
 	defer sm.Unlock()
 	insCreateTSs := vector.MustFixedCol[types.TS](ins.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector())
@@ -894,11 +906,11 @@ func (sm *SnapshotMeta) Rebuild(ins *containers.Batch) {
 			sm.tides[tid] = struct{}{}
 			logutil.Info("[RebuildSnapTable]", zap.Uint64("tid", tid))
 		}
-		if sm.objects[tid] == nil {
-			sm.objects[tid] = make(map[objectio.Segmentid]*objectInfo)
+		if (*objects)[tid] == nil {
+			(*objects)[tid] = make(map[objectio.Segmentid]*objectInfo)
 		}
-		if sm.objects[tid][objectStats.ObjectName().SegmentId()] == nil {
-			sm.objects[tid][objectStats.ObjectName().SegmentId()] = &objectInfo{
+		if (*objects)[tid][objectStats.ObjectName().SegmentId()] == nil {
+			(*objects)[tid][objectStats.ObjectName().SegmentId()] = &objectInfo{
 				stats:    objectStats,
 				createAt: createTS,
 			}
@@ -946,14 +958,14 @@ func (sm *SnapshotMeta) ReadMeta(ctx context.Context, name string, fs fileservic
 		}
 		bat.AddVector(objectInfoSchemaAttr[i], vec)
 	}
-	sm.Rebuild(bat)
+	sm.Rebuild(bat, &sm.objects)
 
 	if len(bs) == 1 {
 		return nil
 	}
 
-	idxes = make([]uint16, len(objectDeltaSchemaAttr))
-	for i := range objectDeltaSchemaAttr {
+	idxes = make([]uint16, len(objectInfoSchemaAttr))
+	for i := range objectInfoSchemaAttr {
 		idxes[i] = uint16(i)
 	}
 	moDeltaBat, releaseDelta, err := reader.LoadColumns(ctx, idxes, nil, bs[1].GetID(), common.DebugAllocator)
@@ -963,17 +975,17 @@ func (sm *SnapshotMeta) ReadMeta(ctx context.Context, name string, fs fileservic
 	defer releaseDelta()
 	deltaBat := containers.NewBatch()
 	defer deltaBat.Close()
-	for i := range objectDeltaSchemaAttr {
+	for i := range objectInfoSchemaAttr {
 		pkgVec := moDeltaBat.Vecs[i]
 		var vec containers.Vector
 		if pkgVec.Length() == 0 {
-			vec = containers.MakeVector(objectDeltaSchemaTypes[i], common.DebugAllocator)
+			vec = containers.MakeVector(objectInfoSchemaTypes[i], common.DebugAllocator)
 		} else {
 			vec = containers.ToTNVector(pkgVec, common.DebugAllocator)
 		}
-		deltaBat.AddVector(objectDeltaSchemaAttr[i], vec)
+		bat.AddVector(objectInfoSchemaAttr[i], vec)
 	}
-	sm.RebuildDelta(deltaBat)
+	sm.Rebuild(deltaBat, &sm.tombstones)
 	return nil
 }
 
