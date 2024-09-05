@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math"
 	"sort"
 	"sync"
 	"time"
@@ -444,6 +443,23 @@ func (sm *SnapshotMeta) Update(
 	return nil, nil
 }
 
+func NewSnapshotDataSource(
+	ctx context.Context,
+	fs fileservice.FileService,
+	ts types.TS,
+	stats []objectio.ObjectStats,
+) *BackupDeltaLocDataSource {
+	ds := make(map[string]*objData)
+	return &BackupDeltaLocDataSource{
+		ctx:        ctx,
+		fs:         fs,
+		ts:         ts,
+		ds:         ds,
+		tombstones: stats,
+		needShrink: false,
+	}
+}
+
 func (sm *SnapshotMeta) GetSnapshot(
 	ctx context.Context,
 	sid string,
@@ -468,32 +484,18 @@ func (sm *SnapshotMeta) GetSnapshot(
 	}
 	logutil.Infof("[GetSnapshot] tables %v objects %v", len(tables), len(objects))
 	for tid, objectMap := range objects {
-		tombstonesData := make(map[string]*objData, 0)
+		tombstonesStats := make([]objectio.ObjectStats, 0)
 		for ttid, tombstoneMap := range tombstones {
 			if ttid != tid {
 				continue
 			}
 			for _, object := range tombstoneMap {
-				name := object.stats.ObjectName()
-				logutil.Infof("[GetSnapshot] tombstone object %v", name.String())
-				bat, _, err := blockio.LoadOneBlock(ctx, fs, object.stats.ObjectLocation(), objectio.SchemaData)
-				if err != nil {
-					return nil, err
-				}
-				tombstonesData[name.String()] = &objData{
-					stats:    &object.stats,
-					tid:      tid,
-					dataType: objectio.SchemaData,
-					sortKey:  uint16(math.MaxUint16),
-					data:     make([]*batch.Batch, 0),
-				}
-				tombstonesData[name.String()].data = append(tombstonesData[name.String()].data, bat)
+				tombstonesStats = append(tombstonesStats, object.stats)
 			}
 			break
 		}
 		checkpointTS := types.BuildTS(time.Now().UTC().UnixNano(), 0)
-		ds := NewBackupDeltaLocDataSource(ctx, fs, checkpointTS, tombstonesData)
-		ds.needShrink = false
+		ds := NewSnapshotDataSource(ctx, fs, checkpointTS, tombstonesStats)
 		for _, object := range objectMap {
 			location := object.stats.ObjectLocation()
 			logutil.Infof("[GetSnapshot] object %v", object.stats.ObjectName().String())
@@ -520,7 +522,7 @@ func (sm *SnapshotMeta) GetSnapshot(
 
 				bat := buildBatch()
 				defer bat.Clean(mp)
-				bat, _, err := blockio.BlockDataReadSnapshot(ctx, sid, &blk, ds, idxes, checkpointTS, fs)
+				bat, _, err := blockio.BlockDataReadBackup(ctx, sid, &blk, ds, idxes, types.TS{}, fs)
 				if err != nil {
 					return nil, err
 				}
@@ -748,7 +750,6 @@ func (sm *SnapshotMeta) RebuildTid(ins *containers.Batch) {
 		return
 	}
 	logutil.Infof("RebuildTid tid %d", insTIDs[0])
-	sm.SetTid(insTIDs[0])
 	for i := 0; i < ins.Length(); i++ {
 		tid := insTIDs[i]
 		accid := accIDs[i]
