@@ -4093,10 +4093,119 @@ func (b *TestBlockReadDeltaSource) GetDeltaLoc(bid objectio.Blockid) (objectio.L
 	return b.deltaLoc, b.testTs
 }
 
-func NewTestBlockReadSource(deltaLoc objectio.Location) logtail.DeltaSource {
+func NewTestBlockReadSource(deltaLoc objectio.Location) DeltaSource {
 	return &TestBlockReadDeltaSource{
 		deltaLoc: deltaLoc,
 	}
+}
+
+type DeltaSource interface {
+	GetDeltaLoc(bid objectio.Blockid) (objectio.Location, types.TS)
+	SetTS(ts types.TS)
+}
+
+type DeltaLocDataSource struct {
+	ctx context.Context
+	fs  fileservice.FileService
+	ts  types.TS
+	ds  DeltaSource
+}
+
+func NewDeltaLocDataSource(
+	ctx context.Context,
+	fs fileservice.FileService,
+	ts types.TS,
+	ds DeltaSource,
+) *DeltaLocDataSource {
+	return &DeltaLocDataSource{
+		ctx: ctx,
+		fs:  fs,
+		ts:  ts,
+		ds:  ds,
+	}
+}
+
+func (d *DeltaLocDataSource) Next(
+	_ context.Context,
+	_ []string,
+	_ []types.Type,
+	_ []uint16,
+	_ any,
+	_ *mpool.MPool,
+	_ engine.VectorPool,
+	_ *batch.Batch,
+) (*objectio.BlockInfo, engine.DataState, error) {
+	return nil, engine.Persisted, nil
+}
+
+func (d *DeltaLocDataSource) Close() {
+
+}
+
+func (d *DeltaLocDataSource) ApplyTombstones(
+	ctx context.Context,
+	bid objectio.Blockid,
+	rowsOffset []int64,
+	applyPolicy engine.TombstoneApplyPolicy,
+) ([]int64, error) {
+	deleteMask, err := d.getAndApplyTombstones(ctx, bid)
+	if err != nil {
+		return nil, err
+	}
+	var rows []int64
+	if !deleteMask.IsEmpty() {
+		for _, row := range rowsOffset {
+			if !deleteMask.Contains(uint64(row)) {
+				rows = append(rows, row)
+			}
+		}
+	}
+	return rows, nil
+}
+
+func (d *DeltaLocDataSource) GetTombstones(
+	ctx context.Context, bid objectio.Blockid,
+) (deletedRows *nulls.Nulls, err error) {
+	var rows *nulls.Bitmap
+	rows, err = d.getAndApplyTombstones(ctx, bid)
+	if err != nil {
+		return
+	}
+	if rows == nil || rows.IsEmpty() {
+		return
+	}
+	return rows, nil
+}
+
+func (d *DeltaLocDataSource) getAndApplyTombstones(
+	ctx context.Context, bid objectio.Blockid,
+) (*nulls.Bitmap, error) {
+	deltaLoc, ts := d.ds.GetDeltaLoc(bid)
+	if deltaLoc.IsEmpty() {
+		return nil, nil
+	}
+	logutil.Infof("deltaLoc: %v, id is %d", deltaLoc.String(), bid.Sequence())
+	deletes, _, release, err := blockio.ReadBlockDelete(ctx, deltaLoc, d.fs)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if ts.IsEmpty() {
+		ts = d.ts
+	}
+	return blockio.EvalDeleteRowsByTimestamp(deletes, ts, &bid), nil
+}
+
+func (d *DeltaLocDataSource) SetOrderBy(orderby []*plan.OrderBySpec) {
+	panic("Not Support order by")
+}
+
+func (d *DeltaLocDataSource) GetOrderBy() []*plan.OrderBySpec {
+	panic("Not Support order by")
+}
+
+func (d *DeltaLocDataSource) SetFilterZM(zm objectio.ZoneMap) {
+	panic("Not Support order by")
 }
 
 func TestBlockRead(t *testing.T) {

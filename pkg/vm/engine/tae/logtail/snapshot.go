@@ -24,8 +24,6 @@ import (
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
-	"github.com/matrixorigin/matrixone/pkg/container/nulls"
-	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 
 	"go.uber.org/zap"
@@ -105,133 +103,6 @@ var (
 	}
 )
 
-type DeltaSource interface {
-	GetDeltaLoc(bid objectio.Blockid) (objectio.Location, types.TS)
-	SetTS(ts types.TS)
-}
-
-type ObjectMapDeltaSource struct {
-	objectMeta map[objectio.Segmentid]*objectInfo
-}
-
-func NewOMapDeltaSource(objectMeta map[objectio.Segmentid]*objectInfo) DeltaSource {
-	return &ObjectMapDeltaSource{
-		objectMeta: objectMeta,
-	}
-}
-
-func (m *ObjectMapDeltaSource) GetDeltaLoc(bid objectio.Blockid) (objectio.Location, types.TS) {
-	return nil, types.TS{}
-}
-
-func (m *ObjectMapDeltaSource) SetTS(ts types.TS) {
-	panic("implement me")
-}
-
-type DeltaLocDataSource struct {
-	ctx context.Context
-	fs  fileservice.FileService
-	ts  types.TS
-	ds  DeltaSource
-}
-
-func NewDeltaLocDataSource(
-	ctx context.Context,
-	fs fileservice.FileService,
-	ts types.TS,
-	ds DeltaSource,
-) *DeltaLocDataSource {
-	return &DeltaLocDataSource{
-		ctx: ctx,
-		fs:  fs,
-		ts:  ts,
-		ds:  ds,
-	}
-}
-
-func (d *DeltaLocDataSource) Next(
-	_ context.Context,
-	_ []string,
-	_ []types.Type,
-	_ []uint16,
-	_ any,
-	_ *mpool.MPool,
-	_ engine.VectorPool,
-	_ *batch.Batch,
-) (*objectio.BlockInfo, engine.DataState, error) {
-	return nil, engine.Persisted, nil
-}
-
-func (d *DeltaLocDataSource) Close() {
-
-}
-
-func (d *DeltaLocDataSource) ApplyTombstones(
-	ctx context.Context,
-	bid objectio.Blockid,
-	rowsOffset []int64,
-	applyPolicy engine.TombstoneApplyPolicy,
-) ([]int64, error) {
-	deleteMask, err := d.getAndApplyTombstones(ctx, bid)
-	if err != nil {
-		return nil, err
-	}
-	var rows []int64
-	if !deleteMask.IsEmpty() {
-		for _, row := range rowsOffset {
-			if !deleteMask.Contains(uint64(row)) {
-				rows = append(rows, row)
-			}
-		}
-	}
-	return rows, nil
-}
-
-func (d *DeltaLocDataSource) GetTombstones(
-	ctx context.Context, bid objectio.Blockid,
-) (deletedRows *nulls.Nulls, err error) {
-	var rows *nulls.Bitmap
-	rows, err = d.getAndApplyTombstones(ctx, bid)
-	if err != nil {
-		return
-	}
-	if rows == nil || rows.IsEmpty() {
-		return
-	}
-	return rows, nil
-}
-
-func (d *DeltaLocDataSource) getAndApplyTombstones(
-	ctx context.Context, bid objectio.Blockid,
-) (*nulls.Bitmap, error) {
-	deltaLoc, ts := d.ds.GetDeltaLoc(bid)
-	if deltaLoc.IsEmpty() {
-		return nil, nil
-	}
-	logutil.Infof("deltaLoc: %v, id is %d", deltaLoc.String(), bid.Sequence())
-	deletes, _, release, err := blockio.ReadBlockDelete(ctx, deltaLoc, d.fs)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	if ts.IsEmpty() {
-		ts = d.ts
-	}
-	return blockio.EvalDeleteRowsByTimestamp(deletes, ts, &bid), nil
-}
-
-func (d *DeltaLocDataSource) SetOrderBy(orderby []*plan.OrderBySpec) {
-	panic("Not Support order by")
-}
-
-func (d *DeltaLocDataSource) GetOrderBy() []*plan.OrderBySpec {
-	panic("Not Support order by")
-}
-
-func (d *DeltaLocDataSource) SetFilterZM(zm objectio.ZoneMap) {
-	panic("Not Support order by")
-}
-
 type objectInfo struct {
 	stats    objectio.ObjectStats
 	createAt types.TS
@@ -284,26 +155,17 @@ func NewSnapshotMeta() *SnapshotMeta {
 	}
 }
 
-func (sm *SnapshotMeta) copyObjectsLocked() map[uint64]map[objectio.Segmentid]*objectInfo {
-	objects := make(map[uint64]map[objectio.Segmentid]*objectInfo)
-	for k, v := range sm.objects {
-		objects[k] = make(map[objectio.Segmentid]*objectInfo)
+func copyObjectsLocked(
+	objects map[uint64]map[objectio.Segmentid]*objectInfo,
+) map[uint64]map[objectio.Segmentid]*objectInfo {
+	newMap := make(map[uint64]map[objectio.Segmentid]*objectInfo)
+	for k, v := range objects {
+		newMap[k] = make(map[objectio.Segmentid]*objectInfo)
 		for kk, vv := range v {
-			objects[k][kk] = vv
+			newMap[k][kk] = vv
 		}
 	}
-	return objects
-}
-
-func (sm *SnapshotMeta) copyTombstonesLocked() map[uint64]map[objectio.Segmentid]*objectInfo {
-	objects := make(map[uint64]map[objectio.Segmentid]*objectInfo)
-	for k, v := range sm.tombstones {
-		objects[k] = make(map[objectio.Segmentid]*objectInfo)
-		for kk, vv := range v {
-			objects[k][kk] = vv
-		}
-	}
-	return objects
+	return newMap
 }
 
 func (sm *SnapshotMeta) copyTablesLocked() map[uint32]map[uint64]*tableInfo {
@@ -380,26 +242,29 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 		if err != nil {
 			return err
 		}
-		// 0 is table id, 1 is table name, 11 is account id, len(objectBat.Vecs)-1 is commit ts
-		idVecs := vector.MustFixedCol[uint64](objectBat.Vecs[0])
-		nameVecs := vector.MustFixedCol[types.Varlena](objectBat.Vecs[1])
+		// 0 is table id
+		// 1 is table name
+		// 11 is account id
+		// len(objectBat.Vecs)-1 is commit ts
+		ids := vector.MustFixedCol[uint64](objectBat.Vecs[0])
+		nameVarlena := vector.MustFixedCol[types.Varlena](objectBat.Vecs[1])
 		nameArea := objectBat.Vecs[1].GetArea()
-		dbVecs := vector.MustFixedCol[uint64](objectBat.Vecs[3])
-		accoutVecs := vector.MustFixedCol[uint32](objectBat.Vecs[11])
-		createVecs := vector.MustFixedCol[types.TS](objectBat.Vecs[len(objectBat.Vecs)-1])
-		for i := 0; i < len(idVecs); i++ {
-			name := string(nameVecs[i].GetByteSlice(nameArea))
-			tid := idVecs[i]
-			account := accoutVecs[i]
-			db := dbVecs[i]
-			createAt := createVecs[i]
-			pks, _, _, err := types.DecodeTuple(objectBat.Vecs[len(objectBat.Vecs)-3].GetRawBytesAt(i))
+		dbs := vector.MustFixedCol[uint64](objectBat.Vecs[3])
+		accounts := vector.MustFixedCol[uint32](objectBat.Vecs[11])
+		creates := vector.MustFixedCol[types.TS](objectBat.Vecs[len(objectBat.Vecs)-1])
+		for i := 0; i < len(ids); i++ {
+			name := string(nameVarlena[i].GetByteSlice(nameArea))
+			tid := ids[i]
+			account := accounts[i]
+			db := dbs[i]
+			createAt := creates[i]
+			tuple, _, _, err := types.DecodeTuple(
+				objectBat.Vecs[len(objectBat.Vecs)-3].GetRawBytesAt(i))
 			if err != nil {
 				return err
 			}
-			logutil.Infof("mo_table add %v %v %v %v %v %v", tid, name, account, db, createAt.ToString(), pks.SQLStrings(nil))
-			pks.String()
-			pk := pks.String()
+			logutil.Infof("mo_table add %v %v %v %v %v %v", tid, name, account, db, createAt.ToString(), tuple.SQLStrings(nil))
+			pk := tuple.String()
 			if name == catalog2.MO_SNAPSHOTS {
 				sm.tides[tid] = struct{}{}
 				logutil.Info("[UpdateSnapTable]",
@@ -426,9 +291,7 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 				createAt:  createAt,
 			}
 			sm.tables[account][tid] = table
-			if sm.acctIndexes[tid] == nil {
-				sm.acctIndexes[tid] = table
-			}
+			sm.acctIndexes[tid] = table
 			if sm.pkIndexes[pk] == nil {
 				sm.pkIndexes[pk] = make([]*tableInfo, 0)
 			}
@@ -449,10 +312,10 @@ func (sm *SnapshotMeta) updateTableInfo(ctx context.Context, fs fileservice.File
 			return err
 		}
 
-		commitTsVecs := vector.MustFixedCol[types.TS](objectBat.Vecs[len(objectBat.Vecs)-1])
-		for i := 0; i < len(commitTsVecs); i++ {
+		commitTsVec := vector.MustFixedCol[types.TS](objectBat.Vecs[len(objectBat.Vecs)-1])
+		for i := 0; i < len(commitTsVec); i++ {
 			pk, _, _, _ := types.DecodeTuple(objectBat.Vecs[1].GetRawBytesAt(i))
-			commitTs := commitTsVecs[i]
+			commitTs := commitTsVec[i]
 			deletes = append(deletes, tombstone{
 				pk: pk,
 				ts: commitTs,
@@ -592,9 +455,9 @@ func (sm *SnapshotMeta) GetSnapshot(
 		logutil.Infof("[GetSnapshot] cost %v", time.Since(now))
 	}()
 	sm.RLock()
-	objects := sm.copyObjectsLocked()
+	objects := copyObjectsLocked(sm.objects)
+	tombstones := copyObjectsLocked(sm.tombstones)
 	tables := sm.copyTablesLocked()
-	tombstones := sm.copyTombstonesLocked()
 	sm.RUnlock()
 	snapshotList := make(map[uint32]containers.Vector)
 	idxes := []uint16{ColTS, ColLevel, ColObjId}
@@ -604,26 +467,30 @@ func (sm *SnapshotMeta) GetSnapshot(
 		snapshotSchemaTypes[ColObjId],
 	}
 	logutil.Infof("[GetSnapshot] tables %v objects %v", len(tables), len(objects))
-	tombstonesData := make(map[string]*objData, 0)
-	for tid, objectMap := range tombstones {
-		for _, object := range objectMap {
-			name := object.stats.ObjectName()
-			bat, _, err := blockio.LoadOneBlock(ctx, fs, object.stats.ObjectLocation(), objectio.SchemaData)
-			if err != nil {
-				return nil, err
+	for tid, objectMap := range objects {
+		tombstonesData := make(map[string]*objData, 0)
+		for ttid, tombstoneMap := range tombstones {
+			if ttid != tid {
+				continue
 			}
-			tombstonesData[name.String()] = &objData{
-				stats:    &object.stats,
-				tid:      tid,
-				dataType: objectio.SchemaData,
-				sortKey:  uint16(math.MaxUint16),
-				data:     make([]*batch.Batch, 0),
+			for _, object := range tombstoneMap {
+				name := object.stats.ObjectName()
+				logutil.Infof("[GetSnapshot] tombstone object %v", name.String())
+				bat, _, err := blockio.LoadOneBlock(ctx, fs, object.stats.ObjectLocation(), objectio.SchemaData)
+				if err != nil {
+					return nil, err
+				}
+				tombstonesData[name.String()] = &objData{
+					stats:    &object.stats,
+					tid:      tid,
+					dataType: objectio.SchemaData,
+					sortKey:  uint16(math.MaxUint16),
+					data:     make([]*batch.Batch, 0),
+				}
+				tombstonesData[name.String()].data = append(tombstonesData[name.String()].data, bat)
 			}
-			tombstonesData[name.String()].data = append(tombstonesData[name.String()].data, bat)
+			break
 		}
-
-	}
-	for _, objectMap := range objects {
 		checkpointTS := types.BuildTS(time.Now().UTC().UnixNano(), 0)
 		ds := NewBackupDeltaLocDataSource(ctx, fs, checkpointTS, tombstonesData)
 		ds.needShrink = false
@@ -922,11 +789,6 @@ func (sm *SnapshotMeta) Rebuild(ins *containers.Batch, objects *map[uint64]map[o
 			continue
 		}
 	}
-}
-
-func (sm *SnapshotMeta) RebuildDelta(ins *containers.Batch) {
-	sm.Lock()
-	defer sm.Unlock()
 }
 
 func (sm *SnapshotMeta) ReadMeta(ctx context.Context, name string, fs fileservice.FileService) error {
