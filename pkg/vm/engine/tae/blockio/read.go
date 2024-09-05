@@ -328,6 +328,35 @@ func BlockDataReadBackup(
 	return
 }
 
+func BlockDataReadSnapshot(
+	ctx context.Context,
+	sid string,
+	info *objectio.BlockInfo,
+	ds engine.DataSource,
+	idxes []uint16,
+	ts types.TS,
+	fs fileservice.FileService,
+) (loaded *batch.Batch, sortKey uint16, err error) {
+	if len(idxes) == 0 {
+		loaded, sortKey, err = LoadOneBlock(ctx, fs, info.MetaLocation(), objectio.SchemaData)
+	} else {
+		loaded, sortKey, err = LoadOneBlockWithIndex(ctx, fs, idxes, info.MetaLocation(), objectio.SchemaData)
+	}
+	// read block data from storage specified by meta location
+	if err != nil {
+		return
+	}
+	tombstones, err := ds.GetTombstones(ctx, info.BlockID)
+	if err != nil {
+		return
+	}
+	rows := tombstones.ToI64Arrary()
+	if len(rows) > 0 {
+		loaded.Shrink(rows, true)
+	}
+	return
+}
+
 // BlockDataReadInner only read data,don't apply deletes.
 func BlockDataReadInner(
 	ctx context.Context,
