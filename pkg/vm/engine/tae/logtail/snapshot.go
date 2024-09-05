@@ -652,7 +652,7 @@ func (sm *SnapshotMeta) GetSnapshot(
 
 				bat := buildBatch()
 				defer bat.Clean(mp)
-				bat, _, err := blockio.BlockDataReadBackup(ctx, sid, &blk, ds, idxes, checkpointTS, fs)
+				bat, _, err := blockio.BlockDataReadSnapshot(ctx, sid, &blk, ds, idxes, checkpointTS, fs)
 				if err != nil {
 					return nil, err
 				}
