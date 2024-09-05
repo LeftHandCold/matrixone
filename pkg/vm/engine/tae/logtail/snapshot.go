@@ -836,7 +836,7 @@ func (sm *SnapshotMeta) ReadMeta(ctx context.Context, name string, fs fileservic
 		} else {
 			vec = containers.ToTNVector(pkgVec, common.DebugAllocator)
 		}
-		bat.AddVector(objectInfoSchemaAttr[i], vec)
+		deltaBat.AddVector(objectInfoSchemaAttr[i], vec)
 	}
 	sm.Rebuild(deltaBat, &sm.tombstones)
 	return nil
