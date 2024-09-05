@@ -586,39 +586,28 @@ func (sm *SnapshotMeta) SaveMeta(name string, fs fileservice.FileService) (uint3
 	for i, attr := range objectInfoSchemaAttr {
 		deltaBat.AddVector(attr, containers.MakeVector(objectInfoSchemaTypes[i], common.DebugAllocator))
 	}
-	for tid, objectMap := range sm.objects {
-		for _, entry := range objectMap {
-			vector.AppendBytes(
-				bat.GetVectorByName(catalog.ObjectAttr_ObjectStats).GetDownstreamVector(),
-				entry.stats[:], false, common.DebugAllocator)
-			vector.AppendFixed[types.TS](
-				bat.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector(),
-				entry.createAt, false, common.DebugAllocator)
-			vector.AppendFixed[types.TS](
-				bat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
-				entry.deleteAt, false, common.DebugAllocator)
-			vector.AppendFixed[uint64](
-				bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
-				tid, false, common.DebugAllocator)
+	appendBat := func(
+		bat *containers.Batch,
+		objects map[uint64]map[objectio.Segmentid]*objectInfo) {
+		for tid, objectMap := range objects {
+			for _, entry := range objectMap {
+				vector.AppendBytes(
+					bat.GetVectorByName(catalog.ObjectAttr_ObjectStats).GetDownstreamVector(),
+					entry.stats[:], false, common.DebugAllocator)
+				vector.AppendFixed[types.TS](
+					bat.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector(),
+					entry.createAt, false, common.DebugAllocator)
+				vector.AppendFixed[types.TS](
+					bat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
+					entry.deleteAt, false, common.DebugAllocator)
+				vector.AppendFixed[uint64](
+					bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
+					tid, false, common.DebugAllocator)
+			}
 		}
 	}
-
-	for tid, objectMap := range sm.tombstones {
-		for _, entry := range objectMap {
-			vector.AppendBytes(
-				bat.GetVectorByName(catalog.ObjectAttr_ObjectStats).GetDownstreamVector(),
-				entry.stats[:], false, common.DebugAllocator)
-			vector.AppendFixed[types.TS](
-				bat.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector(),
-				entry.createAt, false, common.DebugAllocator)
-			vector.AppendFixed[types.TS](
-				bat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
-				entry.deleteAt, false, common.DebugAllocator)
-			vector.AppendFixed[uint64](
-				bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
-				tid, false, common.DebugAllocator)
-		}
-	}
+	appendBat(bat, sm.objects)
+	appendBat(deltaBat, sm.tombstones)
 	defer bat.Close()
 	defer deltaBat.Close()
 	writer, err := objectio.NewObjectWriterSpecial(objectio.WriterGC, name, fs)
