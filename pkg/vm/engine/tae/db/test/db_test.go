@@ -6344,13 +6344,13 @@ func TestSnapshotGC(t *testing.T) {
 	var rel3 handle.Relation
 	{
 		txn, _ := db.StartTxn(nil)
-		database, err := txn.CreateDatabase("db", "", "")
+		database, err := testutil.CreateDatabase2(ctx, txn, "db")
 		assert.Nil(t, err)
-		_, err = database.CreateRelation(schema1)
+		_, err = testutil.CreateRelation2(ctx, txn, database, schema1)
 		assert.Nil(t, err)
-		_, err = database.CreateRelation(schema2)
+		_, err = testutil.CreateRelation2(ctx, txn, database, schema2)
 		assert.Nil(t, err)
-		rel3, err = database.CreateRelation(snapshotSchema)
+		rel3, err = testutil.CreateRelation2(ctx, txn, database, snapshotSchema)
 		assert.Nil(t, err)
 		assert.Nil(t, txn.Commit(context.Background()))
 	}
