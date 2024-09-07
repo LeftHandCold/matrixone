@@ -490,7 +490,7 @@ func TestNewObjectReader1(t *testing.T) {
 func TestNewObjectReader2(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "0191c6a6-c45e-7b20-b345-06cace8de0e0_00000"
+	//	name := "0191c6a6-c45e-7b20-b345-06cace8de0e0_00000"
 
 	fsDir := "/Users/shenjiangwei/Work/local/tae/matrixone/mo-data"
 	c := fileservice.Config{
@@ -500,32 +500,40 @@ func TestNewObjectReader2(t *testing.T) {
 	}
 	service, err := fileservice.NewFileService(ctx, c, nil)
 	assert.Nil(t, err)
-	reader, err := blockio.NewFileReader(service, name)
-	if err != nil {
-		return
-	}
-	//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
-	bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1, 2, 3, 4}, common.DefaultAllocator)
-	if err != nil {
-		logutil.Infof("load all columns failed: %v", err)
-		return
-	}
-	/*name1, err := EncodeNameFromString(reader.GetName())
-	assert.Nil(t, err)
-	location := objectio.BuildLocation(name1, *reader.GetObjectReader().GetMetaExtent(), 51, 1)
-	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
-	//applyDelete(bats[0], bb)
+	files, err := service.List(ctx, "")
+	var bats []*batch.Batch
+	for _, file := range files {
+		reader, err := blockio.NewFileReader(service, file.Name)
+		if err != nil {
+			return
+		}
+		//bats, err := reader.LoadAllColumns(ctx, []uint16{0, 1}, common.DefaultAllocator)
+		bats, err = reader.LoadAllColumns(ctx, []uint16{0, 1, 2, 3, 4}, common.DefaultAllocator)
+		if err != nil {
+			logutil.Infof("load all columns failed: %v", err)
+			return
+		}
+		/*name1, err := EncodeNameFromString(reader.GetName())
+		assert.Nil(t, err)
+		location := objectio.BuildLocation(name1, *reader.GetObjectReader().GetMetaExtent(), 51, 1)
+		_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
+		//applyDelete(bats[0], bb)
 
-	metaHeader, err := reader.GetObjectReader().ReadMeta(ctx, nil)
-	assert.Nil(t, err)
-	meta := metaHeader.MustDataMeta()
-	for i := 0; i < meta.NumColumns(); i++ {
-
+		metaHeader, err := reader.GetObjectReader().ReadMeta(ctx, nil)
+		assert.Nil(t, err)
+		meta := metaHeader.MustDataMeta()
+		for i := uint16(0); i < meta.BlockHeader().MetaColumnCount(); i++ {
+			col := meta.MustGetColumn(i)
+			zm := col.ZoneMap()
+			//zm, err := reader.LoadZoneMaps(ctx, []uint16{0, 1, 2, 3, 4}, 0, nil)
+			if len(zm.GetMaxBuf()) == 0 || len(zm.GetMinBuf()) == 0 {
+				logutil.Infof("zm is empty")
+				panic("zm is empty")
+			}
+			logutil.Infof("zm is %v-%v", zm.GetMax(), zm.GetMin())
+		}
 	}
-	col := meta.MustGetColumn(0)
-	zm := col.ZoneMap()
-	//zm, err := reader.LoadZoneMaps(ctx, []uint16{0, 1, 2, 3, 4}, 0, nil)
-	logutil.Infof("zm is %v-%v", zm.GetMax(), zm.GetMin())
+	return
 	ts := types.TS{}
 	for y, bat := range bats {
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
