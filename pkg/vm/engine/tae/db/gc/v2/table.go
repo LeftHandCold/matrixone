@@ -120,6 +120,7 @@ func (t *GCTable) SoftGC(
 	table *GCTable,
 	ts types.TS,
 	snapShotList map[uint32]containers.Vector,
+	pitrs *logtail.PitrInfo,
 	meta *logtail.SnapshotMeta,
 ) ([]string, map[uint32][]types.TS) {
 	var gc []string
@@ -133,8 +134,8 @@ func (t *GCTable) SoftGC(
 		meta.Unlock()
 		t.Unlock()
 	}()
-	gc = t.objectsComparedAndDeleteLocked(t.objects, table.objects, meta, snapList, ts)
-	gc = append(gc, t.objectsComparedAndDeleteLocked(t.tombstones, table.tombstones, meta, snapList, ts)...)
+	gc = t.objectsComparedAndDeleteLocked(t.objects, table.objects, meta, snapList, pitrs, ts)
+	gc = append(gc, t.objectsComparedAndDeleteLocked(t.tombstones, table.tombstones, meta, snapList, pitrs, ts)...)
 	return gc, snapList
 }
 
@@ -142,20 +143,22 @@ func (t *GCTable) objectsComparedAndDeleteLocked(
 	objects, comparedObjects map[string]*ObjectEntry,
 	meta *logtail.SnapshotMeta,
 	snapList map[uint32][]types.TS,
+	pitrList *logtail.PitrInfo,
 	ts types.TS,
 ) []string {
 	gc := make([]string, 0)
 	for name, entry := range objects {
 		objectEntry := comparedObjects[name]
 		tsList := meta.GetSnapshotListLocked(snapList, entry.table)
-		if tsList == nil {
+		pList := meta.GetPitrLocked(pitrList, entry.db, entry.table)
+		if tsList == nil && pList.IsEmpty() {
 			if objectEntry == nil && entry.commitTS.Less(&ts) {
 				gc = append(gc, name)
 				delete(t.objects, name)
 			}
 			continue
 		}
-		if objectEntry == nil && entry.commitTS.Less(&ts) && !isSnapshotRefers(entry, tsList, name) {
+		if objectEntry == nil && entry.commitTS.Less(&ts) && !isSnapshotRefers(entry, tsList, pList, name) {
 			gc = append(gc, name)
 			delete(t.objects, name)
 		}
@@ -163,8 +166,8 @@ func (t *GCTable) objectsComparedAndDeleteLocked(
 	return gc
 }
 
-func isSnapshotRefers(obj *ObjectEntry, snapVec []types.TS, name string) bool {
-	if len(snapVec) == 0 {
+func isSnapshotRefers(obj *ObjectEntry, snapVec []types.TS, pitrVec types.TS, name string) bool {
+	if len(snapVec) == 0 && len(pitrVec) == 0 {
 		return false
 	}
 	if obj.dropTS.IsEmpty() {
@@ -174,6 +177,12 @@ func isSnapshotRefers(obj *ObjectEntry, snapVec []types.TS, name string) bool {
 			zap.String("createTS", obj.createTS.ToString()),
 			zap.String("dropTS", obj.dropTS.ToString()))
 		return true
+	}
+
+	if !pitrVec.IsEmpty() {
+		if obj.dropTS.Less(&pitrVec) {
+			return true
+		}
 	}
 	left, right := 0, len(snapVec)-1
 	for left <= right {

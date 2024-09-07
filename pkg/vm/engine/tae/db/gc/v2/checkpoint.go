@@ -718,7 +718,12 @@ func (c *checkpointCleaner) tryGC(data *logtail.CheckpointData, gckp *checkpoint
 		logutil.Errorf("[DiskCleaner] GetSnapshots failed: %v", err.Error())
 		return nil
 	}
-	gc, snapshotList := c.softGC(gcTable, gckp, snapshots)
+	pitrs, err := c.GetPITRs()
+	if err != nil {
+		logutil.Errorf("[DiskCleaner] GetPitrs failed: %v", err.Error())
+		return nil
+	}
+	gc, snapshotList := c.softGC(gcTable, gckp, snapshots, pitrs)
 	// Delete files after softGC
 	// TODO:Requires Physical Removal Policy
 	err = c.delWorker.ExecDelete(c.ctx, gc, c.disableGC)
@@ -740,6 +745,7 @@ func (c *checkpointCleaner) softGC(
 	t *GCTable,
 	gckp *checkpoint.CheckpointEntry,
 	snapshots map[uint32]containers.Vector,
+	pitrs *logtail.PitrInfo,
 ) ([]string, map[uint32][]types.TS) {
 	c.inputs.Lock()
 	defer c.inputs.Unlock()
@@ -757,7 +763,7 @@ func (c *checkpointCleaner) softGC(
 	for _, table := range c.inputs.tables {
 		mergeTable.Merge(table)
 	}
-	gc, snapList := mergeTable.SoftGC(t, gckp.GetEnd(), snapshots, c.snapshotMeta)
+	gc, snapList := mergeTable.SoftGC(t, gckp.GetEnd(), snapshots, pitrs, c.snapshotMeta)
 	softCost = time.Since(now)
 	now = time.Now()
 	c.inputs.tables = make([]*GCTable, 0)
@@ -841,7 +847,7 @@ func (c *checkpointCleaner) CheckGC() error {
 		return moerr.NewInternalErrorNoCtxf("processing clean GetSnapshots %s: %v", debugCandidates[0].String(), err)
 	}
 	defer logtail.CloseSnapshotList(snapshots)
-	debugTable.SoftGC(gcTable, gCkp.GetEnd(), snapshots, c.snapshotMeta)
+	debugTable.SoftGC(gcTable, gCkp.GetEnd(), snapshots, nil, c.snapshotMeta)
 	var mergeTable *GCTable
 	if len(c.inputs.tables) > 1 {
 		mergeTable = NewGCTable()
@@ -851,7 +857,7 @@ func (c *checkpointCleaner) CheckGC() error {
 	} else {
 		mergeTable = c.inputs.tables[0]
 	}
-	mergeTable.SoftGC(gcTable, gCkp.GetEnd(), snapshots, c.snapshotMeta)
+	mergeTable.SoftGC(gcTable, gCkp.GetEnd(), snapshots, nil, c.snapshotMeta)
 	if !mergeTable.Compare(debugTable) {
 		logutil.Errorf("inputs :%v", c.inputs.tables[0].String())
 		logutil.Errorf("debugTable :%v", debugTable.String())
@@ -1044,6 +1050,11 @@ func (c *checkpointCleaner) updateSnapshot(
 
 func (c *checkpointCleaner) GetSnapshots() (map[uint32]containers.Vector, error) {
 	return c.snapshotMeta.GetSnapshot(c.ctx, c.sid, c.fs.Service, c.mPool)
+}
+
+func (c *checkpointCleaner) GetPITRs() (*logtail.PitrInfo, error) {
+	ts := time.Now()
+	return c.snapshotMeta.GetPITR(c.ctx, c.sid, ts, c.fs.Service, c.mPool)
 }
 
 func isSnapshotCKPRefers(start, end types.TS, snapVec []types.TS) bool {

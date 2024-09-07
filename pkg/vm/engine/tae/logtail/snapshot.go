@@ -58,6 +58,38 @@ const (
 	ColObjId
 )
 
+const (
+	PitrUnitYear   = "y"
+	PitrUnitMonth  = "mo"
+	PitrUnitDay    = "d"
+	PitrUnitHour   = "h"
+	PitrUnitMinute = "m"
+)
+
+const (
+	PitrLevelCluster  = "cluster"
+	PitrLevelAccount  = "account"
+	PitrLevelDatabase = "database"
+	PitrLevelTable    = "table"
+)
+
+// pitr's schema
+const (
+	ColPitrId uint16 = iota
+	ColPitrName
+	ColPitrCreateAccount
+	ColPitrCreateTime
+	ColPitrModifiedTime
+	ColPitrLevel
+	ColPitrAccountId
+	ColPitrAccountName
+	ColPitrDatabaseName
+	ColPitrTableName
+	ColPitrObjId
+	ColPitrLength
+	ColPitrUnit
+)
+
 var (
 	objectInfoSchemaAttr = []string{
 		catalog.ObjectAttr_ObjectStats,
@@ -116,6 +148,24 @@ type tableInfo struct {
 	deleteAt  types.TS
 }
 
+type PitrInfo struct {
+	account  map[uint32]types.TS
+	database map[uint64]types.TS
+	tables   map[uint64]types.TS
+}
+
+func (p *PitrInfo) GetAccount() map[uint32]types.TS {
+	return p.account
+}
+
+func (p *PitrInfo) GetDatabase() map[uint64]types.TS {
+	return p.database
+}
+
+func (p *PitrInfo) GetTables() map[uint64]types.TS {
+	return p.tables
+}
+
 type SnapshotMeta struct {
 	sync.RWMutex
 
@@ -123,6 +173,12 @@ type SnapshotMeta struct {
 	// will be multiple mo_snapshots, so here is a map, the key is tid.
 	objects    map[uint64]map[objectio.Segmentid]*objectInfo
 	tombstones map[uint64]map[objectio.Segmentid]*objectInfo
+
+	pitr struct {
+		tid        uint64
+		objects    map[objectio.Segmentid]*objectInfo
+		tombstones map[objectio.Segmentid]*objectInfo
+	}
 
 	// tables records all the table information of mo, the key is account id,
 	// and the map is the mapping of table id and table information.
@@ -208,6 +264,7 @@ func (sm *SnapshotMeta) updateTableInfo(
 	tombstones[catalog2.MO_TABLES_ID] = make(map[objectio.Segmentid]*objectInfo)
 	collector := func(
 		objects *map[uint64]map[objectio.Segmentid]*objectInfo,
+		_ map[objectio.Segmentid]*objectInfo,
 		tid uint64,
 		stats objectio.ObjectStats,
 		createTS types.TS, deleteTS types.TS,
@@ -235,8 +292,8 @@ func (sm *SnapshotMeta) updateTableInfo(
 			deleteAt: deleteTS,
 		}
 	}
-	collectObjects(&objects, data.GetObjectBatchs(), collector)
-	collectObjects(&tombstones, data.GetTombstoneObjectBatchs(), collector)
+	collectObjects(&objects, nil, data.GetObjectBatchs(), collector)
+	collectObjects(&tombstones, nil, data.GetTombstoneObjectBatchs(), collector)
 	tObjects := objects[catalog2.MO_TABLES_ID]
 	tTombstones := tombstones[catalog2.MO_TABLES_ID]
 	for _, info := range tObjects {
@@ -277,6 +334,12 @@ func (sm *SnapshotMeta) updateTableInfo(
 					zap.Uint64("tid", tid),
 					zap.Uint32("account id", account),
 					zap.String("create at", createAt.ToString()))
+			}
+			if name == catalog2.MO_PITR {
+				if sm.pitr.tid > 0 && sm.pitr.tid != tid {
+					panic(fmt.Sprintf("pitr table %v is not unique", tid))
+				}
+				sm.pitr.tid = tid
 			}
 			if sm.tables[account] == nil {
 				sm.tables[account] = make(map[uint64]*tableInfo)
@@ -359,9 +422,11 @@ func (sm *SnapshotMeta) updateTableInfo(
 
 func collectObjects(
 	objects *map[uint64]map[objectio.Segmentid]*objectInfo,
+	objects2 map[objectio.Segmentid]*objectInfo,
 	ins *containers.Batch,
 	collector func(
 		*map[uint64]map[objectio.Segmentid]*objectInfo,
+		map[objectio.Segmentid]*objectInfo,
 		uint64,
 		objectio.ObjectStats,
 		types.TS, types.TS,
@@ -380,7 +445,7 @@ func collectObjects(
 		deleteTS := insDeleteTSs[i]
 		createTS := insCreateTSs[i]
 		objectStats := (objectio.ObjectStats)(insStats.GetBytesAt(i))
-		collector(objects, table, objectStats, createTS, deleteTS)
+		collector(objects, objects2, table, objectStats, createTS, deleteTS)
 	}
 }
 
@@ -406,45 +471,57 @@ func (sm *SnapshotMeta) Update(
 
 	collector := func(
 		objects *map[uint64]map[objectio.Segmentid]*objectInfo,
+		objects2 map[objectio.Segmentid]*objectInfo,
 		tid uint64,
 		stats objectio.ObjectStats,
 		createTS types.TS, deleteTS types.TS,
 	) {
+		mapFun := func(
+			objects map[objectio.Segmentid]*objectInfo,
+		) {
+			if objects == nil {
+				objects = make(map[objectio.Segmentid]*objectInfo)
+			}
+			id := stats.ObjectName().SegmentId()
+			if objects[id] == nil {
+				if !deleteTS.IsEmpty() {
+					return
+				}
+				objects[id] = &objectInfo{
+					stats:    stats,
+					createAt: createTS,
+				}
+				logutil.Info("[UpdateSnapshot] Add object",
+					zap.Uint64("table id", tid),
+					zap.String("object name", id.String()),
+					zap.String("create at", createTS.ToString()))
+
+				return
+			}
+			if deleteTS.IsEmpty() {
+				panic(any("deleteTS is empty"))
+			}
+			logutil.Info("[UpdateSnapshot] Delete object",
+				zap.Uint64("table id", tid),
+				zap.String("object name", id.String()),
+				zap.String("delete at", deleteTS.ToString()))
+
+			delete(objects, id)
+		}
+
+		if tid == sm.pitr.tid {
+			mapFun(objects2)
+		}
 		if _, ok := sm.tides[tid]; !ok {
 			return
 		}
 		if (*objects)[tid] == nil {
 			(*objects)[tid] = make(map[objectio.Segmentid]*objectInfo)
 		}
-		oMap := (*objects)[tid]
-		id := stats.ObjectName().SegmentId()
-		if oMap[id] == nil {
-			if !deleteTS.IsEmpty() {
-				return
-			}
-			oMap[id] = &objectInfo{
-				stats:    stats,
-				createAt: createTS,
-			}
-			logutil.Info("[UpdateSnapshot] Add object",
-				zap.Uint64("table id", tid),
-				zap.String("object name", id.String()),
-				zap.String("create at", createTS.ToString()))
-
-			return
-		}
-		if deleteTS.IsEmpty() {
-			panic(any("deleteTS is empty"))
-		}
-		logutil.Info("[UpdateSnapshot] Delete object",
-			zap.Uint64("table id", tid),
-			zap.String("object name", id.String()),
-			zap.String("delete at", deleteTS.ToString()))
-
-		delete(oMap, id)
+		mapFun((*objects)[tid])
 	}
-	collectObjects(&sm.objects, data.GetObjectBatchs(), collector)
-	collectObjects(&sm.tombstones, data.GetTombstoneObjectBatchs(), collector)
+	collectObjects(&sm.objects, sm.pitr.objects, data.GetObjectBatchs(), collector)
+	collectObjects(&sm.tombstones, sm.pitr.tombstones, data.GetTombstoneObjectBatchs(), collector)
 	return nil, nil
 }
 
@@ -572,6 +649,124 @@ func (sm *SnapshotMeta) GetSnapshot(
 		snapshotList[i].GetDownstreamVector().InplaceSort()
 	}
 	return snapshotList, nil
+}
+
+func AddDate(t time.Time, year, month, day int) time.Time {
+	targetDate := t.AddDate(year, month, -t.Day()+1)
+	targetDay := targetDate.AddDate(0, 1, -1).Day()
+	if targetDay > t.Day() {
+		targetDay = t.Day()
+	}
+	targetDate = targetDate.AddDate(0, 0, targetDay-1+day)
+	return targetDate
+}
+
+func (sm *SnapshotMeta) GetPITR(
+	ctx context.Context,
+	sid string,
+	gcTime time.Time,
+	fs fileservice.FileService,
+	mp *mpool.MPool,
+) (*PitrInfo, error) {
+	idxes := []uint16{ColPitrLevel, ColPitrObjId, ColPitrLength, ColPitrUnit}
+	colTypes := []types.Type{
+		types.New(types.T_varchar, types.MaxVarcharLen, 0),
+		types.New(types.T_int64, 0, 0),
+		types.New(types.T_int64, 0, 0),
+		types.New(types.T_varchar, types.MaxVarcharLen, 0),
+	}
+	tombstonesStats := make([]objectio.ObjectStats, 0)
+	for _, tombstone := range sm.pitr.tombstones {
+		tombstonesStats = append(tombstonesStats, tombstone.stats)
+	}
+	checkpointTS := types.BuildTS(time.Now().UTC().UnixNano(), 0)
+	ds := NewSnapshotDataSource(ctx, fs, checkpointTS, tombstonesStats)
+	pitr := &PitrInfo{
+		account:  make(map[uint32]types.TS),
+		database: make(map[uint64]types.TS),
+		tables:   make(map[uint64]types.TS),
+	}
+	for _, object := range sm.pitr.objects {
+		location := object.stats.ObjectLocation()
+		name := object.stats.ObjectName()
+		for i := uint32(0); i < object.stats.BlkCnt(); i++ {
+			loc := objectio.BuildLocation(name, location.Extent(), 0, uint16(i))
+			blk := objectio.BlockInfo{
+				BlockID: *objectio.BuildObjectBlockid(name, uint16(i)),
+				MetaLoc: objectio.ObjectLocation(loc),
+			}
+
+			var vp engine.VectorPool
+			buildBatch := func() *batch.Batch {
+				result := batch.NewWithSize(len(colTypes))
+				for i, typ := range colTypes {
+					if vp == nil {
+						result.Vecs[i] = vector.NewVec(typ)
+					} else {
+						result.Vecs[i] = vp.GetVector(typ)
+					}
+				}
+				return result
+			}
+
+			bat := buildBatch()
+			defer bat.Clean(mp)
+			bat, _, err := blockio.BlockDataReadBackup(ctx, sid, &blk, ds, idxes, types.TS{}, fs)
+			if err != nil {
+				return nil, err
+			}
+			objIDList := vector.MustFixedColWithTypeCheck[int64](bat.Vecs[1])
+			lengList := vector.MustFixedColWithTypeCheck[uint8](bat.Vecs[2])
+			for r := 0; r < bat.Vecs[0].Length(); r++ {
+				length := lengList[r]
+				leng := int(length)
+				unit := bat.Vecs[3].GetStringAt(r)
+				var ts time.Time
+				if unit == PitrUnitYear {
+					ts = AddDate(gcTime, 1-leng, 0, 0)
+				} else if unit == PitrUnitMonth {
+					ts = AddDate(gcTime, 0, 1-leng, 0)
+				} else if unit == PitrUnitDay {
+					ts = gcTime.AddDate(0, 0, 1-leng)
+				} else if unit == PitrUnitHour {
+					ts = gcTime.Add(-time.Duration(leng) * time.Hour)
+				} else if unit == PitrUnitMinute {
+					ts = gcTime.Add(-time.Duration(leng) * time.Minute)
+				}
+				pitrTs := types.BuildTS(ts.UnixNano(), 0)
+				account := objIDList[i]
+				level := bat.Vecs[0].GetStringAt(r)
+				if level == PitrLevelAccount {
+					id := uint32(account)
+					p := pitr.account[id]
+					if !p.IsEmpty() {
+						panic("account duplicate pitr ")
+					}
+					pitr.account[id] = pitrTs
+				} else if level == PitrLevelDatabase {
+					id := uint64(account)
+					p := pitr.database[id]
+					if !p.IsEmpty() {
+						panic("db duplicate pitr ")
+					}
+					pitr.database[id] = pitrTs
+				} else if level == PitrLevelTable {
+					id := uint64(account)
+					p := pitr.tables[id]
+					if !p.IsEmpty() {
+						panic("table duplicate pitr ")
+					}
+					pitr.tables[id] = pitrTs
+				}
+				// TODO: info to debug
+				logutil.Info("[GetPITR] pitr",
+					zap.String("level", level),
+					zap.Int64("id", account),
+					zap.String("snap ts", pitrTs.ToString()))
+			}
+		}
+	}
+	return pitr, nil
 }
 
 func (sm *SnapshotMeta) SetTid(tid uint64) {
@@ -938,6 +1133,46 @@ func (sm *SnapshotMeta) GetSnapshotListLocked(SnapshotList map[uint32][]types.TS
 	}
 	accID := sm.acctIndexes[tid].accountID
 	return SnapshotList[accID]
+}
+
+func (sm *SnapshotMeta) GetPitrLocked(pitr *PitrInfo, db, tid uint64) types.TS {
+	var ts types.TS
+	if isMoTable(tid) || isMoDB(tid) || isMoCol(tid) {
+		for _, p := range pitr.account {
+			if ts.IsEmpty() || p.Less(&ts) {
+				ts = p
+			}
+		}
+		for _, p := range pitr.database {
+			if ts.IsEmpty() || p.Less(&ts) {
+				ts = p
+			}
+		}
+
+		for _, p := range pitr.tables {
+			if ts.IsEmpty() || p.Less(&ts) {
+				ts = p
+			}
+		}
+		return ts
+	}
+	if sm.acctIndexes[tid] != nil {
+		account := sm.acctIndexes[tid].accountID
+		p := pitr.account[account]
+		if !p.IsEmpty() {
+			ts = p
+		}
+	}
+	p := pitr.database[tid]
+	if !p.IsEmpty() && (ts.IsEmpty() || p.Less(&ts)) {
+		ts = p
+	}
+	p = pitr.tables[tid]
+	if !p.IsEmpty() && (ts.IsEmpty() || p.Less(&ts)) {
+		ts = p
+	}
+	return ts
+
 }
 
 func (sm *SnapshotMeta) MergeTableInfo(SnapshotList map[uint32][]types.TS) error {
