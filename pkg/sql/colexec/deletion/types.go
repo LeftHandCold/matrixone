@@ -15,6 +15,7 @@
 package deletion
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"slices"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
@@ -264,6 +265,7 @@ func (ctr *container) flush(proc *process.Process) (uint32, error) {
 			return a.Compare(b)
 		})
 		for _, blkid := range blkids {
+			logutil.Infof("flushing blockid %v, pidx is %d", blkid.String(), pidx)
 			bat := blockId_rowIdBatch[blkid]
 
 			s3writer.StashBatch(proc, bat)
@@ -277,6 +279,7 @@ func (ctr *container) flush(proc *process.Process) (uint32, error) {
 		if err != nil {
 			return 0, err
 		}
+		logutil.Infof("flushing tombstone stats %v", stats.String())
 
 		bat := batch.New(false, []string{catalog.ObjectMeta_ObjectStats})
 		bat.SetVector(0, vector.NewVec(types.T_text.ToType()))
