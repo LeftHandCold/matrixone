@@ -17,6 +17,7 @@ package rpc
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"os"
 	"reflect"
 	"regexp"
@@ -141,7 +142,7 @@ func (h *Handle) GetDB() *db.DB {
 }
 
 func (h *Handle) IsInterceptTable(name string) bool {
-	if name == "bmsql_stock" {
+	if name == "t12" {
 		return true
 	}
 	printMatchRegexp := h.getInterceptMatchRegexp()
@@ -727,6 +728,7 @@ func (h *Handle) HandleWrite(
 				pkDef := schema.GetSingleSortKey()
 				idx := pkDef.Idx
 				isCompositeKey := pkDef.IsCompositeColumn()
+				ids := vector.MustFixedColWithTypeCheck[int32](req.Batch.Vecs[0])
 				for i := 0; i < req.Batch.Vecs[0].Length(); i++ {
 					if isCompositeKey {
 						pkbuf := req.Batch.Vecs[idx].GetBytesAt(i)
@@ -738,11 +740,15 @@ func (h *Handle) HandleWrite(
 							zap.Any("detail", tuple.SQLStrings(nil)),
 						)
 					} else {
-						logutil.Info(
-							"op1",
-							zap.String("txn", txn.String()),
-							zap.String("pk", common.MoVectorToString(req.Batch.Vecs[idx], i)),
-						)
+						id := ids[i]
+						if id == 20 {
+							logutil.Info(
+								"op1",
+								zap.String("txn", txn.String()),
+								zap.String("pk", common.MoVectorToString(req.Batch.Vecs[idx], i)),
+								zap.Int32("id", id),
+							)
+						}
 					}
 				}
 			}
