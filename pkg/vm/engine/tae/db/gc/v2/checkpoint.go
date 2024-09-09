@@ -769,7 +769,7 @@ func (c *checkpointCleaner) softGC(
 	c.inputs.tables = make([]*GCTable, 0)
 	c.inputs.tables = append(c.inputs.tables, mergeTable)
 	c.updateMaxCompared(gckp)
-	c.snapshotMeta.MergeTableInfo(snapList)
+	c.snapshotMeta.MergeTableInfo(snapList, pitrs)
 	mergeCost = time.Since(now)
 	//logutil.Infof("SoftGC is %v, merge table: %v", v2, mergeTable.String())
 	return gc, snapList

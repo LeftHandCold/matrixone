@@ -166,6 +166,10 @@ func (p *PitrInfo) GetTables() map[uint64]types.TS {
 	return p.tables
 }
 
+func (p *PitrInfo) IsEmpty() bool {
+	return len(p.account) == 0 && len(p.database) == 0 && len(p.tables) == 0
+}
+
 type SnapshotMeta struct {
 	sync.RWMutex
 
@@ -1225,14 +1229,14 @@ func (sm *SnapshotMeta) GetPitrLocked(pitr *PitrInfo, db, tid uint64) types.TS {
 
 }
 
-func (sm *SnapshotMeta) MergeTableInfo(SnapshotList map[uint32][]types.TS) error {
+func (sm *SnapshotMeta) MergeTableInfo(SnapshotList map[uint32][]types.TS, pitr *PitrInfo) error {
 	sm.Lock()
 	defer sm.Unlock()
 	if len(sm.tables) == 0 {
 		return nil
 	}
 	for accID, tables := range sm.tables {
-		if SnapshotList[accID] == nil {
+		if SnapshotList[accID] == nil && pitr.IsEmpty() {
 			for _, table := range tables {
 				if !table.deleteAt.IsEmpty() {
 					logutil.Infof("MergeTableInfo delete table %d", table.tid)
@@ -1246,7 +1250,8 @@ func (sm *SnapshotMeta) MergeTableInfo(SnapshotList map[uint32][]types.TS) error
 			continue
 		}
 		for _, table := range tables {
-			if !table.deleteAt.IsEmpty() && !isSnapshotRefers(table, SnapshotList[accID]) {
+			ts := sm.GetPitrLocked(pitr, table.dbID, table.tid)
+			if !table.deleteAt.IsEmpty() && !isSnapshotRefers(table, SnapshotList[accID], ts) {
 				logutil.Infof("MergeTableInfo delete table %d", table.tid)
 				delete(sm.tables[accID], table.tid)
 				delete(sm.acctIndexes, table.tid)
@@ -1266,7 +1271,13 @@ func (sm *SnapshotMeta) String() string {
 		len(sm.tables), len(sm.acctIndexes), len(sm.objects))
 }
 
-func isSnapshotRefers(table *tableInfo, snapVec []types.TS) bool {
+func isSnapshotRefers(table *tableInfo, snapVec []types.TS, pitr types.TS) bool {
+	if !pitr.IsEmpty() {
+		if table.deleteAt.Less(&pitr) {
+			logutil.Infof("isSnapshotRefers: %s, create %v, drop %v, tid %d", pitr.ToString(), table.createAt.ToString(), table.deleteAt.ToString(), table.tid)
+			return true
+		}
+	}
 	if len(snapVec) == 0 {
 		return false
 	}
