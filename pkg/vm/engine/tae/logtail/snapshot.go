@@ -766,7 +766,7 @@ func (sm *SnapshotMeta) GetPITR(
 				// TODO: info to debug
 				logutil.Info("[GetPITR] pitr",
 					zap.String("level", level),
-					zap.Int64("id", account),
+					zap.Uint64("id", account),
 					zap.String("snap ts", pitrTs.ToString()))
 			}
 		}
