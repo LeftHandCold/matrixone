@@ -720,7 +720,7 @@ func (sm *SnapshotMeta) GetPITR(
 			if err != nil {
 				return nil, err
 			}
-			objIDList := vector.MustFixedColWithTypeCheck[int64](bat.Vecs[1])
+			objIDList := vector.MustFixedColWithTypeCheck[uint64](bat.Vecs[1])
 			lengList := vector.MustFixedColWithTypeCheck[uint8](bat.Vecs[2])
 			for r := 0; r < bat.Vecs[0].Length(); r++ {
 				length := lengList[r]
