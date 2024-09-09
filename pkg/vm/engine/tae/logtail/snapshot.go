@@ -200,7 +200,7 @@ type SnapshotMeta struct {
 }
 
 func NewSnapshotMeta() *SnapshotMeta {
-	return &SnapshotMeta{
+	meta := &SnapshotMeta{
 		objects:     make(map[uint64]map[objectio.Segmentid]*objectInfo),
 		tombstones:  make(map[uint64]map[objectio.Segmentid]*objectInfo),
 		tables:      make(map[uint32]map[uint64]*tableInfo),
@@ -208,6 +208,9 @@ func NewSnapshotMeta() *SnapshotMeta {
 		tides:       make(map[uint64]struct{}),
 		pkIndexes:   make(map[string][]*tableInfo),
 	}
+	meta.pitr.objects = make(map[objectio.Segmentid]*objectInfo)
+	meta.pitr.tombstones = make(map[objectio.Segmentid]*objectInfo)
+	return meta
 }
 
 func copyObjectsLocked(
@@ -511,6 +514,7 @@ func (sm *SnapshotMeta) Update(
 
 		if tid == sm.pitr.tid {
 			mapFun(*objects2)
+			logutil.Infof("[UpdateSnapshot] sm.pitr.objects %d", len(*objects2))
 		}
 		if _, ok := sm.tides[tid]; !ok {
 			return
