@@ -264,7 +264,7 @@ func (sm *SnapshotMeta) updateTableInfo(
 	tombstones[catalog2.MO_TABLES_ID] = make(map[objectio.Segmentid]*objectInfo)
 	collector := func(
 		objects *map[uint64]map[objectio.Segmentid]*objectInfo,
-		_ map[objectio.Segmentid]*objectInfo,
+		_ *map[objectio.Segmentid]*objectInfo,
 		tid uint64,
 		stats objectio.ObjectStats,
 		createTS types.TS, deleteTS types.TS,
@@ -422,11 +422,11 @@ func (sm *SnapshotMeta) updateTableInfo(
 
 func collectObjects(
 	objects *map[uint64]map[objectio.Segmentid]*objectInfo,
-	objects2 map[objectio.Segmentid]*objectInfo,
+	objects2 *map[objectio.Segmentid]*objectInfo,
 	ins *containers.Batch,
 	collector func(
 		*map[uint64]map[objectio.Segmentid]*objectInfo,
-		map[objectio.Segmentid]*objectInfo,
+		*map[objectio.Segmentid]*objectInfo,
 		uint64,
 		objectio.ObjectStats,
 		types.TS, types.TS,
@@ -471,7 +471,7 @@ func (sm *SnapshotMeta) Update(
 
 	collector := func(
 		objects *map[uint64]map[objectio.Segmentid]*objectInfo,
-		objects2 map[objectio.Segmentid]*objectInfo,
+		objects2 *map[objectio.Segmentid]*objectInfo,
 		tid uint64,
 		stats objectio.ObjectStats,
 		createTS types.TS, deleteTS types.TS,
@@ -510,7 +510,7 @@ func (sm *SnapshotMeta) Update(
 		}
 
 		if tid == sm.pitr.tid {
-			mapFun(objects2)
+			mapFun(*objects2)
 		}
 		if _, ok := sm.tides[tid]; !ok {
 			return
@@ -520,8 +520,9 @@ func (sm *SnapshotMeta) Update(
 		}
 		mapFun((*objects)[tid])
 	}
-	collectObjects(&sm.objects, sm.pitr.objects, data.GetObjectBatchs(), collector)
-	collectObjects(&sm.tombstones, sm.pitr.tombstones, data.GetTombstoneObjectBatchs(), collector)
+	collectObjects(&sm.objects, &sm.pitr.objects, data.GetObjectBatchs(), collector)
+	logutil.Infof("[UpdateSnapshot] sm.pitr.objects %d", len(sm.pitr.objects))
+	collectObjects(&sm.tombstones, &sm.pitr.tombstones, data.GetTombstoneObjectBatchs(), collector)
 	return nil, nil
 }
 
