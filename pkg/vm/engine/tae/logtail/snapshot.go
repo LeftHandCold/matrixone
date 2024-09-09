@@ -790,28 +790,36 @@ func (sm *SnapshotMeta) SaveMeta(name string, fs fileservice.FileService) (uint3
 	for i, attr := range objectInfoSchemaAttr {
 		deltaBat.AddVector(attr, containers.MakeVector(objectInfoSchemaTypes[i], common.DebugAllocator))
 	}
+	appendBatForMap := func(
+		bat *containers.Batch,
+		tid uint64,
+		objectMap map[objectio.Segmentid]*objectInfo) {
+		for _, entry := range objectMap {
+			vector.AppendBytes(
+				bat.GetVectorByName(catalog.ObjectAttr_ObjectStats).GetDownstreamVector(),
+				entry.stats[:], false, common.DebugAllocator)
+			vector.AppendFixed[types.TS](
+				bat.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector(),
+				entry.createAt, false, common.DebugAllocator)
+			vector.AppendFixed[types.TS](
+				bat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
+				entry.deleteAt, false, common.DebugAllocator)
+			vector.AppendFixed[uint64](
+				bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
+				tid, false, common.DebugAllocator)
+		}
+	}
 	appendBat := func(
 		bat *containers.Batch,
 		objects map[uint64]map[objectio.Segmentid]*objectInfo) {
 		for tid, objectMap := range objects {
-			for _, entry := range objectMap {
-				vector.AppendBytes(
-					bat.GetVectorByName(catalog.ObjectAttr_ObjectStats).GetDownstreamVector(),
-					entry.stats[:], false, common.DebugAllocator)
-				vector.AppendFixed[types.TS](
-					bat.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector(),
-					entry.createAt, false, common.DebugAllocator)
-				vector.AppendFixed[types.TS](
-					bat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
-					entry.deleteAt, false, common.DebugAllocator)
-				vector.AppendFixed[uint64](
-					bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
-					tid, false, common.DebugAllocator)
-			}
+			appendBatForMap(bat, tid, objectMap)
 		}
 	}
 	appendBat(bat, sm.objects)
+	appendBatForMap(bat, sm.pitr.tid, sm.pitr.objects)
 	appendBat(deltaBat, sm.tombstones)
+	appendBatForMap(bat, sm.pitr.tid, sm.pitr.tombstones)
 	defer bat.Close()
 	defer deltaBat.Close()
 	writer, err := objectio.NewObjectWriterSpecial(objectio.WriterGC, name, fs)
@@ -841,9 +849,11 @@ func (sm *SnapshotMeta) SaveTableInfo(name string, fs fileservice.FileService) (
 	}
 	bat := containers.NewBatch()
 	snapTableBat := containers.NewBatch()
+	pitrTableBat := containers.NewBatch()
 	for i, attr := range tableInfoSchemaAttr {
 		bat.AddVector(attr, containers.MakeVector(tableInfoSchemaTypes[i], common.DebugAllocator))
 		snapTableBat.AddVector(attr, containers.MakeVector(tableInfoSchemaTypes[i], common.DebugAllocator))
+		pitrTableBat.AddVector(attr, containers.MakeVector(tableInfoSchemaTypes[i], common.DebugAllocator))
 	}
 	for _, entry := range sm.tables {
 		for _, table := range entry {
@@ -878,6 +888,24 @@ func (sm *SnapshotMeta) SaveTableInfo(name string, fs fileservice.FileService) (
 					table.createAt, false, common.DebugAllocator)
 				vector.AppendFixed[types.TS](
 					snapTableBat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
+					table.deleteAt, false, common.DebugAllocator)
+			}
+
+			if table.tid == sm.pitr.tid {
+				vector.AppendFixed[uint32](
+					pitrTableBat.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector(),
+					table.accountID, false, common.DebugAllocator)
+				vector.AppendFixed[uint64](
+					pitrTableBat.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector(),
+					table.dbID, false, common.DebugAllocator)
+				vector.AppendFixed[uint64](
+					pitrTableBat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
+					table.tid, false, common.DebugAllocator)
+				vector.AppendFixed[types.TS](
+					pitrTableBat.GetVectorByName(catalog2.SystemRelAttr_CreateAt).GetDownstreamVector(),
+					table.createAt, false, common.DebugAllocator)
+				vector.AppendFixed[types.TS](
+					pitrTableBat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
 					table.deleteAt, false, common.DebugAllocator)
 			}
 		}
@@ -949,6 +977,21 @@ func (sm *SnapshotMeta) RebuildTid(ins *containers.Batch) {
 			sm.tides[tid] = struct{}{}
 			logutil.Info("[RebuildSnapshotTid]", zap.Uint64("tid", tid), zap.Uint32("account id", accid))
 		}
+	}
+}
+
+func (sm *SnapshotMeta) RebuildPitr(ins *containers.Batch) {
+	sm.Lock()
+	defer sm.Unlock()
+	insTIDs := vector.MustFixedColWithTypeCheck[uint64](ins.GetVectorByName(catalog.SnapshotAttr_TID).GetDownstreamVector())
+	if ins.Length() < 1 {
+		logutil.Warnf("RebuildPitr unexpected length %d", ins.Length())
+		return
+	}
+	logutil.Infof("RebuildPitr tid %d", insTIDs[0])
+	for i := 0; i < ins.Length(); i++ {
+		tid := insTIDs[i]
+		sm.pitr.tid = tid
 	}
 }
 
@@ -1078,8 +1121,10 @@ func (sm *SnapshotMeta) ReadTableInfo(ctx context.Context, name string, fs files
 		}
 		if id == 0 {
 			sm.RebuildTableInfo(bat)
-		} else {
+		} else if id == 1 {
 			sm.RebuildTid(bat)
+		} else if id == 2 {
+			sm.RebuildTableInfo(bat)
 		}
 	}
 	return nil
