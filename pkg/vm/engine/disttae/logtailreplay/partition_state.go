@@ -297,6 +297,7 @@ func (p *PartitionState) HandleTombstoneObjectList(
 
 		objEntry.CreateTime = createTSCol[idx]
 		objEntry.DeleteTime = deleteTSCol[idx]
+		logutil.Infof("HandleTombstoneObjectList: %v, create %v, delete %v", objEntry.ObjectStats.ObjectName().String(), objEntry.CreateTime.ToString(), objEntry.DeleteTime.ToString())
 
 		old, exist := p.tombstoneObjects.Get(objEntry)
 		if exist {
