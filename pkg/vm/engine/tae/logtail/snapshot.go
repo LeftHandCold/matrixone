@@ -999,7 +999,7 @@ func (sm *SnapshotMeta) RebuildPitr(ins *containers.Batch) {
 	}
 }
 
-func (sm *SnapshotMeta) Rebuild(ins *containers.Batch, objects *map[uint64]map[objectio.Segmentid]*objectInfo) {
+func (sm *SnapshotMeta) Rebuild(ins *containers.Batch, objects *map[uint64]map[objectio.Segmentid]*objectInfo, objects2 *map[objectio.Segmentid]*objectInfo) {
 	sm.Lock()
 	defer sm.Unlock()
 	insCreateTSs := vector.MustFixedColWithTypeCheck[types.TS](ins.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector())
@@ -1010,6 +1010,18 @@ func (sm *SnapshotMeta) Rebuild(ins *containers.Batch, objects *map[uint64]map[o
 		objectStats.UnMarshal(buf)
 		createTS := insCreateTSs[i]
 		tid := insTides[i]
+		if tid == sm.pitr.tid {
+			if (*objects2)[objectStats.ObjectName().SegmentId()] == nil {
+				(*objects2)[objectStats.ObjectName().SegmentId()] = &objectInfo{
+					stats:    objectStats,
+					createAt: createTS,
+				}
+				logutil.Info("[RebuildPITR] Add object2",
+					zap.String("object name", objectStats.ObjectName().String()),
+					zap.String("create at", createTS.ToString()))
+			}
+			continue
+		}
 		if _, ok := sm.tides[tid]; !ok {
 			sm.tides[tid] = struct{}{}
 			logutil.Info("[RebuildSnapTable]", zap.Uint64("tid", tid))
@@ -1061,7 +1073,7 @@ func (sm *SnapshotMeta) ReadMeta(ctx context.Context, name string, fs fileservic
 		}
 		bat.AddVector(objectInfoSchemaAttr[i], vec)
 	}
-	sm.Rebuild(bat, &sm.objects)
+	sm.Rebuild(bat, &sm.objects, &sm.pitr.objects)
 
 	if len(bs) == 1 {
 		return nil
@@ -1088,7 +1100,7 @@ func (sm *SnapshotMeta) ReadMeta(ctx context.Context, name string, fs fileservic
 		}
 		deltaBat.AddVector(objectInfoSchemaAttr[i], vec)
 	}
-	sm.Rebuild(deltaBat, &sm.tombstones)
+	sm.Rebuild(deltaBat, &sm.tombstones, &sm.pitr.tombstones)
 	return nil
 }
 
