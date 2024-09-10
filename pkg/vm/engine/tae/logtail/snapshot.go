@@ -149,6 +149,7 @@ type tableInfo struct {
 }
 
 type PitrInfo struct {
+	cluster  types.TS
 	account  map[uint32]types.TS
 	database map[uint64]types.TS
 	tables   map[uint64]types.TS
@@ -167,7 +168,10 @@ func (p *PitrInfo) GetTables() map[uint64]types.TS {
 }
 
 func (p *PitrInfo) IsEmpty() bool {
-	return len(p.account) == 0 && len(p.database) == 0 && len(p.tables) == 0
+	return p.cluster.IsEmpty() &&
+		len(p.account) == 0 &&
+		len(p.database) == 0 &&
+		len(p.tables) == 0
 }
 
 type SnapshotMeta struct {
@@ -745,7 +749,13 @@ func (sm *SnapshotMeta) GetPITR(
 				pitrTs := types.BuildTS(ts.UnixNano(), 0)
 				account := objIDList[r]
 				level := bat.Vecs[0].GetStringAt(r)
-				if level == PitrLevelAccount {
+				if level == PitrLevelCluster {
+					if !pitr.cluster.IsEmpty() {
+						panic("cluster duplicate pitr ")
+					}
+					pitr.cluster = pitrTs
+
+				} else if level == PitrLevelAccount {
 					id := uint32(account)
 					p := pitr.account[id]
 					if !p.IsEmpty() && p.Less(&pitrTs) {
@@ -760,7 +770,6 @@ func (sm *SnapshotMeta) GetPITR(
 					}
 					pitr.database[id] = pitrTs
 				} else if level == PitrLevelTable {
-					logutil.Infof("[GetPITR] pitr table %d %s", account, pitrTs.ToString())
 					id := uint64(account)
 					p := pitr.tables[id]
 					if !p.IsEmpty() {
@@ -1205,6 +1214,9 @@ func (sm *SnapshotMeta) GetSnapshotListLocked(
 
 func (sm *SnapshotMeta) GetPitrLocked(pitr *PitrInfo, db, tid uint64) types.TS {
 	var ts types.TS
+	if !pitr.cluster.IsEmpty() {
+		ts = pitr.cluster
+	}
 	if isMoTable(tid) || isMoDB(tid) || isMoCol(tid) {
 		for _, p := range pitr.account {
 			if ts.IsEmpty() || p.Less(&ts) {
@@ -1231,7 +1243,7 @@ func (sm *SnapshotMeta) GetPitrLocked(pitr *PitrInfo, db, tid uint64) types.TS {
 			ts = p
 		}
 	}
-	p := pitr.database[tid]
+	p := pitr.database[db]
 	if !p.IsEmpty() && (ts.IsEmpty() || p.Less(&ts)) {
 		ts = p
 	}
