@@ -926,6 +926,9 @@ func (sm *SnapshotMeta) SaveTableInfo(name string, fs fileservice.FileService) (
 	if _, err = writer.WriteWithoutSeqnum(containers.ToCNBatch(snapTableBat)); err != nil {
 		return 0, err
 	}
+	if _, err = writer.WriteWithoutSeqnum(containers.ToCNBatch(pitrTableBat)); err != nil {
+		return 0, err
+	}
 
 	_, err = writer.WriteEnd(context.Background())
 	if err != nil {

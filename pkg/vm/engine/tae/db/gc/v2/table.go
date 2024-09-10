@@ -179,8 +179,14 @@ func isSnapshotRefers(obj *ObjectEntry, snapVec []types.TS, pitrVec types.TS, na
 		return true
 	}
 
+	logutil.Infof("[soft GC]Pitr Get %v", pitrVec.ToString())
 	if !pitrVec.IsEmpty() {
-		if obj.dropTS.Less(&pitrVec) {
+		if obj.dropTS.Greater(&pitrVec) {
+			logutil.Debug("[soft GC]Pitr Refers",
+				zap.String("name", name),
+				zap.String("snapTS", pitrVec.ToString()),
+				zap.String("createTS", obj.createTS.ToString()),
+				zap.String("dropTS", obj.dropTS.ToString()))
 			return true
 		}
 	}
