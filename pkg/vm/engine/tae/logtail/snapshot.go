@@ -787,11 +787,9 @@ func (sm *SnapshotMeta) SaveMeta(name string, fs fileservice.FileService) (uint3
 		return 0, nil
 	}
 	bat := containers.NewBatch()
-	for i, attr := range objectInfoSchemaAttr {
-		bat.AddVector(attr, containers.MakeVector(objectInfoSchemaTypes[i], common.DebugAllocator))
-	}
 	deltaBat := containers.NewBatch()
 	for i, attr := range objectInfoSchemaAttr {
+		bat.AddVector(attr, containers.MakeVector(objectInfoSchemaTypes[i], common.DebugAllocator))
 		deltaBat.AddVector(attr, containers.MakeVector(objectInfoSchemaTypes[i], common.DebugAllocator))
 	}
 	appendBatForMap := func(
@@ -859,63 +857,40 @@ func (sm *SnapshotMeta) SaveTableInfo(name string, fs fileservice.FileService) (
 		snapTableBat.AddVector(attr, containers.MakeVector(tableInfoSchemaTypes[i], common.DebugAllocator))
 		pitrTableBat.AddVector(attr, containers.MakeVector(tableInfoSchemaTypes[i], common.DebugAllocator))
 	}
+	appendBat := func(bat *containers.Batch, table *tableInfo) {
+		vector.AppendFixed[uint32](
+			bat.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector(),
+			table.accountID, false, common.DebugAllocator)
+		vector.AppendFixed[uint64](
+			bat.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector(),
+			table.dbID, false, common.DebugAllocator)
+		vector.AppendFixed[uint64](
+			bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
+			table.tid, false, common.DebugAllocator)
+		vector.AppendFixed[types.TS](
+			bat.GetVectorByName(catalog2.SystemRelAttr_CreateAt).GetDownstreamVector(),
+			table.createAt, false, common.DebugAllocator)
+		vector.AppendFixed[types.TS](
+			bat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
+			table.deleteAt, false, common.DebugAllocator)
+	}
 	for _, entry := range sm.tables {
 		for _, table := range entry {
-			vector.AppendFixed[uint32](
-				bat.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector(),
-				table.accountID, false, common.DebugAllocator)
-			vector.AppendFixed[uint64](
-				bat.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector(),
-				table.dbID, false, common.DebugAllocator)
-			vector.AppendFixed[uint64](
-				bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
-				table.tid, false, common.DebugAllocator)
-			vector.AppendFixed[types.TS](
-				bat.GetVectorByName(catalog2.SystemRelAttr_CreateAt).GetDownstreamVector(),
-				table.createAt, false, common.DebugAllocator)
-			vector.AppendFixed[types.TS](
-				bat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
-				table.deleteAt, false, common.DebugAllocator)
-
-			if _, ok := sm.tides[table.tid]; ok {
-				vector.AppendFixed[uint32](
-					snapTableBat.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector(),
-					table.accountID, false, common.DebugAllocator)
-				vector.AppendFixed[uint64](
-					snapTableBat.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector(),
-					table.dbID, false, common.DebugAllocator)
-				vector.AppendFixed[uint64](
-					snapTableBat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
-					table.tid, false, common.DebugAllocator)
-				vector.AppendFixed[types.TS](
-					snapTableBat.GetVectorByName(catalog2.SystemRelAttr_CreateAt).GetDownstreamVector(),
-					table.createAt, false, common.DebugAllocator)
-				vector.AppendFixed[types.TS](
-					snapTableBat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
-					table.deleteAt, false, common.DebugAllocator)
-			}
+			appendBat(bat, table)
 
 			if table.tid == sm.pitr.tid {
-				vector.AppendFixed[uint32](
-					pitrTableBat.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector(),
-					table.accountID, false, common.DebugAllocator)
-				vector.AppendFixed[uint64](
-					pitrTableBat.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector(),
-					table.dbID, false, common.DebugAllocator)
-				vector.AppendFixed[uint64](
-					pitrTableBat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector(),
-					table.tid, false, common.DebugAllocator)
-				vector.AppendFixed[types.TS](
-					pitrTableBat.GetVectorByName(catalog2.SystemRelAttr_CreateAt).GetDownstreamVector(),
-					table.createAt, false, common.DebugAllocator)
-				vector.AppendFixed[types.TS](
-					pitrTableBat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector(),
-					table.deleteAt, false, common.DebugAllocator)
+				appendBat(pitrTableBat, table)
+				continue
+			}
+
+			if _, ok := sm.tides[table.tid]; ok {
+				appendBat(snapTableBat, table)
 			}
 		}
 	}
 	defer bat.Close()
 	defer snapTableBat.Close()
+	defer pitrTableBat.Close()
 	writer, err := objectio.NewObjectWriterSpecial(objectio.WriterGC, name, fs)
 	if err != nil {
 		return 0, err
@@ -941,11 +916,16 @@ func (sm *SnapshotMeta) SaveTableInfo(name string, fs fileservice.FileService) (
 func (sm *SnapshotMeta) RebuildTableInfo(ins *containers.Batch) {
 	sm.Lock()
 	defer sm.Unlock()
-	insTIDs := vector.MustFixedColWithTypeCheck[uint64](ins.GetVectorByName(catalog.SnapshotAttr_TID).GetDownstreamVector())
-	insAccIDs := vector.MustFixedColWithTypeCheck[uint32](ins.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector())
-	insDBIDs := vector.MustFixedColWithTypeCheck[uint64](ins.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector())
-	insCreateTSs := vector.MustFixedColWithTypeCheck[types.TS](ins.GetVectorByName(catalog2.SystemRelAttr_CreateAt).GetDownstreamVector())
-	insDeleteTSs := vector.MustFixedColWithTypeCheck[types.TS](ins.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
+	insTIDs := vector.MustFixedColWithTypeCheck[uint64](
+		ins.GetVectorByName(catalog.SnapshotAttr_TID).GetDownstreamVector())
+	insAccIDs := vector.MustFixedColWithTypeCheck[uint32](
+		ins.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector())
+	insDBIDs := vector.MustFixedColWithTypeCheck[uint64](
+		ins.GetVectorByName(catalog2.SystemRelAttr_DBID).GetDownstreamVector())
+	insCreateTSs := vector.MustFixedColWithTypeCheck[types.TS](
+		ins.GetVectorByName(catalog2.SystemRelAttr_CreateAt).GetDownstreamVector())
+	insDeleteTSs := vector.MustFixedColWithTypeCheck[types.TS](
+		ins.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
 	for i := 0; i < ins.Length(); i++ {
 		tid := insTIDs[i]
 		dbid := insDBIDs[i]
@@ -970,19 +950,22 @@ func (sm *SnapshotMeta) RebuildTableInfo(ins *containers.Batch) {
 func (sm *SnapshotMeta) RebuildTid(ins *containers.Batch) {
 	sm.Lock()
 	defer sm.Unlock()
-	insTIDs := vector.MustFixedColWithTypeCheck[uint64](ins.GetVectorByName(catalog.SnapshotAttr_TID).GetDownstreamVector())
-	accIDs := vector.MustFixedColWithTypeCheck[uint32](ins.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector())
+	insTIDs := vector.MustFixedColWithTypeCheck[uint64](
+		ins.GetVectorByName(catalog.SnapshotAttr_TID).GetDownstreamVector())
+	accIDs := vector.MustFixedColWithTypeCheck[uint32](
+		ins.GetVectorByName(catalog2.SystemColAttr_AccID).GetDownstreamVector())
 	if ins.Length() < 1 {
 		logutil.Warnf("RebuildTid unexpected length %d", ins.Length())
 		return
 	}
-	logutil.Infof("RebuildTid tid %d", insTIDs[0])
 	for i := 0; i < ins.Length(); i++ {
 		tid := insTIDs[i]
 		accid := accIDs[i]
 		if _, ok := sm.tides[tid]; !ok {
 			sm.tides[tid] = struct{}{}
-			logutil.Info("[RebuildSnapshotTid]", zap.Uint64("tid", tid), zap.Uint32("account id", accid))
+			logutil.Info("[RebuildSnapshotTid]",
+				zap.Uint64("tid", tid),
+				zap.Uint32("account id", accid))
 		}
 	}
 }
@@ -990,7 +973,8 @@ func (sm *SnapshotMeta) RebuildTid(ins *containers.Batch) {
 func (sm *SnapshotMeta) RebuildPitr(ins *containers.Batch) {
 	sm.Lock()
 	defer sm.Unlock()
-	insTIDs := vector.MustFixedColWithTypeCheck[uint64](ins.GetVectorByName(catalog.SnapshotAttr_TID).GetDownstreamVector())
+	insTIDs := vector.MustFixedColWithTypeCheck[uint64](
+		ins.GetVectorByName(catalog.SnapshotAttr_TID).GetDownstreamVector())
 	if ins.Length() < 1 {
 		logutil.Warnf("RebuildPitr unexpected length %d", ins.Length())
 		return
@@ -1002,7 +986,11 @@ func (sm *SnapshotMeta) RebuildPitr(ins *containers.Batch) {
 	}
 }
 
-func (sm *SnapshotMeta) Rebuild(ins *containers.Batch, objects *map[uint64]map[objectio.Segmentid]*objectInfo, objects2 *map[objectio.Segmentid]*objectInfo) {
+func (sm *SnapshotMeta) Rebuild(
+	ins *containers.Batch,
+	objects *map[uint64]map[objectio.Segmentid]*objectInfo,
+	objects2 *map[objectio.Segmentid]*objectInfo,
+) {
 	sm.Lock()
 	defer sm.Unlock()
 	insCreateTSs := vector.MustFixedColWithTypeCheck[types.TS](ins.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector())
@@ -1149,7 +1137,11 @@ func (sm *SnapshotMeta) ReadTableInfo(ctx context.Context, name string, fs files
 	return nil
 }
 
-func (sm *SnapshotMeta) InitTableInfo(ctx context.Context, fs fileservice.FileService, data *CheckpointData) {
+func (sm *SnapshotMeta) InitTableInfo(
+	ctx context.Context,
+	fs fileservice.FileService,
+	data *CheckpointData,
+) {
 	sm.Lock()
 	defer sm.Unlock()
 	sm.updateTableInfo(ctx, fs, data)
@@ -1169,7 +1161,10 @@ func (sm *SnapshotMeta) TableInfoString() string {
 	return buf.String()
 }
 
-func (sm *SnapshotMeta) GetSnapshotList(SnapshotList map[uint32][]types.TS, tid uint64) []types.TS {
+func (sm *SnapshotMeta) GetSnapshotList(
+	SnapshotList map[uint32][]types.TS,
+	tid uint64,
+) []types.TS {
 	sm.RLock()
 	defer sm.RUnlock()
 	if sm.acctIndexes[tid] == nil {
@@ -1179,7 +1174,10 @@ func (sm *SnapshotMeta) GetSnapshotList(SnapshotList map[uint32][]types.TS, tid 
 	return SnapshotList[accID]
 }
 
-func (sm *SnapshotMeta) GetSnapshotListLocked(SnapshotList map[uint32][]types.TS, tid uint64) []types.TS {
+func (sm *SnapshotMeta) GetSnapshotListLocked(
+	SnapshotList map[uint32][]types.TS,
+	tid uint64,
+) []types.TS {
 	if isMoTable(tid) || isMoDB(tid) || isMoCol(tid) {
 		allSnapshot := make(map[types.TS]struct{}, 0)
 		snapshotList := make([]types.TS, 0)
@@ -1254,7 +1252,6 @@ func (sm *SnapshotMeta) MergeTableInfo(SnapshotList map[uint32][]types.TS, pitr 
 		if SnapshotList[accID] == nil && pitr.IsEmpty() {
 			for _, table := range tables {
 				if !table.deleteAt.IsEmpty() {
-					logutil.Infof("MergeTableInfo delete table %d", table.tid)
 					delete(sm.tables[accID], table.tid)
 					delete(sm.acctIndexes, table.tid)
 					if sm.objects[table.tid] != nil {
@@ -1266,8 +1263,8 @@ func (sm *SnapshotMeta) MergeTableInfo(SnapshotList map[uint32][]types.TS, pitr 
 		}
 		for _, table := range tables {
 			ts := sm.GetPitrLocked(pitr, table.dbID, table.tid)
-			if !table.deleteAt.IsEmpty() && !isSnapshotRefers(table, SnapshotList[accID], ts) {
-				logutil.Infof("MergeTableInfo delete table %d", table.tid)
+			if !table.deleteAt.IsEmpty() &&
+				!isSnapshotRefers(table, SnapshotList[accID], ts) {
 				delete(sm.tables[accID], table.tid)
 				delete(sm.acctIndexes, table.tid)
 				if sm.objects[table.tid] != nil {
@@ -1289,7 +1286,6 @@ func (sm *SnapshotMeta) String() string {
 func isSnapshotRefers(table *tableInfo, snapVec []types.TS, pitr types.TS) bool {
 	if !pitr.IsEmpty() {
 		if table.deleteAt.Greater(&pitr) {
-			logutil.Infof("isSnapshotRefers: %s, create %v, drop %v, tid %d", pitr.ToString(), table.createAt.ToString(), table.deleteAt.ToString(), table.tid)
 			return true
 		}
 	}
