@@ -748,8 +748,8 @@ func (sm *SnapshotMeta) GetPITR(
 				if level == PitrLevelAccount {
 					id := uint32(account)
 					p := pitr.account[id]
-					if !p.IsEmpty() {
-						panic("account duplicate pitr ")
+					if !p.IsEmpty() && p.Less(&pitrTs) {
+						continue
 					}
 					pitr.account[id] = pitrTs
 				} else if level == PitrLevelDatabase {
