@@ -677,9 +677,8 @@ func (sm *SnapshotMeta) GetPITR(
 	fs fileservice.FileService,
 	mp *mpool.MPool,
 ) (*PitrInfo, error) {
-	idxes := []uint16{ColPitrName, ColPitrLevel, ColPitrObjId, ColPitrLength, ColPitrUnit}
+	idxes := []uint16{ColPitrLevel, ColPitrObjId, ColPitrLength, ColPitrUnit}
 	colTypes := []types.Type{
-		types.New(types.T_varchar, types.MaxVarcharLen, 0),
 		types.New(types.T_varchar, types.MaxVarcharLen, 0),
 		types.New(types.T_int64, 0, 0),
 		types.New(types.T_int64, 0, 0),
@@ -725,12 +724,12 @@ func (sm *SnapshotMeta) GetPITR(
 			if err != nil {
 				return nil, err
 			}
-			objIDList := vector.MustFixedColWithTypeCheck[uint64](bat.Vecs[2])
-			lengList := vector.MustFixedColWithTypeCheck[uint8](bat.Vecs[3])
+			objIDList := vector.MustFixedColWithTypeCheck[uint64](bat.Vecs[1])
+			lengList := vector.MustFixedColWithTypeCheck[uint8](bat.Vecs[2])
 			for r := 0; r < bat.Vecs[0].Length(); r++ {
 				length := lengList[r]
 				leng := int(length)
-				unit := bat.Vecs[4].GetStringAt(r)
+				unit := bat.Vecs[3].GetStringAt(r)
 				var ts time.Time
 				if unit == PitrUnitYear {
 					ts = AddDate(gcTime, 1-leng, 0, 0)
@@ -744,8 +743,8 @@ func (sm *SnapshotMeta) GetPITR(
 					ts = gcTime.Add(-time.Duration(leng) * time.Minute)
 				}
 				pitrTs := types.BuildTS(ts.UnixNano(), 0)
-				account := objIDList[i]
-				level := bat.Vecs[1].GetStringAt(r)
+				account := objIDList[r]
+				level := bat.Vecs[0].GetStringAt(r)
 				if level == PitrLevelAccount {
 					id := uint32(account)
 					p := pitr.account[id]
@@ -761,7 +760,7 @@ func (sm *SnapshotMeta) GetPITR(
 					}
 					pitr.database[id] = pitrTs
 				} else if level == PitrLevelTable {
-					logutil.Infof("[GetPITR] pitr table %d %s, name is %s", account, pitrTs.ToString(), bat.Vecs[0].GetStringAt(r))
+					logutil.Infof("[GetPITR] pitr table %d %s", account, pitrTs.ToString())
 					id := uint64(account)
 					p := pitr.tables[id]
 					if !p.IsEmpty() {
