@@ -760,6 +760,7 @@ func (sm *SnapshotMeta) GetPITR(
 					}
 					pitr.database[id] = pitrTs
 				} else if level == PitrLevelTable {
+					logutil.Infof("[GetPITR] pitr table %d %s", account, pitrTs.ToString())
 					id := uint64(account)
 					p := pitr.tables[id]
 					if !p.IsEmpty() {
