@@ -1143,7 +1143,7 @@ func (sm *SnapshotMeta) ReadTableInfo(ctx context.Context, name string, fs files
 		} else if id == 1 {
 			sm.RebuildTid(bat)
 		} else if id == 2 {
-			sm.RebuildTableInfo(bat)
+			sm.RebuildPitr(bat)
 		}
 	}
 	return nil
@@ -1288,7 +1288,7 @@ func (sm *SnapshotMeta) String() string {
 
 func isSnapshotRefers(table *tableInfo, snapVec []types.TS, pitr types.TS) bool {
 	if !pitr.IsEmpty() {
-		if table.deleteAt.Less(&pitr) {
+		if table.deleteAt.Greater(&pitr) {
 			logutil.Infof("isSnapshotRefers: %s, create %v, drop %v, tid %d", pitr.ToString(), table.createAt.ToString(), table.deleteAt.ToString(), table.tid)
 			return true
 		}
