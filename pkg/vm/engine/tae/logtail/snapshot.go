@@ -730,7 +730,7 @@ func (sm *SnapshotMeta) GetPITR(
 			for r := 0; r < bat.Vecs[0].Length(); r++ {
 				length := lengList[r]
 				leng := int(length)
-				unit := bat.Vecs[3].GetStringAt(r)
+				unit := bat.Vecs[4].GetStringAt(r)
 				var ts time.Time
 				if unit == PitrUnitYear {
 					ts = AddDate(gcTime, 1-leng, 0, 0)
