@@ -557,7 +557,7 @@ func (c *checkpointCleaner) getDeleteFile(
 				logutil.Info("[MergeCheckpoint]",
 					common.OperationField("isSnapshotCKPRefers"),
 					common.OperandField(ckp.String()))
-				mergeFiles = ckps[:i+1]
+				mergeFiles = ckps[:i+2]
 				break
 			}
 			logutil.Info("[MergeCheckpoint]",

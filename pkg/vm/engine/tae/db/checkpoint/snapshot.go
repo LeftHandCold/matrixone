@@ -220,7 +220,7 @@ func ListSnapshotCheckpointWithMeta(
 
 		if entries[i].end.Equal(&maxGlobalEnd) &&
 			entries[i].entryType == ET_Global {
-			return entries[i:], nil
+			return entries[i+1:], nil
 		}
 
 	}
