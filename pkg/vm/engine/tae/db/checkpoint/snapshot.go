@@ -43,6 +43,7 @@ func AllAfterAndGCheckpoint(snapshot types.TS, files []*MetaFile) ([]*MetaFile, 
 		if snapshot.LessEq(&file.end) &&
 			snapshot.Less(&prev.end) &&
 			file.start.IsEmpty() {
+			logutil.Infof("snapshot: %v, file: %v, prev: %v i %d", snapshot.ToString(), file.name, prev.name, i)
 			return files, i, nil
 		}
 		prev = file
