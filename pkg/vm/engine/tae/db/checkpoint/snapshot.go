@@ -225,7 +225,7 @@ func ListSnapshotCheckpointWithMeta(
 		if entries[i].end.Equal(&maxGlobalEnd) &&
 			entries[i].entryType == ET_Global {
 			logutil.Infof("ListSnapshotCheckpointWithMeta: %v, %d, %d", files[idx].name, idx, len(entries[i+1:]))
-			return entries[i+1:], nil
+			return entries[i:], nil
 		}
 
 	}
