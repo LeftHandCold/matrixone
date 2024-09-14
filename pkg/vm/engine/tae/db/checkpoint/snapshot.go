@@ -209,7 +209,6 @@ func ListSnapshotCheckpointWithMeta(
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].end.Less(&entries[j].end)
 	})
-	logutil.Infof("ListSnapshotCheckpointWithMeta: %v, %d, %d", files[idx].name, idx, len(entries))
 	if isAll && gcStage.IsEmpty() {
 		logutil.Infof("len of entries: %d", len(entries))
 		return entries, nil
@@ -224,7 +223,6 @@ func ListSnapshotCheckpointWithMeta(
 
 		if entries[i].end.Equal(&maxGlobalEnd) &&
 			entries[i].entryType == ET_Global {
-			logutil.Infof("ListSnapshotCheckpointWithMeta: %v, %d, %d", files[idx].name, idx, len(entries[i+1:]))
 			return entries[i:], nil
 		}
 
