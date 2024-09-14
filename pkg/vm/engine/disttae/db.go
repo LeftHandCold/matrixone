@@ -296,7 +296,7 @@ func (e *Engine) getOrCreateSnapPart(
 	ckps, err := checkpoint.ListSnapshotCheckpoint(ctx, e.service, e.fs, ts, tbl.tableId, nil)
 
 	for i := range ckps {
-		logutil.Infof("checkpoint %v", ckps[i].String())
+		logutil.Infof("ListSnapshotCheckpoint checkpoint %v", ckps[i].String())
 	}
 	if err != nil {
 		return nil, err
