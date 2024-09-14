@@ -47,7 +47,7 @@ func AllAfterAndGCheckpoint(snapshot types.TS, files []*MetaFile) ([]*MetaFile, 
 		}
 		prev = file
 	}
-	return files, len(files), nil
+	return files, len(files) - 1, nil
 }
 
 func ListSnapshotCheckpoint(
