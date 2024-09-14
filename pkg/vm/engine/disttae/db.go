@@ -294,7 +294,7 @@ func (e *Engine) getOrCreateSnapPart(
 	//TODO::if tableId is mo_tables, or mo_colunms, or mo_database,
 	//      we should init the partition,ref to engine.init
 	ckps, err := checkpoint.ListSnapshotCheckpoint(ctx, e.service, e.fs, ts, tbl.tableId, nil)
-
+	logutil.Infof("ListSnapshotCheckpoint tableId %v", tbl.tableId)
 	for i := range ckps {
 		logutil.Infof("ListSnapshotCheckpoint checkpoint %v", ckps[i].String())
 	}
