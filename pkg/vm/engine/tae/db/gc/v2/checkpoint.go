@@ -560,12 +560,17 @@ func (c *checkpointCleaner) getDeleteFile(
 				num := i + 2
 				if num > len(ckps)-1 {
 					ts2 := ckps[len(ckps)-1].GetEnd()
+					files, _, idx, err = checkpoint.ListSnapshotMetaWithDiskCleaner(ts2.Next(), nil, c.GetCheckpoints())
+					if err != nil {
+						logutil.Infof("[MergeCheckpoint] ListSnapshotMetaWithDiskCleaner failed: %v", err.Error())
+						return nil, nil, err
+					}
 					ckps2, err := checkpoint.ListSnapshotCheckpointWithMeta(ctx, c.sid, fs, files, idx, ts2.Next(), true)
 					if err != nil {
 						return nil, nil, err
 					}
 					mergeFiles = ckps[:i+1]
-					logutil.Infof("[MergeCheckpoint] getDeleteFile: %v", ckps2[0].String())
+					logutil.Infof("[MergeCheckpoint] getDeleteFile: %v, %v", ckps2[0].String(), ckps2)
 					mergeFiles = append(mergeFiles, ckps2[0])
 				} else {
 					mergeFiles = ckps[:num]
