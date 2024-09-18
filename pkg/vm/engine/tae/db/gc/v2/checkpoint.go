@@ -558,6 +558,9 @@ func (c *checkpointCleaner) getDeleteFile(
 					common.OperationField("isSnapshotCKPRefers"),
 					common.OperandField(ckp.String()))
 				mergeFiles = ckps[:i+2]
+				if len(deleteFiles) > 0 {
+					deleteFiles = deleteFiles[:len(deleteFiles)-1]
+				}
 				break
 			}
 			logutil.Info("[MergeCheckpoint]",
@@ -629,13 +632,13 @@ func (c *checkpointCleaner) mergeCheckpointFiles(stage types.TS, snapshotList ma
 			common.OperationField("MergeCheckpointFiles"),
 			common.OperandField(stage.ToString()),
 			common.OperandField(idx))
-		delFiles, mergeFile, err := c.getDeleteFile(c.ctx, c.fs.Service, files, idx, *ckpGC, stage, ckpSnapList)
+		delFiles, _, err := c.getDeleteFile(c.ctx, c.fs.Service, files, idx, *ckpGC, stage, ckpSnapList)
 		if err != nil {
 			return err
 		}
 		ckpGC = new(types.TS)
 		deleteFiles = append(deleteFiles, delFiles...)
-		var newName string
+		/*var newName string
 		delFiles, newName, err = MergeCheckpoint(c.ctx, c.sid, c.fs.Service, mergeFile, c.GetInputs(), c.mPool)
 		if err != nil {
 			return err
@@ -643,7 +646,7 @@ func (c *checkpointCleaner) mergeCheckpointFiles(stage types.TS, snapshotList ma
 		if newName != "" {
 			c.ckpClient.AddCheckpointMetaFile(newName)
 		}
-		deleteFiles = append(deleteFiles, delFiles...)
+		deleteFiles = append(deleteFiles, delFiles...)*/
 	}
 
 	logutil.Info("[MergeCheckpoint]",
