@@ -224,10 +224,10 @@ func ListSnapshotCheckpointWithMeta(
 			logutil.Infof("gcStage not empty: %v, entry %v, max %v", gcStage.ToString(), entries[i].end.ToString(), maxGlobalEnd.ToString())
 			return entries[i:], nil
 		}
-
-		if entries[i].end.Equal(&maxGlobalEnd) &&
-			entries[i].entryType == ET_Global {
-			logutil.Infof("maxGlobalEnd: %v", maxGlobalEnd.ToString())
+		p := maxGlobalEnd.Prev()
+		if entries[i].end.Equal(&p) || (entries[i].end.Equal(&maxGlobalEnd) &&
+			entries[i].entryType == ET_Global) {
+			logutil.Infof("maxGlobalEnd: %v, is %v", maxGlobalEnd.ToString(), entries[i].String())
 			return entries[i:], nil
 		}
 
