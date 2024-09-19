@@ -708,6 +708,7 @@ func (data *CNCheckpointData) ReadFromData(
 			if err != nil {
 				return
 			}
+			logutil.Infof("load block %d from %s, bat is %v", block.GetID(), block.GetLocation(), bat.String())
 			defer bat.Clean(m)
 			if block.GetEndOffset() == 0 {
 				continue
