@@ -556,12 +556,10 @@ func LoadCheckpointEntries(
 
 	entries := make([]*api.Entry, 0)
 	for i := range objectLocations {
-		logutil.Infof("[yyyy pull] table2 %s: %d, ckp:%v", dbName, len(datas), locations[i].String())
 		if shouldSkip(i) {
 			continue
 		}
 		data := datas[i]
-		logutil.Infof("[yyyy pull] table %s: %d, ckp:%v, i %d", dbName, len(dataBats[i]), objectLocations[i].String(), i)
 		ins, del, dataObj, tombstoneObj, err := data.GetTableDataFromBats(tableID, dataBats[i])
 		if err != nil {
 			for j := range closeCBs {
