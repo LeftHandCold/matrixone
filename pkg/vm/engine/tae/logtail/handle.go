@@ -458,6 +458,7 @@ func LoadCheckpointEntries(
 		if err != nil {
 			return nil, nil, err
 		}
+		logutil.Infof("[yyyy pull] load checkpoint %s %s %d", sid, location.String(), version)
 		locations[i/2] = location
 		reader, err := blockio.NewObjectReader(sid, fs, location)
 		if err != nil {
