@@ -747,6 +747,7 @@ func (data *CNCheckpointData) GetTableDataFromBats(tid uint64, bats []*batch.Bat
 		return
 	}
 	dataObjectTaeBat = bats[DataObject]
+	logutil.Infof("dataObjectTaeBat: %v", dataObjectTaeBat.String())
 	if dataObjectTaeBat != nil {
 		dataObject, err = batch.BatchToProtoBatch(dataObjectTaeBat)
 		if err != nil {
