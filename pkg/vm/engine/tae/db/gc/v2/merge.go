@@ -104,12 +104,12 @@ func MergeCheckpoint(
 
 	mergePool := dbutils.MakeDefaultSmallPool("merge-checkpoint-pool")
 	defer mergePool.Destory()
-	_, err := mergesort.SortBlockColumns(ckpData.GetObjectBatchs().Vecs, 2, mergePool)
+	_, err := mergesort.SortBlockColumns(ckpData.GetObjectBatchs().Vecs, 4, mergePool)
 	if err != nil {
 		return nil, "", err
 	}
 
-	_, err = mergesort.SortBlockColumns(ckpData.GetTombstoneObjectBatchs().Vecs, 2, mergePool)
+	_, err = mergesort.SortBlockColumns(ckpData.GetTombstoneObjectBatchs().Vecs, 4, mergePool)
 	if err != nil {
 		return nil, "", err
 	}
