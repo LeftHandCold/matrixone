@@ -16,6 +16,7 @@ package v2
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -91,12 +92,19 @@ func MergeCheckpoint(
 			logutil.Infof("merge object %v tid is %d", objectStats.ObjectName().String(), tid)
 			appendValToBatch(ins, ckpData.GetObjectBatchs(), i)
 		}
+		createTs := vector.MustFixedColWithTypeCheck[types.TS](tombstone.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector())
+		dropTs := vector.MustFixedColWithTypeCheck[types.TS](tombstone.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
 		for i := 0; i < tombstone.Length(); i++ {
 			var objectStats objectio.ObjectStats
 			buf := tombstone.GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
 			objectStats.UnMarshal(buf)
 			if tombstones[objectStats.ObjectName().String()] == nil {
 				continue
+			}
+			if objectStats.ObjectName().String() == "019204e9-e202-75b7-b9f9-27703f7b816b_00000" {
+				create := createTs[i]
+				drop := dropTs[i]
+				logutil.Infof("merge tombstone %v create %v drop %v", objectStats.ObjectName().String(), create.ToString(), drop.ToString())
 			}
 			appendValToBatch(tombstone, ckpData.GetTombstoneObjectBatchs(), i)
 		}
