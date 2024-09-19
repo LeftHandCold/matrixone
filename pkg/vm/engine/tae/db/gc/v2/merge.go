@@ -82,7 +82,7 @@ func MergeCheckpoint(
 			if objects[objectStats.ObjectName().String()] == nil {
 				continue
 			}
-			tid := ins.GetVectorByName(catalog.SnapshotAttr_TID).Get(i).(int64)
+			tid := ins.GetVectorByName(catalog.SnapshotAttr_TID).Get(i).(uint64)
 			logutil.Infof("merge object %v tid is %d", objectStats.ObjectName().String(), tid)
 			appendValToBatch(ins, ckpData.GetObjectBatchs(), i)
 		}
