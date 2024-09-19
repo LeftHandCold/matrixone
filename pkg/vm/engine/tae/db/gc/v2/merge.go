@@ -43,7 +43,13 @@ func MergeCheckpoint(
 	ckpData := logtail.NewCheckpointData(sid, pool)
 	datas := make([]*logtail.CheckpointData, 0)
 	deleteFiles := make([]string, 0)
-	for _, ckpEntry := range ckpEntries {
+	isRange := false
+	for i, ckpEntry := range ckpEntries {
+		start := ckpEntry.GetStart()
+		if i > 0 && start.IsEmpty() {
+			isRange = true
+			continue
+		}
 		logutil.Infof("merge checkpoint %v", ckpEntry.String())
 		_, data, err := logtail.LoadCheckpointEntriesFromKey(context.Background(), sid, fs,
 			ckpEntry.GetLocation(), ckpEntry.GetVersion(), nil, &types.TS{})
@@ -51,6 +57,9 @@ func MergeCheckpoint(
 			return nil, "", err
 		}
 		datas = append(datas, data)
+		if isRange {
+			continue
+		}
 		nameMeta := blockio.EncodeCheckpointMetadataFileName(
 			checkpoint.CheckpointDir, checkpoint.PrefixMetadata,
 			ckpEntry.GetStart(), ckpEntry.GetEnd())

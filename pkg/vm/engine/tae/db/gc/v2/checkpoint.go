@@ -571,6 +571,7 @@ func (c *checkpointCleaner) getDeleteFile(
 					}
 					mergeFiles = ckps[:i+1]
 					logutil.Infof("[MergeCheckpoint] getDeleteFile: %v, %v", ckps2[1].String(), ckps2)
+					mergeFiles = append(mergeFiles, ckps2[0])
 					mergeFiles = append(mergeFiles, ckps2[1])
 				} else {
 					mergeFiles = ckps[:num]
