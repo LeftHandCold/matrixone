@@ -560,6 +560,7 @@ func LoadCheckpointEntries(
 			continue
 		}
 		data := datas[i]
+		logutil.Infof("[yyyy pull] table %s: %d, ckp:%v, i %d", dbName, len(dataBats[i]), objectLocations[i].String(), i)
 		ins, del, dataObj, tombstoneObj, err := data.GetTableDataFromBats(tableID, dataBats[i])
 		if err != nil {
 			for j := range closeCBs {
