@@ -308,6 +308,7 @@ func (e *Engine) getOrCreateSnapPart(
 		locs = append(locs, checkpoint.GetLocation().String())
 		locs = append(locs, strconv.Itoa(int(checkpoint.GetVersion())))
 		locations := strings.Join(locs, ";")
+		logutil.Infof("ConsumeSnapCkps tableId %v, locations %v", tbl.tableId, checkpoint.GetLocation().String())
 		entries, closeCBs, err := logtail.LoadCheckpointEntries(
 			ctx,
 			e.service,
