@@ -16,7 +16,6 @@ package v2
 
 import (
 	"context"
-	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 
@@ -90,12 +89,8 @@ func MergeCheckpoint(
 			if objects[objectStats.ObjectName().String()] == nil {
 				continue
 			}
-			tid := ins.GetVectorByName(catalog.SnapshotAttr_TID).Get(i).(uint64)
-			logutil.Infof("merge object %v tid is %d", objectStats.ObjectName().String(), tid)
 			appendValToBatch(ins, ckpData.GetObjectBatchs(), i)
 		}
-		createTs := vector.MustFixedColWithTypeCheck[types.TS](tombstone.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector())
-		dropTs := vector.MustFixedColWithTypeCheck[types.TS](tombstone.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
 		for i := 0; i < tombstone.Length(); i++ {
 			var objectStats objectio.ObjectStats
 			buf := tombstone.GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
