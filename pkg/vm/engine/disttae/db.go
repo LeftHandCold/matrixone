@@ -330,7 +330,7 @@ func (e *Engine) getOrCreateSnapPart(
 			}
 		}()
 		for _, entry := range entries {
-			entry.String()
+			logutil.Infof("ConsumeSnapCkps tableId %v, entry %v", tbl.tableId, entry.String())
 			if err = consumeEntry(
 				ctx,
 				tbl.primarySeqnum,
