@@ -30,6 +30,11 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 )
 
+type tableOffset struct {
+	offset int
+	end    int
+}
+
 func MergeCheckpoint(
 	ctx context.Context,
 	sid string,
@@ -95,6 +100,36 @@ func MergeCheckpoint(
 			}
 			appendValToBatch(tombstone, ckpData.GetTombstoneObjectBatchs(), i)
 		}
+	}
+
+	tableInsertOff := make(map[uint64]*tableOffset)
+	tableTombstoneOff := make(map[uint64]*tableOffset)
+	for i := 0; i < ckpData.GetObjectBatchs().Vecs[0].Length(); i++ {
+		tid := ckpData.GetObjectBatchs().GetVectorByName(catalog.SnapshotAttr_TID).Get(i).(uint64)
+		if tableInsertOff[tid] == nil {
+			tableInsertOff[tid] = &tableOffset{
+				offset: i,
+				end:    i,
+			}
+		}
+		tableInsertOff[tid].end += 1
+	}
+	for i := 0; i < ckpData.GetTombstoneObjectBatchs().Vecs[0].Length(); i++ {
+		tid := ckpData.GetTombstoneObjectBatchs().GetVectorByName(catalog.SnapshotAttr_TID).Get(i).(uint64)
+		if tableTombstoneOff[tid] == nil {
+			tableTombstoneOff[tid] = &tableOffset{
+				offset: i,
+				end:    i,
+			}
+		}
+		tableTombstoneOff[tid].end += 1
+	}
+
+	for tid, table := range tableInsertOff {
+		ckpData.UpdateObjectInsertMeta(tid, int32(table.offset), int32(table.end))
+	}
+	for tid, table := range tableTombstoneOff {
+		ckpData.UpdateTombstoneInsertMeta(tid, int32(table.offset), int32(table.end))
 	}
 	cnLocation, tnLocation, _, err := ckpData.WriteTo(
 		fs, logtail.DefaultCheckpointBlockRows, logtail.DefaultCheckpointSize,
