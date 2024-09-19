@@ -17,6 +17,8 @@ package v2
 import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -101,21 +103,30 @@ func MergeCheckpoint(
 			if tombstones[objectStats.ObjectName().String()] == nil {
 				continue
 			}
-			tid := ins.GetVectorByName(catalog.SnapshotAttr_TID).Get(i).(uint64)
-			logutil.Infof("merge object %v tid is %d", objectStats.ObjectName().String(), tid)
-			if objectStats.ObjectName().String() == "019204e9-e202-75b7-b9f9-27703f7b816b_00000" {
-				create := createTs[i]
-				drop := dropTs[i]
-				logutil.Infof("merge tombstone %v create %v drop %v", objectStats.ObjectName().String(), create.ToString(), drop.ToString())
-			}
 			appendValToBatch(tombstone, ckpData.GetTombstoneObjectBatchs(), i)
 		}
+	}
+
+	mergePool := dbutils.MakeDefaultSmallPool("merge-checkpoint-pool")
+	defer mergePool.Destory()
+	_, err := mergesort.SortBlockColumns(ckpData.GetObjectBatchs().Vecs, 2, mergePool)
+	if err != nil {
+		return nil, "", err
+	}
+
+	_, err = mergesort.SortBlockColumns(ckpData.GetTombstoneObjectBatchs().Vecs, 2, mergePool)
+	if err != nil {
+		return nil, "", err
 	}
 
 	tableInsertOff := make(map[uint64]*tableOffset)
 	tableTombstoneOff := make(map[uint64]*tableOffset)
 	for i := 0; i < ckpData.GetObjectBatchs().Vecs[0].Length(); i++ {
+		var objectStats objectio.ObjectStats
+		buf := ckpData.GetObjectBatchs().GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
+		objectStats.UnMarshal(buf)
 		tid := ckpData.GetObjectBatchs().GetVectorByName(catalog.SnapshotAttr_TID).Get(i).(uint64)
+		logutil.Infof("merge object %v tid is %d", objectStats.ObjectName().String(), tid)
 		if tableInsertOff[tid] == nil {
 			tableInsertOff[tid] = &tableOffset{
 				offset: i,
@@ -125,7 +136,11 @@ func MergeCheckpoint(
 		tableInsertOff[tid].end += 1
 	}
 	for i := 0; i < ckpData.GetTombstoneObjectBatchs().Vecs[0].Length(); i++ {
+		var objectStats objectio.ObjectStats
+		buf := ckpData.GetTombstoneObjectBatchs().GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
+		objectStats.UnMarshal(buf)
 		tid := ckpData.GetTombstoneObjectBatchs().GetVectorByName(catalog.SnapshotAttr_TID).Get(i).(uint64)
+		logutil.Infof("merge tombstone %v tid is %d", objectStats.ObjectName().String(), tid)
 		if tableTombstoneOff[tid] == nil {
 			tableTombstoneOff[tid] = &tableOffset{
 				offset: i,
