@@ -21,8 +21,29 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 )
+
+type FlowOption func(*InsertFlow)
+
+func WithAllMergeSorte() FlowOption {
+	return func(flow *InsertFlow) {
+		flow.config.allMergeSorted = true
+	}
+}
+
+func WithDedupAll() FlowOption {
+	return func(flow *InsertFlow) {
+		flow.config.dedupAll = true
+	}
+}
+
+func WithMemorySizeThreshold(size int) FlowOption {
+	return func(flow *InsertFlow) {
+		flow.staged.memorySizeThreshold = size
+	}
+}
 
 type FileSinker interface {
 	Sink(context.Context, *batch.Batch) error
@@ -31,23 +52,31 @@ type FileSinker interface {
 	Close() error
 }
 
-var TODOMergeSortFunc func([]*batch.Batch, int, *batch.Batch, *mpool.MPool) error
-
 func ConsructInsertFlow(
 	mp *mpool.MPool,
 	fs fileservice.FileService,
 	loadNextBatch func(context.Context, *batch.Batch, *mpool.MPool) (bool, error),
+	opts ...FlowOption,
 ) *InsertFlow {
-	return &InsertFlow{
+	flow := &InsertFlow{
 		loadNextBatch: loadNextBatch,
 		mp:            mp,
 		fs:            fs,
 	}
+	for _, opt := range opts {
+		opt(flow)
+	}
+	flow.fillDefaults()
+	return flow
 }
 
 type InsertFlow struct {
 	loadNextBatch func(context.Context, *batch.Batch, *mpool.MPool) (bool, error)
-	staged        struct {
+	config        struct {
+		allMergeSorted bool
+		dedupAll       bool
+	}
+	staged struct {
 		inMemory            []*batch.Batch
 		persisted           []*objectio.ObjectStats
 		inMemorySize        int
@@ -58,6 +87,12 @@ type InsertFlow struct {
 	buffers []*batch.Batch
 	mp      *mpool.MPool
 	fs      fileservice.FileService
+}
+
+func (flow *InsertFlow) fillDefaults() {
+	if flow.staged.memorySizeThreshold == 0 {
+		flow.staged.memorySizeThreshold = DefaultInMemoryStagedSize
+	}
 }
 
 func (flow *InsertFlow) fetchBuffer() *batch.Batch {
@@ -87,35 +122,64 @@ func (flow *InsertFlow) stageData(
 	return nil
 }
 
+func (flow *InsertFlow) cleanupInMemoryStaged() {
+	for i, bat := range flow.staged.inMemory {
+		flow.putbackBuffer(bat)
+		flow.staged.inMemory[i] = nil
+	}
+	flow.staged.inMemory = flow.staged.inMemory[:0]
+	flow.staged.inMemorySize = 0
+}
+
 func (flow *InsertFlow) trySpill(ctx context.Context) error {
+	var sorted []*batch.Batch
 	sinker := func(data *batch.Batch) error {
+		oneSorted := flow.fetchBuffer()
+		_, err := oneSorted.AppendWithCopy(ctx, flow.mp, data)
+		if err != nil {
+			flow.putbackBuffer(oneSorted)
+			return err
+		}
+		sorted = append(sorted, oneSorted)
 		return nil
 	}
+
+	defer func() {
+		for i, bat := range sorted {
+			flow.putbackBuffer(bat)
+			sorted[i] = nil
+		}
+		sorted = sorted[:0]
+	}()
 
 	// 1. merge sort
 	buffer := flow.fetchBuffer() // note the lifecycle of buffer
 	defer flow.putbackBuffer(buffer)
-	if err := TODOMergeSortFunc(
+	if err := colexec.MergeSortBatches(
 		flow.staged.inMemory,
 		0,
 		buffer,
+		sinker,
 		flow.mp,
 	); err != nil {
 		return err
 	}
 
-	// 2. dedup
+	// 2. cleanup the in-memory data
+	flow.cleanupInMemoryStaged()
+
+	// 3. dedup
 	if err := DedupSortedBatches(
 		0,
-		flow.staged.inMemory,
+		sorted,
 	); err != nil {
 		return err
 	}
 
-	// 3. spill
+	// 4. spill
 	fSinker := flow.getStageFileSinker()
 	defer flow.putStageFileSinker(fSinker)
-	for _, bat := range flow.staged.inMemory {
+	for _, bat := range sorted {
 		if err := fSinker.Sink(ctx, bat); err != nil {
 			return err
 		}
@@ -126,15 +190,6 @@ func (flow *InsertFlow) trySpill(ctx context.Context) error {
 	}
 
 	flow.staged.persisted = append(flow.staged.persisted, &stats)
-
-	// put back the in-memory data to the buffer pool
-	// and reset the in-memory data
-	for i, bat := range flow.staged.inMemory {
-		flow.putbackBuffer(bat)
-		flow.staged.inMemory[i] = nil
-	}
-	flow.staged.inMemory = flow.staged.inMemory[:0]
-	flow.staged.inMemorySize = 0
 }
 
 func (flow *InsertFlow) putStageFileSinker(sinker FileSinker) {
@@ -194,6 +249,11 @@ func (flow *InsertFlow) doneAllBatches(ctx context.Context) error {
 		flow.results = append(flow.results, flow.staged.persisted[0])
 	}
 
+	if !flow.config.allMergeSorted && !flow.config.dedupAll {
+		flow.results = append(flow.results, flow.staged.persisted...)
+		return nil
+	}
+	panic("not implemented")
 	// TODO: merge the files and dedup
 	// newPersied, err := MergeSortedFilesAndDedup(flow.staged.persisted)
 	// if err != nil {
@@ -204,6 +264,17 @@ func (flow *InsertFlow) doneAllBatches(ctx context.Context) error {
 }
 
 func (flow *InsertFlow) Close() error {
-	// TODO
+	flow.cleanupInMemoryStaged()
+	for i, bat := range flow.buffers {
+		bat.Clean(flow.mp)
+		flow.buffers[i] = nil
+	}
+	flow.buffers = nil
+	flow.results = nil
+	flow.staged.persisted = nil
+	flow.staged.sinker.Close()
+	flow.staged.sinker = nil
+	flow.mp = nil
+	flow.fs = nil
 	return nil
 }
