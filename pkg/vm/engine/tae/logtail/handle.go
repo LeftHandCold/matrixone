@@ -556,6 +556,7 @@ func LoadCheckpointEntries(
 
 	entries := make([]*api.Entry, 0)
 	for i := range objectLocations {
+		logutil.Infof("[yyyy pull] table2 %s: %d, ckp:%v", dbName, len(datas), locations[i].String())
 		if shouldSkip(i) {
 			continue
 		}
