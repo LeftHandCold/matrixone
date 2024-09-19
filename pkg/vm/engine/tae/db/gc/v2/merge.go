@@ -101,6 +101,8 @@ func MergeCheckpoint(
 			if tombstones[objectStats.ObjectName().String()] == nil {
 				continue
 			}
+			tid := ins.GetVectorByName(catalog.SnapshotAttr_TID).Get(i).(uint64)
+			logutil.Infof("merge object %v tid is %d", objectStats.ObjectName().String(), tid)
 			if objectStats.ObjectName().String() == "019204e9-e202-75b7-b9f9-27703f7b816b_00000" {
 				create := createTs[i]
 				drop := dropTs[i]
