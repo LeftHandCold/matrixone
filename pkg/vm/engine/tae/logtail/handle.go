@@ -493,9 +493,11 @@ func LoadCheckpointEntries(
 	}
 
 	for i := range datas {
+		logutil.Infof("[yyyy pull] table %s: %d, ckp:%v", dbName, len(datas), locations[i].String())
 		if shouldSkip(i) {
 			continue
 		}
+		logutil.Infof("[yyyy pull] InitMetaIdx %s: %d, ckp:%v", dbName, len(datas), locations[i].String())
 		err := datas[i].InitMetaIdx(ctx, versions[i], readers[i], locations[i], mp)
 		if err != nil {
 			return nil, nil, err
