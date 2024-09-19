@@ -82,6 +82,8 @@ func MergeCheckpoint(
 			if objects[objectStats.ObjectName().String()] == nil {
 				continue
 			}
+			tid := ins.GetVectorByName(catalog.SnapshotAttr_TID).Get(i).(int64)
+			logutil.Infof("merge object %v tid is %d", objectStats.ObjectName().String(), tid)
 			appendValToBatch(ins, ckpData.GetObjectBatchs(), i)
 		}
 		for i := 0; i < tombstone.Length(); i++ {
