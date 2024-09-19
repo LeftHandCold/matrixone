@@ -157,7 +157,10 @@ func MergeCheckpoint(
 	if err != nil {
 		return nil, "", err
 	}
-	end := ckpEntries[idx-1].GetEnd()
+	end := ckpEntries[len(ckpEntries)-1].GetEnd()
+	if idx > 0 {
+		end = ckpEntries[idx-1].GetEnd()
+	}
 	bat := makeBatchFromSchema(checkpoint.CheckpointSchema)
 	bat.GetVectorByName(checkpoint.CheckpointAttr_StartTS).Append(ckpEntries[0].GetEnd(), false)
 	bat.GetVectorByName(checkpoint.CheckpointAttr_EndTS).Append(end, false)
