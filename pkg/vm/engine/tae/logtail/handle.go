@@ -569,6 +569,7 @@ func LoadCheckpointEntries(
 			}
 			return nil, nil, err
 		}
+		logutil.Infof("[yyyy pull] table %s: %d, ckp:%v", dbName, len(dataBats), objectLocations[i].String())
 		tableName := fmt.Sprintf("_%d_meta", tableID)
 		if ins != nil {
 			entry := &api.Entry{
