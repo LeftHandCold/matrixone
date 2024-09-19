@@ -44,10 +44,12 @@ func MergeCheckpoint(
 	datas := make([]*logtail.CheckpointData, 0)
 	deleteFiles := make([]string, 0)
 	isRange := false
+	idx := 0
 	for i, ckpEntry := range ckpEntries {
 		start := ckpEntry.GetStart()
 		if i > 0 && start.IsEmpty() {
 			isRange = true
+			idx = i
 			continue
 		}
 		logutil.Infof("merge checkpoint %v", ckpEntry.String())
@@ -98,7 +100,7 @@ func MergeCheckpoint(
 	if err != nil {
 		return nil, "", err
 	}
-	end := ckpEntries[len(ckpEntries)-1].GetEnd()
+	end := ckpEntries[idx-1].GetEnd()
 	bat := makeBatchFromSchema(checkpoint.CheckpointSchema)
 	bat.GetVectorByName(checkpoint.CheckpointAttr_StartTS).Append(ckpEntries[0].GetEnd(), false)
 	bat.GetVectorByName(checkpoint.CheckpointAttr_EndTS).Append(end.Next(), false)
