@@ -50,15 +50,7 @@ func MergeCheckpoint(
 	ckpData := logtail.NewCheckpointData(sid, pool)
 	datas := make([]*logtail.CheckpointData, 0)
 	deleteFiles := make([]string, 0)
-	isRange := false
-	idx := 0
-	for i, ckpEntry := range ckpEntries {
-		start := ckpEntry.GetStart()
-		if i > 0 && start.IsEmpty() {
-			isRange = true
-			idx = i
-			continue
-		}
+	for _, ckpEntry := range ckpEntries {
 		logutil.Infof("merge checkpoint %v", ckpEntry.String())
 		_, data, err := logtail.LoadCheckpointEntriesFromKey(context.Background(), sid, fs,
 			ckpEntry.GetLocation(), ckpEntry.GetVersion(), nil, &types.TS{})
@@ -66,9 +58,6 @@ func MergeCheckpoint(
 			return nil, "", err
 		}
 		datas = append(datas, data)
-		if isRange {
-			continue
-		}
 		nameMeta := blockio.EncodeCheckpointMetadataFileName(
 			checkpoint.CheckpointDir, checkpoint.PrefixMetadata,
 			ckpEntry.GetStart(), ckpEntry.GetEnd())
@@ -158,9 +147,6 @@ func MergeCheckpoint(
 		return nil, "", err
 	}
 	end := ckpEntries[len(ckpEntries)-1].GetEnd()
-	if idx > 0 {
-		end = ckpEntries[idx-1].GetEnd()
-	}
 	bat := makeBatchFromSchema(checkpoint.CheckpointSchema)
 	bat.GetVectorByName(checkpoint.CheckpointAttr_StartTS).Append(ckpEntries[0].GetEnd(), false)
 	bat.GetVectorByName(checkpoint.CheckpointAttr_EndTS).Append(end, false)
