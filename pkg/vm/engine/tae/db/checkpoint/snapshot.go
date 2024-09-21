@@ -41,8 +41,12 @@ func AllAfterAndGCheckpoint(snapshot types.TS, files []*MetaFile) ([]*MetaFile, 
 	prev := &MetaFile{}
 	for i, file := range files {
 		if snapshot.LessEq(&file.end) &&
-			snapshot.Less(&prev.end) &&
+			(prev.end.IsEmpty() || snapshot.Less(&prev.end)) &&
 			file.start.IsEmpty() {
+			logutil.Infof("snapshot: %v, file: %v, prev: %v i %d", snapshot.ToString(), file.name, prev.name, i)
+			if prev.end.IsEmpty() {
+				return files, i, nil
+			}
 			return files, i - 1, nil
 		}
 		prev = file
@@ -162,6 +166,7 @@ func ListSnapshotCheckpointWithMeta(
 	gcStage types.TS,
 	isAll bool,
 ) ([]*CheckpointEntry, error) {
+	logutil.Infof("ListSnapshotCheckpointWithMeta: %v, %d", files[idx].name, idx)
 	reader, err := blockio.NewFileReader(sid, fs, CheckpointDir+files[idx].name)
 	if err != nil {
 		return nil, nil
@@ -208,6 +213,7 @@ func ListSnapshotCheckpointWithMeta(
 		return entries[i].end.Less(&entries[j].end)
 	})
 	if isAll && gcStage.IsEmpty() {
+		logutil.Infof("len of entries: %d", len(entries))
 		return entries, nil
 	}
 	for i := range entries {
@@ -215,12 +221,14 @@ func ListSnapshotCheckpointWithMeta(
 			if entries[i].end.Less(&gcStage) {
 				continue
 			}
+			logutil.Infof("gcStage not empty: %v, entry %v, max %v", gcStage.ToString(), entries[i].end.ToString(), maxGlobalEnd.ToString())
 			return entries[i:], nil
 		}
-
-		if entries[i].end.Equal(&maxGlobalEnd) &&
-			entries[i].entryType == ET_Global {
-			return entries[i+1:], nil
+		p := maxGlobalEnd.Prev()
+		if entries[i].end.Equal(&p) || (entries[i].end.Equal(&maxGlobalEnd) &&
+			entries[i].entryType == ET_Global) {
+			logutil.Infof("maxGlobalEnd: %v, is %v", maxGlobalEnd.ToString(), entries[i].String())
+			return entries[i:], nil
 		}
 
 	}
