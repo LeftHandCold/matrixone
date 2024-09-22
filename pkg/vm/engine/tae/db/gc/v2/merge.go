@@ -16,6 +16,7 @@ package v2
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 
@@ -70,13 +71,20 @@ func MergeCheckpoint(
 	for _, data := range datas {
 		ins := data.GetObjectBatchs()
 		tombstone := data.GetTombstoneObjectBatchs()
-
+		insDropTs := vector.MustFixedColWithTypeCheck[types.TS](
+			ins.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
+		tombstoneDropTs := vector.MustFixedColWithTypeCheck[types.TS](
+			tombstone.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
 		for i := 0; i < ins.Length(); i++ {
 			var objectStats objectio.ObjectStats
 			buf := ins.GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
 			objectStats.UnMarshal(buf)
 			if objects[objectStats.ObjectName().String()] == nil {
 				continue
+			}
+			if objectStats.GetAppendable() && insDropTs[i].IsEmpty() {
+				ins.GetVectorByName(catalog.EntryNode_DeleteAt).Update(
+					i, ckpEntries[len(ckpEntries)-1].GetEnd(), false)
 			}
 			appendValToBatch(ins, ckpData.GetObjectBatchs(), i)
 		}
@@ -86,6 +94,10 @@ func MergeCheckpoint(
 			objectStats.UnMarshal(buf)
 			if tombstones[objectStats.ObjectName().String()] == nil {
 				continue
+			}
+			if objectStats.GetAppendable() && tombstoneDropTs[i].IsEmpty() {
+				tombstone.GetVectorByName(catalog.EntryNode_DeleteAt).Update(
+					i, ckpEntries[len(ckpEntries)-1].GetEnd(), false)
 			}
 			appendValToBatch(tombstone, ckpData.GetTombstoneObjectBatchs(), i)
 		}
