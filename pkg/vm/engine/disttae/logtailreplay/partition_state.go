@@ -292,6 +292,9 @@ func (p *PartitionState) HandleTombstoneObjectList(
 		objEntry.ObjectStats = objectio.ObjectStats(statsVec.GetBytesAt(idx))
 		objEntry.CreateTime = createTSCol[idx]
 		objEntry.DeleteTime = deleteTSCol[idx]
+		if objEntry.ObjectStats.ObjectName().String() == "019219c8-fae6-7398-8fa9-11ff1ff8527c_00000" {
+			logutil.Infof("HandleTombstoneObjectList: %v, create %v, delete %v", objEntry.ObjectStats.ObjectName().String(), objEntry.CreateTime.ToString(), objEntry.DeleteTime.ToString())
+		}
 		if objEntry.Size() == 0 || (objEntry.GetAppendable() && objEntry.DeleteTime.IsEmpty()) {
 			continue
 		}
