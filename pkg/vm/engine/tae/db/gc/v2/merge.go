@@ -68,7 +68,7 @@ func MergeCheckpoint(
 		logutil.Infof("no checkpoint data to merge")
 		return nil, "", nil
 	}
-	for _, data := range datas {
+	for n, data := range datas {
 		ins := data.GetObjectBatchs()
 		tombstone := data.GetTombstoneObjectBatchs()
 		insDropTs := vector.MustFixedColWithTypeCheck[types.TS](
@@ -82,7 +82,7 @@ func MergeCheckpoint(
 			if objects[objectStats.ObjectName().String()] == nil {
 				continue
 			}
-			if objectStats.GetAppendable() && insDropTs[i].IsEmpty() {
+			if n == len(datas)-1 && objectStats.GetAppendable() && insDropTs[i].IsEmpty() {
 				ins.GetVectorByName(catalog.EntryNode_DeleteAt).Update(
 					i, ckpEntries[len(ckpEntries)-1].GetEnd(), false)
 			}
@@ -95,7 +95,7 @@ func MergeCheckpoint(
 			if tombstones[objectStats.ObjectName().String()] == nil {
 				continue
 			}
-			if objectStats.GetAppendable() && tombstoneDropTs[i].IsEmpty() {
+			if n == len(datas)-1 && objectStats.GetAppendable() && tombstoneDropTs[i].IsEmpty() {
 				tombstone.GetVectorByName(catalog.EntryNode_DeleteAt).Update(
 					i, ckpEntries[len(ckpEntries)-1].GetEnd(), false)
 			}
