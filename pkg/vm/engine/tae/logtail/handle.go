@@ -458,7 +458,6 @@ func LoadCheckpointEntries(
 		if err != nil {
 			return nil, nil, err
 		}
-		logutil.Infof("[yyyy pull] load checkpoint %s %s %d", sid, location.String(), version)
 		locations[i/2] = location
 		reader, err := blockio.NewObjectReader(sid, fs, location)
 		if err != nil {
@@ -494,11 +493,9 @@ func LoadCheckpointEntries(
 	}
 
 	for i := range datas {
-		logutil.Infof("[yyyy pull] table %s: %d, ckp:%v", dbName, len(datas), locations[i].String())
 		if shouldSkip(i) {
 			continue
 		}
-		logutil.Infof("[yyyy pull] InitMetaIdx %s: %d, ckp:%v", dbName, len(datas), locations[i].String())
 		err := datas[i].InitMetaIdx(ctx, versions[i], readers[i], locations[i], mp)
 		if err != nil {
 			return nil, nil, err
