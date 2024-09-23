@@ -68,6 +68,34 @@ func MergeCheckpoint(
 		logutil.Infof("no checkpoint data to merge")
 		return nil, "", nil
 	}
+	objs := make(map[string]*types.TS)
+	{
+		ins := datas[len(datas)-1].GetObjectBatchs()
+		tombstone := datas[len(datas)-1].GetTombstoneObjectBatchs()
+		insDropTs := vector.MustFixedColWithTypeCheck[types.TS](
+			ins.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
+		tombstoneDropTs := vector.MustFixedColWithTypeCheck[types.TS](
+			tombstone.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
+		for i := 0; i < ins.Length(); i++ {
+			var objectStats objectio.ObjectStats
+			buf := ins.GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
+			objectStats.UnMarshal(buf)
+			if objects[objectStats.ObjectName().String()] == nil {
+				continue
+			}
+			objs[objectStats.ObjectName().String()] = &insDropTs[i]
+		}
+		for i := 0; i < tombstone.Length(); i++ {
+			var objectStats objectio.ObjectStats
+			buf := tombstone.GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
+			objectStats.UnMarshal(buf)
+			if tombstones[objectStats.ObjectName().String()] == nil {
+				continue
+			}
+			objs[objectStats.ObjectName().String()] = &tombstoneDropTs[i]
+		}
+	}
+
 	for n, data := range datas {
 		ins := data.GetObjectBatchs()
 		tombstone := data.GetTombstoneObjectBatchs()
@@ -82,7 +110,7 @@ func MergeCheckpoint(
 			if objects[objectStats.ObjectName().String()] == nil {
 				continue
 			}
-			if n == len(datas)-1 && objectStats.GetAppendable() && insDropTs[i].IsEmpty() {
+			if n == len(datas)-1 && objectStats.GetAppendable() && insDropTs[i].IsEmpty() && objs[objectStats.ObjectName().String()].IsEmpty() {
 				ins.GetVectorByName(catalog.EntryNode_DeleteAt).Update(
 					i, ckpEntries[len(ckpEntries)-1].GetEnd(), false)
 			}
@@ -95,7 +123,7 @@ func MergeCheckpoint(
 			if tombstones[objectStats.ObjectName().String()] == nil {
 				continue
 			}
-			if n == len(datas)-1 && objectStats.GetAppendable() && tombstoneDropTs[i].IsEmpty() {
+			if n == len(datas)-1 && objectStats.GetAppendable() && tombstoneDropTs[i].IsEmpty() && objs[objectStats.ObjectName().String()].IsEmpty() {
 				tombstone.GetVectorByName(catalog.EntryNode_DeleteAt).Update(
 					i, ckpEntries[len(ckpEntries)-1].GetEnd(), false)
 			}
