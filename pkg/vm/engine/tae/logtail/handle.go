@@ -616,6 +616,5 @@ func LoadCheckpointEntries(
 	// if tableID <= 3 {
 	// 	logutil.Infof("[yyyy ckp] load checkpoint entries %d: %d", tableID, len(entries))
 	// }
-	logutil.Infof("[yyyy ckp] load checkpoint entries %d: %d", tableID, len(entries))
 	return entries, closeCBs, nil
 }
