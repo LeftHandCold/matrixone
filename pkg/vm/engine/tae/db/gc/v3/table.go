@@ -18,8 +18,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
+
 	"github.com/RoaringBitmap/roaring/roaring64"
-	bitmap2 "github.com/matrixorigin/matrixone/pkg/common/bitmap"
+	"github.com/matrixorigin/matrixone/pkg/common/bitmap"
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -33,7 +35,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 	"go.uber.org/zap"
-	"sync"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -121,24 +122,41 @@ func (t *GCTable) SoftGC(
 	meta *logtail.SnapshotMeta,
 ) ([]string, map[uint32][]types.TS) {
 	processBat := t.fetchBuffer()
+	var (
+		bm   bitmap.Bitmap
+		sels []int64
+	)
 	processSoftGCBatch := func(
 		ctx context.Context,
-		data *batch.Batch) error {
-		bitmap := new(bitmap2.Bitmap)
-		bitmap.InitWithSize(int64(data.Vecs[0].Length()))
+		data *batch.Batch,
+	) error {
+		// reset bitmap for each batch
+		bm.Clear()
+		bm.TryExpandWithSize(data.RowCount())
+
 		bf.Test(data.Vecs[0], func(exits bool, i int) {
 			if !exits {
-				bitmap.Add(uint64(i))
+				bm.Add(uint64(i))
 			}
 		})
-		pBatch, err := data.Dup(t.mp)
-		if err != nil {
+
+		// convert bitmap to slice
+		sels = sels[:0]
+		bitmap.ToArray(&bm, &sels)
+
+		tmpBat := t.fetchBuffer()
+		defer t.putBuffer(tmpBat)
+		if err := tmpBat.Union(data, sels, t.mp); err != nil {
 			return err
 		}
-		deleteMask := bitmap.ToI64Arrary()
-		data.Shrink(deleteMask, true)
-		pBatch.Shrink(deleteMask, false)
-		processBat.Append(ctx, t.mp, pBatch)
+
+		// shrink data
+		data.Shrink(sels, true)
+
+		if _, err := processBat.Append(ctx, t.mp, tmpBat); err != nil {
+			return err
+		}
+
 		return nil
 	}
 	err := t.Process(ctx, t.tsRange.start, t.tsRange.end, t.LoadBatchData, processSoftGCBatch)
@@ -350,7 +368,7 @@ func (t *GCTable) updateObjectListLocked(ins *containers.Batch, objects map[stri
 			db:       vector.GetFixedAtNoTypeCheck[uint64](dbid, i),
 			table:    vector.GetFixedAtNoTypeCheck[uint64](tid, i),
 		}
-		t.addObjectLocked(objectStats.ObjectName().String(), object, objects)
+		addObjectLocked(objectStats.ObjectName().String(), object, objects)
 	}
 }
 
@@ -435,7 +453,7 @@ func (t *GCTable) rebuildTable(bats []*containers.Batch, idx BatchType, objects 
 			dropTS:   deleteTS,
 			table:    tid,
 		}
-		t.addObjectLocked(name, object, objects)
+		addObjectLocked(name, object, objects)
 	}
 }
 
