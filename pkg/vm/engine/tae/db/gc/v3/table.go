@@ -142,11 +142,14 @@ func (t *GCTable) SoftGC(
 	snapShotList map[uint32]containers.Vector,
 	meta *logtail.SnapshotMeta,
 ) ([]string, map[uint32][]types.TS) {
-	processBat := t.fetchBuffer()
 	var (
 		bm   bitmap.Bitmap
 		sels []int64
 	)
+
+	sinker := t.getSinker()
+	defer sinker.Close()
+
 	processSoftGCBatch := func(
 		ctx context.Context,
 		data *batch.Batch,
@@ -173,39 +176,42 @@ func (t *GCTable) SoftGC(
 
 		// shrink data
 		data.Shrink(sels, true)
-
-		if _, err := processBat.Append(ctx, t.mp, tmpBat); err != nil {
-			return err
-		}
-
-		return nil
+		return sinker.Write(ctx, tmpBat)
 	}
 	err := t.Process(ctx, t.tsRange.start, t.tsRange.end, t.LoadBatchData, processSoftGCBatch)
 	if err != nil {
 		logutil.Error("GCTable SoftGC Process failed", zap.Error(err))
 		return nil, nil
 	}
+	err = sinker.Sync(ctx)
 
-	creates := vector.MustFixedColNoTypeCheck[types.TS](processBat.Vecs[1])
-	deletes := vector.MustFixedColNoTypeCheck[types.TS](processBat.Vecs[2])
-	dbs := vector.MustFixedColNoTypeCheck[uint64](processBat.Vecs[3])
-	tids := vector.MustFixedColNoTypeCheck[uint64](processBat.Vecs[4])
-	for i := 0; i < processBat.Vecs[0].Length(); i++ {
-		name := processBat.Vecs[0].GetStringAt(i)
-		creatTS := creates[i]
-		deleteTS := deletes[i]
-		db := dbs[i]
-		tid := tids[i]
-		object := &ObjectEntry{
-			createTS: creatTS,
-			dropTS:   deleteTS,
-			db:       db,
-			table:    tid,
-		}
-		addObjectLocked(name, object, t.objects)
+	if err != nil {
+		logutil.Error("GCTable SoftGC Sync failed", zap.Error(err))
+		return nil, nil
 	}
 
-	t.putBuffer(processBat)
+	softGCObjects, processBats := sinker.GetResult()
+	for _, bat := range processBats {
+		creates := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
+		deletes := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
+		dbs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[3])
+		tids := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			name := bat.Vecs[0].GetStringAt(i)
+			creatTS := creates[i]
+			deleteTS := deletes[i]
+			db := dbs[i]
+			tid := tids[i]
+			object := &ObjectEntry{
+				createTS: creatTS,
+				dropTS:   deleteTS,
+				db:       db,
+				table:    tid,
+			}
+			addObjectLocked(name, object, t.objects)
+		}
+	}
+
 	var gc []string
 	snapList := make(map[uint32][]types.TS)
 	for acct, snap := range snapShotList {
@@ -217,30 +223,28 @@ func (t *GCTable) SoftGC(
 		meta.Unlock()
 		t.Unlock()
 	}()
-	gc = t.objectsComparedAndDeleteLocked(t.objects, t.objects, meta, snapList, ts)
+	gc = t.objectsComparedAndDeleteLocked(t.objects, softGCObjects, meta, snapList, ts)
 	return gc, snapList
 }
 
 func (t *GCTable) objectsComparedAndDeleteLocked(
-	objects, comparedObjects map[string]*ObjectEntry,
+	objects map[string]*ObjectEntry,
+	stats []objectio.ObjectStats,
 	meta *logtail.SnapshotMeta,
 	snapList map[uint32][]types.TS,
 	ts types.TS,
 ) []string {
 	gc := make([]string, 0)
 	for name, entry := range objects {
-		objectEntry := comparedObjects[name]
 		tsList := meta.GetSnapshotListLocked(snapList, entry.table)
 		if tsList == nil {
-			if objectEntry == nil &&
-				(entry.createTS.Less(&ts) && entry.dropTS.Less(&ts)) {
+			if entry.createTS.Less(&ts) && entry.dropTS.Less(&ts) {
 				gc = append(gc, name)
 				delete(t.objects, name)
 			}
 			continue
 		}
-		if objectEntry == nil &&
-			entry.createTS.Less(&ts) &&
+		if entry.createTS.Less(&ts) &&
 			entry.dropTS.Less(&ts) &&
 			!isSnapshotRefers(entry, tsList, name) {
 			gc = append(gc, name)
