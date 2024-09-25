@@ -377,30 +377,14 @@ func (n *Bitmap) Count() int {
 }
 
 func (n *Bitmap) ToArray() []uint64 {
-	var rows []uint64
-	if n.EmptyByFlag() {
-		return rows
-	}
-
-	itr := n.Iterator()
-	for itr.HasNext() {
-		r := itr.Next()
-		rows = append(rows, r)
-	}
+	rows := make([]uint64, 0, n.Count())
+	ToArray(n, &rows)
 	return rows
 }
 
 func (n *Bitmap) ToI64Arrary() []int64 {
-	var rows []int64
-	if n.EmptyByFlag() {
-		return rows
-	}
-
-	itr := n.Iterator()
-	for itr.HasNext() {
-		r := itr.Next()
-		rows = append(rows, int64(r))
-	}
+	rows := make([]int64, 0, n.Count())
+	ToArray(n, &rows)
 	return rows
 }
 
@@ -459,4 +443,14 @@ var _ encoding.BinaryUnmarshaler = new(Bitmap)
 func (n *Bitmap) UnmarshalBinary(data []byte) error {
 	n.Unmarshal(data)
 	return nil
+}
+
+func ToArray[T int64 | uint64 | int | int32 | uint32](bm *Bitmap, rows *[]T) {
+	if bm.IsEmpty() {
+		return
+	}
+	it := bm.Iterator()
+	for it.HasNext() {
+		*rows = append(*rows, T(it.Next()))
+	}
 }
