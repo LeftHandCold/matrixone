@@ -486,6 +486,13 @@ func (n *Bitmap) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
+func (n *Bitmap) Clear() {
+	n.count = 0
+	for i := range n.data {
+		n.data[i] = 0
+	}
+}
+
 func ToArray[T int64 | uint64 | int | int32 | uint32](bm *Bitmap, rows *[]T) {
 	if bm.IsEmpty() {
 		return
@@ -493,12 +500,5 @@ func ToArray[T int64 | uint64 | int | int32 | uint32](bm *Bitmap, rows *[]T) {
 	it := bm.Iterator()
 	for it.HasNext() {
 		*rows = append(*rows, T(it.Next()))
-	}
-}
-
-func (n *Bitmap) Clear() {
-	n.count = 0
-	for i := range n.data {
-		n.data[i] = 0
 	}
 }
