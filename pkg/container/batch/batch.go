@@ -379,7 +379,17 @@ func (bat *Batch) Dup(mp *mpool.MPool) (*Batch, error) {
 	return rbat, nil
 }
 
-func (bat *Batch) Union(bat2 *Batch, offset, cnt int, m *mpool.MPool) error {
+func (bat *Batch) Union(bat2 *Batch, sels []int64, m *mpool.MPool) error {
+	for i, vec := range bat.Vecs {
+		if err := vec.Union(bat2.Vecs[i], sels, m); err != nil {
+			return err
+		}
+	}
+	bat.rowCount += cnt
+	return nil
+}
+
+func (bat *Batch) UnionWindow(bat2 *Batch, offset, cnt int, m *mpool.MPool) error {
 	for i, vec := range bat.Vecs {
 		if err := vec.UnionBatch(bat2.Vecs[i], int64(offset), cnt, nil, m); err != nil {
 			return err
