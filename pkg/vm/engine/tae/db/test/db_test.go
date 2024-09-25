@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/vm/engine"
+
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logstore/store"
 
 	pkgcatalog "github.com/matrixorigin/matrixone/pkg/catalog"
@@ -645,7 +647,7 @@ func TestAddObjsWithMetaLoc(t *testing.T) {
 		vec1 := containers.MakeVector(types.T_varchar.ToType(), common.DefaultAllocator)
 		vec1.Append(stats1[:], false)
 		defer vec1.Close()
-		err := rel.AddObjsWithMetaLoc(context.Background(), vec1)
+		err := rel.AddDataFiles(context.Background(), vec1)
 		assert.Nil(t, err)
 		err = rel.Append(context.Background(), bats[0])
 		assert.Nil(t, err)
@@ -653,7 +655,7 @@ func TestAddObjsWithMetaLoc(t *testing.T) {
 		vec2 := containers.MakeVector(types.T_varchar.ToType(), common.DefaultAllocator)
 		vec2.Append(stats2[:], false)
 		defer vec1.Close()
-		err = rel.AddObjsWithMetaLoc(context.Background(), vec2)
+		err = rel.AddDataFiles(context.Background(), vec2)
 		assert.Nil(t, err)
 		err = rel.Append(context.Background(), bats[1])
 		assert.Nil(t, err)
@@ -678,7 +680,7 @@ func TestAddObjsWithMetaLoc(t *testing.T) {
 		vec3.Append(stats1[:], false)
 		vec3.Append(stats2[:], false)
 		defer vec1.Close()
-		err = rel.AddObjsWithMetaLoc(context.Background(), vec3)
+		err = rel.AddDataFiles(context.Background(), vec3)
 		assert.NotNil(t, err)
 
 		//check blk count.
@@ -5036,7 +5038,7 @@ func TestMergeMemsize(t *testing.T) {
 		assert.NoError(t, err)
 		tbl, err := db.CreateRelation(schema)
 		assert.NoError(t, err)
-		assert.NoError(t, tbl.AddObjsWithMetaLoc(context.Background(), statsVec))
+		assert.NoError(t, tbl.AddDataFiles(context.Background(), statsVec))
 		assert.NoError(t, txn.Commit(context.Background()))
 	}
 	statsVec.Close()
@@ -5107,7 +5109,7 @@ func TestCollectDeletesAfterCKP(t *testing.T) {
 		assert.NoError(t, err)
 		tbl, err := testutil.CreateRelation2(ctx, txn, db, schema)
 		assert.NoError(t, err)
-		assert.NoError(t, tbl.AddObjsWithMetaLoc(context.Background(), statsVec))
+		assert.NoError(t, tbl.AddDataFiles(context.Background(), statsVec))
 		assert.NoError(t, txn.Commit(context.Background()))
 	}
 
@@ -5216,7 +5218,7 @@ func TestAlwaysUpdate(t *testing.T) {
 	tbl, err := db.CreateRelation(schema)
 	// tid = tbl.ID()
 	assert.NoError(t, err)
-	assert.NoError(t, tbl.AddObjsWithMetaLoc(context.Background(), statsVec))
+	assert.NoError(t, tbl.AddDataFiles(context.Background(), statsVec))
 	assert.NoError(t, txn.Commit(context.Background()))
 
 	t.Log(tae.Catalog.SimplePPString(common.PPL1))
@@ -6820,6 +6822,186 @@ func TestSnapshotMeta(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestPitrMeta(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	testutils.EnsureNoLeak(t)
+	ctx := context.Background()
+
+	opts := new(options.Options)
+	opts = config.WithQuickScanAndCKPOpts(opts)
+	options.WithDisableGCCheckpoint()(opts)
+	tae := testutil.NewTestEngine(ctx, ModuleName, t, opts)
+	defer tae.Close()
+	db := tae.DB
+	db.DiskCleaner.GetCleaner().SetMinMergeCountForTest(1)
+	pitrSchema := catalog.NewEmptySchema("mo_pitr")
+
+	constraintDef := &engine.ConstraintDef{
+		Cts: make([]engine.Constraint, 0),
+	}
+
+	pitrSchema.AppendCol("col0", types.T_varchar.ToType())
+	pitrSchema.AppendCol("col1", types.T_varchar.ToType())
+	pitrSchema.AppendCol("col2", types.T_uint64.ToType())
+	pitrSchema.AppendCol("col3", types.T_uint64.ToType())
+	pitrSchema.AppendCol("col4", types.T_uint64.ToType())
+	pitrSchema.AppendCol("col5", types.T_varchar.ToType())
+	pitrSchema.AppendCol("col6", types.T_uint64.ToType())
+	pitrSchema.AppendCol("col7", types.T_varchar.ToType())
+	pitrSchema.AppendCol("col8", types.T_varchar.ToType())
+	pitrSchema.AppendCol("col9", types.T_varchar.ToType())
+	pitrSchema.AppendCol("col10", types.T_uint64.ToType())
+	pitrSchema.AppendCol("col11", types.T_uint8.ToType())
+	pitrSchema.AppendCol("col12", types.T_varchar.ToType())
+	pitrSchema.Constraint, _ = constraintDef.MarshalBinary()
+	pitrSchema.AppendFakePKCol()
+	pitrSchema.ColDefs[len(pitrSchema.ColDefs)-1].NullAbility = true
+
+	_ = pitrSchema.Finalize(false)
+	pitrSchema.Extra.BlockMaxRows = 2
+	pitrSchema.Extra.ObjectMaxBlocks = 2
+	schema1 := catalog.MockSchemaAll(13, 2)
+	schema1.Extra.BlockMaxRows = 10
+	schema1.Extra.ObjectMaxBlocks = 2
+	var rel3, rel4 handle.Relation
+	var database, database2 handle.Database
+	var err error
+	{
+		txn, _ := db.StartTxn(nil)
+		database, err = testutil.CreateDatabase2(ctx, txn, "db1")
+		assert.Nil(t, err)
+		rel3, err = testutil.CreateRelation2(ctx, txn, database, pitrSchema)
+		assert.Nil(t, err)
+		database2, err = testutil.CreateDatabase2(ctx, txn, "db")
+		assert.Nil(t, err)
+		rel4, err = testutil.CreateRelation2(ctx, txn, database2, schema1)
+		assert.Nil(t, err)
+		assert.Nil(t, txn.Commit(context.Background()))
+	}
+	db.DiskCleaner.GetCleaner().SetMinMergeCountForTest(1)
+	attrs := []string{"col0", "col1", "col2", "col3", "col4", "col5", "col6", "col7", "col8", "col9", "col10", "col11", "col12"}
+	vecTypes := []types.Type{types.T_varchar.ToType(), types.T_varchar.ToType(),
+		types.T_uint64.ToType(), types.T_uint64.ToType(), types.T_uint64.ToType(),
+		types.T_varchar.ToType(), types.T_uint64.ToType(), types.T_varchar.ToType(),
+		types.T_varchar.ToType(), types.T_varchar.ToType(), types.T_uint64.ToType(),
+		types.T_uint8.ToType(), types.T_varchar.ToType()}
+	for i := 0; i < 4; i++ {
+		opt := containers.Options{}
+		opt.Capacity = 0
+		data := containers.BuildBatch(attrs, vecTypes, opt)
+		data.Vecs[0].Append([]byte("db"), false)
+		data.Vecs[1].Append([]byte("rel"), false)
+		data.Vecs[2].Append(uint64(0), false)
+		data.Vecs[3].Append(uint64(0), false)
+		data.Vecs[4].Append(uint64(0), false)
+		if i == 0 {
+			data.Vecs[5].Append([]byte("cluster"), false)
+			data.Vecs[10].Append(uint64(0), false)
+			data.Vecs[11].Append(uint8(1), false)
+			data.Vecs[12].Append([]byte("h"), false)
+		} else if i == 1 {
+			data.Vecs[5].Append([]byte("account"), false)
+			data.Vecs[10].Append(uint64(0), false)
+			data.Vecs[11].Append(uint8(2), false)
+			data.Vecs[12].Append([]byte("h"), false)
+		} else if i == 2 {
+			data.Vecs[5].Append([]byte("database"), false)
+			data.Vecs[10].Append(uint64(database2.GetID()), false)
+			data.Vecs[11].Append(uint8(3), false)
+			data.Vecs[12].Append([]byte("h"), false)
+		} else {
+			data.Vecs[5].Append([]byte("table"), false)
+			data.Vecs[10].Append(uint64(rel4.ID()), false)
+			data.Vecs[11].Append(uint8(4), false)
+			data.Vecs[12].Append([]byte("h"), false)
+		}
+		data.Vecs[6].Append(uint64(0), false)
+		data.Vecs[7].Append([]byte("varchar"), false)
+		data.Vecs[8].Append([]byte("varchar"), false)
+		data.Vecs[9].Append([]byte("varchar"), false)
+		txn1, _ := db.StartTxn(nil)
+		database, _ = txn1.GetDatabase("db1")
+		rel, _ := database.GetRelationByID(rel3.ID())
+		err = rel.Append(context.Background(), data)
+		data.Close()
+		assert.Nil(t, err)
+		assert.Nil(t, txn1.Commit(context.Background()))
+	}
+	bat := catalog.MockBatch(schema1, int(schema1.Extra.BlockMaxRows*10-1))
+	defer bat.Close()
+	bats := bat.Split(bat.Length())
+
+	pool, err := ants.NewPool(20)
+	assert.Nil(t, err)
+	defer pool.Release()
+	var wg sync.WaitGroup
+
+	for _, data1 := range bats {
+		wg.Add(1)
+		err = pool.Submit(testutil.AppendClosure(t, data1, schema1.Name, db, &wg))
+		assert.Nil(t, err)
+	}
+	wg.Wait()
+	testutils.WaitExpect(10000, func() bool {
+		return db.Runtime.Scheduler.GetPenddingLSNCnt() == 0
+	})
+	if db.Runtime.Scheduler.GetPenddingLSNCnt() != 0 {
+		return
+	}
+	db.DiskCleaner.GetCleaner().EnableGCForTest()
+	assert.Equal(t, uint64(0), db.Runtime.Scheduler.GetPenddingLSNCnt())
+	initMinMerged := db.DiskCleaner.GetCleaner().GetMinMerged()
+	t.Log(tae.Catalog.SimplePPString(common.PPL1))
+	testutils.WaitExpect(3000, func() bool {
+		if db.DiskCleaner.GetCleaner().GetMinMerged() == nil {
+			return false
+		}
+		minEnd := db.DiskCleaner.GetCleaner().GetMinMerged().GetEnd()
+		if minEnd.IsEmpty() {
+			return false
+		}
+		if initMinMerged == nil {
+			return true
+		}
+		initMinEnd := initMinMerged.GetEnd()
+		return minEnd.Greater(&initMinEnd)
+	})
+	minMerged := db.DiskCleaner.GetCleaner().GetMinMerged()
+	if minMerged == nil {
+		return
+	}
+	minEnd := minMerged.GetEnd()
+	if minEnd.IsEmpty() {
+		return
+	}
+	if initMinMerged != nil {
+		initMinEnd := initMinMerged.GetEnd()
+		if !minEnd.Greater(&initMinEnd) {
+			return
+		}
+	}
+
+	err = db.DiskCleaner.GetCleaner().CheckGC()
+	assert.Nil(t, err)
+	assert.NotNil(t, minMerged)
+	tae.Restart(ctx)
+	db = tae.DB
+	db.DiskCleaner.GetCleaner().SetMinMergeCountForTest(2)
+	testutils.WaitExpect(5000, func() bool {
+		if db.DiskCleaner.GetCleaner().GetMaxConsumed() == nil {
+			return false
+		}
+		end := db.DiskCleaner.GetCleaner().GetMaxConsumed().GetEnd()
+		minEnd := minMerged.GetEnd()
+		return end.GreaterEq(&minEnd)
+	})
+	end := db.DiskCleaner.GetCleaner().GetMaxConsumed().GetEnd()
+	minEnd = minMerged.GetEnd()
+	assert.True(t, end.GreaterEq(&minEnd))
+	err = db.DiskCleaner.GetCleaner().CheckGC()
+	assert.Nil(t, err)
+}
+
 func TestGlobalCheckpoint2(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	testutils.EnsureNoLeak(t)
@@ -7677,12 +7859,12 @@ func TestCommitS3Blocks(t *testing.T) {
 
 	for _, vec := range statsVecs {
 		txn, rel := tae.GetRelation()
-		rel.AddObjsWithMetaLoc(context.Background(), vec)
+		rel.AddDataFiles(context.Background(), vec)
 		assert.NoError(t, txn.Commit(context.Background()))
 	}
 	for _, vec := range statsVecs {
 		txn, rel := tae.GetRelation()
-		err := rel.AddObjsWithMetaLoc(context.Background(), vec)
+		err := rel.AddDataFiles(context.Background(), vec)
 		assert.Error(t, err)
 		assert.NoError(t, txn.Commit(context.Background()))
 	}
@@ -7763,7 +7945,7 @@ func TestDedupSnapshot2(t *testing.T) {
 	statsVec2.Append(ss[:], false)
 
 	txn, rel := tae.GetRelation()
-	err = rel.AddObjsWithMetaLoc(context.Background(), statsVec)
+	err = rel.AddDataFiles(context.Background(), statsVec)
 	assert.NoError(t, err)
 	assert.NoError(t, txn.Commit(context.Background()))
 
@@ -7771,7 +7953,7 @@ func TestDedupSnapshot2(t *testing.T) {
 	startTS := txn.GetStartTS()
 	txn.SetSnapshotTS(startTS.Next())
 	txn.SetDedupType(txnif.DedupPolicy_CheckIncremental)
-	err = rel.AddObjsWithMetaLoc(context.Background(), statsVec2)
+	err = rel.AddDataFiles(context.Background(), statsVec2)
 	assert.NoError(t, err)
 	_ = txn.Commit(context.Background())
 }
@@ -7924,7 +8106,7 @@ func TestDeduplication(t *testing.T) {
 	statsVec.Append(ss[:], false)
 
 	txn, rel := tae.GetRelation()
-	err = rel.AddObjsWithMetaLoc(context.Background(), statsVec)
+	err = rel.AddDataFiles(context.Background(), statsVec)
 	assert.NoError(t, err)
 	assert.NoError(t, txn.Commit(context.Background()))
 
@@ -8683,7 +8865,7 @@ func TestCollectDeletesInRange2(t *testing.T) {
 	txn, rel = tae.GetRelation()
 	blk = testutil.GetOneObject(rel)
 	//ok, err := rel.TryDeleteByDeltaloc(blk.Fingerprint(), deltaLoc)
-	ok, err := rel.TryDeleteByStats(blk.Fingerprint(), stats)
+	ok, err := rel.AddPersistedTombstoneFile(blk.Fingerprint(), stats)
 	assert.True(t, ok)
 	assert.NoError(t, err)
 	assert.NoError(t, txn.Commit(context.Background()))
@@ -9315,8 +9497,7 @@ func TestTryDeleteByDeltaloc2(t *testing.T) {
 	tae.MergeBlocks(true)
 	t.Log(tae.Catalog.SimplePPString(3))
 
-	//ok, err := rel.TryDeleteByDeltaloc(id, deltaLoc)
-	ok, err := rel.TryDeleteByStats(id, stats)
+	ok, err := rel.AddPersistedTombstoneFile(id, stats)
 	assert.NoError(t, err)
 	assert.NoError(t, err)
 	assert.True(t, ok)
