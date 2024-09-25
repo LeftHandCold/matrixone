@@ -385,7 +385,9 @@ func (bat *Batch) Union(bat2 *Batch, sels []int64, m *mpool.MPool) error {
 			return err
 		}
 	}
-	bat.rowCount += cnt
+	if len(bat.Vecs) > 0 {
+		bat.rowCount = bat.Vecs[0].Length()
+	}
 	return nil
 }
 
