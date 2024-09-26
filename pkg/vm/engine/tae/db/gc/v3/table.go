@@ -252,6 +252,7 @@ func (t *GCTable) SoftGC(
 		deletes := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
 		dbs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[3])
 		tids := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
+
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
 			name := bat.Vecs[0].GetStringAt(i)
 			tid := tids[i]
@@ -265,7 +266,7 @@ func (t *GCTable) SoftGC(
 					db:       dbs[i],
 					table:    tid,
 				}
-				addObjectLocked(name, object, t.objects)
+				t.objects[name] = object
 				continue
 			}
 			if t.objects[name] != nil && t.objects[name].dropTS.IsEmpty() {
@@ -506,7 +507,7 @@ func (t *GCTable) updateObjectListLocked(ins *containers.Batch, objects map[stri
 			db:       vector.GetFixedAtNoTypeCheck[uint64](dbid, i),
 			table:    vector.GetFixedAtNoTypeCheck[uint64](tid, i),
 		}
-		addObjectLocked(objectStats.ObjectName().String(), object, objects)
+		objects[objectStats.ObjectName().String()] = object
 	}
 }
 
