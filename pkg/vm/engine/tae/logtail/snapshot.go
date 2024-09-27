@@ -813,7 +813,7 @@ func (sm *SnapshotMeta) SetTid(tid uint64) {
 }
 
 func (sm *SnapshotMeta) SaveMeta(name string, fs fileservice.FileService) (uint32, error) {
-	if len(sm.objects) == 0 {
+	if len(sm.objects) == 0 && len(sm.pitr.objects) == 0 {
 		return 0, nil
 	}
 	bat := containers.NewBatch()
