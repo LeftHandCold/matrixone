@@ -1072,7 +1072,6 @@ func (sm *SnapshotMeta) Rebuild(
 ) {
 	sm.Lock()
 	defer sm.Unlock()
-	logutil.Infof("RebuildSnapshotMeta tid %d", sm.pitr.tid)
 	insCreateTSs := vector.MustFixedColWithTypeCheck[types.TS](ins.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector())
 	insTides := vector.MustFixedColWithTypeCheck[uint64](ins.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector())
 	for i := 0; i < ins.Length(); i++ {
@@ -1082,14 +1081,16 @@ func (sm *SnapshotMeta) Rebuild(
 		createTS := insCreateTSs[i]
 		tid := insTides[i]
 		if tid == sm.pitr.tid {
-			(*objects2)[objectStats.ObjectName().SegmentId()] = &objectInfo{
-				stats:    objectStats,
-				createAt: createTS,
+			if (*objects)[tid][objectStats.ObjectName().SegmentId()] == nil {
+				(*objects2)[objectStats.ObjectName().SegmentId()] = &objectInfo{
+					stats:    objectStats,
+					createAt: createTS,
+				}
+				logutil.Info("[RebuildPITR] Add object2",
+					zap.String("object name", objectStats.ObjectName().String()),
+					zap.String("create at", createTS.ToString()))
+				continue
 			}
-			logutil.Info("[RebuildPITR] Add object2",
-				zap.String("object name", objectStats.ObjectName().String()),
-				zap.String("create at", createTS.ToString()))
-			continue
 		}
 		if _, ok := sm.tides[tid]; !ok {
 			sm.tides[tid] = struct{}{}
@@ -1098,14 +1099,18 @@ func (sm *SnapshotMeta) Rebuild(
 		if (*objects)[tid] == nil {
 			(*objects)[tid] = make(map[objectio.Segmentid]*objectInfo)
 		}
-		(*objects)[tid][objectStats.ObjectName().SegmentId()] = &objectInfo{
-			stats:    objectStats,
-			createAt: createTS,
+		if (*objects)[tid][objectStats.ObjectName().SegmentId()] == nil {
+
+			(*objects)[tid][objectStats.ObjectName().SegmentId()] = &objectInfo{
+				stats:    objectStats,
+				createAt: createTS,
+			}
+			logutil.Info("[RebuildSnapshot] Add object",
+				zap.Uint64("table id", tid),
+				zap.String("object name", objectStats.ObjectName().String()),
+				zap.String("create at", createTS.ToString()))
+			continue
 		}
-		logutil.Info("[RebuildSnapshot] Add object",
-			zap.Uint64("table id", tid),
-			zap.String("object name", objectStats.ObjectName().String()),
-			zap.String("create at", createTS.ToString()))
 	}
 }
 
@@ -1118,7 +1123,6 @@ func (sm *SnapshotMeta) ReadMeta(ctx context.Context, name string, fs fileservic
 	if err != nil {
 		return err
 	}
-	logutil.Infof("ReadMeta %s, bs len is %d", name, len(bs))
 	idxes := make([]uint16, len(objectInfoSchemaAttr))
 	for i := range objectInfoSchemaAttr {
 		idxes[i] = uint16(i)
