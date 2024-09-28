@@ -551,9 +551,9 @@ func (c *checkpointCleaner) getDeleteFile(
 	for i := len(ckps) - 1; i >= 0; i-- {
 		ckp := ckps[i]
 		end := ckp.GetEnd()
-		if end.LT(&stage) && end.LT(pitr) {
-			if isSnapshotCKPRefers(ckp.GetStart(), ckp.GetEnd(), ckpSnapList) &&
-				ckp.GetType() != checkpoint.ET_Global {
+		if end.LT(&stage) {
+			if end.GE(pitr) || (isSnapshotCKPRefers(ckp.GetStart(), ckp.GetEnd(), ckpSnapList) &&
+				ckp.GetType() != checkpoint.ET_Global) {
 				// TODO: remove this log
 				logutil.Info("[MergeCheckpoint]",
 					common.OperationField("isSnapshotCKPRefers"),
