@@ -24,6 +24,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/engine_util"
 )
 
 func MakeLoadFunc(
@@ -32,7 +33,7 @@ func MakeLoadFunc(
 	objects []objectio.ObjectStats,
 	fs fileservice.FileService,
 	ts timestamp.Timestamp,
-	opts ...disttae.ReaderOption,
+	opts ...engine_util.ReaderOption,
 ) (
 	func(context.Context, *batch.Batch, *mpool.MPool) (bool, error),
 	func(),
