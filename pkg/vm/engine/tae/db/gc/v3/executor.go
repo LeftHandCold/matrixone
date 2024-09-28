@@ -27,9 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 )
 
-type FilterFn func(
-	context.Context, *bitmap.Bitmap, *batch.Batch, *mpool.MPool,
-) error
+type FilterFn func(context.Context, *bitmap.Bitmap, *batch.Batch, *mpool.MPool) error
 type SourerFn func(context.Context, *batch.Batch, *mpool.MPool) (bool, error)
 type SinkerFn func(context.Context, *batch.Batch) error
 
@@ -98,7 +96,7 @@ func (exec *GCExecutor) Run(
 	sourcer SourerFn,
 	corseFilter FilterFn,
 	fineFilter FilterFn,
-	onGCSinker SinkerFn,
+	finalCanGCSinker SinkerFn,
 ) (newFiles []objectio.ObjectStats, err error) {
 	cannotGCSinker := exec.getSinker(
 		engine_util.WithBuffer(exec.buffer.impl, false),
@@ -109,9 +107,6 @@ func (exec *GCExecutor) Run(
 	)
 	defer cannotGCSinker.Close()
 	defer canGCSinker.Close()
-
-	bat := exec.getBuffer()
-	defer exec.putBuffer(bat)
 
 	// 1. do coarse filter
 	if err = exec.doFilter(
@@ -145,8 +140,8 @@ func (exec *GCExecutor) Run(
 		ctx,
 		fineSourcer,
 		fineFilter,
-		onGCSinker,
 		cannotGCSinker.Write,
+		finalCanGCSinker,
 	); err != nil {
 		return
 	}

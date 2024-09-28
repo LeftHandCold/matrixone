@@ -23,7 +23,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/engine_util"
 )
 
@@ -35,7 +34,7 @@ func MakeLoadFunc(
 	ts timestamp.Timestamp,
 	opts ...engine_util.ReaderOption,
 ) (
-	func(context.Context, *batch.Batch, *mpool.MPool) (bool, error),
+	SourerFn,
 	func(),
 ) {
 	var (
@@ -43,7 +42,7 @@ func MakeLoadFunc(
 		reader engine.Reader
 	)
 	if len(objects) > 0 {
-		reader = disttae.SimpleMultiObjectsReader(
+		reader = engine_util.SimpleMultiObjectsReader(
 			ctx, fs, objects, ts, opts...,
 		)
 	}
