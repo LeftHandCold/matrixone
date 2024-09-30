@@ -223,6 +223,7 @@ func (r *BlockReader) LoadAllColumns(
 		return nil, err
 	}
 	dataMeta := meta.MustDataMeta()
+	logutil.Infof("meta issss %d", dataMeta.BlockHeader().ColumnCount())
 	if dataMeta.BlockHeader().MetaLocation().End() == 0 {
 		return nil, nil
 	}
