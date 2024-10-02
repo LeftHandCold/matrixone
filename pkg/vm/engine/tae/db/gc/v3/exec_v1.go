@@ -17,6 +17,7 @@ package gc
 import (
 	"context"
 	"fmt"
+	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -167,6 +168,30 @@ func MakeSnapshotAndPitrFineFilter(
 			) {
 				bm.Add(uint64(i))
 			}
+		}
+		return nil
+	}, nil
+}
+
+func MakeFinalCanGCSinker(
+	filesToGC *[]string,
+) (
+	SinkerFn,
+	error,
+) {
+	buffer := make(map[string]struct{}, 100)
+	return func(
+		ctx context.Context, bat *batch.Batch,
+	) error {
+		clear(buffer)
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			buf := bat.Vecs[0].GetRawBytesAt(i)
+			stats := (*objectio.ObjectStats)(unsafe.Pointer(&buf[0]))
+			name := stats.ObjectName().String()
+			buffer[name] = struct{}{}
+		}
+		for name := range buffer {
+			*filesToGC = append(*filesToGC, name)
 		}
 		return nil
 	}, nil

@@ -208,21 +208,8 @@ func (t *GCTable) SoftGC(
 		return nil, err
 	}
 
-	gcFiles := make([]string, 0)
-	canGC := func(ctx context.Context, bat *batch.Batch) error {
-		names := make(map[string]struct{})
-		for i := 0; i < bat.Vecs[0].Length(); i++ {
-			buf := bat.Vecs[0].GetRawBytesAt(i)
-			stats := (objectio.ObjectStats)(buf)
-			name := stats.ObjectName().String()
-			names[name] = struct{}{}
-		}
-
-		for name := range names {
-			gcFiles = append(gcFiles, name)
-		}
-		return nil
-	}
+	gcFiles := make([]string, 0, 20)
+	finalGCSinker, err := MakeFinalCanGCSinker(&gcFiles)
 
 	executor := NewGCExecutor(t.buffer, true, t.mp, t.fs)
 	gcStats, err := executor.Run(
@@ -230,7 +217,8 @@ func (t *GCTable) SoftGC(
 		t.LoadBatchData,
 		coarseFilter,
 		fineFilter,
-		canGC)
+		finalGCSinker,
+	)
 	if err != nil {
 		return nil, err
 	}
