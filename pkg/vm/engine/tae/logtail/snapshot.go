@@ -273,9 +273,9 @@ type SnapshotMeta struct {
 	// all table information under the account.
 	tables map[uint32]map[uint64]*tableInfo
 
-	// acctIndexes records all the index information of mo, the key is
+	// tableIndex records all the index information of mo, the key is
 	// account id, and the value is the index information.
-	acctIndexes map[uint64]*tableInfo
+	tableIndex map[uint64]*tableInfo
 
 	// pkIndexes records all the index information of mo, the key is
 	// the mo_table pk, and the value is the index information.
@@ -291,7 +291,7 @@ func NewSnapshotMeta() *SnapshotMeta {
 		tombstones:   make(map[uint64]map[objectio.Segmentid]*objectInfo),
 		aobjDelTsMap: make(map[types.TS]struct{}),
 		tables:       make(map[uint32]map[uint64]*tableInfo),
-		acctIndexes:  make(map[uint64]*tableInfo),
+		tableIndex:   make(map[uint64]*tableInfo),
 		tides:        make(map[uint64]struct{}),
 		pkIndexes:    make(map[string][]*tableInfo),
 	}
@@ -463,7 +463,7 @@ func (sm *SnapshotMeta) updateTableInfo(
 				pk:        pk,
 			}
 			sm.tables[account][tid] = table
-			sm.acctIndexes[tid] = table
+			sm.tableIndex[tid] = table
 			if sm.pkIndexes[pk] == nil {
 				sm.pkIndexes[pk] = make([]*tableInfo, 0)
 			}
@@ -524,12 +524,12 @@ func (sm *SnapshotMeta) updateTableInfo(
 		table.deleteAt = del.ts
 		sm.pkIndexes[pk] = sm.pkIndexes[pk][1:]
 
-		if sm.acctIndexes[table.tid] == nil {
+		if sm.tableIndex[table.tid] == nil {
 			//In the upgraded cluster, because the inc checkpoint is consumed halfway,
 			// there may be no record of the create table entry, only the delete entry
 			continue
 		}
-		sm.acctIndexes[table.tid] = table
+		sm.tableIndex[table.tid] = table
 		sm.tables[table.accountID][table.tid] = table
 	}
 
@@ -1057,7 +1057,7 @@ func (sm *SnapshotMeta) RebuildTableInfo(ins *containers.Batch) {
 			pk:        pk,
 		}
 		sm.tables[accid][tid] = table
-		sm.acctIndexes[tid] = table
+		sm.tableIndex[tid] = table
 		if !table.deleteAt.IsEmpty() {
 			continue
 		}
@@ -1326,10 +1326,10 @@ func (sm *SnapshotMeta) TableInfoString() string {
 }
 
 func (sm *SnapshotMeta) GetSnapshotListLocked(snapshotList map[uint32][]types.TS, tid uint64) []types.TS {
-	if sm.acctIndexes[tid] == nil {
+	if sm.tableIndex[tid] == nil {
 		return nil
 	}
-	accID := sm.acctIndexes[tid].accountID
+	accID := sm.tableIndex[tid].accountID
 	return snapshotList[accID]
 }
 
@@ -1379,7 +1379,7 @@ func (sm *SnapshotMeta) AccountToTableSnapshots(
 	tablePitrs[catalog2.MO_TABLES_ID] = &sysPitr
 	tablePitrs[catalog2.MO_COLUMNS_ID] = &sysPitr
 
-	for tid, info := range sm.acctIndexes {
+	for tid, info := range sm.tableIndex {
 		if catalog2.IsSystemTable(tid) {
 			continue
 		}
@@ -1399,8 +1399,8 @@ func (sm *SnapshotMeta) GetPitrLocked(pitr *PitrInfo, db, tid uint64) *types.TS 
 	if !pitr.cluster.IsEmpty() {
 		ts = pitr.cluster
 	}
-	if sm.acctIndexes[tid] != nil {
-		account := sm.acctIndexes[tid].accountID
+	if sm.tableIndex[tid] != nil {
+		account := sm.tableIndex[tid].accountID
 		p := pitr.account[account]
 		if !p.IsEmpty() {
 			ts = p
@@ -1432,7 +1432,7 @@ func (sm *SnapshotMeta) MergeTableInfo(
 			for _, table := range tables {
 				if !table.deleteAt.IsEmpty() {
 					delete(sm.tables[accID], table.tid)
-					delete(sm.acctIndexes, table.tid)
+					delete(sm.tableIndex, table.tid)
 					if sm.objects[table.tid] != nil {
 						delete(sm.objects, table.tid)
 					}
@@ -1445,7 +1445,7 @@ func (sm *SnapshotMeta) MergeTableInfo(
 			if !table.deleteAt.IsEmpty() &&
 				!isSnapshotRefers(table, accountSnapshots[accID], ts) {
 				delete(sm.tables[accID], table.tid)
-				delete(sm.acctIndexes, table.tid)
+				delete(sm.tableIndex, table.tid)
 				if sm.objects[table.tid] != nil {
 					delete(sm.objects, table.tid)
 				}
@@ -1465,7 +1465,7 @@ func (sm *SnapshotMeta) String() string {
 	sm.RLock()
 	defer sm.RUnlock()
 	return fmt.Sprintf("account count: %d, table count: %d, object count: %d",
-		len(sm.tables), len(sm.acctIndexes), len(sm.objects))
+		len(sm.tables), len(sm.tableIndex), len(sm.objects))
 }
 
 func isSnapshotRefers(table *tableInfo, snapVec []types.TS, pitr *types.TS) bool {
