@@ -152,12 +152,19 @@ func (e *GCJobExecutorV1) getNextCoarseBatch(
 }
 
 func (e *GCJobExecutorV1) Execute(ctx context.Context) error {
+	attrs, attrTypes := logtail.GetDataSchema()
+	buffer := containers.NewOneSchemaBatchBuffer(
+		mpool.MB*16,
+		attrs,
+		attrTypes,
+	)
+	defer buffer.Close(e.mp)
 	transObjects := make(map[string]*ObjectEntry, 100)
 	coarseFilter, err := MakeBloomfilterCoarseFilter(
 		ctx,
 		e.config.coarseEstimateRows,
 		e.config.coarseProbility,
-		e.buffer.impl,
+		buffer,
 		e.globalCkpLoc,
 		e.ts,
 		&transObjects,

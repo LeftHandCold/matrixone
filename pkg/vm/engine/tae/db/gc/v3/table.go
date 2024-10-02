@@ -173,13 +173,6 @@ func (t *GCTable) SoftGC(
 	pitrs *logtail.PitrInfo,
 	meta *logtail.SnapshotMeta,
 ) ([]string, error) {
-	attrs, attrTypes := logtail.GetDataSchema()
-	buffer := containers.NewOneSchemaBatchBuffer(
-		mpool.MB*32,
-		attrs,
-		attrTypes,
-	)
-	defer buffer.Close(t.mp)
 
 	job := NewGCJobExecutorV1(
 		t.metaDir,
@@ -191,7 +184,7 @@ func (t *GCTable) SoftGC(
 		pitrs,
 		accountSnapshots,
 		meta,
-		buffer,
+		t.buffer,
 		false,
 		t.mp,
 		t.fs,
