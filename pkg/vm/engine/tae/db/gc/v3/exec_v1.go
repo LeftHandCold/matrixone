@@ -16,6 +16,8 @@ package gc
 
 import (
 	"context"
+	"fmt"
+
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -110,5 +112,64 @@ func MakeBloomfilterCoarseFilter(
 		)
 		return nil
 
+	}, nil
+}
+
+func MakeSnapshotAndPitrFineFilter(
+	ts *types.TS,
+	accountSnapshots map[uint32][]types.TS,
+	pitrs *logtail.PitrInfo,
+	snapshotMeta *logtail.SnapshotMeta,
+	transObjects map[string]*ObjectEntry,
+) (
+	filter FilterFn,
+	err error,
+) {
+	tableSnapshots, tablePitrs := snapshotMeta.AccountToTableSnapshots(
+		accountSnapshots,
+		pitrs,
+	)
+	return func(
+		ctx context.Context,
+		bm *bitmap.Bitmap,
+		bat *batch.Batch,
+		_ bool,
+		mp *mpool.MPool,
+	) error {
+		createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
+		deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
+		tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			buf := bat.Vecs[0].GetRawBytesAt(i)
+			stats := (objectio.ObjectStats)(buf)
+			name := stats.ObjectName().UnsafeString()
+			tableID := tableIDs[i]
+			createTS := createTSs[i]
+			dropTS := deleteTSs[i]
+
+			snapshots := tableSnapshots[tableID]
+			pitr := tablePitrs[tableID]
+
+			if entry := transObjects[name]; entry != nil {
+				if !isSnapshotRefers(
+					entry.stats, pitr, &entry.createTS, &entry.dropTS, snapshots,
+				) {
+					bm.Add(uint64(i))
+				}
+				continue
+			}
+			if !createTS.LT(ts) || !dropTS.LT(ts) {
+				continue
+			}
+			if dropTS.IsEmpty() {
+				panic(fmt.Sprintf("dropTS is empty, name: %s, createTS: %s", name, createTS.ToString()))
+			}
+			if !isSnapshotRefers(
+				&stats, pitr, &createTS, &dropTS, snapshots,
+			) {
+				bm.Add(uint64(i))
+			}
+		}
+		return nil
 	}, nil
 }
