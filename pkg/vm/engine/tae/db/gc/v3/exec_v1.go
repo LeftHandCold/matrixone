@@ -139,7 +139,7 @@ func (e *GCJobExecutorV1) getNextCoarseBatch(
 	bat *batch.Batch,
 ) (bool, error) {
 	if len(e.gcSourceFiles) == 0 {
-		return false, nil
+		return true, nil
 	}
 	bat.CleanOnlyData()
 	if err := loader(
