@@ -189,7 +189,7 @@ func (t *GCTable) SoftGC(
 		filterBuffer,
 		location,
 		&ts,
-		objects,
+		&objects,
 		t.mp,
 		t.fs,
 	)

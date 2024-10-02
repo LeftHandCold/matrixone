@@ -39,7 +39,7 @@ func MakeBloomfilterCoarseFilter(
 	buffer containers.IBatchBuffer,
 	location *objectio.Location,
 	ts *types.TS,
-	objects map[string]*ObjectEntry,
+	transObjects *map[string]*ObjectEntry,
 	mp *mpool.MPool,
 	fs fileservice.FileService,
 ) (
@@ -68,45 +68,44 @@ func MakeBloomfilterCoarseFilter(
 		ctx context.Context,
 		bm *bitmap.Bitmap,
 		bat *batch.Batch,
-		buildMap bool,
 		mp *mpool.MPool,
 	) (err error) {
-		creates := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
-		deletes := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
+		createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
+		dropTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
 		dbs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[3])
-		tids := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
+		tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
 		bf.Test(
 			bat.Vecs[0],
 			func(exists bool, i int) {
-				if !exists {
-					bm.Add(uint64(i))
-					if !buildMap {
-						return
+				if exists {
+					return
+				}
+
+				bm.Add(uint64(i))
+				createTS := createTSs[i]
+				dropTS := dropTSs[i]
+				if !createTS.LT(ts) || !dropTS.LT(ts) {
+					return
+				}
+
+				buf := bat.Vecs[0].GetRawBytesAt(i)
+				stats := (objectio.ObjectStats)(buf)
+				name := stats.ObjectName().UnsafeString()
+
+				if dropTS.IsEmpty() && (*transObjects)[name] == nil {
+					object := &ObjectEntry{
+						stats:    &stats,
+						createTS: createTS,
+						dropTS:   dropTS,
+						db:       dbs[i],
+						table:    tableIDs[i],
 					}
-					buf := bat.Vecs[0].GetRawBytesAt(i)
-					stats := (objectio.ObjectStats)(buf)
-					name := stats.ObjectName().String()
-					tid := tids[i]
-					createTs := creates[i]
-					dropTs := deletes[i]
-					if !createTs.LT(ts) || !dropTs.LT(ts) {
-						return
-					}
-					if dropTs.IsEmpty() && objects[name] == nil {
-						object := &ObjectEntry{
-							stats:    &stats,
-							createTS: createTs,
-							dropTS:   dropTs,
-							db:       dbs[i],
-							table:    tid,
-						}
-						objects[name] = object
-						return
-					}
-					if objects[name] != nil {
-						objects[name].dropTS = dropTs
-						return
-					}
+					(*transObjects)[name] = object
+					return
+				}
+				if (*transObjects)[name] != nil {
+					(*transObjects)[name].dropTS = dropTS
+					return
 				}
 			},
 		)
@@ -133,7 +132,6 @@ func MakeSnapshotAndPitrFineFilter(
 		ctx context.Context,
 		bm *bitmap.Bitmap,
 		bat *batch.Batch,
-		_ bool,
 		mp *mpool.MPool,
 	) error {
 		createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
