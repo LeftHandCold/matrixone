@@ -1394,28 +1394,15 @@ func (sm *SnapshotMeta) AccountToTableSnapshots(
 	return
 }
 
-func (sm *SnapshotMeta) GetPitrLocked(pitr *PitrInfo, db, tid uint64) *types.TS {
-	var ts types.TS
-	if !pitr.cluster.IsEmpty() {
-		ts = pitr.cluster
+func (sm *SnapshotMeta) GetPitrByTable(
+	pitr *PitrInfo, dbID, tableID uint64,
+) *types.TS {
+	var accountID uint32
+	if tableInfo := sm.tableIndex[tableID]; tableInfo != nil {
+		accountID = tableInfo.accountID
 	}
-	if sm.tableIndex[tid] != nil {
-		account := sm.tableIndex[tid].accountID
-		p := pitr.account[account]
-		if !p.IsEmpty() {
-			ts = p
-		}
-	}
-	p := pitr.database[db]
-	if !p.IsEmpty() && (ts.IsEmpty() || p.LT(&ts)) {
-		ts = p
-	}
-	p = pitr.tables[tid]
-	if !p.IsEmpty() && (ts.IsEmpty() || p.LT(&ts)) {
-		ts = p
-	}
+	ts := pitr.GetTS(accountID, dbID, tableID)
 	return &ts
-
 }
 
 func (sm *SnapshotMeta) MergeTableInfo(
@@ -1441,7 +1428,7 @@ func (sm *SnapshotMeta) MergeTableInfo(
 			continue
 		}
 		for _, table := range tables {
-			ts := sm.GetPitrLocked(pitr, table.dbID, table.tid)
+			ts := sm.GetPitrByTable(pitr, table.dbID, table.tid)
 			if !table.deleteAt.IsEmpty() &&
 				!isSnapshotRefers(table, accountSnapshots[accID], ts) {
 				delete(sm.tables[accID], table.tid)
