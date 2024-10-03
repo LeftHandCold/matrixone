@@ -124,10 +124,7 @@ func (t *GCWindow) ExecuteGlobalCheckpointBasedGC(
 
 	gcTS := gCkp.GetEnd()
 	job := NewCheckpointBasedGCJob(
-		t.metaDir,
 		&gcTS,
-		&t.tsRange.start,
-		&t.tsRange.end,
 		gCkp.GetLocation(),
 		sourcer,
 		pitrs,
@@ -144,9 +141,21 @@ func (t *GCWindow) ExecuteGlobalCheckpointBasedGC(
 		return nil, err
 	}
 
-	var gcFiles []string
-	gcFiles, t.files = job.Result()
-	return gcFiles, nil
+	filesToGC, filesNotGC := job.Result()
+	if err := WriteNewMetaFile(
+		ctx,
+		t.metaDir,
+		&t.tsRange.start,
+		&t.tsRange.end,
+		filesNotGC,
+		t.mp,
+		t.fs,
+	); err != nil {
+		return nil, err
+	}
+
+	t.files = filesNotGC
+	return filesToGC, nil
 }
 
 func (t *GCWindow) ScanCheckpoints(

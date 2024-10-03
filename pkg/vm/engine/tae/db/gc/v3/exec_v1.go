@@ -62,9 +62,6 @@ type CheckpointBasedGCJob struct {
 	pitr             *logtail.PitrInfo
 	ts               *types.TS
 	globalCkpLoc     objectio.Location
-	dir              string
-
-	from, to *types.TS
 
 	result struct {
 		filesToGC  []string
@@ -73,9 +70,7 @@ type CheckpointBasedGCJob struct {
 }
 
 func NewCheckpointBasedGCJob(
-	dir string,
 	ts *types.TS,
-	from, to *types.TS,
 	globalCkpLoc objectio.Location,
 	sourcer engine.BaseReader,
 	pitr *logtail.PitrInfo,
@@ -94,10 +89,7 @@ func NewCheckpointBasedGCJob(
 		accountSnapshots: accountSnapshots,
 		pitr:             pitr,
 		ts:               ts,
-		dir:              dir,
 		globalCkpLoc:     globalCkpLoc,
-		from:             from,
-		to:               to,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -116,9 +108,6 @@ func (e *CheckpointBasedGCJob) Close() error {
 	e.pitr = nil
 	e.ts = nil
 	e.globalCkpLoc = nil
-	e.dir = ""
-	e.from = nil
-	e.to = nil
 	e.result.filesToGC = nil
 	e.result.filesNotGC = nil
 	return e.GCExecutor.Close()
@@ -185,21 +174,9 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 		return err
 	}
 	transObjects = nil
-	if err := WriteNewMetaFile(
-		ctx,
-		e.dir,
-		e.from,
-		e.to,
-		newFiles,
-		e.mp,
-		e.fs,
-	); err != nil {
-		return err
-	}
 
 	e.result.filesNotGC = make([]objectio.ObjectStats, 0, len(newFiles))
 	e.result.filesNotGC = append(e.result.filesNotGC, newFiles...)
-
 	return nil
 }
 
