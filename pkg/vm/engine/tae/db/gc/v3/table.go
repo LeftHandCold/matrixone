@@ -167,7 +167,7 @@ func (t *GCTable) filterGCProcessor(
 // SoftGC is to remove objectentry that can be deleted from GCTable
 func (t *GCTable) SoftGC(
 	ctx context.Context,
-	location *objectio.Location,
+	location objectio.Location,
 	ts types.TS,
 	accountSnapshots map[uint32][]types.TS,
 	pitrs *logtail.PitrInfo,

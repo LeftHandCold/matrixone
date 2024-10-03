@@ -62,7 +62,7 @@ type CheckpointBasedGCJob struct {
 	accountSnapshots map[uint32][]types.TS
 	pitr             *logtail.PitrInfo
 	ts               *types.TS
-	globalCkpLoc     *objectio.Location
+	globalCkpLoc     objectio.Location
 	dir              string
 
 	from, to *types.TS
@@ -77,7 +77,7 @@ func NewCheckpointBasedGCJob(
 	dir string,
 	ts *types.TS,
 	from, to *types.TS,
-	globalCkpLoc *objectio.Location,
+	globalCkpLoc objectio.Location,
 	gcSourceFiles []objectio.ObjectStats,
 	pitr *logtail.PitrInfo,
 	accountSnapshots map[uint32][]types.TS,
@@ -275,7 +275,7 @@ func MakeBloomfilterCoarseFilter(
 	rowCount int,
 	probability float64,
 	buffer containers.IBatchBuffer,
-	location *objectio.Location,
+	location objectio.Location,
 	ts *types.TS,
 	transObjects *map[string]*ObjectEntry,
 	mp *mpool.MPool,

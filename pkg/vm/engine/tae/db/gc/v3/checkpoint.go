@@ -691,18 +691,13 @@ func (c *checkpointCleaner) GetPITRs() (*logtail.PitrInfo, error) {
 }
 
 func (c *checkpointCleaner) TryGC() error {
-	maxGlobalCKP := c.ckpClient.MaxGlobalCheckpoint()
-	if maxGlobalCKP != nil {
-		location := maxGlobalCKP.GetLocation()
-		err := c.tryGC(&location, maxGlobalCKP)
-		if err != nil {
-			return err
-		}
+	if maxGlobalCKP := c.ckpClient.MaxGlobalCheckpoint(); maxGlobalCKP != nil {
+		return c.tryGCAgainstGlobalCheckpoint(maxGlobalCKP)
 	}
 	return nil
 }
 
-func (c *checkpointCleaner) tryGC(location *objectio.Location, gckp *checkpoint.CheckpointEntry) error {
+func (c *checkpointCleaner) tryGCAgainstGlobalCheckpoint(gckp *checkpoint.CheckpointEntry) error {
 	if !c.delWorker.Start() {
 		return nil
 	}
@@ -710,7 +705,7 @@ func (c *checkpointCleaner) tryGC(location *objectio.Location, gckp *checkpoint.
 	var snapshots map[uint32]containers.Vector
 	defer func() {
 		if err != nil {
-			logutil.Errorf("[DiskCleaner] tryGC failed: %v", err.Error())
+			logutil.Errorf("[DiskCleaner] tryGCAgainstGlobalCheckpoint failed: %v", err.Error())
 			c.delWorker.Idle()
 		}
 		logtail.CloseSnapshotList(snapshots)
@@ -726,12 +721,12 @@ func (c *checkpointCleaner) tryGC(location *objectio.Location, gckp *checkpoint.
 		return nil
 	}
 	accountSnapshots := TransformToTSList(snapshots)
-	gc, err := c.softGC(location, gckp, accountSnapshots, pitrs)
+	gc, err := c.softGCAgainstGlobalCheckpoint(gckp, accountSnapshots, pitrs)
 	if err != nil {
-		logutil.Errorf("[DiskCleaner] softGC failed: %v", err.Error())
+		logutil.Errorf("[DiskCleaner] softGCAgainstGlobalCheckpoint failed: %v", err.Error())
 		return err
 	}
-	// Delete files after softGC
+	// Delete files after softGCAgainstGlobalCheckpoint
 	// TODO:Requires Physical Removal Policy
 	err = c.delWorker.ExecDelete(c.ctx, gc, c.disableGC)
 	if err != nil {
@@ -748,8 +743,7 @@ func (c *checkpointCleaner) tryGC(location *objectio.Location, gckp *checkpoint.
 	return nil
 }
 
-func (c *checkpointCleaner) softGC(
-	location *objectio.Location,
+func (c *checkpointCleaner) softGCAgainstGlobalCheckpoint(
 	gckp *checkpoint.CheckpointEntry,
 	accountSnapshots map[uint32][]types.TS,
 	pitrs *logtail.PitrInfo,
@@ -759,7 +753,7 @@ func (c *checkpointCleaner) softGC(
 	now := time.Now()
 	var softCost, mergeCost time.Duration
 	defer func() {
-		logutil.Info("[DiskCleaner] softGC cost",
+		logutil.Info("[DiskCleaner] softGCAgainstGlobalCheckpoint cost",
 			zap.String("soft-gc cost", softCost.String()),
 			zap.String("merge-table cost", mergeCost.String()))
 	}()
@@ -775,6 +769,7 @@ func (c *checkpointCleaner) softGC(
 		table.Close()
 		c.inputs.tables[i] = nil
 	}
+	location := gckp.GetLocation()
 	gc, err := mergeTable.SoftGC(
 		c.ctx,
 		location,
@@ -784,7 +779,7 @@ func (c *checkpointCleaner) softGC(
 		c.snapshotMeta,
 	)
 	if err != nil {
-		logutil.Errorf("softGC failed: %v", err.Error())
+		logutil.Errorf("softGCAgainstGlobalCheckpoint failed: %v", err.Error())
 		return nil, err
 	}
 	softCost = time.Since(now)
@@ -875,7 +870,7 @@ func (c *checkpointCleaner) CheckGC() error {
 	logutil.Infof("merge table is %d, stats is %v", len(mergeTable.files.stats), mergeTable.files.stats[0].ObjectName().String())
 	if _, err = mergeTable.SoftGC(
 		c.ctx,
-		&location,
+		location,
 		gCkp.GetEnd(),
 		accoutSnapshots,
 		pitr,
@@ -888,7 +883,7 @@ func (c *checkpointCleaner) CheckGC() error {
 	//logutil.Infof("debug table is %d, stats is %v", len(debugTable.files.stats), debugTable.files.stats[0].ObjectName().String())
 	if _, err = debugTable.SoftGC(
 		c.ctx,
-		&location,
+		location,
 		gCkp.GetEnd(),
 		accoutSnapshots,
 		pitr,
@@ -990,8 +985,7 @@ func (c *checkpointCleaner) Process() {
 			zap.String("max-global :", maxGlobalCKP.String()),
 			zap.String("ts", compareTS.ToString()),
 		)
-		location := maxGlobalCKP.GetLocation()
-		if err = c.tryGC(&location, maxGlobalCKP); err != nil {
+		if err = c.tryGCAgainstGlobalCheckpoint(maxGlobalCKP); err != nil {
 			logutil.Error(
 				"DiskCleaner-Process-TryGC-Error",
 				zap.Error(err),
