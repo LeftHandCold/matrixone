@@ -22,6 +22,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 
+	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -89,6 +90,22 @@ type GCWindow struct {
 	}
 }
 
+func (t *GCWindow) MakeFilesReader(
+	ctx context.Context,
+	fs fileservice.FileService,
+) engine.Reader {
+	return engine_util.SimpleMultiObjectsReader(
+		ctx,
+		fs,
+		t.files,
+		timestamp.Timestamp{},
+		engine_util.WithColumns(
+			ObjectTableSeqnums,
+			ObjectTableTypes,
+		),
+	)
+}
+
 // ExecuteGlobalCheckpointBasedGC is to remove objectentry that can be deleted from GCWindow
 // it will refresh the files in GCWindow with the files that can not be GC'ed
 // it will return the files that could be GC'ed
@@ -103,16 +120,7 @@ func (t *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	fs fileservice.FileService,
 ) ([]string, error) {
 
-	sourcer := engine_util.SimpleMultiObjectsReader(
-		ctx,
-		fs,
-		t.files,
-		timestamp.Timestamp{},
-		engine_util.WithColumns(
-			ObjectTableSeqnums,
-			ObjectTableTypes,
-		),
-	)
+	sourcer := t.MakeFilesReader(ctx, fs)
 
 	gcTS := gCkp.GetEnd()
 	job := NewCheckpointBasedGCJob(
