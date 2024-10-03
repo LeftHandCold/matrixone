@@ -142,14 +142,8 @@ func (t *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	}
 
 	filesToGC, filesNotGC := job.Result()
-	if err := WriteNewMetaFile(
-		ctx,
-		t.metaDir,
-		&t.tsRange.start,
-		&t.tsRange.end,
-		filesNotGC,
-		t.mp,
-		t.fs,
+	if err := t.writeMetaForRemainings(
+		ctx, filesNotGC,
 	); err != nil {
 		return nil, err
 	}
@@ -214,13 +208,13 @@ func (t *GCWindow) ScanCheckpoints(
 	if err := sinker.Sync(ctx); err != nil {
 		return err
 	}
-	stats, _ := sinker.GetResult()
-	if err := t.writeMetaAfterScan(
-		ctx, &start, &end, stats,
+	newFiles, _ := sinker.GetResult()
+	if err := t.writeMetaForRemainings(
+		ctx, newFiles,
 	); err != nil {
 		return err
 	}
-	t.files = append(t.files, stats...)
+	t.files = append(t.files, newFiles...)
 	return nil
 }
 
@@ -303,12 +297,13 @@ func (t *GCWindow) getSinker(
 	)
 }
 
-func (t *GCWindow) writeMetaAfterScan(
+func (t *GCWindow) writeMetaForRemainings(
 	ctx context.Context,
-	start, end *types.TS,
 	stats []objectio.ObjectStats,
 ) error {
-	name := blockio.EncodeCheckpointMetadataFileName(t.metaDir, PrefixGCMeta, *start, *end)
+	name := blockio.EncodeCheckpointMetadataFileName(
+		t.metaDir, PrefixGCMeta, t.tsRange.start, t.tsRange.end,
+	)
 	ret := batch.NewWithSchema(
 		false, false, ObjectTableMetaAttrs, ObjectTableMetaTypes,
 	)

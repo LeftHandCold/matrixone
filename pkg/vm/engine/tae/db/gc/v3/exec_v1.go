@@ -23,7 +23,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 
 	"github.com/matrixorigin/matrixone/pkg/common/bitmap"
@@ -182,51 +181,6 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 
 func (e *CheckpointBasedGCJob) Result() ([]string, []objectio.ObjectStats) {
 	return e.result.filesToGC, e.result.filesNotGC
-}
-
-func WriteNewMetaFile(
-	ctx context.Context,
-	dir string,
-	from, to *types.TS,
-	newFiles []objectio.ObjectStats,
-	mp *mpool.MPool,
-	fs fileservice.FileService,
-) (err error) {
-	name := blockio.EncodeCheckpointMetadataFileName(
-		dir, PrefixGCMeta, *from, *to,
-	)
-	ret := batch.NewWithSchema(
-		false,
-		false,
-		ObjectTableMetaAttrs,
-		ObjectTableMetaTypes,
-	)
-	defer func() {
-		ret.FreeColumns(mp)
-	}()
-	for i := range newFiles {
-		if err = vector.AppendBytes(
-			ret.GetVector(0),
-			newFiles[i][:],
-			false,
-			mp,
-		); err != nil {
-			return
-		}
-	}
-
-	var writer *objectio.ObjectWriter
-	if writer, err = objectio.NewObjectWriterSpecial(
-		objectio.WriterGC, name, fs,
-	); err != nil {
-		return
-	}
-	if _, err = writer.WriteWithoutSeqnum(ret); err != nil {
-		return
-	}
-
-	_, err = writer.WriteEnd(ctx)
-	return
 }
 
 func MakeBloomfilterCoarseFilter(
