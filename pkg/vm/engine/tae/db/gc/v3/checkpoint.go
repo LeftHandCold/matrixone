@@ -912,7 +912,6 @@ func (c *checkpointCleaner) CheckGC() error {
 }
 
 func (c *checkpointCleaner) Process() {
-	var ts types.TS
 	if !c.GCEnabled() {
 		return
 	}
@@ -924,33 +923,43 @@ func (c *checkpointCleaner) Process() {
 			zap.Duration("duration", time.Since(now)),
 		)
 	}()
-	maxConsumed := c.maxConsumed.Load()
-	if maxConsumed != nil {
-		ts = maxConsumed.GetEnd()
+
+	// 1. get the max consumed timestamp water level
+	var tsWaterLevel types.TS
+	if maxConsumed := c.maxConsumed.Load(); maxConsumed != nil {
+		tsWaterLevel = maxConsumed.GetEnd()
 	}
 
-	checkpoints := c.ckpClient.ICKPSeekLT(ts, 10)
-
+	// 2. get up to 10 incremental checkpoints starting from the tsWaterLevel
+	checkpoints := c.ckpClient.ICKPSeekLT(tsWaterLevel, 10)
+	// if there is no incremental checkpoint, quickly return
 	if len(checkpoints) == 0 {
 		logutil.Info(
 			"DiskCleaner-Process-NoCheckpoint",
-			zap.String("ts", ts.ToString()),
+			zap.String("water-level", tsWaterLevel.ToString()),
 		)
 		return
 	}
-	candidates := make([]*checkpoint.CheckpointEntry, 0)
+
+	// 3. filter out the incremental checkpoints that do not meet the requirements
+	candidates := make([]*checkpoint.CheckpointEntry, 0, len(checkpoints))
 	for _, ckp := range checkpoints {
+		// TODO:
+		// 1. break or continue?
+		// 2. use cases reveiw!
 		if !c.checkExtras(ckp) {
 			break
 		}
 		candidates = append(candidates, ckp)
 	}
-
 	if len(candidates) == 0 {
 		return
 	}
-	var input *GCTable
-	var err error
+
+	var (
+		input *GCTable
+		err   error
+	)
 	if input, err = c.createNewInput(candidates); err != nil {
 		logutil.Error(
 			"DiskCleaner-Process-CreateNewInput-Error",
@@ -963,15 +972,17 @@ func (c *checkpointCleaner) Process() {
 	c.updateInputs(input)
 	c.updateMaxConsumed(candidates[len(candidates)-1])
 
-	var compareTS types.TS
-	maxCompared := c.maxCompared.Load()
-	if maxCompared != nil {
-		compareTS = maxCompared.GetEnd()
-	}
-	maxGlobalCKP := c.ckpClient.MaxGlobalCheckpoint()
-	if maxGlobalCKP == nil {
+	var maxGlobalCKP *checkpoint.CheckpointEntry
+
+	if maxGlobalCKP = c.ckpClient.MaxGlobalCheckpoint(); maxGlobalCKP == nil {
 		return
 	}
+
+	var compareTS types.TS
+	if maxCompared := c.maxCompared.Load(); maxCompared != nil {
+		compareTS = maxCompared.GetEnd()
+	}
+
 	maxEnd := maxGlobalCKP.GetEnd()
 	if compareTS.LT(&maxEnd) {
 		logutil.Info(
@@ -980,8 +991,7 @@ func (c *checkpointCleaner) Process() {
 			zap.String("ts", compareTS.ToString()),
 		)
 		location := maxGlobalCKP.GetLocation()
-		err = c.tryGC(&location, maxGlobalCKP)
-		if err != nil {
+		if err = c.tryGC(&location, maxGlobalCKP); err != nil {
 			logutil.Error(
 				"DiskCleaner-Process-TryGC-Error",
 				zap.Error(err),
@@ -990,8 +1000,7 @@ func (c *checkpointCleaner) Process() {
 			return
 		}
 	}
-	err = c.mergeGCFile()
-	if err != nil {
+	if err = c.mergeGCFile(); err != nil {
 		// TODO: Error handle
 		return
 	}
