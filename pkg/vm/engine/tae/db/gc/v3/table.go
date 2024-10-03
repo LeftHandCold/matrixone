@@ -62,7 +62,10 @@ func NewGCWindow(
 	fs fileservice.FileService,
 	opts ...WindowOption,
 ) *GCWindow {
-	var window GCWindow
+	window := GCWindow{
+		mp: mp,
+		fs: fs,
+	}
 	for _, opt := range opts {
 		opt(&window)
 	}
