@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
 
@@ -102,6 +103,17 @@ func (t *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	fs fileservice.FileService,
 ) ([]string, error) {
 
+	sourcer := engine_util.SimpleMultiObjectsReader(
+		ctx,
+		fs,
+		t.files,
+		timestamp.Timestamp{},
+		engine_util.WithColumns(
+			ObjectTableSeqnums,
+			ObjectTableTypes,
+		),
+	)
+
 	gcTS := gCkp.GetEnd()
 	job := NewCheckpointBasedGCJob(
 		t.metaDir,
@@ -109,7 +121,7 @@ func (t *GCWindow) ExecuteGlobalCheckpointBasedGC(
 		&t.tsRange.start,
 		&t.tsRange.end,
 		gCkp.GetLocation(),
-		t.files,
+		sourcer,
 		pitrs,
 		accountSnapshots,
 		snapshotMeta,
