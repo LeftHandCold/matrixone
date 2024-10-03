@@ -175,12 +175,6 @@ func (c *checkpointCleaner) isEnableCheckGC() bool {
 	return c.checkGC
 }
 
-func (c *checkpointCleaner) MakeBuffer() *containers.OneSchemaBatchBuffer {
-	return containers.NewOneSchemaBatchBuffer(
-		mpool.MB*16, ObjectTableAttrs, ObjectTableTypes,
-	)
-}
-
 func (c *checkpointCleaner) Replay() error {
 	dirs, err := c.fs.ListDir(GCMetaDir)
 	if err != nil {
@@ -398,16 +392,10 @@ func (c *checkpointCleaner) GeteCkpGC() *types.TS {
 	return c.ckpGC.Load()
 }
 
-func (c *checkpointCleaner) GetInputs() *GCWindow {
+func (c *checkpointCleaner) GetFirstWindow() *GCWindow {
 	c.remainingObjects.RLock()
 	defer c.remainingObjects.RUnlock()
 	return c.remainingObjects.windows[0]
-}
-
-func (c *checkpointCleaner) GetGCTables() []*GCWindow {
-	c.remainingObjects.RLock()
-	defer c.remainingObjects.RUnlock()
-	return c.remainingObjects.windows
 }
 
 func (c *checkpointCleaner) SetMinMergeCountForTest(count int) {
@@ -799,7 +787,7 @@ func (c *checkpointCleaner) doGCAgainstGlobalCheckpoint(
 	c.remainingObjects.windows = c.remainingObjects.windows[:1]
 
 	// create a buffer as the GC memory pool
-	memoryBuffer := c.MakeBuffer()
+	memoryBuffer := MakeGCWindowBuffer(16 * mpool.MB)
 	defer memoryBuffer.Close(c.mp)
 
 	var (
@@ -898,7 +886,7 @@ func (c *checkpointCleaner) CheckGC() error {
 		return moerr.NewInternalErrorNoCtx("TS Compare not equal")
 	}
 
-	buffer := c.MakeBuffer()
+	buffer := MakeGCWindowBuffer(16 * mpool.MB)
 	defer buffer.Close(c.mp)
 
 	debugWindow, err := c.scanCheckpointsAsDebugWindow(
@@ -1142,7 +1130,7 @@ func (c *checkpointCleaner) scanCheckpointsAsOneWindow(
 			zap.Uint32("table-meta-size :", tableSize),
 			zap.String("snapshot-detail", c.snapshotMeta.String()))
 	}()
-	buffer := c.MakeBuffer()
+	buffer := MakeGCWindowBuffer(16 * mpool.MB)
 	defer buffer.Close(c.mp)
 	if err = gcWindow.ScanCheckpoints(
 		c.ctx,

@@ -160,6 +160,7 @@ type Cleaner interface {
 	AddChecker(checker func(item any) bool, key string) int
 	RemoveChecker(key string) error
 	GetScanWatermark() *checkpoint.CheckpointEntry
+	GetFirstWindow() *GCWindow
 	Stop()
 	// for test
 	SetMinMergeCountForTest(count int)

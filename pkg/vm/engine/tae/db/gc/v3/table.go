@@ -489,8 +489,13 @@ func (t *GCWindow) Compare(
 	map[string]*ObjectEntry,
 	bool,
 ) {
+	if buffer == nil {
+		buffer = MakeGCWindowBuffer(mpool.MB)
+		defer buffer.Close(t.mp)
+	}
 	bat := buffer.Fetch()
 	defer buffer.Putback(bat, t.mp)
+
 	objects := make(map[string]*ObjectEntry)
 	objects2 := make(map[string]*ObjectEntry)
 
