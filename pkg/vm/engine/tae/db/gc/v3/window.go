@@ -290,7 +290,6 @@ func (t *GCWindow) writeMetaAfterScan(
 		); err != nil {
 			return err
 		}
-		t.files = append(t.files, s)
 	}
 	writer, err := objectio.NewObjectWriterSpecial(objectio.WriterGC, name, t.fs)
 	if err != nil {
