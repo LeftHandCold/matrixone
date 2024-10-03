@@ -174,7 +174,7 @@ func (t *GCTable) SoftGC(
 	meta *logtail.SnapshotMeta,
 ) ([]string, error) {
 
-	job := NewGCJobExecutorV1(
+	job := NewCheckpointBasedGCJob(
 		t.metaDir,
 		&ts,
 		&t.tsRange.start,

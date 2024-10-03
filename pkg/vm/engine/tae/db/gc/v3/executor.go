@@ -31,7 +31,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 )
 
-type GCJobExecutor = GCJobExecutorV1
+type GCJob = CheckpointBasedGCJob
 
 type FilterFn func(context.Context, *bitmap.Bitmap, *batch.Batch, *mpool.MPool) error
 type SourerFn func(context.Context, []string, *plan.Expr, *mpool.MPool, *batch.Batch) (bool, error)

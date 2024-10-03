@@ -38,19 +38,19 @@ const (
 	Default_Coarse_Probility    = 0.0001
 )
 
-type GCJobExecutorOption func(*GCJobExecutor)
+type GCJobExecutorOption func(*GCJob)
 
-func WithJobExecutorCoarseConfig(
+func WithGCJobCoarseConfig(
 	estimateRows int,
 	probility float64,
 ) GCJobExecutorOption {
-	return func(e *GCJobExecutor) {
+	return func(e *GCJob) {
 		e.config.coarseEstimateRows = estimateRows
 		e.config.coarseProbility = probility
 	}
 }
 
-type GCJobExecutorV1 struct {
+type CheckpointBasedGCJob struct {
 	GCExecutor
 	config struct {
 		coarseEstimateRows int
@@ -73,7 +73,7 @@ type GCJobExecutorV1 struct {
 	}
 }
 
-func NewGCJobExecutorV1(
+func NewCheckpointBasedGCJob(
 	dir string,
 	ts *types.TS,
 	from, to *types.TS,
@@ -87,8 +87,8 @@ func NewGCJobExecutorV1(
 	mp *mpool.MPool,
 	fs fileservice.FileService,
 	opts ...GCJobExecutorOption,
-) *GCJobExecutorV1 {
-	e := &GCJobExecutorV1{
+) *CheckpointBasedGCJob {
+	e := &CheckpointBasedGCJob{
 		GCExecutor:       *NewGCExecutor(buffer, isOwner, mp, fs),
 		gcSourceFiles:    gcSourceFiles,
 		snapshotMeta:     snapshotMeta,
@@ -107,7 +107,7 @@ func NewGCJobExecutorV1(
 	return e
 }
 
-func (e *GCJobExecutorV1) Close() error {
+func (e *CheckpointBasedGCJob) Close() error {
 	e.gcSourceFiles = nil
 	e.snapshotMeta = nil
 	e.accountSnapshots = nil
@@ -122,7 +122,7 @@ func (e *GCJobExecutorV1) Close() error {
 	return e.GCExecutor.Close()
 }
 
-func (e *GCJobExecutorV1) fillDefaults() {
+func (e *CheckpointBasedGCJob) fillDefaults() {
 	if e.config.coarseEstimateRows <= 0 {
 		e.config.coarseEstimateRows = Default_Coarse_EstimateRows
 	}
@@ -131,7 +131,7 @@ func (e *GCJobExecutorV1) fillDefaults() {
 	}
 }
 
-func (e *GCJobExecutorV1) getNextCoarseBatch(
+func (e *CheckpointBasedGCJob) getNextCoarseBatch(
 	ctx context.Context,
 	_ []string,
 	_ *plan.Expr,
@@ -151,7 +151,7 @@ func (e *GCJobExecutorV1) getNextCoarseBatch(
 	return false, nil
 }
 
-func (e *GCJobExecutorV1) Execute(ctx context.Context) error {
+func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 	attrs, attrTypes := logtail.GetDataSchema()
 	buffer := containers.NewOneSchemaBatchBuffer(
 		mpool.MB*16,
@@ -221,7 +221,7 @@ func (e *GCJobExecutorV1) Execute(ctx context.Context) error {
 	return nil
 }
 
-func (e *GCJobExecutorV1) Result() ([]string, []objectio.ObjectStats) {
+func (e *CheckpointBasedGCJob) Result() ([]string, []objectio.ObjectStats) {
 	return e.result.filesToGC, e.result.filesNotGC
 }
 
