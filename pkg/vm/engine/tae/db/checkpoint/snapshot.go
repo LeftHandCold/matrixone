@@ -106,41 +106,46 @@ func ListSnapshotMeta(
 
 func ListSnapshotMetaWithDiskCleaner(
 	snapshot types.TS,
-	metas map[string]struct{},
+	checkpointMetaFiles map[string]struct{},
 ) ([]*MetaFile, []*MetaFile, int, error) {
-	if len(metas) == 0 {
+	if len(checkpointMetaFiles) == 0 {
 		return nil, nil, 0, nil
 	}
-	metaFiles := make([]*MetaFile, 0)
+
+	// parse meta file names to MetaFiles
+	metaFiles := make([]*MetaFile, 0, len(checkpointMetaFiles))
 	idx := 0
-	for meta := range metas {
-		start, end := blockio.DecodeCheckpointMetadataFileName(meta)
+	for metaFile := range checkpointMetaFiles {
+		start, end := blockio.DecodeCheckpointMetadataFileName(metaFile)
 		metaFiles = append(metaFiles, &MetaFile{
 			start: start,
 			end:   end,
 			index: idx,
-			name:  meta,
+			name:  metaFile,
 		})
 		idx++
 	}
+
+	// sort meta files by the end ts in the asc order
 	sort.Slice(metaFiles, func(i, j int) bool {
 		return metaFiles[i].end.LT(&metaFiles[j].end)
 	})
 
-	mergeMetaFiles := make([]*MetaFile, 0)
-	start := 0
+	pos := 0
 	for i, file := range metaFiles {
 		// TODO: remove log
 		logutil.Infof("metaFiles[%d]: %v", i, file.String())
 		if file.start.IsEmpty() && i < len(metaFiles)-1 && !metaFiles[i+1].start.IsEmpty() {
-			start = i
+			pos = i
 			break
 		}
 	}
 
-	if start > 0 {
-		mergeMetaFiles = append(mergeMetaFiles, metaFiles[:start]...)
-		metaFiles = metaFiles[start:]
+	var mergeMetaFiles []*MetaFile
+	if pos > 0 {
+		mergeMetaFiles = make([]*MetaFile, 0, pos)
+		mergeMetaFiles = append(mergeMetaFiles, metaFiles[:pos]...)
+		metaFiles = metaFiles[pos:]
 	}
 
 	files, num, err := AllAfterAndGCheckpoint(snapshot, metaFiles)
