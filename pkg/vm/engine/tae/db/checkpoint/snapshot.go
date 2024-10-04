@@ -26,6 +26,57 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 )
 
+// `files` should be sorted by the end-ts in the asc order
+// Ex.1
+//
+//	    files  :  [0,100],[100,200],[200,300],[0,300],[300,400],[400,500]
+//		ts     :  250
+//		return :  [0,100],[100,200],[200,300]
+//
+// Ex.2
+//
+//	    files  :  [0,100],[100,200],[200,300],[0,300],[300,400],[400,500]
+//		ts     :  300
+//		return :  [0,100],[100,200],[200,300],[0,300]
+//
+// Ex.3
+//
+//	    files  :  [0,100],[100,200],[200,300],[0,300],[300,400],[400,500],[500,600]
+//		ts     :  450
+//      return :  [0,100],[100,200],[200,300],[0,300],[300,400],[400,500],[500,600]
+
+func FilterSortedMetaFiles(
+	ts *types.TS,
+	files []*MetaFile,
+) []*MetaFile {
+	if len(files) == 0 {
+		return nil
+	}
+
+	prev := files[0]
+
+	// start.IsEmpty() means the file is a global checkpoint
+	// ts.LE(&prev.end) means the ts is in the range of the checkpoint
+	// it means the ts is in the range of the global checkpoint
+	// ts is within GCKP[0, end]
+	if prev.start.IsEmpty() && ts.LE(&prev.end) {
+		return files[:1]
+	}
+
+	for i := 1; i < len(files); i++ {
+		curr := files[i]
+		// curr.start.IsEmpty() means the file is a global checkpoint
+		// ts.LE(&curr.end) means the ts is in the range of the checkpoint
+		// ts.LT(&prev.end) means the ts is not in the range of the previous checkpoint
+		if curr.start.IsEmpty() && ts.LE(&curr.end) {
+			return files[:i]
+		}
+		prev = curr
+	}
+
+	return files
+}
+
 func AllAfterAndGCheckpoint(snapshot types.TS, files []*MetaFile) ([]*MetaFile, int, error) {
 	prev := &MetaFile{}
 	for i, file := range files {
@@ -120,6 +171,8 @@ func ListSnapshotMetaWithDiskCleaner(
 		return metaFiles[i].end.LT(&metaFiles[j].end)
 	})
 
+	// find the first global checkpoint
+	// JW TODO: refactor the following code
 	pos := 0
 	for i, file := range metaFiles {
 		// TODO: remove log
@@ -131,6 +184,7 @@ func ListSnapshotMetaWithDiskCleaner(
 	}
 
 	var mergeMetaFiles []*MetaFile
+	// JW TODO: pos > 0 ?
 	if pos > 0 {
 		mergeMetaFiles = make([]*MetaFile, 0, pos)
 		mergeMetaFiles = append(mergeMetaFiles, metaFiles[:pos]...)
