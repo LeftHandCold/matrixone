@@ -596,7 +596,7 @@ func (c *checkpointCleaner) mergeCheckpointFiles(stage types.TS, snapshotList ma
 	}
 	metas := c.GetCheckpoints()
 	logutil.Infof("[MergeCheckpoint] metas len %d", len(metas))
-	ok, files, idxes, err := getAllowedMergeFiles(metas, stage, nil)
+	ok, files, idxes, err := getAllowedMergeFiles(metas, stage)
 	if err != nil {
 		return err
 	}
