@@ -26,17 +26,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 )
 
-type GetCheckpointRange = func(snapshot types.TS, files []*MetaFile) ([]*MetaFile, int, error)
-
-func SpecifiedCheckpoint(snapshot types.TS, files []*MetaFile) ([]*MetaFile, int, error) {
-	for i, file := range files {
-		if snapshot.LE(&file.end) {
-			return files, i, nil
-		}
-	}
-	return files, len(files) - 1, nil
-}
-
 func AllAfterAndGCheckpoint(snapshot types.TS, files []*MetaFile) ([]*MetaFile, int, error) {
 	prev := &MetaFile{}
 	for i, file := range files {

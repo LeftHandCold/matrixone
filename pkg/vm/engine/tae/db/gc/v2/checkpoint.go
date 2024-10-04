@@ -488,7 +488,7 @@ func (c *checkpointCleaner) mergeGCFile() error {
 func getAllowedMergeFiles(
 	metas map[string]struct{},
 	snapshot types.TS,
-	listFunc checkpoint.GetCheckpointRange) (ok bool, files []*checkpoint.MetaFile, idxes []int, err error) {
+) (ok bool, files []*checkpoint.MetaFile, idxes []int, err error) {
 	var idx int
 	files, _, idx, err = checkpoint.ListSnapshotMetaWithDiskCleaner(snapshot, metas)
 	if err != nil {
