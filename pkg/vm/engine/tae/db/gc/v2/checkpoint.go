@@ -502,7 +502,8 @@ func getAllowedMergeFiles(
 	var tmpFiles []*checkpoint.MetaFile
 
 	for i, file := range metaFiles {
-		if file.GetStart().IsEmpty() {
+		start := file.GetStart()
+		if start.IsEmpty() {
 			if i != 0 {
 				tmpFiles = append(tmpFiles, metaFiles[i-1])
 			}
@@ -593,7 +594,6 @@ func (c *checkpointCleaner) mergeCheckpointFiles(stage types.TS, snapshotList ma
 		return nil
 	}
 	metas := c.GetCheckpoints()
-	logutil.Infof("[MergeCheckpoint] metas len %d", len(metas))
 	metaFiles, err := getAllowedMergeFiles(metas, stage)
 	if err != nil {
 		return err
@@ -627,8 +627,7 @@ func (c *checkpointCleaner) mergeCheckpointFiles(stage types.TS, snapshotList ma
 	for _, metaFile := range metaFiles {
 		logutil.Info("[MergeCheckpoint]",
 			common.OperationField("MergeCheckpointFiles"),
-			common.OperandField(stage.ToString()),
-			common.OperandField(idx))
+			common.OperandField(stage.ToString()))
 		dFiles, mergeFiles, err := c.getDeleteFile(c.ctx, c.fs.Service, metaFile, *ckpGC, stage, ckpSnapList, &pitr)
 		if err != nil {
 			return err
