@@ -134,7 +134,7 @@ func (exec *GCExecutor) doFilter(
 		if err := canGCBat.Union(bat, exec.sels, exec.mp); err != nil {
 			return err
 		}
-		bat.Shrink(exec.sels, true)
+		bat.Shrink(exec.sels, false)
 		if err := cannotGCSinker(ctx, bat); err != nil {
 			return err
 		}
