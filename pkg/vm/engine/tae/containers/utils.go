@@ -17,6 +17,7 @@ package containers
 import (
 	"bytes"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sync"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -98,6 +99,7 @@ func (bb *OneSchemaBatchBuffer) Fetch() *batch.Batch {
 	}
 	bat := bb.buffer[len(bb.buffer)-1]
 	bb.buffer = bb.buffer[:len(bb.buffer)-1]
+	logutil.Infof("fetch batch: %d, cap is %d", bat.Allocated(), bb.sizeCap)
 	bb.currSize -= bat.Allocated()
 	return bat
 }
@@ -109,7 +111,9 @@ func (bb *OneSchemaBatchBuffer) Putback(bat *batch.Batch, mp *mpool.MPool) {
 		return
 	}
 
+	logutil.Infof("putback batch: %d", bat.Allocated())
 	bat.CleanOnlyData()
+	logutil.Infof("putback batch2: %d, size : %d, cap is %d", bat.Allocated(), bb.currSize, bb.sizeCap)
 	newSize := bb.currSize + bat.Allocated()
 	if newSize > bb.sizeCap {
 		bat.Clean(mp)
