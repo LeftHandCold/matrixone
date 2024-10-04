@@ -60,9 +60,9 @@ type checkpointCleaner struct {
 		scanWaterMark atomic.Pointer[checkpoint.CheckpointEntry]
 
 		gcWaterMark atomic.Pointer[checkpoint.CheckpointEntry]
-	}
 
-	ckpGC atomic.Pointer[types.TS]
+		checkpointGCWaterMark atomic.Pointer[types.TS]
+	}
 
 	config struct {
 		// minMergeCount is the configuration of the merge GC metadata file.
@@ -341,8 +341,8 @@ func (c *checkpointCleaner) updateGCWaterMark(e *checkpoint.CheckpointEntry) {
 	c.watermarks.gcWaterMark.Store(e)
 }
 
-func (c *checkpointCleaner) updateCkpGC(ts *types.TS) {
-	c.ckpGC.Store(ts)
+func (c *checkpointCleaner) updateCheckpointGCWaterMark(ts *types.TS) {
+	c.watermarks.checkpointGCWaterMark.Store(ts)
 }
 
 func (c *checkpointCleaner) addGCWindow(window *GCWindow) {
@@ -369,8 +369,8 @@ func (c *checkpointCleaner) GetGCWaterMark() *checkpoint.CheckpointEntry {
 	return c.watermarks.gcWaterMark.Load()
 }
 
-func (c *checkpointCleaner) GeteCkpGC() *types.TS {
-	return c.ckpGC.Load()
+func (c *checkpointCleaner) GetCheckpointGCWaterMark() *types.TS {
+	return c.watermarks.checkpointGCWaterMark.Load()
 }
 
 func (c *checkpointCleaner) GetFirstWindow() *GCWindow {
@@ -596,7 +596,7 @@ func (c *checkpointCleaner) getDeleteFile(
 			}
 			deleteFiles = append(deleteFiles, nameMeta)
 			if i == len(ckps)-1 {
-				c.updateCkpGC(&end)
+				c.updateCheckpointGCWaterMark(&end)
 			}
 			for name := range locations {
 				deleteFiles = append(deleteFiles, name)
@@ -632,7 +632,7 @@ func (c *checkpointCleaner) mergeCheckpointFiles(
 	if !ok {
 		return nil
 	}
-	ckpGC := c.GeteCkpGC()
+	ckpGC := c.GetCheckpointGCWaterMark()
 	if ckpGC == nil {
 		ckpGC = new(types.TS)
 	}
