@@ -490,7 +490,7 @@ func getAllowedMergeFiles(
 	metaFiles []*checkpoint.MetaFile,
 	err error,
 ) {
-	if metaFiles, err = checkpoint.ListSnapshotMetaWithDiskCleaner(
+	if metaFiles, err = checkpoint.FilterMetaFilesByTimestamp(
 		ts, checkpointMetaFiles,
 	); err != nil {
 		return

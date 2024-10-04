@@ -515,16 +515,16 @@ func (c *checkpointCleaner) upgradeGCFiles(
 	return nil
 }
 
-// getAllowedMergeFiles returns the files that can be merged.
+// getMetaFilesToMerge returns the files that can be merged.
 // metaFiles: all checkpoint meta files should be merged.
-func getAllowedMergeFiles(
+func getMetaFilesToMerge(
 	ts types.TS,
 	checkpointMetaFiles map[string]struct{},
 ) (
 	metaFiles []*checkpoint.MetaFile,
 	err error,
 ) {
-	if metaFiles, err = checkpoint.ListSnapshotMetaWithDiskCleaner(
+	if metaFiles, err = checkpoint.FilterMetaFilesByTimestamp(
 		ts, checkpointMetaFiles,
 	); err != nil {
 		return
@@ -637,7 +637,7 @@ func (c *checkpointCleaner) mergeCheckpointFiles(
 	}
 	checkpointMetaFiles := c.GetCheckpointMetaFiles()
 	logutil.Infof("[MergeCheckpoint] checkpointMetaFiles len %d", len(checkpointMetaFiles))
-	metaFiles, err := getAllowedMergeFiles(
+	metaFiles, err := getMetaFilesToMerge(
 		checkpointLowWaterMark, checkpointMetaFiles,
 	)
 	if err != nil || len(metaFiles) == 0 {

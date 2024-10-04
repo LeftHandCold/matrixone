@@ -131,7 +131,10 @@ func ListSnapshotMeta(
 	return metaFiles, nil
 }
 
-func ListSnapshotMetaWithDiskCleaner(
+// 1. it will parse all the input meta file names to MetaFiles
+// 2. sort the MetaFiles by the end-ts in the asc order
+// 3. filter the MetaFiles by the input ts
+func FilterMetaFilesByTimestamp(
 	snapshot types.TS,
 	checkpointMetaFiles map[string]struct{},
 ) ([]*MetaFile, error) {
