@@ -273,7 +273,7 @@ func (c *checkpointCleaner) Replay() error {
 		//and the table information needs to be initialized from the checkpoint
 		scanWaterMark := c.GetScanWaterMark()
 		isConsumedGCkp := false
-		checkpointEntries, err := checkpoint.ListSnapshotCheckpoint(c.ctx, c.sid, c.fs.Service, scanWaterMark.GetEnd(), 0, nil)
+		checkpointEntries, err := checkpoint.ListSnapshotCheckpoint(c.ctx, c.sid, c.fs.Service, scanWaterMark.GetEnd(), 0)
 		if err != nil {
 			// TODO: why only warn???
 			logutil.Warn(
@@ -522,9 +522,9 @@ func (c *checkpointCleaner) upgradeGCFiles(
 func getAllowedMergeFiles(
 	metas map[string]struct{},
 	snapshot types.TS,
-	listFunc checkpoint.GetCheckpointRange) (ok bool, files []*checkpoint.MetaFile, idxes []int, err error) {
+) (ok bool, files []*checkpoint.MetaFile, idxes []int, err error) {
 	var idx int
-	files, _, idx, err = checkpoint.ListSnapshotMetaWithDiskCleaner(snapshot, listFunc, metas)
+	files, _, idx, err = checkpoint.ListSnapshotMetaWithDiskCleaner(snapshot, metas)
 	if err != nil {
 		return
 	}
@@ -629,7 +629,7 @@ func (c *checkpointCleaner) mergeCheckpointFiles(
 	}
 	metas := c.GetCheckpoints()
 	logutil.Infof("[MergeCheckpoint] metas len %d", len(metas))
-	ok, files, idxes, err := getAllowedMergeFiles(metas, stage, nil)
+	ok, files, idxes, err := getAllowedMergeFiles(metas, stage)
 	if err != nil {
 		return err
 	}

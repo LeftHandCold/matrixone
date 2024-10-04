@@ -59,9 +59,8 @@ func ListSnapshotCheckpoint(
 	fs fileservice.FileService,
 	snapshot types.TS,
 	tid uint64,
-	listFunc GetCheckpointRange,
 ) ([]*CheckpointEntry, error) {
-	files, idx, err := ListSnapshotMeta(ctx, fs, snapshot, listFunc)
+	files, idx, err := ListSnapshotMeta(ctx, snapshot, fs)
 	if err != nil {
 		return nil, err
 	}
@@ -73,9 +72,8 @@ func ListSnapshotCheckpoint(
 
 func ListSnapshotMeta(
 	ctx context.Context,
-	fs fileservice.FileService,
 	snapshot types.TS,
-	listFunc GetCheckpointRange,
+	fs fileservice.FileService,
 ) ([]*MetaFile, int, error) {
 	dirs, err := fs.List(ctx, CheckpointDir)
 	if err != nil {
@@ -103,15 +101,11 @@ func ListSnapshotMeta(
 		logutil.Infof("metaFiles[%d]: %v", i, file.String())
 	}
 
-	if listFunc == nil {
-		listFunc = AllAfterAndGCheckpoint
-	}
-	return listFunc(snapshot, metaFiles)
+	return AllAfterAndGCheckpoint(snapshot, metaFiles)
 }
 
 func ListSnapshotMetaWithDiskCleaner(
 	snapshot types.TS,
-	listFunc GetCheckpointRange,
 	metas map[string]struct{},
 ) ([]*MetaFile, []*MetaFile, int, error) {
 	if len(metas) == 0 {
@@ -149,10 +143,7 @@ func ListSnapshotMetaWithDiskCleaner(
 		metaFiles = metaFiles[start:]
 	}
 
-	if listFunc == nil {
-		listFunc = AllAfterAndGCheckpoint
-	}
-	files, num, err := listFunc(snapshot, metaFiles)
+	files, num, err := AllAfterAndGCheckpoint(snapshot, metaFiles)
 	return files, mergeMetaFiles, num, err
 }
 
