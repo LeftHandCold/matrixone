@@ -553,6 +553,7 @@ func getAllowedMergeFiles(
 	return
 }
 
+// PXU FIXME
 func (c *checkpointCleaner) getDeleteFile(
 	ctx context.Context,
 	fs fileservice.FileService,
@@ -561,7 +562,7 @@ func (c *checkpointCleaner) getDeleteFile(
 	ts, stage types.TS,
 	ckpSnapList []types.TS,
 ) ([]string, []*checkpoint.CheckpointEntry, error) {
-	ckps, err := checkpoint.ListSnapshotCheckpointWithMeta(ctx, c.sid, fs, files, idx, ts, true)
+	ckps, err := checkpoint.ListSnapshotCheckpointWithMeta(ctx, c.sid, fs, files[idx], ts, true)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -45,7 +45,7 @@ import (
 //		ts     :  450
 //      return :  [0,100],[100,200],[200,300],[0,300],[300,400],[400,500],[500,600]
 
-func FilterSortedMetaFiles(
+func FilterSortedMetaFilesByTimestamp(
 	ts *types.TS,
 	files []*MetaFile,
 ) []*MetaFile {
@@ -100,27 +100,29 @@ func ListSnapshotCheckpoint(
 	snapshot types.TS,
 	tid uint64,
 ) ([]*CheckpointEntry, error) {
-	files, idx, err := ListSnapshotMeta(ctx, snapshot, fs)
+	metaFiles, err := ListSnapshotMeta(ctx, snapshot, fs)
 	if err != nil {
 		return nil, err
 	}
-	if len(files) == 0 {
+	if len(metaFiles) == 0 {
 		return nil, nil
 	}
-	return ListSnapshotCheckpointWithMeta(ctx, sid, fs, files, idx, types.TS{}, false)
+	return ListSnapshotCheckpointWithMeta(
+		ctx, sid, fs, metaFiles[len(metaFiles)-1], types.TS{}, false,
+	)
 }
 
 func ListSnapshotMeta(
 	ctx context.Context,
 	snapshot types.TS,
 	fs fileservice.FileService,
-) ([]*MetaFile, int, error) {
+) ([]*MetaFile, error) {
 	dirs, err := fs.List(ctx, CheckpointDir)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	if len(dirs) == 0 {
-		return nil, 0, nil
+		return nil, nil
 	}
 	metaFiles := make([]*MetaFile, 0)
 	for i, dir := range dirs {
@@ -141,7 +143,8 @@ func ListSnapshotMeta(
 		logutil.Infof("metaFiles[%d]: %v", i, file.String())
 	}
 
-	return AllAfterAndGCheckpoint(snapshot, metaFiles)
+	metaFiles = FilterSortedMetaFilesByTimestamp(&snapshot, metaFiles)
+	return metaFiles, nil
 }
 
 func ListSnapshotMetaWithDiskCleaner(
@@ -199,12 +202,11 @@ func ListSnapshotCheckpointWithMeta(
 	ctx context.Context,
 	sid string,
 	fs fileservice.FileService,
-	files []*MetaFile,
-	idx int,
+	metaFile *MetaFile,
 	gcStage types.TS,
 	isAll bool,
 ) ([]*CheckpointEntry, error) {
-	reader, err := blockio.NewFileReader(sid, fs, CheckpointDir+files[idx].name)
+	reader, err := blockio.NewFileReader(sid, fs, CheckpointDir+metaFile.name)
 	if err != nil {
 		return nil, nil
 	}
