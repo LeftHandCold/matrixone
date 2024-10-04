@@ -77,22 +77,6 @@ func FilterSortedMetaFilesByTimestamp(
 	return files
 }
 
-func AllAfterAndGCheckpoint(snapshot types.TS, files []*MetaFile) ([]*MetaFile, int, error) {
-	prev := &MetaFile{}
-	for i, file := range files {
-		if snapshot.LE(&file.end) &&
-			(prev.end.IsEmpty() || snapshot.LT(&prev.end)) &&
-			file.start.IsEmpty() {
-			if prev.end.IsEmpty() {
-				return files, i, nil
-			}
-			return files, i - 1, nil
-		}
-		prev = file
-	}
-	return files, len(files) - 1, nil
-}
-
 func ListSnapshotCheckpoint(
 	ctx context.Context,
 	sid string,
