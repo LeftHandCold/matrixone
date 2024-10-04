@@ -150,9 +150,9 @@ func ListSnapshotMeta(
 func ListSnapshotMetaWithDiskCleaner(
 	snapshot types.TS,
 	checkpointMetaFiles map[string]struct{},
-) ([]*MetaFile, []*MetaFile, int, error) {
+) ([]*MetaFile, error) {
 	if len(checkpointMetaFiles) == 0 {
-		return nil, nil, 0, nil
+		return nil, nil
 	}
 
 	// parse meta file names to MetaFiles
@@ -186,16 +186,13 @@ func ListSnapshotMetaWithDiskCleaner(
 		}
 	}
 
-	var mergeMetaFiles []*MetaFile
 	// JW TODO: pos > 0 ?
 	if pos > 0 {
-		mergeMetaFiles = make([]*MetaFile, 0, pos)
-		mergeMetaFiles = append(mergeMetaFiles, metaFiles[:pos]...)
 		metaFiles = metaFiles[pos:]
 	}
 
-	files, num, err := AllAfterAndGCheckpoint(snapshot, metaFiles)
-	return files, mergeMetaFiles, num, err
+	metaFiles = FilterSortedMetaFilesByTimestamp(&snapshot, metaFiles)
+	return metaFiles, nil
 }
 
 func ListSnapshotCheckpointWithMeta(
