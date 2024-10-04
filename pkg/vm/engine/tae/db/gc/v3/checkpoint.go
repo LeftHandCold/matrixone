@@ -754,7 +754,7 @@ func (c *checkpointCleaner) tryGCAgainstGlobalCheckpoint(gckp *checkpoint.Checkp
 		logutil.Infof("[DiskCleaner] ExecDelete failed: %v", err.Error())
 		return err
 	}
-	err = c.mergeCheckpointFiles(c.checkpointCli.GetStage(), accountSnapshots)
+	err = c.mergeCheckpointFiles(c.checkpointCli.GetLowWaterMark(), accountSnapshots)
 	if err != nil {
 		// TODO: Error handle
 		logutil.Errorf("[DiskCleaner] mergeCheckpointFiles failed: %v", err.Error())

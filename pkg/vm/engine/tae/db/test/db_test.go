@@ -7122,7 +7122,7 @@ func TestMergeGC(t *testing.T) {
 		return db.Runtime.Scheduler.GetPenddingLSNCnt() == 0
 	})
 	testutils.WaitExpect(5000, func() bool {
-		stage := db.BGCheckpointRunner.GetStage()
+		stage := db.BGCheckpointRunner.GetLowWaterMark()
 		return !stage.IsEmpty()
 	})
 	testutils.WaitExpect(5000, func() bool {
