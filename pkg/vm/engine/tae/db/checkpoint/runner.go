@@ -807,7 +807,7 @@ func (r *runner) tryScheduleCheckpoint(endts types.TS) {
 			tree.GetTree().Compact()
 			if !tree.IsEmpty() && entry.TooOld() {
 				logutil.Infof("waiting for dirty tree %s", tree.String())
-				entry.RefreshAge()
+				entry.DeferRetirement()
 			}
 			return tree.IsEmpty()
 		}
@@ -817,7 +817,7 @@ func (r *runner) tryScheduleCheckpoint(endts types.TS) {
 			return
 		}
 		entry.SetState(ST_Running)
-		v2.TaskCkpEntryPendingDurationHistogram.Observe(time.Since(entry.lastPrint).Seconds())
+		v2.TaskCkpEntryPendingDurationHistogram.Observe(entry.Age().Seconds())
 		r.incrementalCheckpointQueue.Enqueue(struct{}{})
 		return
 	}

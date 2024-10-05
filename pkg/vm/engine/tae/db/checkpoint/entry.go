@@ -44,7 +44,8 @@ type CheckpointEntry struct {
 	truncateLSN uint64
 
 	// only for new entry logic procedure
-	bornTime time.Time
+	bornTime   time.Time
+	refreshCnt uint32
 }
 
 func NewCheckpointEntry(sid string, start, end types.TS, typ EntryType) *CheckpointEntry {
@@ -69,15 +70,20 @@ func (e *CheckpointEntry) SetLSN(ckpLSN, truncateLSN uint64) {
 	e.ckpLSN = ckpLSN
 	e.truncateLSN = truncateLSN
 }
-func (e *CheckpointEntry) RefreshAge() {
+func (e *CheckpointEntry) DeferRetirement() {
 	e.Lock()
 	defer e.Unlock()
-	e.bornTime = time.Now()
+	e.refreshCnt++
+}
+func (e *CheckpointEntry) Age() time.Duration {
+	e.RLock()
+	defer e.RUnlock()
+	return time.Since(e.bornTime)
 }
 func (e *CheckpointEntry) TooOld() bool {
 	e.RLock()
 	defer e.RUnlock()
-	return time.Since(e.bornTime) > time.Minute*4
+	return time.Since(e.bornTime) > time.Minute*4*time.Duration(e.refreshCnt+1)
 }
 func (e *CheckpointEntry) LSNString() string {
 	return fmt.Sprintf("ckp %d, truncate %d", e.ckpLSN, e.truncateLSN)
