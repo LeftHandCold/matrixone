@@ -805,9 +805,9 @@ func (r *runner) tryScheduleCheckpoint(endts types.TS) {
 			}
 			tree := r.source.ScanInRangePruned(entry.GetStart(), entry.GetEnd())
 			tree.GetTree().Compact()
-			if !tree.IsEmpty() && entry.CheckPrintTime() {
+			if !tree.IsEmpty() && entry.TooOld() {
 				logutil.Infof("waiting for dirty tree %s", tree.String())
-				entry.IncrWaterLine()
+				entry.RefreshAge()
 			}
 			return tree.IsEmpty()
 		}

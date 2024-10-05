@@ -38,12 +38,13 @@ type CheckpointEntry struct {
 	entryType  EntryType
 	cnLocation objectio.Location
 	tnLocation objectio.Location
-	lastPrint  time.Time
-	waterLine  time.Duration
 	version    uint32
 
 	ckpLSN      uint64
 	truncateLSN uint64
+
+	// only for new entry logic procedure
+	bornTime time.Time
 }
 
 func NewCheckpointEntry(sid string, start, end types.TS, typ EntryType) *CheckpointEntry {
@@ -53,9 +54,8 @@ func NewCheckpointEntry(sid string, start, end types.TS, typ EntryType) *Checkpo
 		end:       end,
 		state:     ST_Pending,
 		entryType: typ,
-		lastPrint: time.Now(),
-		waterLine: time.Minute * 4,
 		version:   logtail.CheckpointCurrentVersion,
+		bornTime:  time.Now(),
 	}
 }
 
@@ -65,19 +65,19 @@ func (e *CheckpointEntry) SetVersion(version uint32) {
 	e.version = version
 }
 
-func (e *CheckpointEntry) IncrWaterLine() {
-	e.Lock()
-	defer e.Unlock()
-	e.waterLine += time.Minute * 4
-}
 func (e *CheckpointEntry) SetLSN(ckpLSN, truncateLSN uint64) {
 	e.ckpLSN = ckpLSN
 	e.truncateLSN = truncateLSN
 }
-func (e *CheckpointEntry) CheckPrintTime() bool {
+func (e *CheckpointEntry) RefreshAge() {
+	e.Lock()
+	defer e.Unlock()
+	e.bornTime = time.Now()
+}
+func (e *CheckpointEntry) TooOld() bool {
 	e.RLock()
 	defer e.RUnlock()
-	return time.Since(e.lastPrint) > e.waterLine
+	return time.Since(e.bornTime) > time.Minute*4
 }
 func (e *CheckpointEntry) LSNString() string {
 	return fmt.Sprintf("ckp %d, truncate %d", e.ckpLSN, e.truncateLSN)
