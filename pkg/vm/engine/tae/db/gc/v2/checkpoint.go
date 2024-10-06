@@ -414,6 +414,7 @@ func (c *checkpointCleaner) mergeGCFile() error {
 	}
 	deleteFiles := make([]string, 0)
 	mergeSnapAcctFile := func(name string, ts, max *types.TS, file *string) error {
+		logutil.Infof("mergeSnapAcctFile: %v, max: %v", name, max.ToString())
 		if *file != "" {
 			if max.LT(ts) {
 				max = ts
