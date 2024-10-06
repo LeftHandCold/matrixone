@@ -115,7 +115,7 @@ type checkpointCleaner struct {
 		gcEnabled atomic.Bool
 	}
 
-	metaFiles map[string]struct{}
+	metaFiles map[string]GCMetaFile
 
 	snapshotMeta *logtail.SnapshotMeta
 
@@ -156,7 +156,7 @@ func NewCheckpointCleaner(
 	cleaner.option.gcEnabled.Store(true)
 	cleaner.mp = common.CheckpointAllocator
 	cleaner.checker.extras = make(map[string]func(item any) bool)
-	cleaner.metaFiles = make(map[string]struct{})
+	cleaner.metaFiles = make(map[string]GCMetaFile)
 	return cleaner
 }
 
@@ -213,8 +213,7 @@ func (c *checkpointCleaner) Replay() error {
 	// Get effective minMerged
 	var snapFile, acctFile string
 	for _, dir := range dirs {
-		c.metaFiles[dir.Name] = struct{}{}
-		_, end, ext := blockio.DecodeGCMetadataFileName(dir.Name)
+		start, end, ext := blockio.DecodeGCMetadataFileName(dir.Name)
 		if ext == blockio.SnapshotExt && maxSnapEnd.LT(&end) {
 			maxSnapEnd = end
 			snapFile = dir.Name
@@ -222,6 +221,12 @@ func (c *checkpointCleaner) Replay() error {
 		if ext == blockio.AcctExt && maxAcctEnd.LT(&end) {
 			maxAcctEnd = end
 			acctFile = dir.Name
+		}
+		c.metaFiles[dir.Name] = GCMetaFile{
+			name:  dir.Name,
+			start: start,
+			end:   end,
+			ext:   ext,
 		}
 	}
 	readDirs := make([]fileservice.DirEntry, 0)
@@ -405,7 +410,9 @@ func (c *checkpointCleaner) OrhpanFilesGCed() []string {
 	return filesGCed
 }
 
-func (c *checkpointCleaner) mergeSnapshotFile(metas map[string]struct{}) error {
+func (c *checkpointCleaner) mergeSnapshotFile(
+	metaFiles map[string]GCMetaFile,
+) error {
 	scanWaterMark := c.GetScanWaterMark()
 	if scanWaterMark == nil {
 		return nil
@@ -421,9 +428,9 @@ func (c *checkpointCleaner) mergeSnapshotFile(metas map[string]struct{}) error {
 	)
 
 	//metas := make(map[string]struct{})
-	for name := range c.metaFiles {
-		metas[name] = struct{}{}
-	}
+	// for name := range c.metaFiles {
+	// 	metas[name] = struct{}{}
+	// }
 
 	doDeleteFileFn := func(
 		thisFile string, thisTS *types.TS,
@@ -469,18 +476,17 @@ func (c *checkpointCleaner) mergeSnapshotFile(metas map[string]struct{}) error {
 		return
 	}
 
-	for name := range metas {
-		_, ts, ext := blockio.DecodeGCMetadataFileName(name)
-		switch ext {
+	for _, metaFile := range metaFiles {
+		switch metaFile.Ext() {
 		case blockio.SnapshotExt:
 			if maxSnapFile, maxSnapEnd, err = doDeleteFileFn(
-				name, &ts, maxSnapFile, &maxSnapEnd,
+				metaFile.Name(), metaFile.End(), maxSnapFile, &maxSnapEnd,
 			); err != nil {
 				return err
 			}
 		case blockio.AcctExt:
 			if maxAcctFile, maxAcctEnd, err = doDeleteFileFn(
-				name, &ts, maxAcctFile, &maxAcctEnd,
+				metaFile.Name(), metaFile.End(), maxAcctFile, &maxAcctEnd,
 			); err != nil {
 				return err
 			}
@@ -490,9 +496,8 @@ func (c *checkpointCleaner) mergeSnapshotFile(metas map[string]struct{}) error {
 }
 
 func (c *checkpointCleaner) upgradeGCFiles(
-	metas map[string]struct{},
+	metaFiles map[string]GCMetaFile,
 	window *GCWindow,
-	checker func(string, *GCWindow) bool,
 ) error {
 	// get the scan watermark
 	scanWaterMark := c.GetScanWaterMark()
@@ -512,10 +517,11 @@ func (c *checkpointCleaner) upgradeGCFiles(
 		)
 	}()
 	deleteFiles := make([]string, 0)
-	for name := range metas {
-		if checker(name, window) {
-			deleteFiles = append(deleteFiles, GCMetaDir+name)
-			delete(c.metaFiles, name)
+	for _, metaFile := range metaFiles {
+		if (metaFile.Ext() == blockio.CheckpointExt) &&
+			(metaFile.EqualRange(&window.tsRange.start, &window.tsRange.end)) {
+			deleteFiles = append(deleteFiles, GCMetaDir+metaFile.Name())
+			delete(c.metaFiles, metaFile.Name())
 		}
 	}
 	c.remainingObjects.RLock()
@@ -759,11 +765,13 @@ func (c *checkpointCleaner) TryGC() error {
 		if len(c.remainingObjects.windows) == 0 {
 			return nil
 		}
-		metas := make(map[string]struct{})
-		for name := range c.metaFiles {
-			metas[name] = struct{}{}
+		metaFiles := make(map[string]GCMetaFile, len(c.metaFiles))
+		for k, v := range c.metaFiles {
+			metaFiles[k] = v
 		}
-		if err := c.upgradeGCFiles(metas, c.remainingObjects.windows[0], upgradeChecker); err != nil {
+		if err := c.upgradeGCFiles(
+			metaFiles, c.remainingObjects.windows[0],
+		); err != nil {
 			logutil.Error(
 				"DiskCleaner-Replay-UpgradeGC-Error",
 				zap.Error(err),
@@ -1122,9 +1130,9 @@ func (c *checkpointCleaner) Process() {
 	// if the gc watermark is less than the end of the global checkpoint, it means
 	// that the maxGlobalCKP has not been GCed, and we need to GC it now
 	nextGCTS := maxGlobalCKP.GetEnd()
-	metas := make(map[string]struct{})
-	for name := range c.metaFiles {
-		metas[name] = struct{}{}
+	metaFiles := make(map[string]GCMetaFile, len(c.metaFiles))
+	for k, v := range c.metaFiles {
+		metaFiles[k] = v
 	}
 	if gcWaterMarkTS.LT(&nextGCTS) {
 		logutil.Info(
@@ -1143,7 +1151,9 @@ func (c *checkpointCleaner) Process() {
 			return
 		}
 
-		if err = c.upgradeGCFiles(metas, c.remainingObjects.windows[0], upgradeChecker); err != nil {
+		if err = c.upgradeGCFiles(
+			metaFiles, c.remainingObjects.windows[0],
+		); err != nil {
 			logutil.Error(
 				"DiskCleaner-Process-UpgradeGC-Error",
 				zap.Error(err),
@@ -1152,7 +1162,7 @@ func (c *checkpointCleaner) Process() {
 		}
 	}
 
-	if err = c.mergeSnapshotFile(metas); err != nil {
+	if err = c.mergeSnapshotFile(metaFiles); err != nil {
 		// TODO: Error handle
 		return
 	}
