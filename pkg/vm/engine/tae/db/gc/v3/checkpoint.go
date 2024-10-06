@@ -411,11 +411,13 @@ func (c *checkpointCleaner) mergeSnapshotFile(metas map[string]struct{}) error {
 		return nil
 	}
 	var (
-		maxSnapEnd types.TS
-		maxAcctEnd types.TS
-		snapFile   string
-		acctFile   string
-		err        error
+		maxSnapEnd  types.TS
+		maxSnapFile string
+
+		maxAcctEnd  types.TS
+		maxAcctFile string
+
+		err error
 	)
 
 	//metas := make(map[string]struct{})
@@ -423,54 +425,68 @@ func (c *checkpointCleaner) mergeSnapshotFile(metas map[string]struct{}) error {
 		metas[name] = struct{}{}
 	}
 
-	mergeSnapAcctFile := func(name string, ts, max *types.TS, file *string) error {
-		if *file != "" {
-			if max.LT(ts) {
-				max = ts
-				err = c.fs.Delete(*file)
-				if err != nil {
-					logutil.Errorf("DelFiles failed: %v, max: %v", err.Error(), max.ToString())
-					return err
-				}
-				*file = GCMetaDir + name
-			} else {
-				err = c.fs.Delete(GCMetaDir + name)
-				if err != nil {
-					logutil.Errorf("DelFiles failed: %v, max: %v", err.Error(), max.ToString())
-					return err
-				}
-				delete(c.metaFiles, name)
-			}
-		} else {
-			*file = GCMetaDir + name
-			max = ts
+	doDeleteFileFn := func(
+		thisFile string, thisTS *types.TS,
+		maxFile string, maxTS *types.TS,
+	) (
+		newMaxFile string,
+		newMaxTS types.TS,
+		err error,
+	) {
+		if maxFile == "" {
+			newMaxFile = GCMetaDir + thisFile
+			newMaxTS = *thisTS
 			logutil.Info(
 				"Merging-GC-File-SnapAcct-File",
-				zap.String("name", name),
-				zap.String("max", max.ToString()),
+				zap.String("max-file", newMaxFile),
+				zap.String("max-ts", newMaxTS.ToString()),
 			)
-			delete(c.metaFiles, name)
+			delete(c.metaFiles, thisFile)
+			return
 		}
-		return nil
+		if maxTS.LT(thisTS) {
+			newMaxFile = GCMetaDir + thisFile
+			newMaxTS = *thisTS
+			if err = c.fs.Delete(maxFile); err != nil {
+				logutil.Errorf("DelFiles failed: %v, max: %v", err.Error(), newMaxTS.ToString())
+				return
+			}
+			logutil.Info(
+				"Merging-GC-File-SnapAcct-File",
+				zap.String("max-file", newMaxFile),
+				zap.String("max-ts", newMaxTS.ToString()),
+			)
+			delete(c.metaFiles, thisFile)
+			return
+		}
+
+		// thisTS <= maxTS: this file is expired and should be deleted
+		if err = c.fs.Delete(GCMetaDir + thisFile); err != nil {
+			logutil.Errorf("DelFiles failed: %v, file: %s, ts: %s", err.Error(), thisFile, thisTS.ToString())
+		}
+		delete(c.metaFiles, thisFile)
+
+		return
 	}
+
 	for name := range metas {
 		_, ts, ext := blockio.DecodeGCMetadataFileName(name)
-		if ext == blockio.SnapshotExt {
-			err = mergeSnapAcctFile(name, &ts, &maxSnapEnd, &snapFile)
-			if err != nil {
+		switch ext {
+		case blockio.SnapshotExt:
+			if maxSnapFile, maxSnapEnd, err = doDeleteFileFn(
+				name, &ts, maxSnapFile, &maxSnapEnd,
+			); err != nil {
 				return err
 			}
-			continue
-		}
-		if ext == blockio.AcctExt {
-			err = mergeSnapAcctFile(name, &ts, &maxAcctEnd, &acctFile)
-			if err != nil {
+		case blockio.AcctExt:
+			if maxAcctFile, maxAcctEnd, err = doDeleteFileFn(
+				name, &ts, maxAcctFile, &maxAcctEnd,
+			); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
-
 }
 
 func (c *checkpointCleaner) upgradeGCFiles(
