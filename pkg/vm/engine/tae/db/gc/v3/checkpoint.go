@@ -1172,17 +1172,6 @@ func (c *checkpointCleaner) Process() {
 	}
 }
 
-func upgradeChecker(name string, window *GCWindow) bool {
-	start, end, ext := blockio.DecodeGCMetadataFileName(name)
-	if ext == blockio.CheckpointExt {
-		if !start.Equal(&window.tsRange.start) ||
-			!end.Equal(&window.tsRange.end) {
-			return true
-		}
-	}
-	return false
-}
-
 func (c *checkpointCleaner) checkExtras(item any) bool {
 	c.checker.RLock()
 	defer c.checker.RUnlock()
