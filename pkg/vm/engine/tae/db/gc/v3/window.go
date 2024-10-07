@@ -155,6 +155,8 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 }
 
 // ScanCheckpoints will load data from the `checkpointEntries` one by one and
+// update `w.tsRange` and `w.files`
+// At the end, it will save the metadata into a specified file as the finish of scan
 func (w *GCWindow) ScanCheckpoints(
 	ctx context.Context,
 	checkpointEntries []*checkpoint.CheckpointEntry,
