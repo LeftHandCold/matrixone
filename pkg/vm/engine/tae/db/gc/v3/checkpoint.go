@@ -82,6 +82,11 @@ type checkpointCleaner struct {
 		checkpointGCWaterMark atomic.Pointer[types.TS]
 	}
 
+	options struct {
+		gcEnabled    atomic.Bool
+		checkEnabled atomic.Bool
+	}
+
 	config struct {
 		// minMergeCount is the configuration of the merge GC metadata file.
 		// When the GC file is greater than or equal to minMergeCount,
@@ -112,11 +117,6 @@ type checkpointCleaner struct {
 	// delWorker is a worker that deletes s3‘s objects or local
 	// files, and only one worker will run
 	delWorker *GCWorker
-
-	options struct {
-		gcEnabled    atomic.Bool
-		checkEnabled atomic.Bool
-	}
 
 	metaFiles map[string]GCMetaFile
 
