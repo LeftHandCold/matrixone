@@ -83,8 +83,9 @@ type checkpointCleaner struct {
 	}
 
 	options struct {
-		gcEnabled    atomic.Bool
-		checkEnabled atomic.Bool
+		gcEnabled           atomic.Bool
+		checkEnabled        atomic.Bool
+		gcCheckpointEnabled atomic.Bool
 	}
 
 	config struct {
@@ -94,8 +95,6 @@ type checkpointCleaner struct {
 		minMergeCount atomic.Int64
 
 		canGCCacheSize int
-
-		DisableGCCheckpoint bool
 	}
 
 	// remainingObjects is to record the currently valid GCWindow
@@ -134,9 +133,9 @@ func WithCanGCCacheSize(
 }
 
 // for ut
-func WithDisableGCCheckpoint(isDisable bool) CheckpointCleanerOption {
+func WithGCCheckpointOption(enable bool) CheckpointCleanerOption {
 	return func(e *checkpointCleaner) {
-		e.config.DisableGCCheckpoint = isDisable
+		e.options.gcCheckpointEnabled.Store(enable)
 	}
 }
 
@@ -197,6 +196,10 @@ func (c *checkpointCleaner) DisableGC() {
 
 func (c *checkpointCleaner) GCEnabled() bool {
 	return c.options.gcEnabled.Load()
+}
+
+func (c *checkpointCleaner) GCCheckpointEnabled() bool {
+	return c.options.gcCheckpointEnabled.Load()
 }
 
 func (c *checkpointCleaner) EnableCheck() {
@@ -735,9 +738,9 @@ func (c *checkpointCleaner) mergeCheckpointFiles(
 	}
 
 	logutil.Info("[MergeCheckpoint] CKP GC",
-		zap.Bool("DisableGC", c.config.DisableGCCheckpoint),
+		zap.Bool("gc-checkpoint", c.GCCheckpointEnabled()),
 		zap.Strings("files", deleteFiles))
-	if !c.config.DisableGCCheckpoint {
+	if c.GCCheckpointEnabled() {
 		err = c.fs.DelFiles(c.ctx, deleteFiles)
 		if err != nil {
 			logutil.Errorf("DelFiles failed: %v", err.Error())
