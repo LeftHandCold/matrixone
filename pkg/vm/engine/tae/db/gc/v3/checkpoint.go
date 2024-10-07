@@ -557,7 +557,7 @@ func (c *checkpointCleaner) upgradeGCFiles(
 	deleteFiles := make([]string, 0)
 	for _, metaFile := range metaFiles {
 		if (metaFile.Ext() == blockio.CheckpointExt) &&
-			(metaFile.EqualRange(&window.tsRange.start, &window.tsRange.end)) {
+			!(metaFile.EqualRange(&window.tsRange.start, &window.tsRange.end)) {
 			deleteFiles = append(deleteFiles, GCMetaDir+metaFile.Name())
 			delete(c.metaFiles, metaFile.Name())
 		}
@@ -586,7 +586,7 @@ func (c *checkpointCleaner) getMetaFilesToMerge(ts *types.TS) (
 	if gcWaterMark != nil {
 		start = *gcWaterMark
 	}
-	if !ts.GT(&start) {
+	if !ts.GE(&start) {
 		panic(fmt.Sprintf("getMetaFilesToMerge end < start. "+
 			"end: %v, start: %v", ts.ToString(), start.ToString()))
 	}
@@ -695,6 +695,10 @@ func (c *checkpointCleaner) mergeCheckpointFiles(
 	if err != nil {
 		return err
 	}
+	if len(mergeFiles) == 0 {
+		logutil.Warnf("[MergeCheckpoint] checkpoints len %d", len(checkpoints))
+		return nil
+	}
 	deleteFiles = append(deleteFiles, dFiles...)
 	// merge ickp
 	var newCheckpoint *checkpoint.CheckpointEntry
@@ -713,6 +717,7 @@ func (c *checkpointCleaner) mergeCheckpointFiles(
 		memoryBuffer,
 		c.mp,
 	)
+
 	dFiles, newCheckpoint, err = MergeCheckpoint(
 		c.ctx,
 		c.sid,
@@ -901,6 +906,13 @@ func (c *checkpointCleaner) tryGCAgainstGlobalCheckpoint(
 	if !waterMark.GT(&mergeMark) {
 		return nil
 	}
+	scanMark := c.GetScanWaterMark().GetEnd()
+	if scanMark.IsEmpty() {
+		panic("scanMark is empty")
+	}
+	if waterMark.GT(&scanMark) {
+		waterMark = scanMark
+	}
 	err = c.mergeCheckpointFiles(&waterMark, accountSnapshots, memoryBuffer)
 	if err != nil {
 		// TODO: Error handle
@@ -963,7 +975,6 @@ func (c *checkpointCleaner) doGCAgainstGlobalCheckpoint(
 		end:   scannedWindow.tsRange.end,
 		ext:   blockio.CheckpointExt,
 	}
-
 	softCost = time.Since(now)
 
 	// update gc watermark and refresh snapshot meta with the latest gc result
@@ -997,6 +1008,7 @@ func (c *checkpointCleaner) scanCheckpointsAsDebugWindow(
 func (c *checkpointCleaner) DoCheck() error {
 	debugCandidates := c.checkpointCli.GetAllIncrementalCheckpoints()
 	compactedCandidates := c.checkpointCli.GetAllCompactedCheckpoints()
+	gckps := c.checkpointCli.GetAllGlobalCheckpoints()
 
 	c.remainingObjects.RLock()
 	defer c.remainingObjects.RUnlock()
@@ -1123,9 +1135,16 @@ func (c *checkpointCleaner) DoCheck() error {
 	}
 	ickpObjects := make(map[string]*ObjectEntry, 0)
 	ok := false
+	gcWaterMark := cend
+	for _, ckp := range gckps {
+		end := ckp.GetEnd()
+		if end.GE(&gcWaterMark) {
+			gcWaterMark = ckp.GetEnd()
+		}
+	}
 	for i, ckp := range debugCandidates {
 		end := ckp.GetEnd()
-		if end.Equal(&cend) {
+		if end.Equal(&gcWaterMark) {
 			debugCandidates = debugCandidates[:i+1]
 			ok = true
 			break
