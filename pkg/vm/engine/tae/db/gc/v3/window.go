@@ -603,12 +603,11 @@ func (w *GCWindow) String(objects map[string]*ObjectEntry) string {
 	if len(objects) == 0 {
 		return ""
 	}
-	var w bytes.Buffer
+	var buf bytes.Buffer
 	_, _ = w.WriteString("objects:[\n")
 	for name, entry := range objects {
-		_, _ = w.WriteString(fmt.Sprintf("name: %s, createTS: %v ", name, entry.createTS.ToString()))
+		_, _ = buf.WriteString(fmt.Sprintf("name: %s, createTS: %v ", name, entry.createTS.ToString()))
 	}
-	_, _ = w.WriteString("]\n")
+	_, _ = buf.WriteString("]\n")
 	return w.String()
-	return ""
 }
