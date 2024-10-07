@@ -498,7 +498,7 @@ func (c *checkpointCleaner) mergeSnapshotFile(
 func (c *checkpointCleaner) upgradeGCFiles(
 	metaFiles map[string]GCMetaFile,
 	window *GCWindow,
-) error {
+) (err error) {
 	// get the scan watermark
 	scanWaterMark := c.GetScanWaterMark()
 	if scanWaterMark == nil {
@@ -527,19 +527,17 @@ func (c *checkpointCleaner) upgradeGCFiles(
 	c.remainingObjects.RLock()
 	if len(c.remainingObjects.windows) == 0 {
 		c.remainingObjects.RUnlock()
-		return nil
+		return
 	}
 	// windows[0] has always been a full GCWindow
 	c.remainingObjects.RUnlock()
-	err := c.fs.DelFiles(c.ctx, deleteFiles)
-	if err != nil {
+	if err = c.fs.DelFiles(c.ctx, deleteFiles); err != nil {
 		logutil.Error(
 			"Merging-GC-File-Error",
 			zap.Error(err),
 		)
-		return err
 	}
-	return nil
+	return
 }
 
 // getMetaFilesToMerge returns the files that can be merged.
