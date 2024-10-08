@@ -203,7 +203,7 @@ func (c *checkpointCleaner) StartMutationTask(name string) {
 	c.mutation.Lock()
 	defer c.mutation.Unlock()
 	c.mutation.taskState.id++
-	c.mutation.taskState.name = fmt.Sprintf("[%s-%d]", name, c.mutation.taskState.id)
+	c.mutation.taskState.name = fmt.Sprintf("%s-%d", name, c.mutation.taskState.id)
 }
 
 func (c *checkpointCleaner) StopMutationTask() {
