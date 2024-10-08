@@ -1144,6 +1144,7 @@ func (data *CheckpointData) WriteTo(
 		blockLoc := BuildBlockLoactionWithLocation(
 			fileName, loc.GetExtent(), 0, loc.GetID(),
 			0, 0)
+		logutil.Infof("checkpoint write block %v", blockLoc.String())
 		data.meta[0].tables[0].locations.Append(blockLoc)
 	}
 	data.prepareMeta()
@@ -1176,6 +1177,7 @@ func (data *CheckpointData) WriteTo(
 	blks2, _, err := writer2.Sync(context.Background())
 	CNLocation = objectio.BuildLocation(name2, blks2[0].GetExtent(), 0, blks2[0].GetID())
 	TNLocation = objectio.BuildLocation(name2, blks2[1].GetExtent(), 0, blks2[1].GetID())
+	logutil.Infof("write meta block %v", CNLocation.String())
 	return
 }
 
