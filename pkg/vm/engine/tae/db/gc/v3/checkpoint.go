@@ -103,6 +103,7 @@ type checkpointCleaner struct {
 		scanned      *GCWindow
 		metaFiles    map[string]GCMetaFile
 		snapshotMeta *logtail.SnapshotMeta
+		replayDone   bool
 	}
 }
 
@@ -194,13 +195,27 @@ func (c *checkpointCleaner) CheckEnabled() bool {
 	return c.options.checkEnabled.Load()
 }
 
-func (c *checkpointCleaner) Replay() error {
-	dirs, err := c.fs.ListDir(GCMetaDir)
-	if err != nil {
-		return err
+func (c *checkpointCleaner) Replay() (err error) {
+	c.mutation.Lock()
+	defer c.mutation.Unlock()
+
+	if c.mutation.replayDone {
+		logutil.Warn("Replay-GC-Already-Done")
+		return
+	}
+
+	defer func() {
+		if err == nil {
+			c.mutation.replayDone = true
+		}
+	}()
+
+	var dirs []fileservice.DirEntry
+	if dirs, err = c.fs.ListDir(GCMetaDir); err != nil {
+		return
 	}
 	if len(dirs) == 0 {
-		return nil
+		return
 	}
 
 	maxConsumedStart := types.TS{}
@@ -239,7 +254,7 @@ func (c *checkpointCleaner) Replay() error {
 		}
 	}
 	if len(readDirs) == 0 {
-		return nil
+		return
 	}
 	logger := logutil.Info
 	for _, dir := range readDirs {
@@ -257,23 +272,27 @@ func (c *checkpointCleaner) Replay() error {
 			zap.Error(err),
 		)
 		if err != nil {
-			return err
+			return
 		}
 		c.mutAddScannedLocked(window)
 	}
 	if acctFile != "" {
-		err = c.mutation.snapshotMeta.ReadTableInfo(c.ctx, GCMetaDir+acctFile, c.fs.Service)
-		if err != nil {
-			return err
+		if err = c.mutation.snapshotMeta.ReadTableInfo(
+			c.ctx, GCMetaDir+acctFile, c.fs.Service,
+		); err != nil {
+			return
 		}
 	}
 	if snapFile != "" {
-		err = c.mutation.snapshotMeta.ReadMeta(c.ctx, GCMetaDir+snapFile, c.fs.Service)
-		if err != nil {
-			return err
+		if err = c.mutation.snapshotMeta.ReadMeta(
+			c.ctx, GCMetaDir+snapFile, c.fs.Service,
+		); err != nil {
+			return
 		}
 	}
-	ckp := checkpoint.NewCheckpointEntry(c.sid, maxConsumedStart, maxConsumedEnd, checkpoint.ET_Incremental)
+	ckp := checkpoint.NewCheckpointEntry(
+		c.sid, maxConsumedStart, maxConsumedEnd, checkpoint.ET_Incremental,
+	)
 	c.updateScanWaterMark(ckp)
 	compacted := c.checkpointCli.GetAllCompactedCheckpoints()
 	if len(compacted) > 0 {
@@ -290,27 +309,28 @@ func (c *checkpointCleaner) Replay() error {
 		//and the table information needs to be initialized from the checkpoint
 		scanWaterMark := c.GetScanWaterMark()
 		isConsumedGCkp := false
-		checkpointEntries, err := checkpoint.ListSnapshotCheckpoint(c.ctx, c.sid, c.fs.Service, scanWaterMark.GetEnd(), 0)
-		if err != nil {
-			// TODO: why only warn???
+		var checkpointEntries []*checkpoint.CheckpointEntry
+		if checkpointEntries, err = checkpoint.ListSnapshotCheckpoint(
+			c.ctx, c.sid, c.fs.Service, scanWaterMark.GetEnd(), 0,
+		); err != nil {
 			logutil.Warn(
 				"Replay-GC-List-Error",
 				zap.Error(err),
 			)
+			return
 		}
 		if len(checkpointEntries) == 0 {
-			return nil
+			return
 		}
 		for _, entry := range checkpointEntries {
 			logutil.Infof("load checkpoint: %s, consumedEnd: %s", entry.String(), scanWaterMark.String())
-			ckpData, err := c.collectCkpData(entry)
-			if err != nil {
-				// TODO: why only warn???
+			var ckpData *logtail.CheckpointData
+			if ckpData, err = c.collectCkpData(entry); err != nil {
 				logutil.Warn(
 					"Replay-GC-Collect-Error",
 					zap.Error(err),
 				)
-				continue
+				return
 			}
 			if entry.GetType() == checkpoint.ET_Global {
 				isConsumedGCkp = true
@@ -323,21 +343,20 @@ func (c *checkpointCleaner) Replay() error {
 			entry := c.checkpointCli.MaxGlobalCheckpoint()
 			if entry == nil {
 				logutil.Warn("not found max global checkpoint!")
-				return nil
+				return
 			}
 			logutil.Info(
 				"Replay-GC-Load-Global-Checkpoint",
 				zap.String("max-gloabl", entry.String()),
 				zap.String("max-consumed", scanWaterMark.String()),
 			)
-			ckpData, err := c.collectCkpData(entry)
-			if err != nil {
-				// TODO: why only warn???
+			var ckpData *logtail.CheckpointData
+			if ckpData, err = c.collectCkpData(entry); err != nil {
 				logutil.Warn(
 					"Replay-GC-Collect-Global-Error",
 					zap.Error(err),
 				)
-				return nil
+				return
 			}
 			c.mutation.snapshotMeta.InitTableInfo(c.ctx, c.fs.Service, ckpData, entry.GetStart(), entry.GetEnd())
 		}
@@ -346,8 +365,7 @@ func (c *checkpointCleaner) Replay() error {
 			zap.String("info", c.mutation.snapshotMeta.TableInfoString()),
 		)
 	}
-	return nil
-
+	return
 }
 
 func (c *checkpointCleaner) GetCheckpointMetaFiles() map[string]struct{} {
