@@ -78,6 +78,34 @@ func FilterSortedMetaFilesByTimestamp(
 	return files, false
 }
 
+func FilterSortedCompactedFilesByTimestamp(
+	ts *types.TS,
+	files []*MetaFile,
+) ([]*MetaFile, bool) {
+	if len(files) == 0 {
+		return nil, false
+	}
+
+	prev := files[0]
+
+	if prev.start.IsEmpty() && ts.LE(&prev.end) {
+		return files[:1], true
+	}
+
+	for i := 1; i < len(files); i++ {
+		curr := files[i]
+		// curr.start.IsEmpty() means the file is a global checkpoint
+		// ts.LE(&curr.end) means the ts is in the range of the checkpoint
+		// ts.LT(&prev.end) means the ts is not in the range of the previous checkpoint
+		if ts.LE(&curr.end) {
+			return files[:i], true
+		}
+		prev = curr
+	}
+
+	return files, false
+}
+
 func ListSnapshotCheckpoint(
 	ctx context.Context,
 	sid string,
@@ -157,7 +185,7 @@ func ListSnapshotMeta(
 	var files []*MetaFile
 	var oFiles []*MetaFile
 	if len(compactedFiles) > 0 {
-		files, isRangeHit = FilterSortedMetaFilesByTimestamp(&snapshot, compactedFiles)
+		files, isRangeHit = FilterSortedCompactedFilesByTimestamp(&snapshot, compactedFiles)
 	}
 
 	if isRangeHit {
