@@ -1337,6 +1337,7 @@ func (c *checkpointCleaner) scanCheckpointsLocked(
 	); err != nil {
 		gcWindow.Close()
 		gcWindow = nil
+		return
 	}
 
 	c.mutAddMetaFileLocked(snapshotFile.name, snapshotFile)
