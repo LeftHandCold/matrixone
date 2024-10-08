@@ -539,6 +539,12 @@ func (c *checkpointCleaner) deleteStaleSnapshotFilesLocked() error {
 				zap.String("max-ts", maxTS.ToString()),
 			)
 		}
+		logutil.Info(
+			"GC-TRACE-DELETE-SNAPSHOT-FILE",
+			zap.String("task", c.TaskNameLocked()),
+			zap.String("max-file", thisFile),
+			zap.String("max-ts", thisTS.ToString()),
+		)
 		delete(metaFiles, thisFile)
 
 		return
@@ -560,6 +566,7 @@ func (c *checkpointCleaner) deleteStaleSnapshotFilesLocked() error {
 			}
 		}
 	}
+	logutil.Infof(" metaFiles: %v", metaFiles)
 
 	return c.mutSetNewMetaFilesLocked(metaFiles)
 }
