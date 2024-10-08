@@ -584,6 +584,7 @@ func (c *checkpointCleaner) deleteStaleCKPMetaFileLocked() (err error) {
 	for _, metaFile := range metaFiles {
 		if (metaFile.Ext() != blockio.CheckpointExt) ||
 			(metaFile.EqualRange(&window.tsRange.start, &window.tsRange.end)) {
+			logutil.Infof("skip file: %s", metaFile.Name())
 			continue
 		}
 		gcWindow := NewGCWindow(c.mp, c.fs.Service)
@@ -631,6 +632,7 @@ func (c *checkpointCleaner) getMetaFilesToMerge(ts *types.TS) (
 		panic(fmt.Sprintf("getMetaFilesToMerge end < start. "+
 			"end: %v, start: %v", ts.ToString(), start.ToString()))
 	}
+	logutil.Infof("getMetaFilesToMerge: start: %v, end: %v", start.ToString(), ts.ToString())
 	return c.checkpointCli.ICKPRange(&start, ts, 20)
 }
 
@@ -645,7 +647,8 @@ func (c *checkpointCleaner) filterCheckpoints(
 	var i int
 	for i = len(checkpoints) - 1; i >= 0; i-- {
 		endTS := checkpoints[i].GetEnd()
-		if endTS.LT(highWater) {
+		if endTS.LE(highWater) {
+			logutil.Infof("filterCheckpoints: endTS: %v, highWater: %v", endTS.ToString(), highWater.ToString())
 			break
 		}
 	}

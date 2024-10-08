@@ -207,7 +207,7 @@ func MergeCheckpoint(
 	checkpointEntry.SetLSN(ckpEntries[len(ckpEntries)-1].LSN(), ckpEntries[len(ckpEntries)-1].GetTruncateLsn())
 	checkpointEntry.SetState(checkpoint.ST_Finished)
 	checkpointEntry.SetVersion(logtail.CheckpointCurrentVersion)
-	logutil.Infof("write checkpoint %s", name)
+	logutil.Infof("write checkpoint %s, location", name, cnLocation.String())
 	return
 }
 
