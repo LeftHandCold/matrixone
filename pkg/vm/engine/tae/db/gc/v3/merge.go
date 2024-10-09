@@ -169,9 +169,11 @@ func MergeCheckpoint(
 	}
 
 	for tid, table := range tableInsertOff {
+		logutil.Infof("update object insert meta tid %d offset %d end %d", tid, table.offset, table.end)
 		ckpData.UpdateObjectInsertMeta(tid, int32(table.offset), int32(table.end))
 	}
 	for tid, table := range tableTombstoneOff {
+		logutil.Infof("update object tombstone meta tid %d offset %d end %d", tid, table.offset, table.end)
 		ckpData.UpdateTombstoneInsertMeta(tid, int32(table.offset), int32(table.end))
 	}
 	cnLocation, tnLocation, _, err := ckpData.WriteTo(
