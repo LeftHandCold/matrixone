@@ -120,13 +120,7 @@ func ListSnapshotCheckpoint(
 	if len(metaFiles) == 0 {
 		return nil, nil
 	}
-	bat, version, _, err := loadCheckpointMeta(ctx, sid, fs, metaFiles)
-	defer func() {
-	}()
-	if err != nil {
-		return nil, err
-	}
-	return ListSnapshotCheckpointWithMeta(bat, version)
+	return loadCheckpointMeta(ctx, sid, fs, metaFiles)
 }
 
 func ListSnapshotMeta(
@@ -206,50 +200,49 @@ func loadCheckpointMeta(
 	sid string,
 	fs fileservice.FileService,
 	metaFiles []*MetaFile,
-) (bat *containers.Batch, checkpointVersion int, releases []func(), err error) {
+) (entries []*CheckpointEntry, err error) {
 	colNames := CheckpointSchema.Attrs()
 	logutil.Infof("loadCheckpointMeta: sid=%s metaFiles=%v", sid, colNames)
 	colTypes := CheckpointSchema.Types()
-	bat = containers.NewBatch()
-	releases = make([]func(), 0)
+	bat := containers.NewBatch()
 	var (
-		bats    []*batch.Batch
-		tmpBat  *batch.Batch
-		closeCB func()
-		reader  *blockio.BlockReader
+		bats   []*batch.Batch
+		tmpBat *batch.Batch
 	)
-	loader := func(name string) error {
+	loader := func(name string) (closeCB func(), err error) {
 		logutil.Infof("loadCheckpointMeta: load %s", name)
+		var reader *blockio.BlockReader
 		reader, err = blockio.NewFileReader(sid, fs, name)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		bats, closeCB, err = reader.LoadAllColumns(ctx, nil, common.DebugAllocator)
 		if err != nil {
-			return err
-		}
-		if closeCB != nil {
-			releases = append(releases, closeCB)
+			return
 		}
 
 		if len(bats) > 1 {
 			panic("unexpected multiple batches in a checkpoint file")
 		}
 		if len(bats) == 0 {
-			return nil
+			return
 		}
 		if tmpBat == nil {
 			tmpBat = bats[0]
 		} else {
 			tmpBat.Append(ctx, common.CheckpointAllocator, bats[0])
 		}
-		return nil
+		return
 	}
 
 	for _, metaFile := range metaFiles {
-		err = loader(CheckpointDir + metaFile.name)
+		var cb func()
+		cb, err = loader(CheckpointDir + metaFile.name)
 		if err != nil {
 			return
+		}
+		if cb != nil {
+			defer cb()
 		}
 	}
 
@@ -264,6 +257,7 @@ func loadCheckpointMeta(
 	}
 	// in version 1, checkpoint metadata doesn't contain 'version'.
 	vecLen := len(bat.Vecs)
+	var checkpointVersion int
 	if vecLen < CheckpointSchemaColumnCountV1 {
 		checkpointVersion = 1
 	} else if vecLen < CheckpointSchemaColumnCountV2 {
@@ -271,7 +265,7 @@ func loadCheckpointMeta(
 	} else {
 		checkpointVersion = 3
 	}
-	return
+	return ListSnapshotCheckpointWithMeta(bat, checkpointVersion)
 }
 
 func ListSnapshotCheckpointWithMeta(
