@@ -201,9 +201,6 @@ func ListSnapshotMeta(
 	// so you only need to read the last meta file
 	oFiles, _ = FilterSortedMetaFilesByTimestamp(&snapshot, metaFiles)
 
-	if len(oFiles) == 1 {
-		return oFiles, nil
-	}
 	return oFiles[len(oFiles)-1:], nil
 }
 
