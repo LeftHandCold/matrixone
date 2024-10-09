@@ -155,11 +155,12 @@ func (p *Partition) ConsumeSnapCkps(
 	state := p.state.Load()
 	start := types.MaxTs()
 	end := types.TS{}
-	for _, ckp := range ckps {
+	for i, ckp := range ckps {
 		if err = fn(ckp, state); err != nil {
 			return
 		}
-		if ckp.GetType() == checkpoint.ET_Global {
+		if ckp.GetType() == checkpoint.ET_Global ||
+			(ckp.GetType() == checkpoint.ET_Compacted && i == 0) {
 			ckpStart := ckp.GetStart()
 			if ckpStart.IsEmpty() {
 				start = ckp.GetEnd()
@@ -168,7 +169,8 @@ func (p *Partition) ConsumeSnapCkps(
 				end = ckp.GetEnd()
 			}
 		}
-		if ckp.GetType() == checkpoint.ET_Incremental {
+		if ckp.GetType() == checkpoint.ET_Incremental ||
+			(ckp.GetType() == checkpoint.ET_Compacted && i > 0) {
 			ckpstart := ckp.GetStart()
 			if ckpstart.LT(&start) {
 				start = ckpstart

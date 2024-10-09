@@ -515,11 +515,6 @@ func ReplayCheckpointEntries(bat *containers.Batch, checkpointVersion int) (entr
 		var ckpLSN, truncateLSN uint64
 		ckpLSN = bat.GetVectorByName(CheckpointAttr_CheckpointLSN).Get(i).(uint64)
 		truncateLSN = bat.GetVectorByName(CheckpointAttr_TruncateLSN).Get(i).(uint64)
-		if i == 0 {
-			typ = ET_Global
-		} else {
-			typ = ET_Incremental
-		}
 		checkpointEntry := &CheckpointEntry{
 			start:       start,
 			end:         end,
