@@ -222,6 +222,7 @@ func loadCheckpointMeta(
 		reader  *blockio.BlockReader
 	)
 	loader := func(name string) error {
+		logutil.Infof("loadCheckpointMeta: load %s", name)
 		reader, err = blockio.NewFileReader(sid, fs, name)
 		if err != nil {
 			return err
