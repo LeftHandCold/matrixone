@@ -89,7 +89,7 @@ func FilterSortedCompactedFilesByTimestamp(
 	prev := files[0]
 
 	if prev.start.IsEmpty() && ts.LE(&prev.end) {
-		return files[:2], true
+		return files[:1], true
 	}
 
 	for i := 1; i < len(files); i++ {
