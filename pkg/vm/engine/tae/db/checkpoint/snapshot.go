@@ -250,7 +250,7 @@ func loadCheckpointMeta(
 			logutil.Infof("loadCheckpointMeta: start=%v end=%v cnLoc=%v", start.ToString(), end.ToString(), cnLoc.String())
 		}
 		if len(bat.Vecs) > 0 {
-			bat.Append(containers.ToTNBatch(b, common.DebugAllocator))
+			bat.Extend(containers.ToTNBatch(b, common.DebugAllocator))
 			for i := 0; i < bat.Length(); i++ {
 				start := bat.GetVectorByName(CheckpointAttr_StartTS).Get(i).(types.TS)
 				end := bat.GetVectorByName(CheckpointAttr_EndTS).Get(i).(types.TS)
