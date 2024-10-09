@@ -16,8 +16,6 @@ package blockio
 
 import (
 	"context"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
-
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -247,7 +245,6 @@ func (r *BlockReader) LoadAllColumns(
 	block := dataMeta.GetBlockMeta(0)
 	if len(idxs) == 0 {
 		idxs = make([]uint16, block.GetColumnCount())
-		logutil.Infof("LoadAllColumns: idxs is empty, set idxs to %v", idxs)
 		for i := range idxs {
 			idxs[i] = uint16(i)
 		}
@@ -268,7 +265,6 @@ func (r *BlockReader) LoadAllColumns(
 		bat := batch.NewWithSize(len(idxs))
 		var obj any
 		for i := range idxs {
-			logutil.Infof("LoadAllColumns: idxs is %d, i is %d, ssss %d, y is %d, %v", len(idxs), i, y*len(idxs)+i, y, ioVectors.Entries[y*len(idxs)+i].CachedData.Bytes())
 			obj, err = objectio.Decode(ioVectors.Entries[y*len(idxs)+i].CachedData.Bytes())
 			if err != nil {
 				return nil, nil, err

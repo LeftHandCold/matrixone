@@ -260,7 +260,6 @@ func ReadAllBlocksWithMeta(
 				ToCacheData: factory(int64(ext.OriginSize()), ext.Alg()),
 			})
 
-			logutil.Infof("block %s read seqnum %d %v, ext is %v, offset %d, size %d", name, seqnum, ext.String(), ext.Offset(), ext.Length())
 		}
 	}
 
