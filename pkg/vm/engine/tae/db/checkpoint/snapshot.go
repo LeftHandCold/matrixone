@@ -212,6 +212,7 @@ func loadCheckpointMeta(
 	metaFiles []*MetaFile,
 ) (bat *containers.Batch, checkpointVersion int, releases []func(), err error) {
 	colNames := CheckpointSchema.Attrs()
+	logutil.Infof("loadCheckpointMeta: sid=%s metaFiles=%v", sid, colNames)
 	colTypes := CheckpointSchema.Types()
 	bat = containers.NewBatch()
 	releases = make([]func(), 0)
@@ -252,8 +253,8 @@ func loadCheckpointMeta(
 		if len(bat.Vecs) > 0 {
 			bat.Extend(containers.ToTNBatch(b, common.DebugAllocator))
 			for i := 0; i < bat.Length(); i++ {
-				start := bat.GetVectorByName(CheckpointAttr_StartTS).Get(i).(types.TS)
-				end := bat.GetVectorByName(CheckpointAttr_EndTS).Get(i).(types.TS)
+				start := bat.Vecs[0].Get(i).(types.TS)
+				end := bat.Vecs[1].Get(i).(types.TS)
 				cnLoc := objectio.Location(bat.GetVectorByName(CheckpointAttr_MetaLocation).Get(i).([]byte))
 				logutil.Infof("loadCheckpointMeta22: start=%v end=%v cnLoc=%v", start.ToString(), end.ToString(), cnLoc.String())
 			}
