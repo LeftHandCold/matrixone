@@ -98,7 +98,7 @@ func FilterSortedCompactedFilesByTimestamp(
 		// ts.LE(&curr.end) means the ts is in the range of the checkpoint
 		// ts.LT(&prev.end) means the ts is not in the range of the previous checkpoint
 		if ts.LE(&curr.end) {
-			return files[:i], true
+			return files[:i+1], true
 		}
 		prev = curr
 	}
