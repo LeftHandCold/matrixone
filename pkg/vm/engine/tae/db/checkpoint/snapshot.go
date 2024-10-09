@@ -242,16 +242,17 @@ func loadCheckpointMeta(
 			return nil
 		}
 		b := bats[0]
-		b.Attrs = colNames
+		//b.Attrs = colNames
 		y := containers.ToTNBatch(b, common.DebugAllocator)
-		for i := 0; i < b.Vecs[0].Length(); i++ {
+		//y.Attrs = colNames
+		for i := 0; i < y.Vecs[0].Length(); i++ {
 			start := y.GetVectorByName(CheckpointAttr_StartTS).Get(i).(types.TS)
 			end := y.GetVectorByName(CheckpointAttr_EndTS).Get(i).(types.TS)
 			cnLoc := objectio.Location(y.GetVectorByName(CheckpointAttr_MetaLocation).Get(i).([]byte))
 			logutil.Infof("loadCheckpointMeta: start=%v end=%v cnLoc=%v", start.ToString(), end.ToString(), cnLoc.String())
 		}
 		if len(bat.Vecs) > 0 {
-			bat.Extend(containers.ToTNBatch(b, common.DebugAllocator))
+			bat.Extend(y)
 			for i := 0; i < bat.Length(); i++ {
 				start := bat.Vecs[0].Get(i).(types.TS)
 				end := bat.Vecs[1].Get(i).(types.TS)
