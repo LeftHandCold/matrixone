@@ -240,6 +240,7 @@ func loadCheckpointMeta(
 			return nil
 		}
 		b := bats[0]
+		b.Attrs = colNames
 		for i := range b.Vecs {
 			logutil.Infof("loadCheckpointMeta: %v %v", colNames[i], b.Vecs[i].Length())
 		}
