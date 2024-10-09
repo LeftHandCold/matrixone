@@ -120,11 +120,8 @@ func ListSnapshotCheckpoint(
 	if len(metaFiles) == 0 {
 		return nil, nil
 	}
-	bat, version, closeCBs, err := loadCheckpointMeta(ctx, sid, fs, metaFiles)
+	bat, version, _, err := loadCheckpointMeta(ctx, sid, fs, metaFiles)
 	defer func() {
-		for _, cb := range closeCBs {
-			cb()
-		}
 	}()
 	if err != nil {
 		return nil, err
