@@ -118,10 +118,6 @@ func (p *PartitionState) HandleDataObjectList(
 	defer vec.Free(pool)
 	createTSCol := vector.MustFixedColWithTypeCheck[types.TS](vec)
 
-	vec = mustVectorFromProto(ee.Bat.Vecs[4])
-	defer vec.Free(pool)
-	tableTSCol := vector.MustFixedColWithTypeCheck[uint64](vec)
-
 	vec = mustVectorFromProto(ee.Bat.Vecs[6])
 	defer vec.Free(pool)
 	deleteTSCol := vector.MustFixedColWithTypeCheck[types.TS](vec)
@@ -145,9 +141,6 @@ func (p *PartitionState) HandleDataObjectList(
 		objEntry.ObjectStats = objectio.ObjectStats(statsVec.GetBytesAt(idx))
 		objEntry.CreateTime = createTSCol[idx]
 		objEntry.DeleteTime = deleteTSCol[idx]
-		if tableTSCol[idx] == 272522 {
-			logutil.Infof("tableTSCol[idx] == 272522 %v-%v,%v", objEntry.CreateTime.ToString(), objEntry.DeleteTime.ToString(), objEntry.ObjectStats.ObjectName().String())
-		}
 		if objEntry.Size() == 0 || (objEntry.GetAppendable() && objEntry.DeleteTime.IsEmpty()) {
 			// CN doesn't consume the create event of appendable object
 			continue
