@@ -208,18 +208,24 @@ func loadCheckpointMeta(
 	var (
 		tmpBat *batch.Batch
 	)
-	loader := func(name string) (closeCB func(), err error) {
+	loader := func(name string) (err error) {
 		logutil.Infof("loadCheckpointMeta: load %s", name)
 		var reader *blockio.BlockReader
 		var bats []*batch.Batch
+		var closeCB func()
 		reader, err = blockio.NewFileReader(sid, fs, name)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		bats, closeCB, err = reader.LoadAllColumns(ctx, nil, common.DebugAllocator)
 		if err != nil {
 			return
 		}
+		defer func() {
+			if closeCB != nil {
+				closeCB()
+			}
+		}()
 
 		if len(bats) > 1 {
 			panic("unexpected multiple batches in a checkpoint file")
@@ -228,21 +234,24 @@ func loadCheckpointMeta(
 			return
 		}
 		if tmpBat == nil {
-			tmpBat = bats[0]
+			tmpBat, err = bats[0].Dup(common.CheckpointAllocator)
+			if err != nil {
+				return
+			}
 		} else {
-			tmpBat.Append(ctx, common.CheckpointAllocator, bats[0])
+			test, err := bats[0].Dup(common.CheckpointAllocator)
+			if err != nil {
+				return err
+			}
+			tmpBat.Append(ctx, common.CheckpointAllocator, test)
 		}
 		return
 	}
 
 	for _, metaFile := range metaFiles {
-		var cb func()
-		cb, err = loader(CheckpointDir + metaFile.name)
+		err = loader(CheckpointDir + metaFile.name)
 		if err != nil {
 			return
-		}
-		if cb != nil {
-			defer cb()
 		}
 	}
 
