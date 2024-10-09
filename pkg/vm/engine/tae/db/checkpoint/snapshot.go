@@ -17,6 +17,7 @@ package checkpoint
 import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"sort"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -80,30 +81,14 @@ func FilterSortedMetaFilesByTimestamp(
 
 func FilterSortedCompactedFilesByTimestamp(
 	ts *types.TS,
-	files []*MetaFile,
-) ([]*MetaFile, bool) {
-	if len(files) == 0 {
-		return nil, false
+	file *MetaFile,
+) (*MetaFile, bool) {
+
+	if ts.LE(&file.end) {
+		return file, true
 	}
 
-	prev := files[0]
-
-	if prev.start.IsEmpty() && ts.LE(&prev.end) {
-		return files[:1], true
-	}
-
-	for i := 1; i < len(files); i++ {
-		curr := files[i]
-		// curr.start.IsEmpty() means the file is a global checkpoint
-		// ts.LE(&curr.end) means the ts is in the range of the checkpoint
-		// ts.LT(&prev.end) means the ts is not in the range of the previous checkpoint
-		if ts.LE(&curr.end) {
-			return files[:i+1], true
-		}
-		prev = curr
-	}
-
-	return files, false
+	return file, false
 }
 
 func ListSnapshotCheckpoint(
@@ -173,19 +158,28 @@ func ListSnapshotMeta(
 	// the range of this snapshot. If the 'compacted' does not meet the requirements,
 	// then the normal checkpoint must be returned, that is 'metaFiles'.
 	isRangeHit := false
-	var files []*MetaFile
+	var file *MetaFile
 	var oFiles []*MetaFile
 	if len(compactedFiles) > 0 {
-		files, isRangeHit = FilterSortedCompactedFilesByTimestamp(&snapshot, compactedFiles)
+		file, isRangeHit = FilterSortedCompactedFilesByTimestamp(&snapshot, compactedFiles[len(compactedFiles)-1])
 	}
 
 	if isRangeHit {
+		oFiles = make([]*MetaFile, 0, 2)
+		oFiles = append(oFiles, file)
+		for _, f := range metaFiles {
+			if f.start.GE(&file.end) {
+				oFiles = append(oFiles, f)
+				break
+			}
+		}
+
 		logutil.Infof(
 			"ListSnapshotMeta: snapshot=%v files=%v-%v",
-			snapshot.ToString(), files[0].end.ToString(), files[len(files)-1].end.ToString())
+			snapshot.ToString(), file.end.ToString(), oFiles[len(oFiles)-1].end.ToString())
 		// The compacted checkpoint meta only contains one checkpoint record,
 		// so you need to read all the meta files
-		return files, nil
+		return oFiles, nil
 	}
 
 	// The normal checkpoint meta file records a checkpoint interval,
@@ -234,16 +228,28 @@ func loadCheckpointMeta(
 			return
 		}
 		if tmpBat == nil {
-			tmpBat, err = bats[0].Dup(common.CheckpointAllocator)
+			tmpBat, err = bats[0].Dup(common.DebugAllocator)
 			if err != nil {
 				return
 			}
 		} else {
-			test, err := bats[0].Dup(common.CheckpointAllocator)
-			if err != nil {
-				return err
-			}
-			tmpBat.Append(ctx, common.CheckpointAllocator, test)
+			b := bats[0]
+			row := b.Vecs[0].Length() - 1
+			startTs := vector.MustFixedColWithTypeCheck[types.TS](b.Vecs[0])
+			endTs := vector.MustFixedColWithTypeCheck[types.TS](b.Vecs[1])
+			typ := vector.MustFixedColWithTypeCheck[bool](b.Vecs[3])
+			vesion := vector.MustFixedColWithTypeCheck[uint32](b.Vecs[4])
+			lsn1 := vector.MustFixedColWithTypeCheck[uint64](b.Vecs[6])
+			lsn2 := vector.MustFixedColWithTypeCheck[uint64](b.Vecs[7])
+			vector.AppendFixed[types.TS](tmpBat.Vecs[0], startTs[row], false, common.DefaultAllocator)
+			vector.AppendFixed[types.TS](tmpBat.Vecs[1], endTs[row], false, common.DefaultAllocator)
+			vector.AppendBytes(tmpBat.Vecs[2], b.Vecs[2].GetBytesAt(row), false, common.DefaultAllocator)
+			vector.AppendFixed[bool](tmpBat.Vecs[3], typ[row], false, common.DefaultAllocator)
+			vector.AppendFixed[uint32](tmpBat.Vecs[4], vesion[row], false, common.DefaultAllocator)
+			vector.AppendBytes(tmpBat.Vecs[5], b.Vecs[5].GetBytesAt(row), false, common.DefaultAllocator)
+			vector.AppendFixed[uint64](tmpBat.Vecs[6], lsn1[row], false, common.DefaultAllocator)
+			vector.AppendFixed[uint64](tmpBat.Vecs[7], lsn2[row], false, common.DefaultAllocator)
+			vector.AppendFixed[int8](tmpBat.Vecs[8], int8(ET_Incremental), false, common.DefaultAllocator)
 		}
 		return
 	}
@@ -264,6 +270,7 @@ func loadCheckpointMeta(
 		}
 		bat.AddVector(colNames[i], vec)
 	}
+	defer tmpBat.Clean(common.DebugAllocator)
 	// in version 1, checkpoint metadata doesn't contain 'version'.
 	vecLen := len(bat.Vecs)
 	var checkpointVersion int
@@ -281,7 +288,7 @@ func ListSnapshotCheckpointWithMeta(
 	bat *containers.Batch,
 	version int,
 ) ([]*CheckpointEntry, error) {
-
+	defer bat.Close()
 	entries, maxGlobalEnd := ReplayCheckpointEntries(bat, version)
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].end.LT(&entries[j].end)
