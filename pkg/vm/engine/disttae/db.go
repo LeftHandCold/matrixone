@@ -297,7 +297,7 @@ func (e *Engine) getOrCreateSnapPart(
 	if err != nil {
 		return nil, err
 	}
-	logutil.Infof("getOrCreateSnapPart: tableId:%d, ts:%d, ckps:%d", tbl.tableId, ts.ToString(), len(ckps))
+	logutil.Infof("getOrCreateSnapPart: tableId:%d, ts:%v, ckps:%d", tbl.tableId, ts.ToString(), len(ckps))
 
 	for _, ckp := range ckps {
 		logutil.Infof("getOrCreateSnapPart: tableId:%d, ckp:%s", tbl.tableId, ckp.String())
