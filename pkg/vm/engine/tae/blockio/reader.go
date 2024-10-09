@@ -268,7 +268,7 @@ func (r *BlockReader) LoadAllColumns(
 		bat := batch.NewWithSize(len(idxs))
 		var obj any
 		for i := range idxs {
-			logutil.Infof("LoadAllColumns: idxs is %d, i is %d, ssss %d, y is %d", len(idxs), i, y*len(idxs)+i), y)
+			logutil.Infof("LoadAllColumns: idxs is %d, i is %d, ssss %d, y is %d", len(idxs), i, y*len(idxs)+i, y)
 			obj, err = objectio.Decode(ioVectors.Entries[y*len(idxs)+i].CachedData.Bytes())
 			if err != nil {
 				return nil, nil, err
