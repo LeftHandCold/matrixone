@@ -206,12 +206,12 @@ func loadCheckpointMeta(
 	colTypes := CheckpointSchema.Types()
 	bat := containers.NewBatch()
 	var (
-		bats   []*batch.Batch
 		tmpBat *batch.Batch
 	)
 	loader := func(name string) (closeCB func(), err error) {
 		logutil.Infof("loadCheckpointMeta: load %s", name)
 		var reader *blockio.BlockReader
+		var bats []*batch.Batch
 		reader, err = blockio.NewFileReader(sid, fs, name)
 		if err != nil {
 			return nil, err
