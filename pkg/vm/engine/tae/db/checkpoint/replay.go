@@ -526,6 +526,7 @@ func ReplayCheckpointEntries(bat *containers.Batch, checkpointVersion int) (entr
 			ckpLSN:      ckpLSN,
 			truncateLSN: truncateLSN,
 		}
+		logutil.Infof("ReplayCheckpointEntries: %s", checkpointEntry.String())
 		entries[i] = checkpointEntry
 		if typ == ET_Global {
 			if end.GT(&maxGlobalEnd) {
