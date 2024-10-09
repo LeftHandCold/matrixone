@@ -774,13 +774,23 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 	c.updateCheckpointGCWaterMark(&newWaterMark)
 
 	deleteFiles = tmpFiles
-
+	gckps := c.checkpointCli.GetAllGlobalCheckpoints()
+	for _, ckp := range gckps {
+		end := ckp.GetEnd()
+		if end.LT(&newWaterMark) {
+			nameMeta := blockio.EncodeCheckpointMetadataFileName(
+				checkpoint.CheckpointDir, checkpoint.PrefixMetadata,
+				ckp.GetStart(), ckp.GetEnd())
+			deleteFiles = append(deleteFiles, nameMeta)
+		}
+	}
 	if c.GCCheckpointEnabled() {
 		if err = c.fs.DelFiles(c.ctx, deleteFiles); err != nil {
 			extraErrMsg = "DelFiles failed"
 			return err
 		}
 	}
+
 	for _, file := range deleteFiles {
 		if strings.Contains(file, checkpoint.PrefixMetadata) {
 			info := strings.Split(file, checkpoint.CheckpointDir+"/")
