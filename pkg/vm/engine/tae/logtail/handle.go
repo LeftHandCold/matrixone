@@ -480,7 +480,7 @@ func LoadCheckpointEntries(
 
 	for i := range objectLocations {
 		data := NewCNCheckpointData(sid)
-		meteIdxSchema := checkpointDataReferVersions[CheckpointVersion12][MetaIDX]
+		meteIdxSchema := checkpointDataReferVersions[versions[i]][MetaIDX]
 		idxes := make([]uint16, len(meteIdxSchema.attrs))
 		for attr := range meteIdxSchema.attrs {
 			idxes[attr] = uint16(attr)
