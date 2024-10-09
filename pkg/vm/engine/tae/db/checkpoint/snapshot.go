@@ -240,6 +240,9 @@ func loadCheckpointMeta(
 			return nil
 		}
 		b := bats[0]
+		for i := range b.Vecs {
+			logutil.Infof("loadCheckpointMeta: %v %v", colNames[i], b.Vecs[i].Length())
+		}
 		if len(bat.Vecs) > 0 {
 			bat.Append(containers.ToTNBatch(b, common.DebugAllocator))
 			return nil
