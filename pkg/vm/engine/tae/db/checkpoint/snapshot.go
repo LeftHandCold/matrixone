@@ -17,6 +17,7 @@ package checkpoint
 import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"sort"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -241,8 +242,11 @@ func loadCheckpointMeta(
 		}
 		b := bats[0]
 		b.Attrs = colNames
-		for i := range b.Vecs {
-			logutil.Infof("loadCheckpointMeta: %v %v", colNames[i], b.Vecs[i].Length())
+		for i := 0; i < b.Vecs[0].Length(); i++ {
+			start := bat.GetVectorByName(CheckpointAttr_StartTS).Get(i).(types.TS)
+			end := bat.GetVectorByName(CheckpointAttr_EndTS).Get(i).(types.TS)
+			cnLoc := objectio.Location(bat.GetVectorByName(CheckpointAttr_MetaLocation).Get(i).([]byte))
+			logutil.Infof("loadCheckpointMeta: start=%v end=%v cnLoc=%v", start.ToString(), end.ToString(), cnLoc.String())
 		}
 		if len(bat.Vecs) > 0 {
 			bat.Append(containers.ToTNBatch(b, common.DebugAllocator))
