@@ -441,6 +441,9 @@ func LoadCheckpointEntries(
 		v2.LogTailLoadCheckpointDurationHistogram.Observe(time.Since(now).Seconds())
 	}()
 	locationsAndVersions := strings.Split(metLoc, ";")
+	for i := 0; i < len(locationsAndVersions); i++ {
+		logutil.Infof("[logtail] load checkpoint %s", locationsAndVersions[i])
+	}
 
 	datas := make([]*CNCheckpointData, len(locationsAndVersions)/2)
 
