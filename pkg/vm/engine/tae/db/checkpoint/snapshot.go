@@ -17,7 +17,6 @@ package checkpoint
 import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
-	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"sort"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -218,10 +217,10 @@ func loadCheckpointMeta(
 	releases = make([]func(), 0)
 	var (
 		bats    []*batch.Batch
+		tmpBat  *batch.Batch
 		closeCB func()
 		reader  *blockio.BlockReader
 	)
-
 	loader := func(name string) error {
 		reader, err = blockio.NewFileReader(sid, fs, name)
 		if err != nil {
@@ -241,34 +240,10 @@ func loadCheckpointMeta(
 		if len(bats) == 0 {
 			return nil
 		}
-		b := bats[0]
-		//b.Attrs = colNames
-		y := containers.ToTNBatch(b, common.DebugAllocator)
-		//y.Attrs = colNames
-		for i := 0; i < y.Vecs[0].Length(); i++ {
-			start := y.GetVectorByName(CheckpointAttr_StartTS).Get(i).(types.TS)
-			end := y.GetVectorByName(CheckpointAttr_EndTS).Get(i).(types.TS)
-			cnLoc := objectio.Location(y.GetVectorByName(CheckpointAttr_MetaLocation).Get(i).([]byte))
-			logutil.Infof("loadCheckpointMeta: start=%v end=%v cnLoc=%v", start.ToString(), end.ToString(), cnLoc.String())
-		}
-		if len(bat.Vecs) > 0 {
-			bat.Extend(y)
-			for i := 0; i < bat.Length(); i++ {
-				start := bat.Vecs[0].Get(i).(types.TS)
-				end := bat.Vecs[1].Get(i).(types.TS)
-				cnLoc := objectio.Location(bat.GetVectorByName(CheckpointAttr_MetaLocation).Get(i).([]byte))
-				logutil.Infof("loadCheckpointMeta22: start=%v end=%v cnLoc=%v", start.ToString(), end.ToString(), cnLoc.String())
-			}
-			return nil
-		}
-		for i := range b.Vecs {
-			var vec containers.Vector
-			if bats[0].Vecs[i].Length() == 0 {
-				vec = containers.MakeVector(colTypes[i], common.DebugAllocator)
-			} else {
-				vec = containers.ToTNVector(bats[0].Vecs[i], common.DebugAllocator)
-			}
-			bat.AddVector(colNames[i], vec)
+		if tmpBat == nil {
+			tmpBat = bats[0]
+		} else {
+			tmpBat.Append(ctx, common.CheckpointAllocator, bats[0])
 		}
 		return nil
 	}
@@ -280,6 +255,15 @@ func loadCheckpointMeta(
 		}
 	}
 
+	for i := range tmpBat.Vecs {
+		var vec containers.Vector
+		if tmpBat.Vecs[i].Length() == 0 {
+			vec = containers.MakeVector(colTypes[i], common.DebugAllocator)
+		} else {
+			vec = containers.ToTNVector(tmpBat.Vecs[i], common.DebugAllocator)
+		}
+		bat.AddVector(colNames[i], vec)
+	}
 	// in version 1, checkpoint metadata doesn't contain 'version'.
 	vecLen := len(bat.Vecs)
 	if vecLen < CheckpointSchemaColumnCountV1 {
