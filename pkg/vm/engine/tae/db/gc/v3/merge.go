@@ -175,11 +175,9 @@ func MergeCheckpoint(
 	}
 
 	for tid, table := range tableInsertOff {
-		logutil.Infof("update object insert meta tid %d offset %d end %d", tid, table.offset, table.end)
 		ckpData.UpdateObjectInsertMeta(tid, int32(table.offset), int32(table.end))
 	}
 	for tid, table := range tableTombstoneOff {
-		logutil.Infof("update object tombstone meta tid %d offset %d end %d", tid, table.offset, table.end)
 		ckpData.UpdateTombstoneInsertMeta(tid, int32(table.offset), int32(table.end))
 	}
 	cnLocation, tnLocation, _, err := ckpData.WriteTo(
@@ -215,7 +213,6 @@ func MergeCheckpoint(
 	checkpointEntry.SetLSN(ckpEntries[len(ckpEntries)-1].LSN(), ckpEntries[len(ckpEntries)-1].GetTruncateLsn())
 	checkpointEntry.SetState(checkpoint.ST_Finished)
 	checkpointEntry.SetVersion(logtail.CheckpointCurrentVersion)
-	logutil.Infof("write checkpoint %s, location %v", name, cnLocation.String())
 	return
 }
 

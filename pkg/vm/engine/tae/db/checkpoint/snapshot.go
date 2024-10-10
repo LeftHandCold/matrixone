@@ -16,8 +16,8 @@ package checkpoint
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
-	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"sort"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -50,9 +50,9 @@ import (
 func FilterSortedMetaFilesByTimestamp(
 	ts *types.TS,
 	files []*MetaFile,
-) ([]*MetaFile, bool) {
+) []*MetaFile {
 	if len(files) == 0 {
-		return nil, false
+		return nil
 	}
 
 	prev := files[0]
@@ -62,7 +62,7 @@ func FilterSortedMetaFilesByTimestamp(
 	// it means the ts is in the range of the global checkpoint
 	// ts is within GCKP[0, end]
 	if prev.start.IsEmpty() && ts.LE(&prev.end) {
-		return files[:1], true
+		return files[:1]
 	}
 
 	for i := 1; i < len(files); i++ {
@@ -71,24 +71,12 @@ func FilterSortedMetaFilesByTimestamp(
 		// ts.LE(&curr.end) means the ts is in the range of the checkpoint
 		// ts.LT(&prev.end) means the ts is not in the range of the previous checkpoint
 		if curr.start.IsEmpty() && ts.LE(&curr.end) {
-			return files[:i], true
+			return files[:i]
 		}
 		prev = curr
 	}
 
-	return files, false
-}
-
-func FilterSortedCompactedFilesByTimestamp(
-	ts *types.TS,
-	file *MetaFile,
-) (*MetaFile, bool) {
-
-	if ts.LE(&file.end) {
-		return file, true
-	}
-
-	return file, false
+	return files
 }
 
 func ListSnapshotCheckpoint(
@@ -154,39 +142,34 @@ func ListSnapshotMeta(
 		logutil.Infof("compactedFiles[%d]: %v", i, file.String())
 	}
 
-	// isRangeHit is a flag, which represents whether the metaFiles passed in meet
-	// the range of this snapshot. If the 'compacted' does not meet the requirements,
-	// then the normal checkpoint must be returned, that is 'metaFiles'.
-	isRangeHit := false
-	var file *MetaFile
-	var oFiles []*MetaFile
+	retFiles := make([]*MetaFile, 0)
 	if len(compactedFiles) > 0 {
-		file, isRangeHit = FilterSortedCompactedFilesByTimestamp(&snapshot, compactedFiles[len(compactedFiles)-1])
-	}
+		file := compactedFiles[len(compactedFiles)-1]
+		retFiles = append(retFiles, file)
+		if snapshot.LE(&compactedFiles[len(compactedFiles)-1].end) {
+			// If this condition is met, you can return the compacted checkpoint + one normal checkpoint,
+			// otherwise you need to call FilterSortedMetaFilesByTimestamp to handle it normally.
 
-	if isRangeHit {
-		oFiles = make([]*MetaFile, 0, 2)
-		oFiles = append(oFiles, file)
-		for _, f := range metaFiles {
-			if f.start.GE(&file.end) {
-				oFiles = append(oFiles, f)
-				break
+			// The compacted checkpoint already contains the range of the snapshot, but in
+			// order to avoid data loss, an additional checkpoint is still needed, because
+			// the object flushed by the snapshot may be in the next checkpoint
+			for _, f := range metaFiles {
+				if f.start.GE(&file.end) {
+					retFiles = append(retFiles, f)
+					break
+				}
 			}
+			return retFiles, nil
 		}
-
-		logutil.Infof(
-			"ListSnapshotMeta: snapshot=%v files=%v-%v",
-			snapshot.ToString(), file.end.ToString(), oFiles[len(oFiles)-1].end.ToString())
-		// The compacted checkpoint meta only contains one checkpoint record,
-		// so you need to read all the meta files
-		return oFiles, nil
 	}
 
 	// The normal checkpoint meta file records a checkpoint interval,
 	// so you only need to read the last meta file
-	oFiles, _ = FilterSortedMetaFilesByTimestamp(&snapshot, metaFiles)
+	ickpFiles := FilterSortedMetaFilesByTimestamp(&snapshot, metaFiles)
 
-	return oFiles[len(oFiles)-1:], nil
+	retFiles = append(retFiles, ickpFiles...)
+
+	return retFiles, nil
 }
 
 func loadCheckpointMeta(
@@ -196,14 +179,12 @@ func loadCheckpointMeta(
 	metaFiles []*MetaFile,
 ) (entries []*CheckpointEntry, err error) {
 	colNames := CheckpointSchema.Attrs()
-	logutil.Infof("loadCheckpointMeta: sid=%s metaFiles=%v", sid, colNames)
 	colTypes := CheckpointSchema.Types()
 	bat := containers.NewBatch()
 	var (
 		tmpBat *batch.Batch
 	)
 	loader := func(name string) (err error) {
-		logutil.Infof("loadCheckpointMeta: load %s", name)
 		var reader *blockio.BlockReader
 		var bats []*batch.Batch
 		var closeCB func()
@@ -227,29 +208,15 @@ func loadCheckpointMeta(
 		if len(bats) == 0 {
 			return
 		}
+		bats[0].SetAttributes(colNames)
 		if tmpBat == nil {
 			tmpBat, err = bats[0].Dup(common.DebugAllocator)
 			if err != nil {
 				return
 			}
 		} else {
-			b := bats[0]
-			row := b.Vecs[0].Length() - 1
-			startTs := vector.MustFixedColWithTypeCheck[types.TS](b.Vecs[0])
-			endTs := vector.MustFixedColWithTypeCheck[types.TS](b.Vecs[1])
-			typ := vector.MustFixedColWithTypeCheck[bool](b.Vecs[3])
-			vesion := vector.MustFixedColWithTypeCheck[uint32](b.Vecs[4])
-			lsn1 := vector.MustFixedColWithTypeCheck[uint64](b.Vecs[6])
-			lsn2 := vector.MustFixedColWithTypeCheck[uint64](b.Vecs[7])
-			vector.AppendFixed[types.TS](tmpBat.Vecs[0], startTs[row], false, common.DefaultAllocator)
-			vector.AppendFixed[types.TS](tmpBat.Vecs[1], endTs[row], false, common.DefaultAllocator)
-			vector.AppendBytes(tmpBat.Vecs[2], b.Vecs[2].GetBytesAt(row), false, common.DefaultAllocator)
-			vector.AppendFixed[bool](tmpBat.Vecs[3], typ[row], false, common.DefaultAllocator)
-			vector.AppendFixed[uint32](tmpBat.Vecs[4], vesion[row], false, common.DefaultAllocator)
-			vector.AppendBytes(tmpBat.Vecs[5], b.Vecs[5].GetBytesAt(row), false, common.DefaultAllocator)
-			vector.AppendFixed[uint64](tmpBat.Vecs[6], lsn1[row], false, common.DefaultAllocator)
-			vector.AppendFixed[uint64](tmpBat.Vecs[7], lsn2[row], false, common.DefaultAllocator)
-			vector.AppendFixed[int8](tmpBat.Vecs[8], int8(ET_Incremental), false, common.DefaultAllocator)
+			row := bats[0].Vecs[0].Length() - 1
+			appendValToBatch(tmpBat, bats[0], row, common.DebugAllocator)
 		}
 		return
 	}
@@ -302,4 +269,17 @@ func ListSnapshotCheckpointWithMeta(
 
 	}
 	return entries, nil
+}
+
+func appendValToBatch(dst, src *batch.Batch, row int, mp *mpool.MPool) {
+	tSrc := containers.ToTNBatch(src, mp)
+	tDst := containers.ToTNBatch(dst, mp)
+	for v, vec := range tSrc.Vecs {
+		val := vec.Get(row)
+		if val == nil {
+			tDst.Vecs[v].Append(val, true)
+		} else {
+			tDst.Vecs[v].Append(val, false)
+		}
+	}
 }
