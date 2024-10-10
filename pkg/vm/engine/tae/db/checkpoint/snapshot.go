@@ -154,8 +154,10 @@ func ListSnapshotMeta(
 			// order to avoid data loss, an additional checkpoint is still needed, because
 			// the object flushed by the snapshot may be in the next checkpoint
 			for _, f := range metaFiles {
+				logutil.Infof("f.start: %v, f.end: %v, file.end %v", f.start.ToString(), f.end.ToString(), file.end.ToString())
 				if !f.start.IsEmpty() && f.start.GE(&file.end) {
 					retFiles = append(retFiles, f)
+					logutil.Infof("f.start:2 %v, f.end: %v, file.end %v", f.start.ToString(), f.end.ToString(), file.end.ToString())
 					break
 				}
 			}
@@ -166,6 +168,7 @@ func ListSnapshotMeta(
 	// The normal checkpoint meta file records a checkpoint interval,
 	// so you only need to read the last meta file
 	ickpFiles := FilterSortedMetaFilesByTimestamp(&snapshot, metaFiles)
+	logutil.Infof("f.start: %v, f.end: %v, file.end %v", len(ickpFiles))
 
 	retFiles = append(retFiles, ickpFiles...)
 
