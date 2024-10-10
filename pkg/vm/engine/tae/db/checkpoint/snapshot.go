@@ -279,12 +279,12 @@ func ListSnapshotCheckpointWithMeta(
 func appendValToBatch(dst, src *batch.Batch, row int, mp *mpool.MPool) {
 	tSrc := containers.ToTNBatch(src, mp)
 	tDst := containers.ToTNBatch(dst, mp)
+	for i := 0; i < tSrc.Vecs[0].Length(); i++ {
+		vv := vector.GetFixedAtNoTypeCheck[types.TS](tSrc.Vecs[0].GetDownstreamVector(), i)
+		logutil.Infof("vv: %v, v is %v", vv.ToString(), i)
+	}
 	logutil.Infof("tSrc.Vecs: %d", row)
 	for v, vec := range tSrc.Vecs {
-		if v < 2 {
-			vv := vector.GetFixedAtNoTypeCheck[types.TS](vec.GetDownstreamVector(), row)
-			logutil.Infof("vv: %v, v is %v", vv.ToString(), v)
-		}
 		val := vec.Get(row)
 		if val == nil {
 			tDst.Vecs[v].Append(val, true)
