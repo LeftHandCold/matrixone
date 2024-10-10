@@ -218,6 +218,7 @@ func loadCheckpointMeta(
 				return
 			}
 		} else {
+			logutil.Infof("bats[0].Vecs .Vecs[0].Length(): %d", bats[0].Vecs[0].Length())
 			row := bats[0].Vecs[0].Length() - 1
 			appendValToBatch(tmpBat, bats[0], row, common.DebugAllocator)
 		}
@@ -277,6 +278,7 @@ func ListSnapshotCheckpointWithMeta(
 func appendValToBatch(dst, src *batch.Batch, row int, mp *mpool.MPool) {
 	tSrc := containers.ToTNBatch(src, mp)
 	tDst := containers.ToTNBatch(dst, mp)
+	logutil.Infof("tSrc.Vecs: %d", row)
 	for v, vec := range tSrc.Vecs {
 		val := vec.Get(row)
 		if val == nil {
