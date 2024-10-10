@@ -154,7 +154,7 @@ func ListSnapshotMeta(
 			// order to avoid data loss, an additional checkpoint is still needed, because
 			// the object flushed by the snapshot may be in the next checkpoint
 			for _, f := range metaFiles {
-				if f.start.GE(&file.end) {
+				if !f.start.IsEmpty() && f.start.GE(&file.end) {
 					retFiles = append(retFiles, f)
 					break
 				}
