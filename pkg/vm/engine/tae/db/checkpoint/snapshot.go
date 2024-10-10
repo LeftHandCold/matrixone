@@ -188,7 +188,7 @@ func loadCheckpointMeta(
 	var (
 		tmpBat *batch.Batch
 	)
-	loader := func(name string) (err error) {
+	loader := func(name string, start, end types.TS) (err error) {
 		var reader *blockio.BlockReader
 		var bats []*batch.Batch
 		var closeCB func()
@@ -219,15 +219,13 @@ func loadCheckpointMeta(
 				return
 			}
 		} else {
-			logutil.Infof("bats[0].Vecs .Vecs[0].Length(): %d", bats[0].Vecs[0].Length())
-			row := bats[0].Vecs[0].Length() - 1
-			appendValToBatch(tmpBat, bats[0], row, common.DebugAllocator)
+			appendValToBatch(tmpBat, bats[0], start, end, common.DebugAllocator)
 		}
 		return
 	}
 
 	for _, metaFile := range metaFiles {
-		err = loader(CheckpointDir + metaFile.name)
+		err = loader(CheckpointDir+metaFile.name, metaFile.start, metaFile.end)
 		if err != nil {
 			return
 		}
@@ -276,20 +274,25 @@ func ListSnapshotCheckpointWithMeta(
 	return entries, nil
 }
 
-func appendValToBatch(dst, src *batch.Batch, row int, mp *mpool.MPool) {
+func appendValToBatch(dst, src *batch.Batch, start, end types.TS, mp *mpool.MPool) {
 	tSrc := containers.ToTNBatch(src, mp)
 	tDst := containers.ToTNBatch(dst, mp)
-	for i := 0; i < tSrc.Vecs[0].Length(); i++ {
-		vv := vector.GetFixedAtNoTypeCheck[types.TS](tSrc.Vecs[0].GetDownstreamVector(), i)
-		logutil.Infof("vv: %v, v is %v", vv.ToString(), i)
-	}
-	logutil.Infof("tSrc.Vecs: %d", row)
-	for v, vec := range tSrc.Vecs {
-		val := vec.Get(row)
-		if val == nil {
-			tDst.Vecs[v].Append(val, true)
-		} else {
-			tDst.Vecs[v].Append(val, false)
+	length := tSrc.Vecs[0].Length() - 1
+	startTs := vector.MustFixedColWithTypeCheck[types.TS](tSrc.Vecs[0].GetDownstreamVector())
+	endTs := vector.MustFixedColWithTypeCheck[types.TS](tSrc.Vecs[1].GetDownstreamVector())
+	for i := length; i >= 0; i-- {
+		if !startTs[i].EQ(&start) || !endTs[i].EQ(&end) {
+			continue
 		}
+		for v, vec := range tSrc.Vecs {
+			val := vec.Get(i)
+			if val == nil {
+				tDst.Vecs[v].Append(val, true)
+			} else {
+				tDst.Vecs[v].Append(val, false)
+			}
+		}
+		return
 	}
+	panic("don't find the value in the batch")
 }
