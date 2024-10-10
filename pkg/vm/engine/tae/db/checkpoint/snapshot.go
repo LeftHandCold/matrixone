@@ -219,7 +219,7 @@ func loadCheckpointMeta(
 			}
 		} else {
 			logutil.Infof("bats[0].Vecs .Vecs[0].Length(): %d", bats[0].Vecs[0].Length())
-			row := bats[0].Vecs[0].Length() - 1
+			row := bats[0].Vecs[0].Length()
 			appendValToBatch(tmpBat, bats[0], row, common.DebugAllocator)
 		}
 		return
