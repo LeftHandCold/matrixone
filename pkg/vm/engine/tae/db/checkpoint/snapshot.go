@@ -155,10 +155,8 @@ func ListSnapshotMeta(
 			// order to avoid data loss, an additional checkpoint is still needed, because
 			// the object flushed by the snapshot may be in the next checkpoint
 			for _, f := range metaFiles {
-				logutil.Infof("f.start: %v, f.end: %v, file.end %v", f.start.ToString(), f.end.ToString(), file.end.ToString())
 				if !f.start.IsEmpty() && f.start.GE(&file.end) {
 					retFiles = append(retFiles, f)
-					logutil.Infof("f.start:2 %v, f.end: %v, file.end %v", f.start.ToString(), f.end.ToString(), file.end.ToString())
 					break
 				}
 			}
@@ -169,7 +167,6 @@ func ListSnapshotMeta(
 	// The normal checkpoint meta file records a checkpoint interval,
 	// so you only need to read the last meta file
 	ickpFiles := FilterSortedMetaFilesByTimestamp(&snapshot, metaFiles)
-	logutil.Infof("f.start: %v, f.end: %v, file.end %v", len(ickpFiles))
 
 	retFiles = append(retFiles, ickpFiles...)
 
@@ -219,7 +216,11 @@ func loadCheckpointMeta(
 				return
 			}
 		} else {
-			appendValToBatch(tmpBat, bats[0], start, end, common.DebugAllocator)
+			// The incremental checkpoint meta records an interval,
+			// and you need to add the specified checkpoint information to tmpBat
+			// according to start and end.
+			// start is file name start, end is file name end
+			appendCheckpointToBatch(tmpBat, bats[0], start, end, common.DebugAllocator)
 		}
 		return
 	}
@@ -274,7 +275,7 @@ func ListSnapshotCheckpointWithMeta(
 	return entries, nil
 }
 
-func appendValToBatch(dst, src *batch.Batch, start, end types.TS, mp *mpool.MPool) {
+func appendCheckpointToBatch(dst, src *batch.Batch, start, end types.TS, mp *mpool.MPool) {
 	tSrc := containers.ToTNBatch(src, mp)
 	tDst := containers.ToTNBatch(dst, mp)
 	length := tSrc.Vecs[0].Length() - 1
