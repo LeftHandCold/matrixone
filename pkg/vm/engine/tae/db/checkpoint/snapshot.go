@@ -18,6 +18,7 @@ import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"sort"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -219,7 +220,7 @@ func loadCheckpointMeta(
 			}
 		} else {
 			logutil.Infof("bats[0].Vecs .Vecs[0].Length(): %d", bats[0].Vecs[0].Length())
-			row := bats[0].Vecs[0].Length()
+			row := bats[0].Vecs[0].Length() - 1
 			appendValToBatch(tmpBat, bats[0], row, common.DebugAllocator)
 		}
 		return
@@ -280,6 +281,10 @@ func appendValToBatch(dst, src *batch.Batch, row int, mp *mpool.MPool) {
 	tDst := containers.ToTNBatch(dst, mp)
 	logutil.Infof("tSrc.Vecs: %d", row)
 	for v, vec := range tSrc.Vecs {
+		if v < 2 {
+			vv := vector.GetFixedAtNoTypeCheck[types.TS](vec.GetDownstreamVector(), row)
+			logutil.Infof("vv: %v, v is %v", vv.ToString(), v)
+		}
 		val := vec.Get(row)
 		if val == nil {
 			tDst.Vecs[v].Append(val, true)
