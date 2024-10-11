@@ -15,6 +15,7 @@
 package gc
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -478,6 +479,8 @@ func (c *checkpointCleaner) deleteStaleSnapshotFilesLocked() error {
 
 	metaFiles := c.CloneMetaFilesLocked()
 
+	prevNum := len(metaFiles)
+
 	doDeleteFileFn := func(
 		thisFile string, thisTS *types.TS,
 		maxFile string, maxTS *types.TS,
@@ -560,7 +563,18 @@ func (c *checkpointCleaner) deleteStaleSnapshotFilesLocked() error {
 			}
 		}
 	}
-	logutil.Infof(" metaFiles: %v", metaFiles)
+	if len(metaFiles) != prevNum {
+		var w bytes.Buffer
+		for _, v := range metaFiles {
+			w.WriteString(fmt.Sprintf("%s,", v.String()))
+		}
+		logutil.Info(
+			"GC-TRACE-DELETE-SNAPSHOT-FILES",
+			zap.String("task", c.TaskNameLocked()),
+			zap.Int("left-len", len(metaFiles)),
+			zap.String("left-files", w.String()),
+		)
+	}
 
 	return c.mutSetNewMetaFilesLocked(metaFiles)
 }
@@ -585,7 +599,11 @@ func (c *checkpointCleaner) deleteStaleCKPMetaFileLocked() (err error) {
 	for _, metaFile := range metaFiles {
 		if (metaFile.Ext() != blockio.CheckpointExt) ||
 			(metaFile.EqualRange(&window.tsRange.start, &window.tsRange.end)) {
-			logutil.Infof("skip file: %s", metaFile.Name())
+			logutil.Info(
+				"GC-TRACE-DELETE-CKP-FILE-SKIP",
+				zap.String("task", c.TaskNameLocked()),
+				zap.String("skip-file", metaFile.Name()),
+			)
 			continue
 		}
 		gcWindow := NewGCWindow(c.mp, c.fs.Service)
@@ -619,10 +637,9 @@ func (c *checkpointCleaner) deleteStaleCKPMetaFileLocked() (err error) {
 	return c.mutSetNewMetaFilesLocked(metaFiles)
 }
 
-// getMetaFilesToMerge returns the files that can be merged.
-// metaFiles: all checkpoint meta files should be merged.
-func (c *checkpointCleaner) getMetaFilesToMerge(ts *types.TS) (
-	checkpoints []*checkpoint.CheckpointEntry,
+// getEntriesToMerge returns the checkpoint entries to merge
+func (c *checkpointCleaner) getEntriesToMerge(ts *types.TS) (
+	entries []*checkpoint.CheckpointEntry,
 ) {
 	gcWaterMark := c.GetCheckpointGCWaterMark()
 	start := types.TS{}
@@ -630,21 +647,26 @@ func (c *checkpointCleaner) getMetaFilesToMerge(ts *types.TS) (
 		start = *gcWaterMark
 	}
 	if !ts.GE(&start) {
-		panic(fmt.Sprintf("getMetaFilesToMerge end < start. "+
+		panic(fmt.Sprintf("getEntriesToMerge end < start. "+
 			"end: %v, start: %v", ts.ToString(), start.ToString()))
 	}
-	var ret []*checkpoint.CheckpointEntry
 	compacted := c.checkpointCli.GetCompacted()
 	ickps := c.checkpointCli.ICKPRange(&start, ts, 20)
-	if compacted != nil {
-		ret = make([]*checkpoint.CheckpointEntry, 0)
-		ret = append(ret, compacted)
-		ret = append(ret, ickps...)
+	if compacted != nil && len(ickps) > 0 {
+		entries = make([]*checkpoint.CheckpointEntry, 0, 1+len(ickps))
+		entries = append(entries, compacted)
+		entries = append(entries, ickps...)
 	} else {
-		ret = ickps
+		entries = ickps
 	}
-	logutil.Infof("getMetaFilesToMerge: start: %v, end: %v", start.ToString(), ts.ToString())
-	return ret
+	logutil.Info(
+		"GC-TRACE-GET-META-FILES-TO-MERGE",
+		zap.String("task", c.TaskNameLocked()),
+		zap.String("start", start.ToString()),
+		zap.String("end", ts.ToString()),
+		zap.Int("checkpoint-len", len(entries)),
+	)
+	return
 }
 
 // filterCheckpoints filters the checkpoints with the endTS less than the highWater
@@ -682,13 +704,12 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 	now := time.Now()
 
 	var (
-		tmpFiles           []string
-		deleteFiles        []string
-		newCheckpoint      *checkpoint.CheckpointEntry
-		checkpointMaxEnd   types.TS
-		checkpoints        []*checkpoint.CheckpointEntry
-		checkpointsToMerge []*checkpoint.CheckpointEntry
-		extraErrMsg        string
+		tmpFiles         []string
+		deleteFiles      []string
+		newCheckpoint    *checkpoint.CheckpointEntry
+		checkpointMaxEnd types.TS
+		toMergeEntries   []*checkpoint.CheckpointEntry
+		extraErrMsg      string
 	)
 
 	defer func() {
@@ -705,31 +726,26 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 			zap.Strings("delete-files", deleteFiles),
 			zap.String("new-checkpoint", newCheckpoint.String()),
 			zap.String("checkpoint-max-end", checkpointMaxEnd.ToString()),
-			zap.Int("checkpoint-len", len(checkpoints)),
-			zap.Int("checkpoint-to-merge-len", len(checkpointsToMerge)),
+			zap.Int("checkpoint-to-merge-len", len(toMergeEntries)),
 		)
 	}()
 
-	if checkpoints = c.getMetaFilesToMerge(checkpointLowWaterMark); len(checkpoints) == 0 {
+	if toMergeEntries = c.getEntriesToMerge(checkpointLowWaterMark); len(toMergeEntries) == 0 {
 		return
 	}
 
-	if len(checkpoints) == 1 && checkpoints[0].GetType() == checkpoint.ET_Compacted {
-		return
-	}
-
-	checkpointMaxEnd = checkpoints[len(checkpoints)-1].GetEnd()
+	checkpointMaxEnd = toMergeEntries[len(toMergeEntries)-1].GetEnd()
 	if checkpointMaxEnd.GT(checkpointLowWaterMark) {
 		panic(fmt.Sprintf("checkpointMaxEnd %s < checkpointLowWaterMark %s", checkpointMaxEnd.ToString(), checkpointLowWaterMark.ToString()))
 	}
 
-	if checkpointsToMerge, err = c.filterCheckpoints(
+	if toMergeEntries, err = c.filterCheckpoints(
 		checkpointLowWaterMark,
-		checkpoints,
+		toMergeEntries,
 	); err != nil {
 		return
 	}
-	if len(checkpointsToMerge) == 0 {
+	if len(toMergeEntries) == 0 {
 		return
 	}
 
@@ -754,7 +770,7 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 		c.ctx,
 		c.sid,
 		c.fs.Service,
-		checkpointsToMerge,
+		toMergeEntries,
 		bf,
 		&checkpointMaxEnd,
 		c.mp,
