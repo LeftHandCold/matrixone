@@ -103,10 +103,11 @@ const (
 )
 
 type UsageData struct {
-	AccId uint64
-	DbId  uint64
-	TblId uint64
-	Size  uint64
+	AccId        uint64
+	DbId         uint64
+	TblId        uint64
+	Size         uint64
+	SnapshotSize int64
 
 	special triode
 
@@ -123,11 +124,12 @@ type ObjectAbstract struct {
 }
 
 var zeroUsageData UsageData = UsageData{
-	AccId:   math.MaxUint32,
-	DbId:    math.MaxUint64,
-	TblId:   math.MaxUint64,
-	Size:    math.MaxInt64,
-	special: unknown,
+	AccId:        math.MaxUint32,
+	DbId:         math.MaxUint64,
+	TblId:        math.MaxUint64,
+	Size:         math.MaxInt64,
+	SnapshotSize: math.MaxInt64,
+	special:      unknown,
 }
 
 // MockUsageData generates accCnt * dbCnt * tblCnt UsageDatas.
@@ -142,10 +144,11 @@ func MockUsageData(accCnt, dbCnt, tblCnt int, allocator *atomic.Uint64) (result 
 
 			for z := 0; z < tblCnt; z++ {
 				result = append(result, UsageData{
-					AccId: accId,
-					DbId:  dbId,
-					TblId: allocator.Add(1),
-					Size:  uint64(rand.Int63() % 0x3fff),
+					AccId:        accId,
+					DbId:         dbId,
+					TblId:        allocator.Add(1),
+					Size:         uint64(rand.Int63() % 0x3fff),
+					SnapshotSize: rand.Int63() % 0x3fff,
 				})
 			}
 		}
@@ -155,8 +158,8 @@ func MockUsageData(accCnt, dbCnt, tblCnt int, allocator *atomic.Uint64) (result 
 }
 
 func (u UsageData) String() string {
-	return fmt.Sprintf("account id = %d; database id = %d; table id = %d; size = %d",
-		u.AccId, u.DbId, u.TblId, u.Size)
+	return fmt.Sprintf("account id = %d; database id = %d; table id = %d; size = %d; snapshot size = %d",
+		u.AccId, u.DbId, u.TblId, u.Size, u.SnapshotSize)
 }
 
 func (u *UsageData) Merge(other UsageData, delete bool) {
@@ -179,6 +182,10 @@ func (u *UsageData) Merge(other UsageData, delete bool) {
 		u.TotalObjCnt += other.TotalObjCnt
 		u.TotalRowCnt += other.TotalRowCnt
 		u.TotalBlkCnt += other.TotalBlkCnt
+	}
+
+	if other.SnapshotSize != -1 {
+		u.SnapshotSize = other.SnapshotSize
 	}
 }
 

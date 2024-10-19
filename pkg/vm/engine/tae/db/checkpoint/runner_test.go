@@ -17,7 +17,15 @@ package checkpoint
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -370,4 +378,179 @@ func TestICKPSeekLT(t *testing.T) {
 		t.Log(e.String())
 	}
 	assert.Equal(t, 0, len(ckps))
+}
+
+func TestBlockWriter_GetName(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+
+	fsDir := "/Users/shenjiangwei/Work/code/view/matrixone/mo-data/shared"
+	service, err := fileservice.NewS3FS(ctx, fileservice.ObjectStorageArguments{
+		Name:     defines.LocalFileServiceName,
+		Endpoint: "disk",
+		Bucket:   fsDir,
+	},
+		fileservice.DisabledCacheConfig,
+		nil,
+		true,
+		false)
+	assert.Nil(t, err)
+	FS := objectio.NewObjectFS(service, "")
+	dirs, err := service.List(ctx, CheckpointDir)
+	if err != nil {
+		return
+	}
+	if len(dirs) == 0 {
+		return
+	}
+	logutil.Infof("dirs: %v", dirs)
+	t0 := time.Now()
+	metaFiles := make([]*MetaFile, 0)
+	compactedFiles := make([]*MetaFile, 0)
+	for i, dir := range dirs {
+		start, end, ext := blockio.DecodeCheckpointMetadataFileName(dir.Name)
+		metaFile := &MetaFile{
+			start: start,
+			end:   end,
+			index: i,
+			name:  dir.Name,
+		}
+		if ext == blockio.CompactedExt {
+			compactedFiles = append(compactedFiles, metaFile)
+			continue
+		}
+		metaFiles = append(metaFiles, metaFile)
+	}
+	sort.Slice(metaFiles, func(i, j int) bool {
+		return metaFiles[i].end.LT(&metaFiles[j].end)
+	})
+	targetIdx := metaFiles[len(metaFiles)-1].index
+	dir := dirs[targetIdx]
+	replayEntries := func(name string, ckpBat *containers.Batch) (entries []*CheckpointEntry, maxGlobalEnd types.TS, err error) {
+		reader, err := blockio.NewFileReader("", service, CheckpointDir+name)
+		if err != nil {
+			return
+		}
+		bats, closeCB, err := reader.LoadAllColumns(ctx, nil, common.CheckpointAllocator)
+		if err != nil {
+			return
+		}
+		if len(bats) == 0 {
+			return
+		}
+		defer func() {
+			if closeCB != nil {
+				closeCB()
+			}
+		}()
+		colNames := CheckpointSchema.Attrs()
+		colTypes := CheckpointSchema.Types()
+		var checkpointVersion int
+		// in version 1, checkpoint metadata doesn't contain 'version'.
+		vecLen := len(bats[0].Vecs)
+		logutil.Infof("checkpoint version: %d, list and load duration: %v", vecLen, time.Since(t0))
+		if vecLen < CheckpointSchemaColumnCountV1 {
+			checkpointVersion = 1
+		} else if vecLen < CheckpointSchemaColumnCountV2 {
+			checkpointVersion = 2
+		} else {
+			checkpointVersion = 3
+		}
+		for i := range bats[0].Vecs {
+			var vec containers.Vector
+			if bats[0].Vecs[i].Length() == 0 {
+				vec = containers.MakeVector(colTypes[i], common.CheckpointAllocator)
+			} else {
+				vec = containers.ToTNVector(bats[0].Vecs[i], common.CheckpointAllocator)
+			}
+			ckpBat.AddVector(colNames[i], vec)
+		}
+		entries, maxGlobalEnd = ReplayCheckpointEntries(ckpBat, checkpointVersion)
+		return
+	}
+
+	{
+		// replay compacted tree
+		for _, file := range compactedFiles {
+			compacted := containers.NewBatch()
+			defer compacted.Close()
+			entry, _, err := replayEntries(file.name, compacted)
+			if err != nil {
+				logutil.Errorf("replay compacted checkpoint file %s failed: %v", file.name, err.Error())
+			}
+			if len(entry) != 1 {
+				for _, e := range entry {
+					logutil.Infof("compacted checkpoint entry: %v", e.String())
+				}
+				panic("invalid compacted checkpoint file")
+			}
+		}
+	}
+
+	bat := containers.NewBatch()
+	defer bat.Close()
+	entries, maxGlobalEnd, err := replayEntries(dir.Name, bat)
+	if err != nil {
+		logutil.Infof("replay checkpoint file %s failed: %v", dir.Name, err.Error())
+		return
+	}
+	for _, entry := range entries {
+		logutil.Infof("test is endtyr is %v", entry.String())
+	}
+
+	// step2. read checkpoint data, output is the ckpdatas
+	datas := make([]*logtail.CheckpointData, bat.Length())
+
+	closecbs := make([]func(), 0)
+	readfn := func(i int, readType uint16) {
+		checkpointEntry := entries[i]
+		checkpointEntry.sid = ""
+		if checkpointEntry.end.LT(&maxGlobalEnd) {
+			return
+		}
+		var err2 error
+		if readType == PrefetchData {
+			if err2 = checkpointEntry.Prefetch(ctx, FS, datas[i]); err2 != nil {
+				logutil.Warnf("read %v failed: %v", checkpointEntry.String(), err2)
+			}
+		} else if readType == PrefetchMetaIdx {
+			datas[i], err = checkpointEntry.PrefetchMetaIdx(ctx, FS)
+			if err != nil {
+				return
+			}
+		} else if readType == ReadMetaIdx {
+			err = checkpointEntry.ReadMetaIdx(ctx, FS, datas[i])
+			if err != nil {
+				return
+			}
+		} else {
+			if err2 = checkpointEntry.Read(ctx, FS, datas[i]); err2 != nil {
+				logutil.Warnf("read %v failed: %v", checkpointEntry.String(), err2)
+			} else {
+				entries[i] = checkpointEntry
+				closecbs = append(closecbs, func() { datas[i].CloseWhenLoadFromCache(checkpointEntry.version) })
+			}
+		}
+	}
+	t0 = time.Now()
+	for i := 0; i < bat.Length(); i++ {
+		metaLoc := objectio.Location(bat.GetVectorByName(CheckpointAttr_MetaLocation).Get(i).([]byte))
+		err = blockio.PrefetchMeta("", service, metaLoc)
+		if err != nil {
+			return
+		}
+	}
+	for i := 0; i < bat.Length(); i++ {
+		readfn(i, PrefetchMetaIdx)
+	}
+	for i := 0; i < bat.Length(); i++ {
+		readfn(i, ReadMetaIdx)
+	}
+	for i := 0; i < bat.Length(); i++ {
+		readfn(i, PrefetchData)
+	}
+	for i := 0; i < bat.Length(); i++ {
+		readfn(i, ReadData)
+	}
+
 }
