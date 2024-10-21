@@ -16,6 +16,8 @@ package blockio
 
 import (
 	"context"
+	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"math"
 	"sort"
 	"time"
@@ -218,6 +220,17 @@ func BlockDataRead(
 	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
 		logutil.Debugf("read block %s, columns %v, types %v", info.BlockID.String(), columns, colTypes)
 	}
+	defer func() {
+		if e := recover(); e != nil {
+			err := moerr.ConvertPanicError(ctx, e)
+			logutil.Error("panic in BlockDataRead",
+				zap.String("info", info.String()),
+				zap.String("error", err.Error()),
+				zap.String("columns", fmt.Sprintf("%v", columns)),
+				zap.String("tableName", tableName))
+		}
+
+	}()
 
 	snapshotTS := types.TimestampToTS(ts)
 
