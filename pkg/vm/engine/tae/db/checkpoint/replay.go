@@ -107,15 +107,10 @@ func (c *CkpReplayer) ReadCkpFiles() (err error) {
 		if err != nil {
 			return
 		}
-		bats, closeCB, err := reader.LoadAllColumns(ctx, nil, common.CheckpointAllocator)
+		bats, closeCB, err := reader.LoadAllColumns(ctx, nil, common.DebugAllocator)
 		if err != nil {
 			return
 		}
-		defer func() {
-			for _, bat := range bats {
-				bat.Clean(common.CheckpointAllocator)
-			}
-		}()
 		if len(bats) == 0 {
 			return
 		}
@@ -140,9 +135,9 @@ func (c *CkpReplayer) ReadCkpFiles() (err error) {
 		for i := range bats[0].Vecs {
 			var vec containers.Vector
 			if bats[0].Vecs[i].Length() == 0 {
-				vec = containers.MakeVector(colTypes[i], common.CheckpointAllocator)
+				vec = containers.MakeVector(colTypes[i], common.DebugAllocator)
 			} else {
-				vec = containers.ToTNVector(bats[0].Vecs[i], common.CheckpointAllocator)
+				vec = containers.ToTNVector(bats[0].Vecs[i], common.DebugAllocator)
 			}
 			ckpBat.AddVector(colNames[i], vec)
 		}
