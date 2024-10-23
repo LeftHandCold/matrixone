@@ -125,11 +125,11 @@ func (exec *GCExecutor) doFilter(
 		//    bit 0 means the row cannot be GC'ed
 		exec.bm.Clear()
 		exec.bm.TryExpandWithSize(bat.RowCount())
-		err = mergesort.SortColumnsByIndex(bat.Vecs, 2, common.DefaultAllocator)
+		err = mergesort.SortColumnsByIndex(bat.Vecs, 2, common.DebugAllocator)
 		if err != nil {
 			return err
 		}
-		if err := filter(ctx, &exec.bm, bat, exec.mp); err != nil {
+		if err := filter(ctx, &exec.bm, bat, common.DebugAllocator); err != nil {
 			return err
 		}
 		// 3. sink the batch to the corresponding sinker
