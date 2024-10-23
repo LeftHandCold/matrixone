@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/common/malloc"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -217,7 +216,7 @@ func MakeBloomfilterCoarseFilter(
 		2,
 		reader.LoadBatchData,
 		buffer,
-		common.DebugAllocator,
+		mp,
 	)
 	if err != nil {
 		reader.Close()
@@ -228,7 +227,7 @@ func MakeBloomfilterCoarseFilter(
 		ctx context.Context,
 		bm *bitmap.Bitmap,
 		bat *batch.Batch,
-		_ *mpool.MPool,
+		mp *mpool.MPool,
 	) (err error) {
 		createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
 		dropTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])

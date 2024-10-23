@@ -16,6 +16,7 @@ package gc
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 
 	"github.com/matrixorigin/matrixone/pkg/common/bitmap"
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
@@ -52,7 +53,7 @@ func BuildBloomfilter(
 	var done bool
 	for {
 		bat.CleanOnlyData()
-		if done, err = sourcer(ctx, bat.Attrs, nil, mp, bat); err != nil {
+		if done, err = sourcer(ctx, bat.Attrs, nil, common.DebugAllocator, bat); err != nil {
 			return
 		}
 		if done {
