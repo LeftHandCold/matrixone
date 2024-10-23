@@ -125,7 +125,7 @@ func (exec *GCExecutor) doFilter(
 		//    bit 0 means the row cannot be GC'ed
 		exec.bm.Clear()
 		exec.bm.TryExpandWithSize(bat.RowCount())
-		err = mergesort.SortColumnsByIndex(bat.Vecs, 2, exec.mp)
+		err = mergesort.SortColumnsByIndex(bat.Vecs, 2, common.DefaultAllocator)
 		if err != nil {
 			return err
 		}
