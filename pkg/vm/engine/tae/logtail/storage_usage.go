@@ -1208,6 +1208,7 @@ func FillUsageBatOfCompacted(
 			logutil.Infof("id %d table %d object %s size %d", accountId, tableID[i], stats.ObjectName().String(), stats.Size())
 			// skip the same object
 			if _, hit := objectsName[stats.ObjectName().String()]; hit {
+				logutil.Infof("id222 %d table %d object %s size %d", accountId, tableID[i], stats.ObjectName().String(), stats.Size())
 				continue
 			}
 			key := [3]uint64{accountId, dbid[i], tableID[i]}
