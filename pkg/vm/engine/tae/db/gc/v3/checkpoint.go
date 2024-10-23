@@ -332,7 +332,7 @@ func (c *checkpointCleaner) Replay() (err error) {
 	logger := logutil.Info
 	for _, dir := range gcMetaDirs {
 		start := time.Now()
-		window := NewGCWindow(c.mp, c.fs.Service)
+		window := NewGCWindow(common.CheckpointAllocator, c.fs.Service)
 		err = window.ReadTable(c.ctx, GCMetaDir+dir.Name, c.fs)
 		if err != nil {
 			logger = logutil.Error
@@ -1383,6 +1383,7 @@ func (c *checkpointCleaner) DoCheck() error {
 }
 
 func (c *checkpointCleaner) Process() {
+	return
 	if !c.GCEnabled() {
 		return
 	}
