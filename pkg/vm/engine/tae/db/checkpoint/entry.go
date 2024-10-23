@@ -282,7 +282,7 @@ func (e *CheckpointEntry) GetByTableID(ctx context.Context, fs *objectio.ObjectF
 		return
 	}
 	var bats []*batch.Batch
-	if bats, err = data.ReadFromData(ctx, tid, e.cnLocation, reader, e.version, common.CheckpointAllocator); err != nil {
+	if bats, err = data.ReadFromData(ctx, tid, e.cnLocation, reader, e.version, common.DebugAllocator); err != nil {
 		return
 	}
 	ins, del, dataObject, tombstoneObject, err = data.GetTableDataFromBats(tid, bats)

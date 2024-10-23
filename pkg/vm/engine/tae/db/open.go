@@ -193,6 +193,9 @@ func Open(ctx context.Context, dirname string, opts *options.Options) (db *DB, e
 	if err = ckpReplayer.ReadCkpFiles(); err != nil {
 		panic(err)
 	}
+	defer func() {
+		ckpReplayer.Close()
+	}()
 
 	// 1. replay three tables objectlist
 	checkpointed, ckpLSN, valid, err := ckpReplayer.ReplayThreeTablesObjectlist()

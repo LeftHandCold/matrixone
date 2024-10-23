@@ -60,6 +60,9 @@ func (c *CkpReplayer) Close() {
 	for _, close := range c.closes {
 		close()
 	}
+	for _, ckpdata := range c.ckpdatas {
+		ckpdata.Close()
+	}
 }
 
 func (c *CkpReplayer) ReadCkpFiles() (err error) {
@@ -108,6 +111,11 @@ func (c *CkpReplayer) ReadCkpFiles() (err error) {
 		if err != nil {
 			return
 		}
+		defer func() {
+			for _, bat := range bats {
+				bat.Clean(common.CheckpointAllocator)
+			}
+		}()
 		if len(bats) == 0 {
 			return
 		}
