@@ -232,7 +232,7 @@ func (e *CheckpointEntry) PrefetchMetaIdx(
 	ctx context.Context,
 	fs *objectio.ObjectFS,
 ) (data *logtail.CheckpointData, err error) {
-	data = logtail.NewCheckpointData(e.sid, common.CheckpointAllocator)
+	data = logtail.NewCheckpointData(e.sid, common.DebugAllocator)
 	if err = data.PrefetchMeta(
 		fs.Service,
 		e.tnLocation,
