@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/common/malloc"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -216,7 +217,7 @@ func MakeBloomfilterCoarseFilter(
 		2,
 		reader.LoadBatchData,
 		buffer,
-		mp,
+		common.DebugAllocator,
 	)
 	if err != nil {
 		reader.Close()
