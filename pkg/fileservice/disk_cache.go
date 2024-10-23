@@ -598,20 +598,28 @@ func (d *DiskCache) DeletePaths(
 	ctx context.Context,
 	paths []string,
 ) error {
-
+	done := time.Now()
 	for _, path := range paths {
+		doneUp := time.Since(done)
 		diskPath := d.pathForFile(path)
 		//TODO also delete IOEntry files
-
+		now := time.Now()
 		doneUpdate := d.startUpdate(diskPath)
+		startUpdate := time.Since(now)
 		defer doneUpdate()
-
+		now = time.Now()
 		if err := os.Remove(diskPath); err != nil {
 			if !os.IsNotExist(err) {
 				return err
 			}
 		}
+		osRemove := time.Since(now)
+		now = time.Now()
 		d.cache.Delete(diskPath)
+		cacheDelete := time.Since(now)
+		done = time.Now()
+		logutil.Infof("disk cache file deleted, name: %v, startUpdate %v, osRemove %v, cacheDelete %v, doneUp %v",
+			diskPath, startUpdate, osRemove, cacheDelete, doneUp)
 	}
 
 	return nil
