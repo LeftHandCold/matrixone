@@ -1108,7 +1108,7 @@ func (c *checkpointCleaner) doGCAgainstGlobalCheckpointLocked(
 		c.config.canGCCacheSize,
 		c.config.estimateRows,
 		c.config.probility,
-		c.mp,
+		common.CheckpointAllocator,
 		c.fs.Service,
 	); err != nil {
 		extraErrMsg = fmt.Sprintf("ExecuteGlobalCheckpointBasedGC %v failed", gckp.String())
