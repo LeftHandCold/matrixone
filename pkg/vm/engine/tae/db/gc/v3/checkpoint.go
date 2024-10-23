@@ -1013,7 +1013,7 @@ func (c *checkpointCleaner) tryGCAgainstGCKPLocked(
 		extraErrMsg = "GetPITRs failed"
 		return
 	}
-	snapshots, err = c.mutation.snapshotMeta.GetSnapshot(c.ctx, c.sid, c.fs.Service, c.mp)
+	snapshots, err = c.mutation.snapshotMeta.GetSnapshot(c.ctx, c.sid, c.fs.Service, common.CheckpointAllocator)
 	if err != nil {
 		extraErrMsg = "GetSnapshot failed"
 		return
