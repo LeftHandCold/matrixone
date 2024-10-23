@@ -16,6 +16,7 @@ package gc
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 
 	"github.com/matrixorigin/matrixone/pkg/common/bitmap"
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
@@ -111,7 +112,7 @@ func (exec *GCExecutor) doFilter(
 		bat.CleanOnlyData()
 		canGCBat.CleanOnlyData()
 		// 1. get next batch from sourcer
-		done, err := sourcer(ctx, bat.Attrs, nil, exec.mp, bat)
+		done, err := sourcer(ctx, bat.Attrs, nil, common.DebugAllocator, bat)
 		if err != nil {
 			return err
 		}
