@@ -135,7 +135,7 @@ func (exec *GCExecutor) doFilter(
 		// 3. sink the batch to the corresponding sinker
 		exec.sels = exec.sels[:0]
 		bitmap.ToArray(&exec.bm, &exec.sels)
-		if err := canGCBat.Union(bat, exec.sels, exec.mp); err != nil {
+		if err := canGCBat.Union(bat, exec.sels, common.DebugAllocator); err != nil {
 			return err
 		}
 		bat.Shrink(exec.sels, true)
