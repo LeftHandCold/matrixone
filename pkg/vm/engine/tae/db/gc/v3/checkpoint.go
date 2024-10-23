@@ -180,7 +180,7 @@ func NewCheckpointCleaner(
 	}
 	cleaner.delWorker = NewGCWorker(fs, cleaner)
 	cleaner.options.gcEnabled.Store(true)
-	cleaner.mp = common.CheckpointAllocator
+	cleaner.mp = common.DebugAllocator
 	cleaner.checker.extras = make(map[string]func(item any) bool)
 	cleaner.mutation.metaFiles = make(map[string]GCMetaFile)
 	cleaner.mutation.snapshotMeta = logtail.NewSnapshotMeta()
