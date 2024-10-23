@@ -365,6 +365,7 @@ func (c *checkpointCleaner) Replay() (err error) {
 		c.updateCheckpointGCWaterMark(&end)
 	}
 	if acctFile == "" {
+		logutil.Infof("acctFile is empty, it may be a new cluster or an upgraded cluster, and the table information needs to be initialized from the checkpoint")
 		//No account table information, it may be a new cluster or an upgraded cluster,
 		//and the table information needs to be initialized from the checkpoint
 		scanWaterMark := c.GetScanWaterMark()
