@@ -1200,12 +1200,12 @@ func FillUsageBatOfCompacted(
 			}
 
 			if insDeleteTSVec[i].GT(waterMark) {
-				logutil.Infof("table %d delete at %s, waterMark is %v", tableID[i], insDeleteTSVec[i].ToString(), waterMark.ToString())
+				logutil.Infof("id %d table %d delete at %s, waterMark is %v", accountId, tableID[i], insDeleteTSVec[i].ToString(), waterMark.ToString())
 				continue
 			}
 			buf := bat.GetVectorByName(ObjectAttr_ObjectStats).GetDownstreamVector().GetRawBytesAt(i)
 			stats := (objectio.ObjectStats)(buf)
-			logutil.Infof("table %d object %s size %d", tableID[i], stats.ObjectName().String(), stats.Size())
+			logutil.Infof("id %d table %d object %s size %d", accountId, tableID[i], stats.ObjectName().String(), stats.Size())
 			// skip the same object
 			if _, ok := objectsName[stats.ObjectName().String()]; ok {
 				continue
