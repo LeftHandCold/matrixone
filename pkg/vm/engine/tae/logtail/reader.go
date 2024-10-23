@@ -204,7 +204,7 @@ func (r *CheckpointReader) LoadBatchData(
 		}
 		item := checkpointDataReferVersions[CheckpointCurrentVersion][idx]
 		if bats, err = LoadBlkColumnsByMeta(
-			CheckpointCurrentVersion, ctx, item.types, item.attrs, uint16(idx), reader, mp,
+			CheckpointCurrentVersion, ctx, item.types, item.attrs, uint16(idx), reader, common.DefaultAllocator,
 		); err != nil {
 			return false, err
 		}
