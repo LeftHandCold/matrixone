@@ -137,9 +137,15 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 		attrs,
 		attrTypes,
 	)
-	defer buffer.Close(e.mp)
+	var closeCB func()
+	defer func() {
+		if closeCB != nil {
+			closeCB()
+		}
+		buffer.Close(e.mp)
+	}()
 	transObjects := make(map[string]*ObjectEntry, 100)
-	coarseFilter, err := MakeBloomfilterCoarseFilter(
+	coarseFilter, freeBF, err := MakeBloomfilterCoarseFilter(
 		ctx,
 		e.config.coarseEstimateRows,
 		e.config.coarseProbility,
@@ -150,6 +156,7 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 		common.DebugAllocator,
 		e.fs,
 	)
+	closeCB = freeBF
 	if err != nil {
 		return err
 	}
@@ -204,11 +211,12 @@ func MakeBloomfilterCoarseFilter(
 	fs fileservice.FileService,
 ) (
 	FilterFn,
+	func(),
 	error,
 ) {
 	reader, err := logtail.MakeGlobalCheckpointDataReader(ctx, "", fs, location, 0)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	bf, err := BuildBloomfilter(
 		ctx,
@@ -219,9 +227,14 @@ func MakeBloomfilterCoarseFilter(
 		buffer,
 		mp,
 	)
+	freeBF := func() {
+		if bf != nil {
+			bf.Clean()
+		}
+	}
 	if err != nil {
 		reader.Close()
-		return nil, err
+		return nil, freeBF, err
 	}
 	reader.Close()
 	return func(
@@ -271,7 +284,7 @@ func MakeBloomfilterCoarseFilter(
 		)
 		return nil
 
-	}, nil
+	}, freeBF, nil
 }
 
 func MakeSnapshotAndPitrFineFilter(
