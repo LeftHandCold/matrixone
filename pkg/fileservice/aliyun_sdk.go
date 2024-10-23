@@ -322,10 +322,11 @@ func (a *AliyunSDK) Delete(
 		if end > len(keys) {
 			end = len(keys)
 		}
+		now := time.Now()
 		if _, err := a.deleteObjects(ctx, keys[i:end]...); err != nil {
 			return err
 		}
-		logutil.Infof("deleted %d objects, start %d, end %d", i, end-i)
+		logutil.Infof("AliyunSDK deleted %d objects. %v", end-i, time.Since(now))
 	}
 
 	return nil

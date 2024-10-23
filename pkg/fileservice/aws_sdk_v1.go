@@ -323,16 +323,19 @@ func (a *AwsSDKv1) Delete(
 	for _, key := range keys {
 		objs = append(objs, &s3.ObjectIdentifier{Key: ptrTo(key)})
 		if len(objs) == 1000 {
+			now := time.Now()
 			if err := a.deleteMultiObj(ctx, objs); err != nil {
 				return err
 			}
 			objs = objs[:0]
-			logutil.Infof("AwsSDKv1 deleted %d objects", len(objs))
+			logutil.Infof("AwsSDKv1 deleted 1000 objects. %v", time.Since(now))
 		}
 	}
+	now := time.Now()
 	if err := a.deleteMultiObj(ctx, objs); err != nil {
 		return err
 	}
+	logutil.Infof("AwsSDKv2... deleted %d objects. %v", len(objs), time.Since(now))
 	return nil
 }
 
