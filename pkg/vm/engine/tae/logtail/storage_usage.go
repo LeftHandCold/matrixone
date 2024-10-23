@@ -1183,6 +1183,7 @@ func FillUsageBatOfCompacted(
 		for i := 0; i < bat.Length(); i++ {
 			if insDeleteTSVec[i].IsEmpty() {
 				dropTs, ok := meta.GetTableDropAt(tableID[i])
+				logutil.Infof("table %d drop at %s", tableID[i], dropTs.ToString())
 				if !ok || dropTs.IsEmpty() {
 					continue
 				}
@@ -1199,10 +1200,12 @@ func FillUsageBatOfCompacted(
 			}
 
 			if insDeleteTSVec[i].GT(waterMark) {
+				logutil.Infof("table %d delete at %s, waterMark is %v", tableID[i], insDeleteTSVec[i].ToString(), waterMark.ToString())
 				continue
 			}
 			buf := bat.GetVectorByName(ObjectAttr_ObjectStats).GetDownstreamVector().GetRawBytesAt(i)
 			stats := (objectio.ObjectStats)(buf)
+			logutil.Infof("table %d object %s size %d", tableID[i], stats.ObjectName().String(), stats.Size())
 			// skip the same object
 			if _, ok := objectsName[stats.ObjectName().String()]; ok {
 				continue
