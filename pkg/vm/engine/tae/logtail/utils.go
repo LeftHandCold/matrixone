@@ -1215,7 +1215,7 @@ func LoadBlkColumnsByMeta(
 			} else {
 				srcVec := containers.ToTNVector(pkgVec, mp)
 				vec = srcVec.CloneWindow(0, srcVec.Length(), mp)
-				defer srcVec.Close()
+				srcVec.Close()
 			}
 			bat.AddVector(colNames[idx], vec)
 			bat.Vecs[i] = vec
