@@ -190,13 +190,6 @@ func (r *CheckpointReader) LoadBatchData(
 		return false, err
 	}
 	var bats []*containers.Batch
-	defer func() {
-		for i := range bats {
-			if bats[i] != nil {
-				bats[i].Close()
-			}
-		}
-	}()
 	for idx := range checkpointDataReferVersions[CheckpointCurrentVersion] {
 		if uint16(idx) != ObjectInfoIDX &&
 			uint16(idx) != TombstoneObjectInfoIDX {
@@ -211,6 +204,7 @@ func (r *CheckpointReader) LoadBatchData(
 		for i := range bats {
 			cnBat := containers.ToCNBatch(bats[i])
 			bat, err = bat.Append(ctx, mp, cnBat)
+			bats[i].Close()
 			if err != nil {
 				logutil.Infof("err is %v", err)
 				return false, err
