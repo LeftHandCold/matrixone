@@ -902,19 +902,28 @@ func (s *S3FS) Delete(ctx context.Context, filePaths ...string) error {
 			if s.memCache == nil {
 				return nil
 			}
-			return s.memCache.DeletePaths(ctx, filePaths)
+			logutil.Infof("memCache.DeletePaths start")
+			err := s.memCache.DeletePaths(ctx, filePaths)
+			logutil.Infof("memCache.DeletePaths end %v", err)
+			return err
 		}(),
 		func() error {
 			if s.diskCache == nil {
 				return nil
 			}
-			return s.diskCache.DeletePaths(ctx, filePaths)
+			logutil.Infof("diskCache.DeletePaths start")
+			err := s.diskCache.DeletePaths(ctx, filePaths)
+			logutil.Infof("diskCache.DeletePaths end %v", err)
+			return err
 		}(),
 		func() error {
 			if s.remoteCache == nil {
 				return nil
 			}
-			return s.remoteCache.DeletePaths(ctx, filePaths)
+			logutil.Infof("remoteCache.DeletePaths start")
+			err := s.remoteCache.DeletePaths(ctx, filePaths)
+			logutil.Infof("remoteCache.DeletePaths end %v", err)
+			return err
 		}(),
 	)
 }

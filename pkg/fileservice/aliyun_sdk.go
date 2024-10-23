@@ -325,6 +325,7 @@ func (a *AliyunSDK) Delete(
 		if _, err := a.deleteObjects(ctx, keys[i:end]...); err != nil {
 			return err
 		}
+		logutil.Infof("deleted %d objects, start %d, end %d", i, end-i)
 	}
 
 	return nil

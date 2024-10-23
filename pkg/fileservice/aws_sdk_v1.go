@@ -327,6 +327,7 @@ func (a *AwsSDKv1) Delete(
 				return err
 			}
 			objs = objs[:0]
+			logutil.Infof("AwsSDKv1 deleted %d objects", len(objs))
 		}
 	}
 	if err := a.deleteMultiObj(ctx, objs); err != nil {

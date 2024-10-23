@@ -82,8 +82,9 @@ func (g *GCWorker) ExecDelete(ctx context.Context, names []string) error {
 			zap.Int("file count", deleteCount),
 			zap.String("time cost", time.Since(now).String()))
 	}()
-	logutil.Infof("[DB GC] files to delete: %v", g.objects)
+	logutil.Infof("[DB GC] files to delete count: %d", len(g.objects))
 	err := g.fs.DelFiles(ctx, g.objects)
+	logutil.Infof("[DB GC] delete files result: %v", err)
 	g.Lock()
 	defer g.Unlock()
 	if err != nil && !moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
