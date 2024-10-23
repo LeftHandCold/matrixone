@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/common/malloc"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -146,7 +147,7 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 		e.globalCkpLoc,
 		e.ts,
 		&transObjects,
-		e.mp,
+		common.DebugAllocator,
 		e.fs,
 	)
 	if err != nil {
