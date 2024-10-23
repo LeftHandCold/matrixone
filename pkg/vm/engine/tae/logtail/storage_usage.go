@@ -1214,6 +1214,7 @@ func FillUsageBatOfCompacted(
 			key := [3]uint64{accountId, dbid[i], tableID[i]}
 			snapSize := usageData[key].SnapshotSize
 			snapSize += uint64(stats.Size())
+			logutil.Infof("key %v, size is %d, usageData[key].SnapshotSize is %d", key, snapSize, usageData[key].SnapshotSize)
 			usageData[key] = UsageData{
 				AccId:        accountId,
 				DbId:         dbid[i],
@@ -1231,6 +1232,7 @@ func FillUsageBatOfCompacted(
 	for iter.Next() {
 		val := iter.Item()
 		key := [3]uint64{val.AccId, val.DbId, val.TblId}
+		logutil.Infof("key %v, size is %d", key, val.SnapshotSize)
 		ud, ok := usageData[key]
 		if val.SnapshotSize == 0 && !ok {
 			continue
