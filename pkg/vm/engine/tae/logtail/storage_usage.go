@@ -1200,21 +1200,17 @@ func FillUsageBatOfCompacted(
 			}
 
 			if insDeleteTSVec[i].GT(waterMark) {
-				logutil.Infof("id %d table %d delete at %s, waterMark is %v", accountId, tableID[i], insDeleteTSVec[i].ToString(), waterMark.ToString())
 				continue
 			}
 			buf := bat.GetVectorByName(ObjectAttr_ObjectStats).GetDownstreamVector().GetRawBytesAt(i)
 			stats := (objectio.ObjectStats)(buf)
-			logutil.Infof("id %d table %d object %s size %d", accountId, tableID[i], stats.ObjectName().String(), stats.Size())
 			// skip the same object
 			if _, hit := objectsName[stats.ObjectName().String()]; hit {
-				logutil.Infof("id222 %d table %d object %s size %d", accountId, tableID[i], stats.ObjectName().String(), stats.Size())
 				continue
 			}
 			key := [3]uint64{accountId, dbid[i], tableID[i]}
 			snapSize := usageData[key].SnapshotSize
 			snapSize += uint64(stats.Size())
-			logutil.Infof("key %v, size is %d, usageData[key].SnapshotSize is %d", key, snapSize, usageData[key].SnapshotSize)
 			usageData[key] = UsageData{
 				AccId:        accountId,
 				DbId:         dbid[i],
@@ -1239,10 +1235,16 @@ func FillUsageBatOfCompacted(
 		}
 		val.SnapshotSize = ud.SnapshotSize
 		update[key] = val
+		delete(usageData, key)
 	}
 	iter.Release()
 
 	for _, v := range update {
+		usage.cache.SetOrReplace(v)
+	}
+
+	// table has been dropped
+	for _, v := range usageData {
 		usage.cache.SetOrReplace(v)
 	}
 	memoryUsed = usage.MemoryUsed()
