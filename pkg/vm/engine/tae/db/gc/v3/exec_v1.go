@@ -227,7 +227,7 @@ func MakeBloomfilterCoarseFilter(
 		ctx context.Context,
 		bm *bitmap.Bitmap,
 		bat *batch.Batch,
-		mp *mpool.MPool,
+		_ *mpool.MPool,
 	) (err error) {
 		createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
 		dropTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
