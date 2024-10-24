@@ -1164,6 +1164,7 @@ func FillUsageBatOfCompacted(
 	meta *SnapshotMeta,
 	accountSnapshots map[uint32][]types.TS,
 	pitrs *PitrInfo,
+	waterMark *types.TS,
 ) {
 	now := time.Now()
 	var memoryUsed float64
@@ -1220,8 +1221,18 @@ func FillUsageBatOfCompacted(
 				&insCreateTSVec[i],
 				&insDeleteTSVec[i],
 				tableSnapshots[tableID[i]]) {
+				logutil.Infof("!ObjectIsSnapshotRefers object %s, create %v, drop %v", stats.ObjectName().String(), insCreateTSVec[i], insDeleteTSVec[i])
+				//continue
+			}
+
+			if (insDeleteTSVec[i].IsEmpty() && insCreateTSVec[i].LT(waterMark)) ||
+				(!insDeleteTSVec[i].IsEmpty() && insDeleteTSVec[i].LT(waterMark)) {
+				logutil.Infof("skip %v insDeleteTSVec %v, insCreateTSVec %v, waterMark %v", stats.ObjectName().String(), insDeleteTSVec[i].ToString(), insCreateTSVec[i].ToString(), waterMark.ToString())
 				continue
 			}
+
+			logutil.Infof("fill usage object %s, create %v, drop %v", stats.ObjectName().String(), insCreateTSVec[i].ToString(), insDeleteTSVec[i].ToString())
+
 			key := [3]uint64{accountId, dbid[i], tableID[i]}
 			snapSize := usageData[key].SnapshotSize
 			snapSize += uint64(stats.Size())

@@ -414,7 +414,8 @@ func (c *checkpointCleaner) Replay() (err error) {
 			ckpData,
 			c.mutation.snapshotMeta,
 			accountSnapshots,
-			pitrs)
+			pitrs,
+			&end)
 		logutil.Info("GC-REPLAY-COLLECT-SNAPSHOT-SIZE",
 			zap.String("task", c.TaskNameLocked()),
 			zap.Int("size", len(accountSnapshots)),
@@ -888,7 +889,8 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 		newCheckpointData,
 		c.mutation.snapshotMeta,
 		accountSnapshots,
-		pitrs)
+		pitrs,
+		checkpointLowWaterMark)
 	if newCheckpoint == nil {
 		panic("MergeCheckpoint new checkpoint is nil")
 	}
