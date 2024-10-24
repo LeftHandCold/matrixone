@@ -1270,6 +1270,8 @@ func FillUsageBatOfCompacted(
 	for _, v := range usageData {
 		usage.cache.SetOrReplace(v)
 	}
+
+	logutil.Infof("dropddd size %d, ref size %d, not ref size %d", drop, ref, notRef)
 	memoryUsed = usage.MemoryUsed()
 }
 func iSnapshotRefers(
