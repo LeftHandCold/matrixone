@@ -1439,7 +1439,7 @@ func (sm *SnapshotMeta) MergeTableInfo(
 		for _, table := range tables {
 			ts := sm.GetPitrByTable(pitr, table.dbID, table.tid)
 			if !table.deleteAt.IsEmpty() &&
-				!isSnapshotRefers(table, accountSnapshots[accID], ts) {
+				!tableIsSnapshotRefers(table, accountSnapshots[accID], ts) {
 				delete(sm.tables[accID], table.tid)
 				delete(sm.tableIDIndex, table.tid)
 				if sm.objects[table.tid] != nil {
@@ -1489,7 +1489,7 @@ func (sm *SnapshotMeta) String() string {
 		len(sm.tables), len(sm.tableIDIndex), len(sm.objects))
 }
 
-func isSnapshotRefers(table *tableInfo, snapVec []types.TS, pitr *types.TS) bool {
+func tableIsSnapshotRefers(table *tableInfo, snapVec []types.TS, pitr *types.TS) bool {
 	if !pitr.IsEmpty() {
 		if table.deleteAt.GT(pitr) {
 			return true
@@ -1503,10 +1503,73 @@ func isSnapshotRefers(table *tableInfo, snapVec []types.TS, pitr *types.TS) bool
 		mid := left + (right-left)/2
 		snapTS := snapVec[mid]
 		if snapTS.GE(&table.createAt) && snapTS.LT(&table.deleteAt) {
-			logutil.Infof("isSnapshotRefers: %s, create %v, drop %v, tid %d",
+			logutil.Infof("tableIsSnapshotRefers: %s, create %v, drop %v, tid %d",
 				snapTS.ToString(), table.createAt.ToString(), table.deleteAt.ToString(), table.tid)
 			return true
 		} else if snapTS.LT(&table.createAt) {
+			left = mid + 1
+		} else {
+			right = mid - 1
+		}
+	}
+	return false
+}
+
+func ObjectIsSnapshotRefers(
+	obj *objectio.ObjectStats,
+	pitr, createTS, dropTS *types.TS,
+	snapshots []types.TS,
+) bool {
+	// no snapshot and no pitr
+	if len(snapshots) == 0 && (pitr == nil || pitr.IsEmpty()) {
+		return false
+	}
+
+	// if dropTS is empty, it means the object is not dropped
+	if dropTS.IsEmpty() {
+		common.DoIfDebugEnabled(func() {
+			logutil.Debug(
+				"GCJOB-DEBUG-1",
+				zap.String("obj", obj.ObjectName().String()),
+				zap.String("create-ts", createTS.ToString()),
+				zap.String("drop-ts", createTS.ToString()),
+			)
+		})
+		return true
+	}
+
+	// if pitr is not empty, and pitr is greater than dropTS, it means the object is not dropped
+	if pitr != nil && !pitr.IsEmpty() {
+		if dropTS.GT(pitr) {
+			common.DoIfDebugEnabled(func() {
+				logutil.Debug(
+					"GCJOB-PITR-PIN",
+					zap.String("name", obj.ObjectName().String()),
+					zap.String("pitr", pitr.ToString()),
+					zap.String("create-ts", createTS.ToString()),
+					zap.String("drop-ts", dropTS.ToString()),
+				)
+			})
+			return true
+		}
+	}
+
+	left, right := 0, len(snapshots)-1
+	for left <= right {
+		mid := left + (right-left)/2
+		snapTS := snapshots[mid]
+		if snapTS.GE(createTS) && snapTS.LT(dropTS) {
+			common.DoIfDebugEnabled(func() {
+				logutil.Debug(
+					"GCJOB-DEBUG-2",
+					zap.String("name", obj.ObjectName().String()),
+					zap.String("pitr", snapTS.ToString()),
+					zap.String("create-ts", createTS.ToString()),
+					zap.String("drop-ts", dropTS.ToString()),
+				)
+			})
+			return true
+		} else if snapTS.LT(createTS) {
 			left = mid + 1
 		} else {
 			right = mid - 1

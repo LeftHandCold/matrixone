@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"math"
 	"math/rand"
 	"regexp"
@@ -1182,9 +1181,6 @@ func FillUsageBatOfCompacted(
 		pitrs,
 	)
 	objectsName := make(map[string]struct{})
-	drop := uint64(0)
-	ref := uint64(0)
-	notRef := uint64(0)
 	scan := func(bat *containers.Batch) {
 		insDeleteTSVec := vector.MustFixedColWithTypeCheck[types.TS](
 			bat.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
@@ -1218,19 +1214,13 @@ func FillUsageBatOfCompacted(
 			if _, ok = objectsName[stats.ObjectName().String()]; ok {
 				continue
 			}
-			if id == 10001 {
-				if insDeleteTSVec[i].IsEmpty() {
-					drop += uint64(stats.Size())
-					logutil.Infof("drop name %v, create %v, table is %d", stats.ObjectName().String(), insCreateTSVec[i].ToString(), tableID[i])
-				} else {
-					if iSnapshotRefers(&stats, tablePitrs[tableID[i]], &insCreateTSVec[i], &insDeleteTSVec[i], tableSnapshots[tableID[i]]) {
-						ref += uint64(stats.Size())
-						logutil.Infof("ref name %v, create %v, table is %d", stats.ObjectName().String(), insCreateTSVec[i].ToString(), tableID[i])
-					} else {
-						notRef += uint64(stats.Size())
-						logutil.Infof("not ref name %v, create %v, table is %d", stats.ObjectName().String(), insCreateTSVec[i].ToString(), tableID[i])
-					}
-				}
+			if !ObjectIsSnapshotRefers(
+				&stats,
+				tablePitrs[tableID[i]],
+				&insCreateTSVec[i],
+				&insDeleteTSVec[i],
+				tableSnapshots[tableID[i]]) {
+				continue
 			}
 			key := [3]uint64{accountId, dbid[i], tableID[i]}
 			snapSize := usageData[key].SnapshotSize
@@ -1271,66 +1261,7 @@ func FillUsageBatOfCompacted(
 		usage.cache.SetOrReplace(v)
 	}
 
-	logutil.Infof("dropddd size %d, ref size %d, not ref size %d", drop, ref, notRef)
 	memoryUsed = usage.MemoryUsed()
-}
-func iSnapshotRefers(
-	obj *objectio.ObjectStats,
-	pitr, createTS, dropTS *types.TS,
-	snapshots []types.TS,
-) bool {
-	// no snapshot and no pitr
-	if len(snapshots) == 0 && (pitr == nil || pitr.IsEmpty()) {
-		return false
-	}
-
-	// if dropTS is empty, it means the object is not dropped
-	if dropTS.IsEmpty() {
-		logutil.Info(
-			"tttttt",
-			zap.String("obj", obj.ObjectName().String()),
-			zap.String("create-ts", createTS.ToString()),
-			zap.String("drop-ts", createTS.ToString()),
-		)
-		return true
-	}
-
-	// if pitr is not empty, and pitr is greater than dropTS, it means the object is not dropped
-	if pitr != nil && !pitr.IsEmpty() {
-		if dropTS.GT(pitr) {
-			common.DoIfDebugEnabled(func() {
-				logutil.Debug(
-					"GCJOB-PITR-PIN",
-					zap.String("name", obj.ObjectName().String()),
-					zap.String("pitr", pitr.ToString()),
-					zap.String("create-ts", createTS.ToString()),
-					zap.String("drop-ts", dropTS.ToString()),
-				)
-			})
-			return true
-		}
-	}
-
-	left, right := 0, len(snapshots)-1
-	for left <= right {
-		mid := left + (right-left)/2
-		snapTS := snapshots[mid]
-		if snapTS.GE(createTS) && snapTS.LT(dropTS) {
-			logutil.Debug(
-				"tttttt2-2",
-				zap.String("name", obj.ObjectName().String()),
-				zap.String("pitr", snapTS.ToString()),
-				zap.String("create-ts", createTS.ToString()),
-				zap.String("drop-ts", dropTS.ToString()),
-			)
-			return true
-		} else if snapTS.LT(createTS) {
-			left = mid + 1
-		} else {
-			right = mid - 1
-		}
-	}
-	return false
 }
 
 // GetStorageUsageHistory is for debug to show these storage usage changes.
