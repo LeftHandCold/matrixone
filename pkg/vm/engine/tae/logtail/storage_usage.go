@@ -1218,7 +1218,7 @@ func FillUsageBatOfCompacted(
 			if _, ok = objectsName[stats.ObjectName().String()]; ok {
 				continue
 			}
-			if id == 1 {
+			if id == 10001 {
 				if insDeleteTSVec[i].IsEmpty() {
 					drop += uint64(stats.Size())
 					logutil.Infof("drop name %v, create %v, table is %d", stats.ObjectName().String(), insCreateTSVec[i].ToString(), tableID[i])
