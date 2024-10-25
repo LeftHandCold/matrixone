@@ -5,6 +5,7 @@ import (
 	"fmt"
 	pkgcatalog "github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -731,6 +732,32 @@ func getTableSchemaFromCatalog(dbId, tblId uint64, cc *catalog.Catalog) *catalog
 	return schema
 }
 
+func IsObjectSoftDeleted(
+	cc *catalog.Catalog,
+	dbId, tblId uint64,
+	obj *types.Objectid,
+) (bool, error) {
+	dbEntry, err := cc.GetDatabaseByID(dbId)
+	if err != nil {
+		return false, err
+	}
+
+	tblEntry, err := dbEntry.GetTableEntryByID(tblId)
+	if err != nil {
+		return false, err
+	}
+
+	objEntry, err := tblEntry.GetObjectByID(obj, false)
+	if err != nil {
+		if moerr.IsMoErrCode(err, moerr.GetOkExpectedEOB().ErrorCode()) {
+			return true, nil
+		}
+		return false, err
+	}
+
+	return !objEntry.DeletedAt.IsEmpty(), nil
+}
+
 func replayObjectBatchHelper(
 	ctx context.Context,
 	ts types.TS,
@@ -898,7 +925,18 @@ func replayDeletesHelper(
 		bat, release, err := blockio.LoadTombstoneColumnsOldVersion(
 			ctx, nil, fs, loc, common.CheckpointAllocator, 0)
 		if err != nil {
-			panic(err)
+			deleted, err2 := IsObjectSoftDeleted(cc, dbId, tblId, blk.Object())
+			if err2 != nil {
+				panic(err2)
+			}
+			if deleted {
+				// soft deleted obj, skip
+				logutil.Infof("replay deletes helper, skip soft deleted object: %s, loc: %s",
+					blk.Object().String(), loc)
+				continue
+			} else {
+				panic(err)
+			}
 		}
 
 		// dedup bat
@@ -971,7 +1009,8 @@ func ReplayDeletes(
 	fs fileservice.FileService,
 	srcBat, srcTxnBat *containers.Batch,
 	destBat *containers.Batch,
-	sinker *engine_util.Sinker) {
+	sinker *engine_util.Sinker,
+) {
 	now := time.Now()
 	var (
 		err         error
