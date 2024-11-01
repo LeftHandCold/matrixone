@@ -816,7 +816,6 @@ func (r *runner) tryScheduleIncrementalCheckpoint(start, end types.TS) {
 }
 
 func (r *runner) tryScheduleCheckpoint(endts types.TS) {
-	logutil.Infof("tryScheduleCheckpoint is %v, %v", r.disabled.Load(), endts.ToString())
 	if r.disabled.Load() {
 		return
 	}
@@ -825,20 +824,15 @@ func (r *runner) tryScheduleCheckpoint(endts types.TS) {
 	// no prev checkpoint found. try schedule the first
 	// checkpoint
 	if entry == nil {
-		logutil.Infof("tryScheduleCheckpoint: no prev checkpoint found")
 		if global == nil {
 			r.tryScheduleIncrementalCheckpoint(types.TS{}, endts)
-			return
 		} else {
 			maxTS := global.end.Prev()
 			if r.incrementalPolicy.Check(maxTS) {
 				r.tryScheduleIncrementalCheckpoint(maxTS.Next(), endts)
-				logutil.Infof("tryScheduleCheckpoint: schedule incremental checkpoint %v", maxTS.Next().ToString())
 			}
-			return
 		}
 	}
-	logutil.Infof("tryScheduleCheckpoint: prev checkpoint found %v", endts.ToString())
 
 	if entry.IsPendding() {
 		check := func() (done bool) {
