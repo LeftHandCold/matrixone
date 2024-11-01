@@ -422,6 +422,7 @@ func (r *runner) onIncrementalCheckpointEntries(items ...any) {
 	// can be called when the queue still has unexecuted task.
 	// Add `entry == nil` here as protective codes
 	if entry == nil || entry.GetState() != ST_Running {
+		logutil.Infof("Incremental-Checkpoint-Skip", zap.String("entry", entry.String()))
 		return
 	}
 	var (
@@ -758,6 +759,7 @@ func (r *runner) tryAddNewIncrementalCheckpointEntry(entry *CheckpointEntry) (su
 
 	// if it's the first entry, add it
 	if maxEntry == nil {
+		logutil.Infof("First incremental checkpoint entry: %s", entry.String())
 		r.storage.incrementals.Set(entry)
 		success = true
 		return
@@ -778,7 +780,7 @@ func (r *runner) tryAddNewIncrementalCheckpointEntry(entry *CheckpointEntry) (su
 		success = false
 		return
 	}
-
+	logutil.Infof("First incremental checkpoint entry2: %s", entry.String())
 	r.storage.incrementals.Set(entry)
 
 	success = true
@@ -850,7 +852,7 @@ func (r *runner) tryScheduleCheckpoint(endts types.TS) {
 		}
 
 		if !check() {
-			logutil.Debugf("%s is waiting", entry.String())
+			logutil.Infof("%s is waiting", entry.String())
 			return
 		}
 		entry.SetState(ST_Running)
