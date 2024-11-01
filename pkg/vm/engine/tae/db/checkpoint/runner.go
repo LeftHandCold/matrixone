@@ -838,7 +838,8 @@ func (r *runner) tryScheduleCheckpoint(endts types.TS) {
 			return
 		}
 	}
-	logutil.Infof("tryScheduleCheckpoint: prev checkpoint found %v", entry.String())
+	logutil.Infof("tryScheduleCheckpoint: prev checkpoint found %v", endts.ToString())
+
 	if entry.IsPendding() {
 		check := func() (done bool) {
 			if !r.source.IsCommitted(entry.GetStart(), entry.GetEnd()) {
