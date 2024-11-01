@@ -119,7 +119,7 @@ func (r *runner) ForceGlobalCheckpoint(end types.TS, interval time.Duration) err
 			if err != nil {
 				if dbutils.IsRetrieableCheckpoint(err) {
 					retryTime++
-					interval := interval.Milliseconds() / 400
+					interval := interval.Milliseconds() / 40
 					time.Sleep(time.Duration(interval))
 					break
 				}
@@ -213,6 +213,7 @@ func (r *runner) ForceIncrementalCheckpoint(end types.TS, truncate bool) error {
 	now := time.Now()
 	prev := r.MaxIncrementalCheckpoint()
 	if prev != nil && !prev.IsFinished() {
+		logutil.Infof("ForceIncrementalCheckpoint: prev checkpoint is not finished %v", prev.String())
 		return moerr.NewPrevCheckpointNotFinished()
 	}
 
