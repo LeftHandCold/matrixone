@@ -403,7 +403,6 @@ func (r *reader) Read(
 			r.Close()
 		}
 	}()
-
 	r.tryUpdateColumns(cols)
 
 	blkInfo, state, err := r.source.Next(
