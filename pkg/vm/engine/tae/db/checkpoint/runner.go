@@ -832,6 +832,7 @@ func (r *runner) tryScheduleCheckpoint(endts types.TS) {
 				r.tryScheduleIncrementalCheckpoint(maxTS.Next(), endts)
 			}
 		}
+		entry = r.MaxIncrementalCheckpoint()
 	}
 
 	if entry.IsPendding() {
