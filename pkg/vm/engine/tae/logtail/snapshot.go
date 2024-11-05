@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"sort"
 	"sync"
 	"time"
@@ -397,6 +398,14 @@ func (sm *SnapshotMeta) updateTableInfo(
 			objectio.SchemaData,
 		)
 		if err != nil {
+			if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+				logutil.Warn("UpdateSnapTable-Load-Objects-Error",
+					zap.Error(err),
+					zap.String("object-CreateAt", info.createAt.ToString()),
+					zap.String("object-DeleteAt", info.deleteAt.ToString()),
+				)
+				continue
+			}
 			return err
 		}
 		// 0 is table id
@@ -483,6 +492,14 @@ func (sm *SnapshotMeta) updateTableInfo(
 			objectio.SchemaData,
 		)
 		if err != nil {
+			if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+				logutil.Warn("UpdateSnapTable-Load-Tombstone-Error",
+					zap.Error(err),
+					zap.String("object-CreateAt", info.createAt.ToString()),
+					zap.String("object-DeleteAt", info.deleteAt.ToString()),
+				)
+				continue
+			}
 			return err
 		}
 
