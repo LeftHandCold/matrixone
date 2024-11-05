@@ -668,7 +668,7 @@ func (c *checkpointCleaner) getEntriesToMerge(ts *types.TS) (
 			"end: %v, start: %v", ts.ToString(), start.ToString()))
 	}
 	compacted := c.checkpointCli.GetCompacted()
-	ickps := c.checkpointCli.ICKPRange(&start, ts, 299)
+	ickps := c.checkpointCli.ICKPRange(&start, ts, 499)
 	if compacted != nil && len(ickps) > 0 {
 		entries = make([]*checkpoint.CheckpointEntry, 0, 1+len(ickps))
 		entries = append(entries, compacted)
@@ -1426,7 +1426,7 @@ func (c *checkpointCleaner) tryScanLocked(
 	}
 
 	// get up to 10 incremental checkpoints starting from the max scanned timestamp
-	checkpoints := c.checkpointCli.ICKPSeekLT(maxScannedTS, 300)
+	checkpoints := c.checkpointCli.ICKPSeekLT(maxScannedTS, 500)
 
 	// quick return if there is no incremental checkpoint
 	if len(checkpoints) == 0 {
