@@ -563,7 +563,12 @@ func (sm *SnapshotMeta) updateTableInfo(
 
 	for pk, tables := range sm.tablePKIndex {
 		if len(tables) > 1 {
-			panic(fmt.Sprintf("table %v has more than one entry, tables len %d", pk, len(tables)))
+			logutil.Warn("UpdateSnapTable-Error",
+				zap.String("table", pk),
+				zap.Int("len", len(tables)),
+			)
+			tables = tables[len(tables)-1:]
+			sm.tablePKIndex[pk] = tables
 		}
 		if len(tables) == 0 {
 			continue
@@ -1556,6 +1561,15 @@ func (sm *SnapshotMeta) GetAccountId(tid uint64) (uint32, bool) {
 		return 0, false
 	}
 	return sm.tableIDIndex[tid].accountID, true
+}
+
+func (sm *SnapshotMeta) IsTableDrop(tid uint64) bool {
+	sm.RLock()
+	defer sm.RUnlock()
+	if sm.tableIDIndex[tid] == nil {
+		return true
+	}
+	return false
 }
 
 // for test
