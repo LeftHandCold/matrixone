@@ -17,7 +17,9 @@ package blockio
 import (
 	"context"
 	"fmt"
+	"go.uber.org/zap"
 	"math"
+	"runtime/debug"
 
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -176,6 +178,12 @@ func (w *BlockWriter) WriteBatch(batch *batch.Batch) (objectio.BlockObject, erro
 	}
 	if w.objMetaBuilder == nil {
 		w.objMetaBuilder = NewObjectColumnMetasBuilder(len(batch.Vecs))
+	}
+
+	if w.isTombstone && len(batch.Vecs) > 0 && batch.Vecs[0].Length() == 1 {
+		logutil.Info("CN-Commit-Tombstone-1row",
+			zap.String("object", w.nameStr),
+			zap.String("stack", string(debug.Stack())))
 	}
 	seqnums := w.writer.GetSeqnums()
 	if w.sortKeyIdx != math.MaxUint16 {
