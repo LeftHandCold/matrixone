@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"strings"
 	"time"
 
@@ -48,7 +49,7 @@ type FileService interface {
 	ReadCache(ctx context.Context, vector *IOVector) error
 
 	// List lists sub-entries in a dir
-	List(ctx context.Context, dirPath string) ([]DirEntry, error)
+	List(ctx context.Context, dirPath string) iter.Seq2[*DirEntry, error]
 
 	// Delete deletes multi file
 	// returns ErrFileNotFound if requested file not found
@@ -64,7 +65,7 @@ type FileService interface {
 	// Cost returns the cost attr of the file service
 	Cost() *CostAttr
 
-	Close()
+	Close(ctx context.Context)
 }
 
 type IOVector struct {
@@ -132,7 +133,7 @@ type IOEntry struct {
 	// reader always contains entry contents
 	// data may contains entry contents if available
 	// if data is empty, the io.Reader must be fully read before returning nil error
-	ToCacheData func(reader io.Reader, data []byte, allocator CacheDataAllocator) (cacheData fscache.Data, err error)
+	ToCacheData func(ctx context.Context, reader io.Reader, data []byte, allocator CacheDataAllocator) (cacheData fscache.Data, err error)
 
 	// done indicates whether the entry is filled with data
 	// for implementing cascade cache
@@ -152,7 +153,8 @@ func (i IOEntry) String() string {
 }
 
 type CacheDataAllocator interface {
-	AllocateCacheData(size int) fscache.Data
+	AllocateCacheData(ctx context.Context, size int) fscache.Data
+	CopyToCacheData(ctx context.Context, data []byte) fscache.Data
 }
 
 // DirEntry is a file or dir

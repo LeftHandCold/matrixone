@@ -38,7 +38,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/cache"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/engine_util"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
@@ -105,8 +104,6 @@ func MockTableDelegate(
 		origin: delegate.origin,
 		isMock: true,
 	}
-	tbl.shard.service = service
-
 	tbl.shard.service = service
 	tbl.shard.is = false
 	tbl.isLocal = tbl.isLocalFunc
@@ -497,7 +494,6 @@ type shardingLocalReader struct {
 	//relation data to distribute to remote CN which holds shard's partition state.
 	remoteRelData         engine.RelData
 	remoteTombApplyPolicy engine.TombstoneApplyPolicy
-	remoteScanType        int
 }
 
 // TODO::
@@ -516,15 +512,6 @@ func (r *shardingLocalReader) Read(
 		if err != nil || isEnd {
 			r.close()
 		}
-		//for test issue-19202
-		logutil.Infof("xxxx shardingLocalReader read, "+
-			"txn:%s, table:%s, isEnd:%v,err:%v, bat:%s, state:%v",
-			r.tblDelegate.origin.db.op.Txn().DebugString(),
-			r.tblDelegate.origin.tableName,
-			isEnd,
-			err,
-			common.MoBatchToString(bat, 10),
-			r.iteratePhase)
 	}()
 
 	for {
@@ -554,7 +541,6 @@ func (r *shardingLocalReader) Read(
 				func(param *shard.ReadParam) {
 					param.ReaderBuildParam.RelData = relData
 					param.ReaderBuildParam.Expr = expr
-					param.ReaderBuildParam.ScanType = int32(r.remoteScanType)
 					param.ReaderBuildParam.TombstoneApplyPolicy = int32(r.remoteTombApplyPolicy)
 				},
 				func(resp []byte) {
@@ -611,7 +597,7 @@ func (r *shardingLocalReader) close() error {
 			r.lrd.Close()
 		}
 		if r.remoteRelData != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+			ctx, cancel := context.WithTimeoutCause(context.Background(), time.Second*10, moerr.CauseShardingLocalReader)
 			defer cancel()
 
 			err := r.tblDelegate.forwardRead(
@@ -624,7 +610,7 @@ func (r *shardingLocalReader) close() error {
 				},
 			)
 			if err != nil {
-				return err
+				return moerr.AttachCause(ctx, err)
 			}
 		}
 	}
@@ -671,18 +657,18 @@ func (tbl *txnTableDelegate) BuildShardingReaders(
 		return nil, err
 	}
 	group := func(rd engine.RelData) (local engine.RelData, remote engine.RelData) {
-		local = rd.BuildEmptyRelData()
-		remote = rd.BuildEmptyRelData()
-		engine.ForRangeBlockInfo(0, rd.DataCnt(), rd, func(bi objectio.BlockInfo) (bool, error) {
+		local = rd.BuildEmptyRelData(0)
+		remote = rd.BuildEmptyRelData(0)
+		engine.ForRangeBlockInfo(0, rd.DataCnt(), rd, func(bi *objectio.BlockInfo) (bool, error) {
 			if bi.IsMemBlk() {
-				local.AppendBlockInfo(&bi)
-				remote.AppendBlockInfo(&bi)
+				local.AppendBlockInfo(bi)
+				remote.AppendBlockInfo(bi)
 				return true, nil
 			}
 			if _, ok := uncommittedObjNames[*objectio.ShortName(&bi.BlockID)]; ok {
-				local.AppendBlockInfo(&bi)
+				local.AppendBlockInfo(bi)
 			} else {
-				remote.AppendBlockInfo(&bi)
+				remote.AppendBlockInfo(bi)
 			}
 			return true, nil
 		})
@@ -703,7 +689,6 @@ func (tbl *txnTableDelegate) BuildShardingReaders(
 		}
 	}
 
-	scanType := determineScanType(relData, newNum)
 	mod := blkCnt % newNum
 	divide := blkCnt / newNum
 	current := 0
@@ -722,7 +707,6 @@ func (tbl *txnTableDelegate) BuildShardingReaders(
 		srd := &shardingLocalReader{
 			tblDelegate:           tbl,
 			remoteTombApplyPolicy: engine.Policy_SkipUncommitedInMemory | engine.Policy_SkipUncommitedS3,
-			remoteScanType:        scanType,
 		}
 
 		if localRelData.DataCnt() > 0 {
@@ -744,11 +728,11 @@ func (tbl *txnTableDelegate) BuildShardingReaders(
 				tbl.origin.db.op.SnapshotTS(),
 				expr,
 				ds,
+				engine_util.GetThresholdForReader(newNum),
 			)
 			if err != nil {
 				return nil, err
 			}
-			lrd.SetScanType(scanType)
 			srd.lrd = lrd
 		}
 
@@ -1024,12 +1008,18 @@ func (tbl *txnTableDelegate) hasAllLocalReplicas() (bool, error) {
 }
 
 func (tbl *txnTableDelegate) getReadRequest(
+	ctx context.Context,
 	method int,
 	apply func([]byte),
 ) (shardservice.ReadRequest, error) {
 	processInfo, err := tbl.origin.proc.Load().BuildProcessInfo(
 		tbl.origin.createSql,
 	)
+	if err != nil {
+		return shardservice.ReadRequest{}, err
+	}
+
+	createdInTx, err := tbl.origin.isCreatedInTxn(ctx)
 	if err != nil {
 		return shardservice.ReadRequest{}, err
 	}
@@ -1044,7 +1034,7 @@ func (tbl *txnTableDelegate) getReadRequest(
 				DatabaseName: tbl.origin.db.databaseName,
 				AccountID:    uint64(tbl.origin.accountId),
 				TableName:    tbl.origin.tableName,
-				CreatedInTxn: tbl.origin.isCreatedInTxn(),
+				CreatedInTxn: createdInTx,
 			},
 		},
 		Apply: apply,
@@ -1095,6 +1085,7 @@ func (tbl *txnTableDelegate) forwardRead(
 	apply func([]byte),
 ) error {
 	request, err := tbl.getReadRequest(
+		ctx,
 		method,
 		apply,
 	)
@@ -1126,7 +1117,9 @@ func (tbl *txnTableDelegate) forwardRead(
 	err = tbl.shard.service.Read(
 		ctx,
 		request,
-		shardservice.ReadOptions{}.Shard(shardID),
+		shardservice.ReadOptions{}.
+			ReadAt(tbl.origin.getTxn().op.SnapshotTS()).
+			Shard(shardID),
 	)
 	if err != nil {
 		return err

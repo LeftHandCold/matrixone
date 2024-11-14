@@ -54,6 +54,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/logtailreplay"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/engine_util"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
@@ -582,6 +583,7 @@ func (tbl *txnTable) doRanges(
 	start := time.Now()
 	seq := tbl.db.op.NextSequence()
 
+	var part *logtailreplay.PartitionState
 	blocks := objectio.PreAllocBlockInfoSlice(1, preAllocSize)
 
 	trace.GetService(sid).AddTxnDurationAction(
@@ -634,6 +636,19 @@ func (tbl *txnTable) doRanges(
 			)
 		}
 
+		if objectio.RangesInjected(tbl.tableDef.Name) {
+			logutil.Info(
+				"INJECT-TRACE-RANGES",
+				zap.String("name", tbl.tableDef.Name),
+				zap.String("exprs", plan2.FormatExprs(exprs)),
+				zap.Uint64("tbl-id", tbl.tableId),
+				zap.String("txn", tbl.db.op.Txn().DebugString()),
+				zap.String("blocks", blocks.String()),
+				zap.String("ps", fmt.Sprintf("%p", part)),
+				zap.Error(err),
+			)
+		}
+
 		trace.GetService(sid).AddTxnAction(
 			tbl.db.op,
 			client.RangesEvent,
@@ -658,7 +673,6 @@ func (tbl *txnTable) doRanges(
 	}()
 
 	// get the table's snapshot
-	var part *logtailreplay.PartitionState
 	if part, err = tbl.getPartitionState(ctx); err != nil {
 		return
 	}
@@ -995,7 +1009,7 @@ func (tbl *txnTable) TableDefs(ctx context.Context) ([]engine.TableDef, error) {
 	}
 	for i, def := range tbl.defs {
 		if attr, ok := def.(*engine.AttributeDef); ok {
-			if attr.Attr.Name != catalog.Row_ID {
+			if !objectio.IsPhysicalAddr(attr.Attr.Name) {
 				defs = append(defs, tbl.defs[i])
 			}
 		}
@@ -1063,7 +1077,7 @@ func (tbl *txnTable) GetTableDef(ctx context.Context) *plan.TableDef {
 						Name: name,
 					}
 				}
-				if attr.Attr.Name == catalog.Row_ID {
+				if objectio.IsPhysicalAddr(attr.Attr.Name) {
 					hasRowId = true
 				}
 				i++
@@ -1168,6 +1182,7 @@ func (tbl *txnTable) GetTableDef(ctx context.Context) *plan.TableDef {
 			ClusterBy:     clusterByDef,
 			Indexes:       indexes,
 			Version:       tbl.version,
+			DbId:          tbl.GetDBID(ctx),
 		}
 	}
 	return tbl.tableDef
@@ -1198,19 +1213,33 @@ func (tbl *txnTable) UpdateConstraint(ctx context.Context, c *engine.ConstraintD
 // and then the second alter will be treated as an operation on a newly-created table if txn.CreateTable is used.
 //
 // 2. This check depends on replaying all catalog cache when cn starts.
-func (tbl *txnTable) isCreatedInTxn() bool {
+func (tbl *txnTable) isCreatedInTxn(ctx context.Context) (bool, error) {
 	if tbl.remoteWorkspace {
-		return tbl.createdInTxn
+		return tbl.createdInTxn, nil
 	}
 
 	if tbl.db.op.IsSnapOp() {
 		// if the operation is snapshot read, isCreatedInTxn can not be called by AlterTable
 		// So if the snapshot read want to subcribe logtail tail, let it go ahead.
-		return false
+		return false, nil
 	}
-	idAckedbyTN := tbl.db.getEng().GetLatestCatalogCache().
-		GetTableByIdAndTime(tbl.accountId, tbl.db.databaseId, tbl.tableId, tbl.db.op.SnapshotTS())
-	return idAckedbyTN == nil
+
+	cache := tbl.db.getEng().GetLatestCatalogCache()
+	cacheTS := cache.GetStartTS().ToTimestamp()
+	if cacheTS.Greater(tbl.db.op.SnapshotTS()) {
+		if err := tbl.db.op.UpdateSnapshot(ctx, cacheTS); err != nil {
+			return false, err
+		}
+		return false, moerr.NewTxnNeedRetry(ctx)
+	}
+
+	idAckedbyTN := cache.GetTableByIdAndTime(
+		tbl.accountId,
+		tbl.db.databaseId,
+		tbl.tableId,
+		tbl.db.op.SnapshotTS(),
+	)
+	return idAckedbyTN == nil, nil
 }
 
 func (tbl *txnTable) AlterTable(ctx context.Context, c *engine.ConstraintDef, reqs []*api.AlterTableReq) error {
@@ -1304,7 +1333,10 @@ func (tbl *txnTable) AlterTable(ctx context.Context, c *engine.ConstraintDef, re
 	// 0. check if the table is created in txn.
 	// For a table created in txn, alter means to recreate table and put relating dml/alter batch behind the new create batch.
 	// For a normal table, alter means sending Alter request to TN, no creating command, and no dropping command.
-	createdInTxn := tbl.isCreatedInTxn()
+	createdInTxn, err := tbl.isCreatedInTxn(ctx)
+	if err != nil {
+		return err
+	}
 	if !createdInTxn {
 		tbl.version += 1
 		// For normal Alter, send Alter request to TN
@@ -1401,7 +1433,7 @@ func (tbl *txnTable) GetHideKeys(ctx context.Context) ([]*engine.Attribute, erro
 	attrs = append(attrs, &engine.Attribute{
 		IsHidden: true,
 		IsRowId:  true,
-		Name:     catalog.Row_ID,
+		Name:     objectio.PhysicalAddr_Attr,
 		Type:     types.New(types.T_Rowid, 0, 0),
 		Primary:  true,
 	})
@@ -1449,7 +1481,7 @@ func (tbl *txnTable) Write(ctx context.Context, bat *batch.Batch) error {
 		ibat.Clean(tbl.getTxn().proc.Mp())
 		return err
 	}
-	return tbl.getTxn().dumpBatch(tbl.getTxn().GetSnapshotWriteOffset())
+	return tbl.getTxn().dumpBatch(ctx, tbl.getTxn().GetSnapshotWriteOffset())
 }
 
 func (tbl *txnTable) Update(ctx context.Context, bat *batch.Batch) error {
@@ -1487,7 +1519,10 @@ func (tbl *txnTable) EnhanceDelete(bat *batch.Batch, name string) error {
 			return err
 		}
 
-		tbl.getTxn().StashFlushedTombstones(stats)
+		for i := range bat.Vecs[0].Length() {
+			ss := objectio.ObjectStats(bat.Vecs[0].GetBytesAt(i))
+			tbl.getTxn().StashFlushedTombstones(ss)
+		}
 
 	case deletion.CNBlockOffset:
 	case deletion.RawBatchOffset:
@@ -1523,7 +1558,7 @@ func (tbl *txnTable) ensureSeqnumsAndTypesExpectRowid() {
 }
 
 // TODO:: do prefetch read and parallel compaction
-func (tbl *txnTable) compaction(
+func (tbl *txnTable) compaction(ctx context.Context,
 	compactedBlks map[objectio.ObjectLocation][]int64,
 ) ([]objectio.BlockInfo, objectio.ObjectStats, error) {
 	s3writer, err := colexec.NewS3Writer(tbl.tableDef, 0)
@@ -1551,7 +1586,7 @@ func (tbl *txnTable) compaction(
 		s3writer.StashBatch(tbl.getTxn().proc, bat)
 		bat.Clean(tbl.getTxn().proc.GetMPool())
 	}
-	return s3writer.SortAndSync(tbl.getTxn().proc)
+	return s3writer.SortAndSync(ctx, tbl.getTxn().proc)
 }
 
 func (tbl *txnTable) Delete(
@@ -1561,7 +1596,7 @@ func (tbl *txnTable) Delete(
 		return moerr.NewInternalErrorNoCtx("delete operation is not allowed in snapshot transaction")
 	}
 	//for S3 delete
-	if name != catalog.Row_ID {
+	if !objectio.IsPhysicalAddr(name) {
 		return tbl.EnhanceDelete(bat, name)
 	}
 	bat = tbl.getTxn().deleteBatch(bat, tbl.db.databaseId, tbl.tableId)
@@ -1756,7 +1791,6 @@ func (tbl *txnTable) BuildReaders(
 		}
 	}
 
-	scanType := determineScanType(relData, newNum)
 	def := tbl.GetTableDef(ctx)
 	mod := blkCnt % newNum
 	divide := blkCnt / newNum
@@ -1783,12 +1817,12 @@ func (tbl *txnTable) BuildReaders(
 			tbl.db.op.SnapshotTS(),
 			expr,
 			ds,
+			engine_util.GetThresholdForReader(newNum),
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		rd.SetScanType(scanType)
 		rds = append(rds, rd)
 	}
 	return rds, nil
@@ -1833,6 +1867,11 @@ func (tbl *txnTable) getPartitionState(
 		if err != nil {
 			return nil, err
 		}
+		logutil.Infof("Get partition state for snapshot read, table:%s, tid:%v, txn:%s, ps:%p",
+			tbl.tableName,
+			tbl.tableId,
+			tbl.db.op.Txn().DebugString(),
+			ps)
 		tbl._partState.Store(ps)
 	}
 	return tbl._partState.Load(), nil
@@ -1846,7 +1885,11 @@ func (tbl *txnTable) tryToSubscribe(ctx context.Context) (ps *logtailreplay.Part
 		}
 	}()
 
-	if tbl.isCreatedInTxn() {
+	createdInTxn, err := tbl.isCreatedInTxn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if createdInTxn {
 		return
 	}
 
@@ -1975,10 +2018,10 @@ func (tbl *txnTable) PKPersistedBetween(
 	}
 
 	buildUnsortedFilter := func() objectio.ReadFilterSearchFuncType {
-		return getNonSortedPKSearchFuncByPKVec(keys)
+		return LinearSearchOffsetByValFactory(keys)
 	}
 
-	cacheBat := batch.EmptyBatchWithSize(1)
+	cacheVectors := containers.NewVectors(1)
 	//read block ,check if keys exist in the block.
 	pkDef := tbl.tableDef.Cols[tbl.primaryIdx]
 	pkSeq := pkDef.Seqnum
@@ -1990,7 +2033,7 @@ func (tbl *txnTable) PKPersistedBetween(
 			[]types.Type{pkType},
 			fs,
 			blk.MetaLocation(),
-			&cacheBat,
+			cacheVectors,
 			tbl.proc.Load().GetMPool(),
 			fileservice.Policy(0),
 		)
@@ -2003,7 +2046,7 @@ func (tbl *txnTable) PKPersistedBetween(
 			searchFunc = buildUnsortedFilter()
 		}
 
-		sels := searchFunc(cacheBat.Vecs)
+		sels := searchFunc(&cacheVectors[0])
 		release()
 		if len(sels) > 0 {
 			return true, nil
@@ -2023,12 +2066,17 @@ func (tbl *txnTable) PrimaryKeysMayBeModified(
 		return false,
 			moerr.NewInternalErrorNoCtx("primary key modification is not allowed in snapshot transaction")
 	}
+
+	//snap, err := tbl.getPartitionState(ctx)
+	//if err != nil {
+	//	return false, err
+	//}
 	part, err := tbl.eng.(*Engine).LazyLoadLatestCkp(ctx, tbl)
 	if err != nil {
 		return false, err
 	}
-
 	snap := part.Snapshot()
+
 	var packer *types.Packer
 	put := tbl.eng.(*Engine).packerPool.Get(&packer)
 	defer put.Put()

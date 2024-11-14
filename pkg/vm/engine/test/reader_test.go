@@ -792,7 +792,6 @@ func Test_ShardingRemoteReader(t *testing.T) {
 		data, err := relData.MarshalBinary()
 		require.NoError(t, err)
 		readerBuildParam.ReaderBuildParam.RelData = data
-		readerBuildParam.ReaderBuildParam.ScanType = engine_util.SMALL
 		readerBuildParam.ReaderBuildParam.TombstoneApplyPolicy =
 			int32(engine.Policy_SkipUncommitedInMemory | engine.Policy_SkipUncommitedS3)
 		res, err := disttae.HandleShardingReadBuildReader(
@@ -1327,7 +1326,7 @@ func Test_SimpleReader(t *testing.T) {
 	require.NoError(t, err)
 	defer w.Free(mp)
 	w.StashBatch(proc, bat1)
-	_, stats, err := w.SortAndSync(proc)
+	_, stats, err := w.SortAndSync(proc.Ctx, proc)
 	require.NoError(t, err)
 	require.Equal(t, uint32(20), stats.Rows())
 	t.Logf("stats: %s", stats.String())

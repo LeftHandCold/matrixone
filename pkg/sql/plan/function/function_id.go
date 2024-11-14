@@ -327,8 +327,7 @@ const (
 	MO_TABLE_COL_MAX // table column max value
 	MO_TABLE_COL_MIN // table column min value
 
-	MO_LOG_DATE // parse date from string, like __mo_filepath
-	MO_CHECH_LEVEL
+	MO_LOG_DATE   // parse date from string, like __mo_filepath
 	PURGE_LOG     // purge mo internal log, like rawlog, statement_info, metric
 	MO_ADMIN_NAME // get mo admin name of account
 	MO_CU
@@ -392,6 +391,10 @@ const (
 	BITMAP_COUNT
 	BITMAP_CONSTRUCT_AGG
 	BITMAP_OR_AGG
+
+	// fulltext function
+	FULLTEXT_MATCH
+	FULLTEXT_MATCH_SCORE
 
 	// FUNCTION_END_NUMBER is not a function, just a flag to record the max number of function.
 	// TODO: every one should put the new function id in front of this one if you want to make a new function.
@@ -658,7 +661,6 @@ var functionIdRegister = map[string]int32{
 	"trim":                           TRIM,
 	"sha2":                           SHA2,
 	"mo_log_date":                    MO_LOG_DATE,
-	"mo_check_level":                 MO_CHECH_LEVEL,
 	"purge_log":                      PURGE_LOG,
 	"mo_admin_name":                  MO_ADMIN_NAME,
 	"mo_cu":                          MO_CU,
@@ -715,4 +717,8 @@ var functionIdRegister = map[string]int32{
 	"bitmap_count":         BITMAP_COUNT,
 	"bitmap_construct_agg": BITMAP_CONSTRUCT_AGG,
 	"bitmap_or_agg":        BITMAP_OR_AGG,
+
+	// match function
+	"fulltext_match":       FULLTEXT_MATCH,
+	"fulltext_match_score": FULLTEXT_MATCH_SCORE,
 }

@@ -242,7 +242,7 @@ type connector struct {
 
 func newConnector(c *PushClient, e *Engine) *connector {
 	co := &connector{
-		signal: make(chan struct{}),
+		signal: make(chan struct{}, 10),
 		client: c,
 		engine: e,
 	}
@@ -545,7 +545,7 @@ func (c *PushClient) resume() {
 }
 
 func (c *PushClient) receiveOneLogtail(ctx context.Context, e *Engine) error {
-	ctx, cancel := context.WithTimeout(ctx, maxTimeToWaitServerResponse)
+	ctx, cancel := context.WithTimeoutCause(ctx, maxTimeToWaitServerResponse, moerr.CauseReceiveOneLogtail)
 	defer cancel()
 
 	// Client receives one logtail counter.
@@ -553,6 +553,7 @@ func (c *PushClient) receiveOneLogtail(ctx context.Context, e *Engine) error {
 
 	resp := c.subscriber.receiveResponse(ctx)
 	if resp.err != nil {
+		resp.err = moerr.AttachCause(ctx, resp.err)
 		// POSSIBLE ERROR: context deadline exceeded, rpc closed, decode error.
 		logutil.Errorf("%s receive an error from log tail client, err: %s", logTag, resp.err)
 		return resp.err
@@ -563,6 +564,7 @@ func (c *PushClient) receiveOneLogtail(ctx context.Context, e *Engine) error {
 	if res := resp.response.GetSubscribeResponse(); res != nil { // consume subscribe response
 		v2.LogtailSubscribeReceivedCounter.Inc()
 		if err := dispatchSubscribeResponse(ctx, e, res, c.receiver, receiveAt); err != nil {
+			err = moerr.AttachCause(ctx, err)
 			logutil.Errorf("%s dispatch subscribe response failed, err: %s", logTag, err)
 			return err
 		}
@@ -574,6 +576,7 @@ func (c *PushClient) receiveOneLogtail(ctx context.Context, e *Engine) error {
 		}
 
 		if err := dispatchUpdateResponse(ctx, e, res, c.receiver, receiveAt); err != nil {
+			err = moerr.AttachCause(ctx, err)
 			logutil.Errorf("%s dispatch update response failed, err: %s", logTag, err)
 			return err
 		}
@@ -581,6 +584,7 @@ func (c *PushClient) receiveOneLogtail(ctx context.Context, e *Engine) error {
 		v2.LogtailUnsubscribeReceivedCounter.Inc()
 
 		if err := dispatchUnSubscribeResponse(ctx, e, unResponse, c.receiver, receiveAt); err != nil {
+			err = moerr.AttachCause(ctx, err)
 			logutil.Errorf("%s dispatch unsubscribe response failed, err: %s", logTag, err)
 			return err
 		}
@@ -633,11 +637,15 @@ func (c *PushClient) sendConnectSig() {
 		return
 	}
 
-	select {
-	case c.connector.signal <- struct{}{}:
-		logutil.Infof("%s reconnect signal is received", logTag)
-	default:
-		logutil.Infof("%s connecting is in progress", logTag)
+	for {
+		select {
+		case c.connector.signal <- struct{}{}:
+			logutil.Infof("%s reconnect signal is received", logTag)
+			return
+		default:
+			logutil.Infof("%s reconnect chan is full", logTag)
+			time.Sleep(time.Second)
+		}
 	}
 }
 
@@ -701,7 +709,7 @@ func (c *PushClient) replayCatalogCache(ctx context.Context, e *Engine) (err err
 	}
 	defer func() {
 		//same timeout value as it in frontend
-		ctx2, cancel := context.WithTimeout(ctx, e.Hints().CommitOrRollbackTimeout)
+		ctx2, cancel := context.WithTimeoutCause(ctx, e.Hints().CommitOrRollbackTimeout, moerr.CauseReplayCatalogCache)
 		defer cancel()
 		if err != nil {
 			_ = op.Rollback(ctx2)
@@ -943,6 +951,10 @@ func (c *PushClient) unusedTableGCTicker(ctx context.Context) {
 						// never unsubscribe the mo_databases, mo_tables, mo_columns.
 						continue
 					}
+					if !c.eng.safeToUnsubscribe(k) {
+						logutil.Infof("%s table [%d-%d] is not safe to unsubscribe", logTag, v.DBID, k)
+						continue
+					}
 					if !v.LatestTime.After(shouldClean) {
 						if v.SubState != Subscribed {
 							continue
@@ -1003,7 +1015,6 @@ func (c *PushClient) partitionStateGCTicker(ctx context.Context, e *Engine) {
 			logutil.Infof("%s GC partition_state %v", logTag, ts.ToString())
 			for ids, part := range parts {
 				part.Truncate(ctx, ids, ts)
-				part.UpdateStart(ts)
 			}
 			e.catalog.GC(ts.ToTimestamp())
 		}
@@ -1439,11 +1450,13 @@ func (s *logTailSubscriber) subscribeTable(
 	ctx context.Context, tblId api.TableID) error {
 	// set a default deadline for ctx if it doesn't have.
 	if _, ok := ctx.Deadline(); !ok {
-		newCtx, cancel := context.WithTimeout(ctx, defaultRequestDeadline)
+		newCtx, cancel := context.WithTimeoutCause(ctx, defaultRequestDeadline, moerr.CauseSubscribeTable)
 		_ = cancel
-		return s.logTailClient.Subscribe(newCtx, tblId)
+		err := s.logTailClient.Subscribe(newCtx, tblId)
+		return moerr.AttachCause(ctx, err)
 	}
-	return s.logTailClient.Subscribe(ctx, tblId)
+	err := s.logTailClient.Subscribe(ctx, tblId)
+	return moerr.AttachCause(ctx, err)
 }
 
 // can't call this method directly.
@@ -1451,11 +1464,13 @@ func (s *logTailSubscriber) unSubscribeTable(
 	ctx context.Context, tblId api.TableID) error {
 	// set a default deadline for ctx if it doesn't have.
 	if _, ok := ctx.Deadline(); !ok {
-		newCtx, cancel := context.WithTimeout(ctx, defaultRequestDeadline)
+		newCtx, cancel := context.WithTimeoutCause(ctx, defaultRequestDeadline, moerr.CauseUnSubscribeTable)
 		_ = cancel
-		return s.logTailClient.Unsubscribe(newCtx, tblId)
+		err := s.logTailClient.Unsubscribe(newCtx, tblId)
+		return moerr.AttachCause(ctx, err)
 	}
-	return s.logTailClient.Unsubscribe(ctx, tblId)
+	err := s.logTailClient.Unsubscribe(ctx, tblId)
+	return moerr.AttachCause(ctx, err)
 }
 
 func (s *logTailSubscriber) receiveResponse(deadlineCtx context.Context) logTailSubscriberResponse {
@@ -1576,12 +1591,6 @@ func dispatchSubscribeResponse(
 
 		if err := e.consumeSubscribeResponse(ctx, response, false, receiveAt); err != nil {
 			return err
-		}
-		if len(lt.CkpLocation) == 0 {
-			p := e.GetOrCreateLatestPart(tbl.DbId, tbl.TbId)
-			p.UpdateDuration(types.TS{}, types.MaxTs())
-			c := e.GetLatestCatalogCache()
-			c.UpdateDuration(types.TS{}, types.MaxTs())
 		}
 		e.pClient.subscribed.setTableSubscribed(tbl.DbId, tbl.TbId)
 	} else {
@@ -1890,10 +1899,6 @@ func updatePartitionOfPush(
 		if len(tl.CkpLocation) > 0 {
 			t0 = time.Now()
 			ckpStart, ckpEnd = parseCkpDuration(tl)
-			if !ckpStart.IsEmpty() || !ckpEnd.IsEmpty() {
-				state.CacheCkpDuration(ckpStart, ckpEnd, partition)
-			}
-			state.AppendCheckpoint(tl.CkpLocation, partition)
 			v2.LogtailUpdatePartitonHandleCheckpointDurationHistogram.Observe(time.Since(t0).Seconds())
 		}
 
@@ -1926,15 +1931,26 @@ func updatePartitionOfPush(
 	}
 
 	//After consume checkpoints finished ,then update the start and end of
-	//the mo system table's partition and catalog.
-	if !lazyLoad && len(tl.CkpLocation) != 0 {
-		if !ckpStart.IsEmpty() || !ckpEnd.IsEmpty() {
-			t0 = time.Now()
-			partition.UpdateDuration(ckpStart, types.MaxTs())
-			//Notice that the checkpoint duration is same among all mo system tables,
-			//such as mo_databases, mo_tables, mo_columns.
-			e.GetLatestCatalogCache().UpdateDuration(ckpStart, types.MaxTs())
-			v2.LogtailUpdatePartitonUpdateTimestampsDurationHistogram.Observe(time.Since(t0).Seconds())
+	//the table's partition and catalog cache.
+	if isSub {
+		if len(tl.CkpLocation) != 0 {
+			if !ckpStart.IsEmpty() || !ckpEnd.IsEmpty() {
+				t0 = time.Now()
+				state.UpdateDuration(ckpStart, types.MaxTs())
+				if lazyLoad {
+					state.AppendCheckpoint(tl.CkpLocation, partition)
+				} else {
+					//Notice that the checkpoint duration is same among all mo system tables,
+					//such as mo_databases, mo_tables, mo_columns.
+					e.GetLatestCatalogCache().UpdateDuration(ckpStart, types.MaxTs())
+				}
+				v2.LogtailUpdatePartitonUpdateTimestampsDurationHistogram.Observe(time.Since(t0).Seconds())
+			}
+		} else {
+			state.UpdateDuration(types.TS{}, types.MaxTs())
+			if !lazyLoad {
+				e.GetLatestCatalogCache().UpdateDuration(types.TS{}, types.MaxTs())
+			}
 		}
 	}
 
@@ -2005,8 +2021,8 @@ func consumeCkpsAndLogTail(
 		ctx,
 		engine.service,
 		lt.CkpLocation,
-		tableId, "",
-		databaseId, "", engine.mp, engine.fs); err != nil {
+		tableId, lt.Table.TbName,
+		databaseId, lt.Table.DbName, engine.mp, engine.fs); err != nil {
 		return
 	}
 	defer func() {

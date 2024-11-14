@@ -166,7 +166,7 @@ func (s *serverConn) RawConn() net.Conn {
 func (s *serverConn) HandleHandshake(
 	handshakeResp *frontend.Packet, timeout time.Duration,
 ) (*frontend.Packet, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeoutCause(context.Background(), timeout, moerr.CauseHandleHandshake)
 	defer cancel()
 
 	var r *frontend.Packet
@@ -190,7 +190,7 @@ func (s *serverConn) HandleHandshake(
 		logutil.Errorf("handshake to cn %s timeout %v, conn ID: %d",
 			s.cnServer.addr, timeout, s.connID)
 		// Return a retryable error.
-		return nil, newConnectErr(context.DeadlineExceeded)
+		return nil, newConnectErr(moerr.AttachCause(ctx, context.DeadlineExceeded))
 	}
 }
 
@@ -247,9 +247,7 @@ func (s *serverConn) CreateTime() time.Time {
 
 func (s *serverConn) Quit() error {
 	defer func() {
-		// Disconnect from the connection manager, also, close the
-		// raw TCP connection.
-		_ = s.RawConn().Close()
+		_ = s.Close()
 	}()
 	_, err := s.ExecStmt(internalStmt{
 		cmdType: cmdQuit,
@@ -271,8 +269,10 @@ func (s *serverConn) Close() error {
 			s.mysqlProto.Close()
 		}
 	})
-	// Un-track the connection.
-	s.rebalancer.connManager.disconnect(s.cnServer, s.tun)
+	if s.rebalancer != nil {
+		// Un-track the connection.
+		s.rebalancer.connManager.disconnect(s.cnServer, s.tun)
+	}
 	return nil
 }
 

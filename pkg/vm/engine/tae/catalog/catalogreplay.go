@@ -215,7 +215,8 @@ func (catalog *Catalog) RelayFromSysTableObjects(
 	readTxn txnif.AsyncTxn,
 	dataFactory DataFactory,
 	readFunc func(context.Context, *TableEntry, txnif.AsyncTxn) *containers.Batch,
-	sortFunc func([]containers.Vector, int) error) {
+	sortFunc func([]containers.Vector, int) error,
+) {
 	db, err := catalog.GetDatabaseByID(pkgcatalog.MO_CATALOG_ID)
 	if err != nil {
 		panic(err)
@@ -232,10 +233,29 @@ func (catalog *Catalog) RelayFromSysTableObjects(
 	if err != nil {
 		panic(err)
 	}
+
+	////  Note: do not use ckp-end as txnNode
+	// Running
+	// ------+------+---------+----+-----------+-> time
+	//       |      |         |    |           |
+	//  create-db-s |         |  ckp-end     drop-db-c
+	//         create-db-c  drop-db-s
+	//
+	// Replay
+	// -----------------------+----+-----------+-> time
+	//                        |    |           |
+	//                  drop-db-s  |          drop-db-c
+	//                             ckp-end
+	//                             create-db-s
+	//                             create-db-c
+	// create-db entry was replayed from checkpoint and drop-db entry was replayed from WAL
+	// If ckp-end was used, the create-db and drop-db are disordered, leading to ExpectedDup error
+
+	panguEpoch := types.BuildTS(42424242, 0)
 	txnNode := &txnbase.TxnMVCCNode{
-		Start:   readTxn.GetStartTS(),
-		Prepare: readTxn.GetStartTS(),
-		End:     readTxn.GetStartTS(),
+		Start:   panguEpoch,
+		Prepare: panguEpoch,
+		End:     panguEpoch,
 	}
 
 	// replay database catalog
@@ -246,12 +266,12 @@ func (catalog *Catalog) RelayFromSysTableObjects(
 
 	// replay table catalog
 	if tableBatch := readFunc(ctx, tableTbl, readTxn); tableBatch != nil {
-		if err := sortFunc(tableBatch.Vecs, 0); err != nil {
+		if err := sortFunc(tableBatch.Vecs, pkgcatalog.MO_TABLES_REL_ID_IDX); err != nil {
 			panic(err)
 		}
 		defer tableBatch.Close()
 		columnBatch := readFunc(ctx, columnTbl, readTxn)
-		if err := sortFunc(columnBatch.Vecs, 0); err != nil {
+		if err := sortFunc(columnBatch.Vecs, pkgcatalog.MO_COLUMNS_ATT_RELNAME_ID_IDX); err != nil {
 			panic(err)
 		}
 		defer columnBatch.Close()
@@ -387,7 +407,8 @@ func (catalog *Catalog) OnReplayCreateTable(dbid, tid uint64, schema *Schema, tx
 			},
 			TxnMVCCNode: txnNode,
 			BaseNode: &TableMVCCNode{
-				Schema: schema,
+				Schema:          schema,
+				TombstoneSchema: GetTombstoneSchema(schema),
 			},
 		}
 		tbl.InsertLocked(un)
@@ -419,7 +440,8 @@ func (catalog *Catalog) OnReplayCreateTable(dbid, tid uint64, schema *Schema, tx
 		},
 		TxnMVCCNode: txnNode,
 		BaseNode: &TableMVCCNode{
-			Schema: schema,
+			Schema:          schema,
+			TombstoneSchema: GetTombstoneSchema(schema),
 		},
 	}
 	tbl.InsertLocked(un)

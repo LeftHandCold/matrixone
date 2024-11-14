@@ -21,6 +21,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
@@ -85,29 +86,40 @@ func (r *runner) CleanPenddingCheckpoint() {
 	}
 }
 
-func (r *runner) ForceGlobalCheckpoint(end types.TS, versionInterval time.Duration) error {
-	if versionInterval == 0 {
-		versionInterval = r.options.globalVersionInterval
+func (r *runner) ForceGlobalCheckpoint(end types.TS, interval time.Duration) error {
+	if interval == 0 {
+		interval = r.options.globalVersionInterval
 	}
 	if r.GetPenddingIncrementalCount() != 0 {
 		end = r.MaxIncrementalCheckpoint().GetEnd()
 		r.globalCheckpointQueue.Enqueue(&globalCheckpointContext{
 			force:    true,
 			end:      end,
-			interval: versionInterval,
+			interval: interval,
 		})
 		return nil
 	}
-	timeout := time.After(versionInterval)
+	retryTime := 0
+	timeout := time.After(interval)
+	var err error
+	defer func() {
+		if err != nil || retryTime > 0 {
+			logutil.Error("ForceGlobalCheckpoint-End",
+				zap.Error(err),
+				zap.Uint64("retryTime", uint64(retryTime)))
+			return
+		}
+	}()
 	for {
 		select {
 		case <-timeout:
 			return moerr.NewInternalError(r.ctx, "timeout")
 		default:
-			err := r.ForceIncrementalCheckpoint(end, false)
+			err = r.ForceIncrementalCheckpoint(end, false)
 			if err != nil {
 				if dbutils.IsRetrieableCheckpoint(err) {
-					interval := versionInterval.Milliseconds() / 400
+					retryTime++
+					interval := interval.Milliseconds() / 400
 					time.Sleep(time.Duration(interval))
 					break
 				}
@@ -116,7 +128,7 @@ func (r *runner) ForceGlobalCheckpoint(end types.TS, versionInterval time.Durati
 			r.globalCheckpointQueue.Enqueue(&globalCheckpointContext{
 				force:    true,
 				end:      end,
-				interval: versionInterval,
+				interval: interval,
 			})
 			return nil
 		}
@@ -125,7 +137,9 @@ func (r *runner) ForceGlobalCheckpoint(end types.TS, versionInterval time.Durati
 
 func (r *runner) ForceGlobalCheckpointSynchronously(ctx context.Context, end types.TS, versionInterval time.Duration) error {
 	prevGlobalEnd := types.TS{}
+	r.storage.RLock()
 	global, _ := r.storage.globals.Max()
+	r.storage.RUnlock()
 	if global != nil {
 		prevGlobalEnd = global.end
 	}
@@ -186,7 +200,7 @@ func (r *runner) ForceFlushWithInterval(ts types.TS, ctx context.Context, forceD
 	if err != nil {
 		return moerr.NewInternalErrorf(ctx, "force flush failed: %v", err)
 	}
-	_, sarg, _ := fault.TriggerFault("tae: flush timeout")
+	_, sarg, _ := fault.TriggerFault(objectio.FJ_FlushTimeout)
 	if sarg != "" {
 		err = moerr.NewInternalError(ctx, sarg)
 	}
@@ -302,6 +316,10 @@ func (r *runner) ForceCheckpointForBackup(end types.TS) (location string, err er
 	prev := r.MaxIncrementalCheckpoint()
 	if prev != nil && !prev.IsFinished() {
 		return "", moerr.NewInternalError(r.ctx, "prev checkpoint not finished")
+	}
+	// ut causes all Ickp to be gc too fast, leaving a Gckp
+	if prev == nil {
+		prev = r.MaxGlobalCheckpoint()
 	}
 	start := types.TS{}
 	if prev != nil {

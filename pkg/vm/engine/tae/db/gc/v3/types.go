@@ -37,7 +37,6 @@ const (
 )
 
 type BatchType int8
-type CleanerState int8
 
 const CurrentVersion = uint16(3)
 
@@ -53,11 +52,6 @@ const (
 	DropDB
 	DeleteFile
 	Tombstone
-)
-
-const (
-	Idle CleanerState = iota
-	Running
 )
 
 const (
@@ -164,6 +158,9 @@ type Cleaner interface {
 	GCEnabled() bool
 	GetMPool() *mpool.MPool
 	GetSnapshots() (map[uint32]containers.Vector, error)
+
+	// For testing
+	GetTablePK(tableId uint64) string
 }
 
 var ObjectTableAttrs []string

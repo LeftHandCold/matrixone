@@ -31,6 +31,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+	"github.com/matrixorigin/matrixone/pkg/perfcounter"
 	"github.com/matrixorigin/matrixone/pkg/sql/compile"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/dialect/mysql"
@@ -45,6 +46,15 @@ import (
 
 type backExec struct {
 	backSes *backSession
+	inUse   bool
+}
+
+func (back *backExec) init(ses FeSession, txnOp TxnOperator, db string, callBack outputCallBackFunc) {
+	if back.backSes == nil {
+		back.backSes = newBackSession(ses, txnOp, db, callBack)
+	} else {
+		back.backSes.reInit(ses, txnOp, db, callBack)
+	}
 }
 
 func (back *backExec) Service() string {
@@ -52,21 +62,14 @@ func (back *backExec) Service() string {
 }
 
 func (back *backExec) Close() {
-	tempExecCtx := ExecCtx{
-		ses:    back.backSes,
-		txnOpt: FeTxnOption{byRollback: true},
+	if back == nil {
+		return
 	}
-	defer tempExecCtx.Close()
-	err := back.backSes.GetTxnHandler().Rollback(&tempExecCtx)
-	if err != nil {
-		back.backSes.Error(tempExecCtx.reqCtx,
-			"Failed to rollback txn in back session",
-			zap.Error(err))
-	}
+	defer func() {
+		back.inUse = false
+	}()
 	back.Clear()
 	back.backSes.Close()
-	back.backSes.Clear()
-	back.backSes = nil
 }
 
 func (back *backExec) Exec(ctx context.Context, sql string) error {
@@ -75,6 +78,7 @@ func (back *backExec) Exec(ctx context.Context, sql string) error {
 	if ctx == nil {
 		return moerr.NewInternalError(context.Background(), "context is nil")
 	}
+	ctx = perfcounter.AttachInternalExecutorKey(ctx)
 
 	_, err := defines.GetAccountId(ctx)
 	if err != nil {
@@ -137,6 +141,9 @@ func (back *backExec) ExecRestore(ctx context.Context, sql string, opAccount uin
 	if ctx == nil {
 		return moerr.NewInternalError(context.Background(), "context is nil")
 	}
+
+	ctx = perfcounter.AttachInternalExecutorKey(ctx)
+
 	_, err := defines.GetAccountId(ctx)
 	if err != nil {
 		return err
@@ -187,6 +194,9 @@ func (back *backExec) ExecRestore(ctx context.Context, sql string, opAccount uin
 }
 
 func (back *backExec) ExecStmt(ctx context.Context, statement tree.Statement) error {
+	if ctx == nil {
+		return moerr.NewInternalError(context.Background(), "context is nil")
+	}
 	return nil
 }
 
@@ -217,6 +227,9 @@ func (back *backExec) ClearExecResultBatches() {
 }
 
 func (back *backExec) Clear() {
+	if back == nil {
+		return
+	}
 	back.backSes.Clear()
 }
 
@@ -499,31 +512,23 @@ var NewBackgroundExec = func(
 	reqCtx context.Context,
 	upstream FeSession,
 ) BackgroundExec {
-	backSes := newBackSession(upstream, nil, "", fakeDataSetFetcher2)
-	if up, ok := upstream.(*Session); ok {
-		backSes.upstream = up
-	}
-	bh := &backExec{
-		backSes: backSes,
-	}
+	return upstream.InitBackExec(nil, "", fakeDataSetFetcher2)
+}
 
-	return bh
+var NewShareTxnBackgroundExec = func(ctx context.Context, ses FeSession, rawBatch bool) BackgroundExec {
+	return ses.GetShareTxnBackgroundExec(ctx, rawBatch)
 }
 
 // ExeSqlInBgSes for mock stub
-var ExeSqlInBgSes = func(reqCtx context.Context, upstream *Session, sql string) ([]ExecResult, error) {
-	return executeSQLInBackgroundSession(reqCtx, upstream, sql)
+var ExeSqlInBgSes = func(reqCtx context.Context, bh BackgroundExec, sql string) ([]ExecResult, error) {
+	return executeSQLInBackgroundSession(reqCtx, bh, sql)
 }
 
 // executeSQLInBackgroundSession executes the sql in an independent session and transaction.
 // It sends nothing to the client.
-func executeSQLInBackgroundSession(reqCtx context.Context, upstream *Session, sql string) ([]ExecResult, error) {
-	bh := NewBackgroundExec(reqCtx, upstream)
-	defer bh.Close()
-
-	upstream.Debugf(reqCtx, "background exec sql:%v", sql)
+func executeSQLInBackgroundSession(reqCtx context.Context, bh BackgroundExec, sql string) ([]ExecResult, error) {
+	bh.ClearExecResultSet()
 	err := bh.Exec(reqCtx, sql)
-	upstream.Debug(reqCtx, "background exec sql done")
 	if err != nil {
 		return nil, err
 	}
@@ -588,7 +593,7 @@ func executeStmtInSameSession(ctx context.Context, ses *Session, execCtx *ExecCt
 
 // fakeDataSetFetcher2 gets the result set from the pipeline and save it in the session.
 // It will not send the result to the client.
-func fakeDataSetFetcher2(handle FeSession, execCtx *ExecCtx, dataSet *batch.Batch) error {
+func fakeDataSetFetcher2(handle FeSession, execCtx *ExecCtx, dataSet *batch.Batch, _ *perfcounter.CounterSet) error {
 	if handle == nil || dataSet == nil {
 		return nil
 	}
@@ -617,7 +622,7 @@ func fillResultSet(ctx context.Context, dataSet *batch.Batch, ses FeSession, mrs
 
 // batchFetcher2 gets the result batches from the pipeline and save the origin batches in the session.
 // It will not send the result to the client.
-func batchFetcher2(handle FeSession, _ *ExecCtx, dataSet *batch.Batch) error {
+func batchFetcher2(handle FeSession, _ *ExecCtx, dataSet *batch.Batch, _ *perfcounter.CounterSet) error {
 	if handle == nil {
 		return nil
 	}
@@ -631,7 +636,7 @@ func batchFetcher2(handle FeSession, _ *ExecCtx, dataSet *batch.Batch) error {
 
 // batchFetcher gets the result batches from the pipeline and save the origin batches in the session.
 // It will not send the result to the client.
-func batchFetcher(handle FeSession, _ *ExecCtx, dataSet *batch.Batch) error {
+func batchFetcher(handle FeSession, _ *ExecCtx, dataSet *batch.Batch, _ *perfcounter.CounterSet) error {
 	if handle == nil {
 		return nil
 	}
@@ -659,32 +664,68 @@ func getResultSet(ctx context.Context, bh BackgroundExec) ([]ExecResult, error) 
 
 type backSession struct {
 	feSessionImpl
+	txnOpReused            TxnOperator
+	shareTxnBackExecReused *backExec
 }
 
 func newBackSession(ses FeSession, txnOp TxnOperator, db string, callBack outputCallBackFunc) *backSession {
 	service := ses.GetService()
 	txnHandler := InitTxnHandler(ses.GetService(), getPu(service).StorageEngine, ses.GetTxnHandler().GetConnCtx(), txnOp)
-	backSes := &backSession{
-		feSessionImpl: feSessionImpl{
-			pool:           ses.GetMemPool(),
-			buf:            buffer.New(),
-			stmtProfile:    process.StmtProfile{},
-			tenant:         nil,
-			txnHandler:     txnHandler,
-			txnCompileCtx:  InitTxnCompilerContext(db),
-			mrs:            nil,
-			outputCallback: callBack,
-			allResultSet:   nil,
-			resultBatches:  nil,
-			derivedStmt:    false,
-			label:          make(map[string]string),
-			timeZone:       time.Local,
-			respr:          defResper,
-			service:        service,
-		},
-	}
+	backSes := &backSession{}
+	backSes.initFeSes(ses, txnHandler, db, callBack)
 	backSes.uuid, _ = uuid.NewV7()
 	return backSes
+}
+
+func (backSes *backSession) reInit(ses FeSession, txnOp TxnOperator, db string, callBack outputCallBackFunc) *backSession {
+	service := ses.GetService()
+	var txnHandler *TxnHandler
+	if txnOp != nil {
+		txnHandler = InitTxnHandler(ses.GetService(), getPu(service).StorageEngine, ses.GetTxnHandler().GetConnCtx(), txnOp)
+	} else {
+		txnHandler = InitTxnHandler(ses.GetService(), getPu(service).StorageEngine, ses.GetTxnHandler().GetConnCtx(), nil)
+		txnHandler.txnOp = backSes.txnOpReused
+	}
+	backSes.initFeSes(ses, txnHandler, db, callBack)
+	return backSes
+}
+
+func (backSes *backSession) initFeSes(
+	ses FeSession,
+	txnHandler *TxnHandler,
+	db string,
+	callBack outputCallBackFunc) *backSession {
+	backSes.pool = ses.GetMemPool()
+	backSes.buf = buffer.New()
+	backSes.stmtProfile = process.StmtProfile{}
+	backSes.tenant = nil
+	backSes.txnHandler = txnHandler
+	backSes.txnCompileCtx = InitTxnCompilerContext(db)
+	backSes.mrs = nil
+	backSes.outputCallback = callBack
+	backSes.allResultSet = nil
+	backSes.resultBatches = nil
+	backSes.derivedStmt = false
+	backSes.label = make(map[string]string)
+	backSes.timeZone = time.Local
+	backSes.respr = defResper
+	backSes.service = ses.GetService()
+	return backSes
+}
+
+func (backSes *backSession) InitBackExec(txnOp TxnOperator, db string, callBack outputCallBackFunc) BackgroundExec {
+	if txnOp != nil {
+		if backSes.shareTxnBackExecReused == nil {
+			backSes.shareTxnBackExecReused = &backExec{}
+		} else if backSes.shareTxnBackExecReused.inUse {
+			panic("backSession.ShareTxnBackExec already in use")
+		}
+		backSes.shareTxnBackExecReused.init(backSes, txnOp, db, callBack)
+		backSes.shareTxnBackExecReused.inUse = true
+		return backSes.shareTxnBackExecReused
+	} else {
+		panic("backSession does not support non-txn-shared backExec recursively")
+	}
 }
 
 func (backSes *backSession) getCachedPlan(sql string) *cachedPlan {
@@ -692,17 +733,54 @@ func (backSes *backSession) getCachedPlan(sql string) *cachedPlan {
 }
 
 func (backSes *backSession) Close() {
-	backSes.feSessionImpl.Close()
+	if backSes == nil {
+		return
+	}
+	txnHandler := backSes.GetTxnHandler()
+	if txnHandler != nil {
+		tempExecCtx := ExecCtx{
+			ses:    backSes,
+			txnOpt: FeTxnOption{byRollback: true},
+		}
+		defer tempExecCtx.Close()
+		err := txnHandler.Rollback(&tempExecCtx)
+		if err != nil {
+			backSes.Error(tempExecCtx.reqCtx,
+				"Failed to rollback txn in back session",
+				zap.Error(err))
+		}
+
+		//record txnOp
+		if backSes.txnOpReused == nil &&
+			!txnHandler.IsShareTxn() {
+			txnOp := txnHandler.GetTxn()
+			if txnOp != nil {
+				backSes.txnOpReused = txnOp
+			}
+		}
+	}
+
+	//if the txn is not shared outside, we clean feSessionImpl.
+	//reset else
+	if txnHandler == nil || !txnHandler.IsShareTxn() {
+		backSes.feSessionImpl.Close()
+	} else {
+		backSes.feSessionImpl.Reset()
+	}
 	backSes.upstream = nil
+	backSes.shareTxnBackExecReused.Close()
 }
 
 func (backSes *backSession) Clear() {
+	if backSes == nil {
+		return
+	}
 	backSes.feSessionImpl.Clear()
 }
 
-func (backSes *backSession) GetOutputCallback(execCtx *ExecCtx) func(*batch.Batch) error {
-	return func(bat *batch.Batch) error {
-		return backSes.outputCallback(backSes, execCtx, bat)
+func (backSes *backSession) GetOutputCallback(execCtx *ExecCtx) func(*batch.Batch, *perfcounter.CounterSet) error {
+	return func(bat *batch.Batch, crs *perfcounter.CounterSet) error {
+		return backSes.outputCallback(backSes, execCtx, bat, crs)
 	}
 }
 
@@ -713,7 +791,7 @@ func (backSes *backSession) SendRows() int64 {
 	return 0
 }
 
-func (backSes *backSession) GetConfig(ctx context.Context, dbName, varName string) (any, error) {
+func (backSes *backSession) GetConfig(ctx context.Context, varName, dbName, tblName string) (any, error) {
 	return nil, moerr.NewInternalError(ctx, "do not support get config in background exec")
 }
 
@@ -863,13 +941,10 @@ func (backSes *backSession) GetShareTxnBackgroundExec(ctx context.Context, newRa
 		txnOp = backSes.GetTxnHandler().GetTxn()
 	}
 
-	newBackSes := newBackSession(backSes, txnOp, "", fakeDataSetFetcher2)
-	bh := &backExec{
-		backSes: newBackSes,
-	}
+	backSes.InitBackExec(txnOp, "", fakeDataSetFetcher2)
 	//the derived statement execute in a shared transaction in background session
-	bh.backSes.ReplaceDerivedStmt(true)
-	return bh
+	backSes.shareTxnBackExecReused.backSes.ReplaceDerivedStmt(true)
+	return backSes.shareTxnBackExecReused
 }
 
 func (backSes *backSession) GetUserDefinedVar(name string) (*UserDefinedVar, error) {

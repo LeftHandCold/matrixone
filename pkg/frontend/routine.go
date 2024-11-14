@@ -34,12 +34,16 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 )
 
+type holder struct {
+	proto MysqlRrWr
+}
+
 // Routine handles requests.
 // Read requests from the IOSession layer,
 // use the executor to handle requests, and response them.
 type Routine struct {
 	//protocol layer
-	protocol MysqlRrWr
+	protocol atomic.Pointer[holder]
 
 	cancelRoutineCtx  context.Context
 	cancelRoutineFunc context.CancelFunc
@@ -64,6 +68,8 @@ type Routine struct {
 
 	restricted atomic.Bool
 
+	expired atomic.Bool
+
 	printInfoOnce bool
 
 	mc *migrateController
@@ -83,6 +89,14 @@ func (rt *Routine) setResricted(val bool) {
 
 func (rt *Routine) isRestricted() bool {
 	return rt.restricted.Load()
+}
+
+func (rt *Routine) setExpired(val bool) {
+	rt.expired.Store(val)
+}
+
+func (rt *Routine) isExpired() bool {
+	return rt.expired.Load()
 }
 
 func (rt *Routine) increaseCount(counter func()) {
@@ -143,9 +157,7 @@ func (rt *Routine) getCancelRoutineCtx() context.Context {
 }
 
 func (rt *Routine) getProtocol() MysqlRrWr {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	return rt.protocol
+	return rt.protocol.Load().proto
 }
 
 func (rt *Routine) getConnectionID() uint32 {
@@ -261,12 +273,10 @@ func (rt *Routine) handleRequest(req *Request) error {
 
 	parameters := rt.getParameters()
 	//all offspring related to the request inherit the txnCtx
-	cancelRequestCtx, cancelRequestFunc := context.WithTimeout(ses.GetTxnHandler().GetTxnCtx(), parameters.SessionTimeout.Duration)
+	cancelRequestCtx, cancelRequestFunc := context.WithTimeoutCause(ses.GetTxnHandler().GetTxnCtx(), parameters.SessionTimeout.Duration, moerr.CauseHandleRequest)
 	rt.setCancelRequestFunc(cancelRequestFunc)
-	ses.ResetFPrints()
 	ses.EnterFPrint(FPHandleRequest)
 	defer ses.ExitFPrint(FPHandleRequest)
-	defer ses.ResetFPrints()
 
 	if rt.needPrintSessionInfo() {
 		ses.Info(routineCtx, "mo received first request")
@@ -285,6 +295,7 @@ func (rt *Routine) handleRequest(req *Request) error {
 
 	execCtx.reqCtx = tenantCtx
 	if resp, err = ExecRequest(ses, &execCtx, req); err != nil {
+		err = moerr.AttachCause(tenantCtx, err)
 		if !skipClientQuit(err.Error()) {
 			ses.Error(tenantCtx,
 				"Failed to execute request",
@@ -294,6 +305,7 @@ func (rt *Routine) handleRequest(req *Request) error {
 
 	if resp != nil {
 		if err = rt.getProtocol().WriteResponse(tenantCtx, resp); err != nil {
+			err = moerr.AttachCause(tenantCtx, err)
 			if resp.isIssue3482 {
 				ses.Error(tenantCtx,
 					"Failed to send response",
@@ -393,7 +405,7 @@ func (rt *Routine) killConnection(killMyself bool) {
 		//before closing the network to avoid the mysql client to be hung.
 		closeConn := func() {
 			//If it is not in processing the request, just close the network
-			proto := rt.protocol
+			proto := rt.getProtocol()
 			if proto != nil {
 				proto.Close()
 			}
@@ -440,8 +452,8 @@ func (rt *Routine) cleanup() {
 		rt.releaseRoutineCtx()
 
 		//step D: clean protocol
-		rt.protocol.Close()
-		rt.protocol = nil
+		rt.getProtocol().Close()
+		rt.protocol.Store(&holder{})
 
 		//step E: release the resources related to the session
 		if ses != nil {
@@ -501,11 +513,11 @@ func (rt *Routine) resetSession(baseServiceID string, resp *query.ResetSessionRe
 	rt.killQuery(false, "")
 
 	// reset the new session in other instances.
-	rt.protocol.Reset(newSession)
+	rt.getProtocol().Reset(newSession)
 	rt.setSession(newSession)
 
 	// update the password filed in response.
-	resp.AuthString = []byte(rt.protocol.GetStr(AuthString))
+	resp.AuthString = []byte(rt.getProtocol().GetStr(AuthString))
 
 	return nil
 }
@@ -514,7 +526,6 @@ func NewRoutine(ctx context.Context, protocol MysqlRrWr, parameters *config.Fron
 	ctx = trace.Generate(ctx) // fill span{trace_id} in ctx
 	cancelRoutineCtx, cancelRoutineFunc := context.WithCancel(ctx)
 	ri := &Routine{
-		protocol:          protocol,
 		cancelRoutineCtx:  cancelRoutineCtx,
 		cancelRoutineFunc: cancelRoutineFunc,
 		parameters:        parameters,
@@ -522,6 +533,7 @@ func NewRoutine(ctx context.Context, protocol MysqlRrWr, parameters *config.Fron
 		mc:                newMigrateController(),
 		goroutineID:       GetRoutineId(),
 	}
+	ri.protocol.Store(&holder{proto: protocol})
 	protocol.UpdateCtx(cancelRoutineCtx)
 
 	return ri

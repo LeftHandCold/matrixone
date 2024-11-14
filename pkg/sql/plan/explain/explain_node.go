@@ -21,12 +21,10 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/matrixorigin/matrixone/pkg/vm/message"
-
-	plan2 "github.com/matrixorigin/matrixone/pkg/sql/plan"
-
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+	plan2 "github.com/matrixorigin/matrixone/pkg/sql/plan"
+	"github.com/matrixorigin/matrixone/pkg/vm/message"
 )
 
 var _ NodeDescribe = &NodeDescribeImpl{}
@@ -144,8 +142,10 @@ func (ndesc *NodeDescribeImpl) GetNodeBasicInfo(ctx context.Context, options *Ex
 		pname = "Lock"
 	case plan.Node_APPLY:
 		pname = "CROSS APPLY"
-	//case plan.Node_MULTI_UPDATE:
-	//	pname = "Multi Update"
+	case plan.Node_MULTI_UPDATE:
+		pname = "Multi Update"
+	case plan.Node_POSTDML:
+		pname = "Post DML"
 	default:
 		panic("error node type")
 	}
@@ -211,6 +211,11 @@ func (ndesc *NodeDescribeImpl) GetNodeBasicInfo(ctx context.Context, options *Ex
 				buf.WriteString(ndesc.Node.ObjRef.GetSchemaName() + "." + ndesc.Node.ObjRef.GetObjName())
 			} else if ndesc.Node.TableDef != nil {
 				buf.WriteString(ndesc.Node.TableDef.GetName())
+			}
+		case plan.Node_POSTDML:
+			buf.WriteString(" on ")
+			if ndesc.Node.PostDmlCtx != nil && ndesc.Node.PostDmlCtx.Ref != nil {
+				buf.WriteString(ndesc.Node.PostDmlCtx.Ref.GetSchemaName() + "." + ndesc.Node.PostDmlCtx.Ref.GetObjName())
 			}
 		}
 	}
@@ -356,6 +361,14 @@ func (ndesc *NodeDescribeImpl) GetExtraInfo(ctx context.Context, options *Explai
 		lines = append(lines, windowSpecListInfo)
 	}
 
+	if len(ndesc.Node.InsertDeleteCols) > 0 {
+		colsInfo, err := ndesc.GetInsertDeleteColsInfo(ctx, options)
+		if err != nil {
+			return nil, err
+		}
+		lines = append(lines, colsInfo)
+	}
+
 	// Get Filter list info
 	if len(ndesc.Node.FilterList) > 0 {
 		filterInfo, err := ndesc.GetFilterConditionInfo(ctx, options)
@@ -442,6 +455,7 @@ func (ndesc *NodeDescribeImpl) GetExtraInfo(ctx context.Context, options *Explai
 			lines = append(lines, msgInfo)
 		}
 	}
+
 	return lines, nil
 }
 
@@ -487,24 +501,28 @@ func (ndesc *NodeDescribeImpl) GetJoinConditionInfo(ctx context.Context, options
 			hashCol = exprImpl.F.Args[0]
 		}
 
-		if shuffleType == plan.ShuffleType_Hash {
-			buf.WriteString(" shuffle: hash(")
-			err := describeExpr(ctx, hashCol, options, buf)
-			if err != nil {
-				return "", err
-			}
-			buf.WriteString(")")
+		if ndesc.Node.Stats.HashmapStats.ShuffleMethod == plan.ShuffleMethod_Reuse {
+			buf.WriteString(" shuffle: REUSE")
 		} else {
-			buf.WriteString(" shuffle: range(")
-			err := describeExpr(ctx, hashCol, options, buf)
-			if err != nil {
-				return "", err
+			if shuffleType == plan.ShuffleType_Hash {
+				buf.WriteString(" shuffle: hash(")
+				err := describeExpr(ctx, hashCol, options, buf)
+				if err != nil {
+					return "", err
+				}
+				buf.WriteString(")")
+			} else {
+				buf.WriteString(" shuffle: range(")
+				err := describeExpr(ctx, hashCol, options, buf)
+				if err != nil {
+					return "", err
+				}
+				buf.WriteString(")")
 			}
-			buf.WriteString(")")
-		}
 
-		if ndesc.Node.Stats.HashmapStats.ShuffleTypeForMultiCN == plan.ShuffleTypeForMultiCN_Hybrid {
-			buf.WriteString(" HYBRID ")
+			if ndesc.Node.Stats.HashmapStats.ShuffleTypeForMultiCN == plan.ShuffleTypeForMultiCN_Hybrid {
+				buf.WriteString(" HYBRID ")
+			}
 		}
 	}
 
@@ -533,6 +551,71 @@ func (ndesc *NodeDescribeImpl) GetPartitionPruneInfo(ctx context.Context, option
 		return "", moerr.NewNYI(ctx, "explain format dot")
 	}
 	return buf.String(), nil
+}
+
+func (ndesc *NodeDescribeImpl) GetInsertDeleteColsInfo(ctx context.Context, options *ExplainOptions) (string, error) {
+	buf := bytes.NewBuffer(make([]byte, 0, 512))
+	if ndesc.Node.NodeType == plan.Node_INSERT {
+		buf.WriteString("Insert Columns: ")
+	} else {
+		buf.WriteString("Delete Columns: ")
+	}
+	if options.Format == EXPLAIN_FORMAT_TEXT {
+		first := true
+		for _, v := range ndesc.Node.InsertDeleteCols {
+			if !first {
+				buf.WriteString(", ")
+			}
+			first = false
+			err := describeExpr(ctx, v, options, buf)
+			if err != nil {
+				return "", err
+			}
+		}
+	} else if options.Format == EXPLAIN_FORMAT_JSON {
+		return "", moerr.NewNYI(ctx, "explain format json")
+	} else if options.Format == EXPLAIN_FORMAT_DOT {
+		return "", moerr.NewNYI(ctx, "explain format dot")
+	}
+	return buf.String(), nil
+}
+
+func (ndesc *NodeDescribeImpl) GetUpdateCtxInfo(ctx context.Context, options *ExplainOptions) ([]string, error) {
+	var lines []string
+	if options.Format == EXPLAIN_FORMAT_TEXT {
+		for _, updateCtx := range ndesc.Node.UpdateCtxList {
+			buf := bytes.NewBuffer(make([]byte, 0, 512))
+			buf.WriteString("Table: " + updateCtx.TableDef.Name)
+			if len(updateCtx.InsertCols) > 0 {
+				buf.WriteString(" Insert Columns: ")
+				first := true
+				for i := range updateCtx.InsertCols {
+					if !first {
+						buf.WriteString(", ")
+					}
+					first = false
+					describeColRef(&updateCtx.InsertCols[i], buf)
+				}
+			}
+			if len(updateCtx.DeleteCols) > 0 {
+				buf.WriteString(" Delete Columns: ")
+				first := true
+				for i := range updateCtx.DeleteCols {
+					if !first {
+						buf.WriteString(", ")
+					}
+					first = false
+					describeColRef(&updateCtx.DeleteCols[i], buf)
+				}
+			}
+			lines = append(lines, buf.String())
+		}
+	} else if options.Format == EXPLAIN_FORMAT_JSON {
+		return nil, moerr.NewNYI(ctx, "explain format json")
+	} else if options.Format == EXPLAIN_FORMAT_DOT {
+		return nil, moerr.NewNYI(ctx, "explain format dot")
+	}
+	return lines, nil
 }
 
 func (ndesc *NodeDescribeImpl) GetFilterConditionInfo(ctx context.Context, options *ExplainOptions) (string, error) {

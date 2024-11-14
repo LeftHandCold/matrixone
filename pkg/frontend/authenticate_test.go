@@ -365,6 +365,18 @@ func Test_initUser(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
+		bh := &backgroundExecTest{}
+		bh.init()
+
+		bhStub := gostub.StubFunc(&NewBackgroundExec, bh)
+		defer bhStub.Reset()
+
+		bh.sql2result["begin;"] = nil
+		bh.sql2result["commit;"] = nil
+		bh.sql2result["rollback;"] = nil
+
+		ses := newSes(nil, ctrl)
+
 		pu := config.NewParameterUnit(&config.FrontendParameters{}, nil, nil, nil)
 		pu.SV.SetDefaultValues()
 
@@ -408,11 +420,6 @@ func Test_initUser(t *testing.T) {
 			sql2result[sql] = mrs
 		}
 
-		bh := newBh(ctrl, sql2result)
-
-		bhStub := gostub.StubFunc(&NewBackgroundExec, bh)
-		defer bhStub.Reset()
-
 		tenant := &TenantInfo{
 			Tenant:        sysAccountName,
 			User:          rootName,
@@ -422,7 +429,6 @@ func Test_initUser(t *testing.T) {
 			DefaultRoleID: moAdminRoleID,
 		}
 
-		ses := &Session{}
 		err := InitUser(ctx, ses, tenant, cu)
 		convey.So(err, convey.ShouldBeError)
 	})
@@ -7412,7 +7418,7 @@ func newSes(priv *privilege, ctrl *gomock.Controller) *Session {
 	stubs := gostub.StubFunc(&ExeSqlInBgSes, nil, nil)
 	defer stubs.Reset()
 
-	_ = ses.InitSystemVariables(ctx)
+	_ = ses.InitSystemVariables(ctx, nil)
 
 	rm, _ := NewRoutineManager(ctx, "")
 	rm.baseService = new(MockBaseService)
@@ -7427,8 +7433,7 @@ type MockBaseService struct {
 }
 
 func (m *MockBaseService) ID() string {
-	//TODO implement me
-	panic("implement me")
+	return "mock base service"
 }
 
 func (m *MockBaseService) SQLAddress() string {
@@ -10931,6 +10936,7 @@ func TestDoResolveSnapshotTsWithSnapShotName(t *testing.T) {
 			DefaultRoleID: moAdminRoleID,
 		}
 		ses.SetTenantInfo(tenant)
+		ses.GetTxnHandler().txnOp = newTestTxnOp()
 
 		//no result set
 		bh.sql2result["begin;"] = nil

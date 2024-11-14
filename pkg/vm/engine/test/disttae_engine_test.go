@@ -34,6 +34,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae"
 	catalog2 "github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
@@ -602,6 +603,29 @@ func TestInProgressTransfer(t *testing.T) {
 	worker.Start()
 	defer worker.Stop()
 
+	fault.Enable()
+	defer fault.Disable()
+	err1 := fault.AddFaultPoint(
+		p.Ctx,
+		objectio.FJ_CommitDelete,
+		":::",
+		"echo",
+		0,
+		"trace delete",
+	)
+	require.NoError(t, err1)
+	defer fault.RemoveFaultPoint(p.Ctx, objectio.FJ_CommitDelete)
+	err1 = fault.AddFaultPoint(
+		p.Ctx,
+		objectio.FJ_CommitSlowLog,
+		":::",
+		"echo",
+		0,
+		"trace slowlog",
+	)
+	require.NoError(t, err1)
+	defer fault.RemoveFaultPoint(p.Ctx, objectio.FJ_CommitSlowLog)
+
 	var did, tid uint64
 	var theRow *batch.Batch
 	{
@@ -783,7 +807,7 @@ func TestCacheGC(t *testing.T) {
 	cc := p.D.Engine.GetLatestCatalogCache()
 	r := cc.GC(gcTime)
 	require.Equal(t, 4, r.TStaleItem)
-	require.Equal(t, 2 /*test2 & test 4*/, r.TDelCpk)
+	require.Equal(t, 2 /*test2 & test 4*/, r.TStaleCpk)
 
 }
 
@@ -1091,4 +1115,28 @@ func TestApplyDeletesForWorkspaceAndPart(t *testing.T) {
 		pkSum += vector.GetFixedAtWithTypeCheck[int16](res.Batches[0].Vecs[1], i)
 	}
 	require.Equal(t, int16(5 /*2+3*/), pkSum)
+}
+
+func TestCache3Tables(t *testing.T) {
+	opts := config.WithLongScanAndCKPOpts(nil)
+	p := testutil.InitEnginePack(testutil.TestOptions{TaeEngineOptions: opts}, t)
+	defer p.Close()
+	txnop := p.StartCNTxn()
+	dbname, tname, rel, err := p.D.Engine.GetRelationById(p.Ctx, txnop, catalog.MO_DATABASE_ID)
+	require.NoError(t, err)
+	require.Equal(t, catalog.MO_CATALOG, dbname)
+	require.Equal(t, catalog.MO_DATABASE, tname)
+	require.NotNil(t, rel)
+
+	dbname, tname, rel, err = p.D.Engine.GetRelationById(p.Ctx, txnop, catalog.MO_TABLES_ID)
+	require.NoError(t, err)
+	require.Equal(t, catalog.MO_CATALOG, dbname)
+	require.Equal(t, catalog.MO_TABLES, tname)
+	require.NotNil(t, rel)
+
+	dbname, tname, rel, err = p.D.Engine.GetRelationById(p.Ctx, txnop, catalog.MO_COLUMNS_ID)
+	require.NoError(t, err)
+	require.Equal(t, catalog.MO_CATALOG, dbname)
+	require.Equal(t, catalog.MO_COLUMNS, tname)
+	require.NotNil(t, rel)
 }

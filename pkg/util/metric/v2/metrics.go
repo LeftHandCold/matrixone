@@ -16,6 +16,7 @@ package v2
 
 import (
 	"math"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -89,6 +90,7 @@ func initTaskMetrics() {
 
 func initFileServiceMetrics() {
 	registry.MustRegister(fsReadCounter)
+	registry.MustRegister(fsCacheBytes)
 	registry.MustRegister(S3ConnectCounter)
 	registry.MustRegister(S3DNSResolveCounter)
 
@@ -200,7 +202,7 @@ func initFrontendMetrics() {
 	registry.MustRegister(cdcRecordCounter)
 	registry.MustRegister(cdcErrorCounter)
 	registry.MustRegister(cdcProcessingRecordCountGauge)
-	registry.MustRegister(cdcAllocatedBatchBytesGauge)
+	registry.MustRegister(cdcMemoryGauge)
 	registry.MustRegister(cdcDurationHistogram)
 }
 
@@ -213,6 +215,7 @@ func initLogServiceMetrics() {
 	registry.MustRegister(LogServiceAppendDurationHistogram)
 	registry.MustRegister(LogServiceAppendCounter)
 	registry.MustRegister(LogServiceAppendBytesHistogram)
+	registry.MustRegister(LogServiceReplicaHealthGauge)
 }
 
 func initShardingMetrics() {
@@ -222,10 +225,15 @@ func initShardingMetrics() {
 	registry.MustRegister(ReplicaFreezeCNCountGauge)
 }
 
-func getDurationBuckets() []float64 {
-	return append(prometheus.ExponentialBuckets(0.00001, 2, 30), math.MaxFloat64)
-}
+var (
+	minDuration    = float64(time.Nanosecond*100) / float64(time.Second)
+	maxDuration    = float64(time.Hour*10) / float64(time.Second)
+	durationFactor = 1.2
+	durationCount  = int(math.Ceil(
+		math.Log2(maxDuration/minDuration) / math.Log2(durationFactor),
+	))
+)
 
-func getShortDurationBuckets() []float64 {
-	return append(prometheus.ExponentialBuckets(0.0000001, 2, 30), math.MaxFloat64)
+func getDurationBuckets() []float64 {
+	return append(prometheus.ExponentialBucketsRange(minDuration, maxDuration, durationCount), math.MaxFloat64)
 }
