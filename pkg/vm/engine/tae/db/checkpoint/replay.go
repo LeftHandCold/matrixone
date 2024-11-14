@@ -370,6 +370,7 @@ func (c *CkpReplayer) ReplayCatalog(readTxn txnif.AsyncTxn) (err error) {
 	// logutil.Infof(c.r.catalog.SimplePPString(common.PPL3))
 	c.r.catalog.RelayFromSysTableObjects(c.r.ctx, readTxn, c.dataF, tables.ReadSysTableBatch, sortFunc)
 	logutil.Info(c.r.catalog.SimplePPString(common.PPL2))
+	return
 }
 
 // ReplayObjectlist replays the data part of the checkpoint.

@@ -46,7 +46,7 @@ func NewFileFs(ctx context.Context, path string) fileservice.FileService {
 }
 
 func ListCkpFiles(ctx context.Context, fs fileservice.FileService) (res []string) {
-	entires, err := fs.List(ctx, ckpBakDir)
+	entires, err := fileservice.SortedList(fs.List(ctx, ckpBakDir))
 	if err != nil {
 		panic(err)
 	}
@@ -1098,7 +1098,7 @@ func ReplayDeletes(
 func GcCheckpointFiles(ctx context.Context, fs fileservice.FileService) {
 	mp := common.CheckpointAllocator
 	bf := bloomfilter.New(1000000, 0.01)
-	newObjs, err := fs.List(ctx, newObjDir)
+	newObjs, err := fileservice.SortedList(fs.List(ctx, newObjDir))
 	if err != nil {
 		panic(err)
 	}
@@ -1124,7 +1124,7 @@ func GcCheckpointFiles(ctx context.Context, fs fileservice.FileService) {
 		}
 	}
 
-	oldObjs, err := fs.List(ctx, oldObjDir)
+	oldObjs, err := fileservice.SortedList(fs.List(ctx, oldObjDir))
 	if err != nil {
 		panic(err)
 	}
@@ -1167,7 +1167,7 @@ func GcCheckpointFiles(ctx context.Context, fs fileservice.FileService) {
 
 func Rollback(ctx context.Context, fs fileservice.FileService) {
 	mp := common.CheckpointAllocator
-	objs, err := fs.List(ctx, rollbackDir)
+	objs, err := fileservice.SortedList(fs.List(ctx, rollbackDir))
 	if err != nil {
 		panic(err)
 	}

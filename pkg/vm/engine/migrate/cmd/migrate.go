@@ -122,7 +122,7 @@ const (
 
 func cleanDir(fs fileservice.FileService, dir string) {
 	ctx := context.Background()
-	entries, _ := fs.List(ctx, dir)
+	entries, _ := fileservice.SortedList(fs.List(ctx, dir))
 	for _, entry := range entries {
 		err := fs.Delete(ctx, dir+"/"+entry.Name)
 		if err != nil {
@@ -136,7 +136,7 @@ const (
 )
 
 func getLatestCkpMeta(fs fileservice.FileService, dir string) (res string) {
-	dirs, _ := fs.List(context.Background(), dir)
+	dirs, _ := fileservice.SortedList(fs.List(context.Background(), dir))
 	var name string
 	maxTs := types.BuildTS(0, 0)
 	minTs := types.BuildTS(0, 0)
@@ -442,7 +442,7 @@ func (c *testArg) Run() error {
 	ctx := context.Background()
 	fs := migrate.NewS3FsWithCache(ctx, c.arg)
 
-	entries, err := fs.List(ctx, ckpDir)
+	entries, err := fileservice.SortedList(fs.List(ctx, ckpDir))
 	if err != nil {
 		panic(err)
 	}

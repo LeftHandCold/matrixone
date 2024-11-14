@@ -100,13 +100,13 @@ func WriteFile(fs fileservice.FileService, file string, data []byte) error {
 func BackupCkpDir(ctx context.Context, fs fileservice.FileService, dir, dest string) {
 
 	{
-		entries, _ := fs.List(context.Background(), dest)
+		entries, _ := fileservice.SortedList(fs.List(context.Background(), dest))
 		for _, entry := range entries {
 			fs.Delete(ctx, dest+"/"+entry.Name)
 		}
 	}
 
-	entries, err := fs.List(ctx, dir)
+	entries, err := fileservice.SortedList(fs.List(ctx, dir))
 	if err != nil {
 		panic(err)
 	}
@@ -130,7 +130,7 @@ func BackupCkpDir(ctx context.Context, fs fileservice.FileService, dir, dest str
 		}
 	}
 
-	bakentries, err := fs.List(ctx, dest)
+	bakentries, err := fileservice.SortedList(fs.List(ctx, dest))
 	if err != nil {
 		panic(err)
 	}
@@ -189,13 +189,13 @@ func RollbackDir(ctx context.Context, fs fileservice.FileService, dir string) {
 	bakdir := dir + "-bak"
 
 	{
-		entries, _ := fs.List(context.Background(), dir)
+		entries, _ := fileservice.SortedList(fs.List(context.Background(), dir))
 		for _, entry := range entries {
 			fs.Delete(ctx, dir+"/"+entry.Name)
 		}
 	}
 
-	entries, err := fs.List(ctx, bakdir)
+	entries, err := fileservice.SortedList(fs.List(ctx, bakdir))
 	if err != nil {
 		panic(err)
 	}
@@ -221,7 +221,7 @@ func RollbackDir(ctx context.Context, fs fileservice.FileService, dir string) {
 
 func cleanDir(fs fileservice.FileService, dir string) {
 	ctx := context.Background()
-	entries, _ := fs.List(ctx, dir)
+	entries, _ := fileservice.SortedList(fs.List(ctx, dir))
 	for _, entry := range entries {
 		err := fs.Delete(ctx, dir+"/"+entry.Name)
 		if err != nil {

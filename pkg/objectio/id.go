@@ -95,3 +95,10 @@ func IsEmptySegid(id *Segmentid) bool {
 func IsEmptyBlkid(id *Blockid) bool {
 	return bytes.Equal(id[:], emptyBlockId[:])
 }
+
+// used only in some special cases
+func HackObjid2Rowid(id *ObjectId) Rowid {
+	var rowid Rowid
+	copy(rowid[:], id[:])
+	return rowid
+}
