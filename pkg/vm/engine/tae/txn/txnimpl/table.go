@@ -1547,7 +1547,7 @@ func (tbl *txnTable) DeleteByPhyAddrKeys(
 	if tbl.tombstoneTable == nil {
 		tbl.tombstoneTable = newBaseTable(tbl.entry.GetLastestSchema(true), true, tbl)
 	}
-	logutil.Infof("rowIDVec is %v, pk is %v", rowIDVec.String(), pk.String())
+	logutil.Infof("rowIDVec is %v, pk is %v, deleteBatch is %v", rowIDVec.String(), pk.String(), deleteBatch.String())
 	err = tbl.dedup(tbl.store.ctx, deleteBatch.GetVectorByName(objectio.TombstoneAttr_Rowid_Attr), true)
 	if err != nil {
 		return
