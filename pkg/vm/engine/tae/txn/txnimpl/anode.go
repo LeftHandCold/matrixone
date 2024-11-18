@@ -130,7 +130,8 @@ func (n *anode) Append(data *containers.Batch, offset uint32) (an uint32, err er
 		// }
 		def := schema.ColDefs[schema.GetColIdx(attr)]
 		destVec := n.data.Vecs[def.Idx]
-		logutil.Infof("destVec: %s, %v, %v,  %d, %d %d", destVec.String(), data.Vecs[def.Idx].String(), attr, data.Length(), offset, an)
+		logutil.Infof("destVec: %s, %v, %v,  %d, %d %d, t %v -%v", destVec.String(), data.Vecs[def.Idx].String(),
+			attr, data.Length(), offset, an, destVec.GetType().String(), data.Vecs[def.Idx].GetType().String())
 		destVec.ExtendWithOffset(data.Vecs[def.Idx], int(offset), int(an))
 	}
 	n.rows = uint32(n.data.Length())
