@@ -147,6 +147,7 @@ type FSArg struct {
 	MemCache  uint64 `json:"mem_cache"`
 	DiskCache uint64 `json:"disk_cache"`
 	DiskPath  string `json:"disk_path"`
+	IsMinio   bool   `json:"is_minio"`
 }
 
 func NewS3Fs(ctx context.Context, fsArg FSArg, dir string) fileservice.FileService {
@@ -155,6 +156,7 @@ func NewS3Fs(ctx context.Context, fsArg FSArg, dir string) fileservice.FileServi
 		Endpoint:  fsArg.Endpoint,
 		Bucket:    fsArg.Bucket,
 		KeyPrefix: filepath.Join(fsArg.KeyPrefix, dir),
+		IsMinio:   fsArg.IsMinio,
 	}
 	fs, err := fileservice.NewS3FS(ctx, arg, fileservice.DisabledCacheConfig, nil, false, false)
 	if err != nil {
@@ -169,6 +171,7 @@ func NewS3FsWithCache(ctx context.Context, fsArg FSArg) fileservice.FileService 
 		Endpoint:  fsArg.Endpoint,
 		Bucket:    fsArg.Bucket,
 		KeyPrefix: fsArg.KeyPrefix,
+		IsMinio:   fsArg.IsMinio,
 	}
 	mem := toml.ByteSize(fsArg.MemCache)
 	disk := toml.ByteSize(fsArg.DiskCache)
