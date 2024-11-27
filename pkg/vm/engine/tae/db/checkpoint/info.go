@@ -27,6 +27,7 @@ import (
 
 type RunnerReader interface {
 	GetAllIncrementalCheckpoints() []*CheckpointEntry
+	GetMinIncrementalCheckpoints() *CheckpointEntry
 	GetAllGlobalCheckpoints() []*CheckpointEntry
 	GetPenddingIncrementalCount() int
 	GetGlobalCheckpointCount() int
@@ -84,6 +85,13 @@ func (r *runner) GetAllIncrementalCheckpoints() []*CheckpointEntry {
 	snapshot := r.storage.incrementals.Copy()
 	r.storage.Unlock()
 	return snapshot.Items()
+}
+
+func (r *runner) GetMinIncrementalCheckpoints() *CheckpointEntry {
+	r.storage.Lock()
+	defer r.storage.Unlock()
+	m, _ := r.storage.incrementals.Max()
+	return m
 }
 
 func (r *runner) GetAllGlobalCheckpoints() []*CheckpointEntry {

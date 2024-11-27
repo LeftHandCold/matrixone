@@ -919,7 +919,7 @@ func (c *checkpointCleaner) tryGCLocked(
 	// 1. Quick check if GC is needed
 	// 1.1. If there is no global checkpoint, no need to do GC
 	var maxGlobalCKP *checkpoint.CheckpointEntry
-	if maxGlobalCKP = c.checkpointCli.MaxGlobalCheckpoint(); maxGlobalCKP == nil {
+	if maxGlobalCKP = c.checkpointCli.GetMinIncrementalCheckpoints(); maxGlobalCKP == nil {
 		return
 	}
 	// 1.2. If there is no incremental checkpoint scanned, no need to do GC.
@@ -927,18 +927,6 @@ func (c *checkpointCleaner) tryGCLocked(
 	var scannedWindow *GCWindow
 	if scannedWindow = c.GetScannedWindowLocked(); scannedWindow == nil {
 		return
-	}
-
-	// gcWaterMark is not nil, which means some global checkpoint has been GC'ed
-	// if the GC'ed global checkpoint is greater than or equal to the max global checkpoint,
-	// it means no need to do GC again
-	gcWaterMark := c.GetGCWaterMark()
-	if gcWaterMark != nil {
-		gcWaterMarkTS := gcWaterMark.GetEnd()
-		maxGlobalCKPTS := maxGlobalCKP.GetEnd()
-		if gcWaterMarkTS.GE(&maxGlobalCKPTS) {
-			return
-		}
 	}
 
 	if err = c.tryGCAgainstGCKPLocked(
@@ -1131,7 +1119,7 @@ func (c *checkpointCleaner) doGCAgainstGlobalCheckpointLocked(
 	// gcWaterMark: GCKP[t200, t400)
 	now = time.Now()
 	// TODO:
-	c.updateGCWaterMark(gckp)
+	c.updateGCWaterMark(c.GetScanWaterMark())
 	c.mutation.snapshotMeta.MergeTableInfo(accountSnapshots, pitrs)
 	mergeCost = time.Since(now)
 	return filesToGC, nil
@@ -1427,7 +1415,7 @@ func (c *checkpointCleaner) tryScanLocked(
 	}
 
 	// get up to 10 incremental checkpoints starting from the max scanned timestamp
-	checkpoints := c.checkpointCli.ICKPSeekLT(maxScannedTS, 10)
+	checkpoints := c.checkpointCli.ICKPSeekLT(maxScannedTS, 100)
 
 	// quick return if there is no incremental checkpoint
 	if len(checkpoints) == 0 {

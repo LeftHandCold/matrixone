@@ -308,6 +308,10 @@ func MakeSnapshotAndPitrFineFilter(
 			pitr := tablePitrs[tableID]
 
 			if entry := transObjects[name]; entry != nil {
+				if !entry.dropTS.IsEmpty() {
+					bm.Add(uint64(i))
+				}
+				continue
 				if !logtail.ObjectIsSnapshotRefers(
 					entry.stats, pitr, &entry.createTS, &entry.dropTS, snapshots,
 				) {
