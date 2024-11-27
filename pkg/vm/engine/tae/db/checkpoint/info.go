@@ -90,7 +90,7 @@ func (r *runner) GetAllIncrementalCheckpoints() []*CheckpointEntry {
 func (r *runner) GetMinIncrementalCheckpoints() *CheckpointEntry {
 	r.storage.Lock()
 	defer r.storage.Unlock()
-	m, _ := r.storage.incrementals.Max()
+	m, _ := r.storage.incrementals.Min()
 	return m
 }
 
