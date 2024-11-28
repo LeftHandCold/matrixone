@@ -919,8 +919,22 @@ func (c *checkpointCleaner) tryGCLocked(
 	// 1. Quick check if GC is needed
 	// 1.1. If there is no global checkpoint, no need to do GC
 	var maxGlobalCKP *checkpoint.CheckpointEntry
-	if maxGlobalCKP = c.checkpointCli.GetMinIncrementalCheckpoints(); maxGlobalCKP == nil {
-		return
+	var gcWaterTS types.TS
+	if scanWaterMark := c.GetGCWaterMark(); scanWaterMark != nil {
+		gcWaterTS = scanWaterMark.GetEnd()
+	}
+
+	// get up to 10 incremental checkpoints starting from the max scanned timestamp
+	checkpoints := c.checkpointCli.ICKPSeekLT(gcWaterTS, 1)
+
+	// quick return if there is no incremental checkpoint
+	if len(checkpoints) == 0 {
+		if maxGlobalCKP = c.checkpointCli.GetMinIncrementalCheckpoints(); maxGlobalCKP == nil {
+			return
+		}
+	} else {
+		// get the max incremental checkpoint
+		maxGlobalCKP = checkpoints[0]
 	}
 	// 1.2. If there is no incremental checkpoint scanned, no need to do GC.
 	//      because GC is based on the scanned result.
