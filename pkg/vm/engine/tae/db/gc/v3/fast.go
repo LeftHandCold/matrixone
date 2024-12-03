@@ -25,7 +25,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
-	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/blockio"
@@ -34,7 +33,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logstore/store"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
 	"go.uber.org/zap"
 )
 
@@ -200,168 +198,6 @@ func (c *fastCleaner) TaskNameLocked() string {
 }
 
 func (c *fastCleaner) Replay() (err error) {
-	now := time.Now()
-
-	c.StartMutationTask("gc-replay")
-	defer c.StopMutationTask()
-
-	if c.mutation.replayDone {
-		logutil.Warn(
-			"GC-REPLAY-ALREADY-DONE",
-			zap.String("task", c.TaskNameLocked()),
-		)
-		return
-	}
-
-	defer func() {
-		if err == nil {
-			c.mutation.replayDone = true
-		}
-		logutil.Info(
-			"GC-REPLAY-TRACE",
-			zap.String("task", c.TaskNameLocked()),
-			zap.Duration("duration", time.Since(now)),
-			zap.Error(err),
-		)
-	}()
-
-	var dirs []fileservice.DirEntry
-	if dirs, err = fileservice.SortedList(c.fs.ListDir(GCMetaDir)); err != nil {
-		return
-	}
-	if len(dirs) == 0 {
-		return
-	}
-
-	maxConsumedStart := types.TS{}
-	maxConsumedEnd := types.TS{}
-	maxSnapEnd := types.TS{}
-	maxAcctEnd := types.TS{}
-	// Get effective minMerged
-	var snapFile, acctFile string
-	for _, dir := range dirs {
-		start, end, ext := blockio.DecodeGCMetadataFileName(dir.Name)
-		if ext == blockio.SnapshotExt && maxSnapEnd.LT(&end) {
-			maxSnapEnd = end
-			snapFile = dir.Name
-		}
-		if ext == blockio.AcctExt && maxAcctEnd.LT(&end) {
-			maxAcctEnd = end
-			acctFile = dir.Name
-		}
-		c.mutation.metaFiles[dir.Name] = GCMetaFile{
-			name:  dir.Name,
-			start: start,
-			end:   end,
-			ext:   ext,
-		}
-	}
-	gcMetaDirs := make([]fileservice.DirEntry, 0)
-	for _, dir := range dirs {
-		start, end, ext := blockio.DecodeGCMetadataFileName(dir.Name)
-		if ext == blockio.SnapshotExt || ext == blockio.AcctExt {
-			continue
-		}
-		if maxConsumedStart.IsEmpty() || maxConsumedStart.LT(&end) {
-			maxConsumedStart = start
-			maxConsumedEnd = end
-			gcMetaDirs = append(gcMetaDirs, dir)
-		}
-	}
-
-	// In the normal process, gcMetaDirs is empty, and it is impossible to have snapFile and acctFile,
-	// but when upgrading from 1.2 to 1.3, there may be such a situation, so you need to replay table info first
-	if acctFile != "" {
-		if err = c.mutation.snapshotMeta.ReadTableInfo(
-			c.ctx, GCMetaDir+acctFile, c.fs.Service,
-		); err != nil {
-			return
-		}
-	}
-	if len(gcMetaDirs) == 0 {
-		return
-	}
-	logger := logutil.Info
-	for _, dir := range gcMetaDirs {
-		start := time.Now()
-		window := NewGCWindow(c.mp, c.fs.Service)
-		err = window.ReadTable(c.ctx, GCMetaDir+dir.Name, c.fs.Service)
-		if err != nil {
-			logger = logutil.Error
-		}
-		logger(
-			"GC-REPLAY-READ-TABLE",
-			zap.String("name", dir.Name),
-			zap.Duration("duration", time.Since(start)),
-			zap.Error(err),
-		)
-		if err != nil {
-			return
-		}
-		c.mutAddScannedLocked(window)
-	}
-	if snapFile != "" {
-		if err = c.mutation.snapshotMeta.ReadMeta(
-			c.ctx, GCMetaDir+snapFile, c.fs.Service,
-		); err != nil {
-			return
-		}
-	}
-	ckp := checkpoint.NewCheckpointEntry(
-		c.sid, maxConsumedStart, maxConsumedEnd, checkpoint.ET_Incremental,
-	)
-	c.updateScanWaterMark(ckp)
-	compacted := c.checkpointCli.GetCompacted()
-	if compacted != nil {
-		start := time.Now()
-		end := compacted.GetEnd()
-
-		var ckpData *logtail.CheckpointData
-		if ckpData, err = c.collectCkpData(compacted); err != nil {
-			logutil.Error(
-				"GC-REPLAY-COLLECT-ERROR",
-				zap.String("task", c.TaskNameLocked()),
-				zap.Error(err),
-				zap.String("checkpoint", compacted.String()),
-			)
-			return
-		}
-		defer ckpData.Close()
-		var snapshots map[uint32]containers.Vector
-		var pitrs *logtail.PitrInfo
-		pitrs, err = c.GetPITRsLocked()
-		if err != nil {
-			logutil.Error("GC-REPLAY-GET-PITRS_ERROR",
-				zap.String("task", c.TaskNameLocked()),
-				zap.Error(err),
-				zap.Duration("duration", time.Since(start)),
-			)
-			return
-		}
-		snapshots, err = c.mutation.snapshotMeta.GetSnapshot(c.ctx, c.sid, c.fs.Service, c.mp)
-		if err != nil {
-			logutil.Error("GC-REPLAY-GET-SNAPSHOT_ERROR",
-				zap.String("task", c.TaskNameLocked()),
-				zap.Error(err),
-				zap.Duration("duration", time.Since(start)),
-			)
-			return
-		}
-		accountSnapshots := TransformToTSList(snapshots)
-		logtail.CloseSnapshotList(snapshots)
-		logtail.FillUsageBatOfCompacted(
-			c.checkpointCli.GetCatalog().GetUsageMemo().(*logtail.TNUsageMemo),
-			ckpData,
-			c.mutation.snapshotMeta,
-			accountSnapshots,
-			pitrs,
-			0)
-		logutil.Info("GC-REPLAY-COLLECT-SNAPSHOT-SIZE",
-			zap.String("task", c.TaskNameLocked()),
-			zap.Int("size", len(accountSnapshots)),
-			zap.Duration("duration", time.Since(start)),
-		)
-	}
 	return
 }
 
@@ -521,64 +357,6 @@ func (c *fastCleaner) deleteStaleSnapshotFilesLocked() error {
 	return c.mutSetNewMetaFilesLocked(metaFiles)
 }
 
-// when call this function: at least one incremental checkpoint has been scanned
-// it uses `c.mutation.metaFiles` and `c.mutation.scanned` as the input
-// it updates `c.mutation.metaFiles` after the deletion
-// it deletes the stale checkpoint meta files
-// Example:
-// Before:
-// `c.mutation.metaFiles`: [t100_t200_xxx.ckp, t200_t300_xxx.ckp, t300_t400_xxx.ckp]
-// `c.mutation.scanned`: [t300, t400]
-// After:
-// `c.mutation.metaFiles`: [t300_t400_xxx.ckp]
-// `c.mutation.scanned`: [t300, t400]
-// `t100_t200_xxx.ckp`, `t200_t300_xxx.ckp` are hard deleted
-func (c *fastCleaner) deleteStaleCKPMetaFileLocked() (err error) {
-	// TODO: add log
-	window := c.GetScannedWindowLocked()
-	metaFiles := c.CloneMetaFilesLocked()
-	filesToDelete := make([]string, 0)
-	for _, metaFile := range metaFiles {
-		if (metaFile.Ext() != blockio.CheckpointExt) ||
-			(metaFile.EqualRange(&window.tsRange.start, &window.tsRange.end)) {
-			logutil.Info(
-				"GC-TRACE-DELETE-CKP-FILE-SKIP",
-				zap.String("task", c.TaskNameLocked()),
-				zap.String("skip-file", metaFile.Name()),
-			)
-			continue
-		}
-		gcWindow := NewGCWindow(c.mp, c.fs.Service)
-		defer gcWindow.Close()
-		if err = gcWindow.ReadTable(c.ctx, GCMetaDir+metaFile.Name(), c.fs.Service); err != nil {
-			logutil.Error(
-				"GC-WINDOW-READ-ERROR",
-				zap.Error(err),
-				zap.String("file", GCMetaDir+metaFile.Name()),
-				zap.String("task", c.TaskNameLocked()),
-			)
-			return
-		}
-		for _, file := range gcWindow.files {
-			filesToDelete = append(filesToDelete, file.ObjectName().String())
-		}
-		filesToDelete = append(filesToDelete, GCMetaDir+metaFile.Name())
-		delete(metaFiles, metaFile.Name())
-	}
-
-	// TODO: if file is not found, it should be ignored
-	if err = c.fs.DelFiles(c.ctx, filesToDelete); err != nil {
-		logutil.Error(
-			"GC-DELETE-CKP-FILES-ERROR",
-			zap.Error(err),
-			zap.Strings("files", filesToDelete),
-			zap.String("task", c.TaskNameLocked()),
-		)
-		return
-	}
-	return c.mutSetNewMetaFilesLocked(metaFiles)
-}
-
 // filterCheckpoints filters the checkpoints with the endTS less than the highWater
 func (c *fastCleaner) filterCheckpoints(
 	highWater *types.TS,
@@ -643,12 +421,6 @@ func (c *fastCleaner) TryGC() (err error) {
 func (c *fastCleaner) tryGCLocked(
 	memoryBuffer *containers.OneSchemaBatchBuffer,
 ) (err error) {
-	// 1. Quick check if GC is needed
-	// 1.1. If there is no global checkpoint, no need to do GC
-	var maxGlobalCKP *checkpoint.CheckpointEntry
-	if maxGlobalCKP = c.checkpointCli.MaxGlobalCheckpoint(); maxGlobalCKP == nil {
-		return
-	}
 	// 1.2. If there is no incremental checkpoint scanned, no need to do GC.
 	//      because GC is based on the scanned result.
 	var scannedWindow *GCWindow
@@ -660,28 +432,9 @@ func (c *fastCleaner) tryGCLocked(
 		logutil.Error(
 			"GC-TRY-GC-AGAINST-GCKP-ERROR",
 			zap.Error(err),
-			zap.String("checkpoint", maxGlobalCKP.String()),
 			zap.String("task", c.TaskNameLocked()),
 		)
 		return
-	}
-
-	if err = c.deleteStaleCKPMetaFileLocked(); err != nil {
-		logutil.Error(
-			"GC-TRY-DELETE-STALE-CKP-META-FILE-ERROR",
-			zap.Error(err),
-			zap.String("task", c.TaskNameLocked()),
-			zap.String("checkpoint", maxGlobalCKP.String()),
-		)
-	}
-
-	if err = c.deleteStaleSnapshotFilesLocked(); err != nil {
-		logutil.Error(
-			"GC-TRY-DELETE-STALE-SNAPSHOT-FILES-ERROR",
-			zap.Error(err),
-			zap.String("task", c.TaskNameLocked()),
-			zap.String("checkpoint", maxGlobalCKP.String()),
-		)
 	}
 
 	return
@@ -778,9 +531,8 @@ func (c *fastCleaner) doGCAgainstGlobalCheckpointLocked(
 	// [t100, t400] [f10, f11]
 	// Also, it will update the GC metadata
 	scannedWindow := c.GetScannedWindowLocked()
-	if filesToGC, metafile, err = scannedWindow.ExecuteGlobalCheckpointBasedGC(
+	if filesToGC, metafile, err = scannedWindow.ExecuteFastBasedGC(
 		c.ctx,
-		gckp,
 		accountSnapshots,
 		pitrs,
 		c.mutation.snapshotMeta,
@@ -791,7 +543,7 @@ func (c *fastCleaner) doGCAgainstGlobalCheckpointLocked(
 		c.mp,
 		c.fs.Service,
 	); err != nil {
-		extraErrMsg = fmt.Sprintf("ExecuteGlobalCheckpointBasedGC %v failed", gckp.String())
+		extraErrMsg = fmt.Sprintf("ExecuteGlobalCheckpointBasedGC %v failed", scannedWindow)
 		return nil, err
 	}
 
@@ -818,8 +570,6 @@ func (c *fastCleaner) doGCAgainstGlobalCheckpointLocked(
 	// After:
 	// gcWaterMark: GCKP[t200, t400)
 	now = time.Now()
-	// TODO:
-	c.updateGCWaterMark(gckp)
 	c.mutation.snapshotMeta.MergeTableInfo(accountSnapshots, pitrs)
 	mergeCost = time.Since(now)
 	return filesToGC, nil
@@ -840,225 +590,6 @@ func (c *fastCleaner) scanCheckpointsAsDebugWindow(
 }
 
 func (c *fastCleaner) DoCheck() error {
-	c.StartMutationTask("gc-check")
-	defer c.StopMutationTask()
-
-	debugCandidates := c.checkpointCli.GetAllIncrementalCheckpoints()
-	compacted := c.checkpointCli.GetCompacted()
-	gckps := c.checkpointCli.GetAllGlobalCheckpoints()
-
-	// no scan watermark, GC has not yet run
-	var scanWaterMark *checkpoint.CheckpointEntry
-	if scanWaterMark = c.GetScanWaterMark(); scanWaterMark == nil {
-		return moerr.NewInternalErrorNoCtx("GC has not yet run")
-	}
-
-	gCkp := c.GetGCWaterMark()
-	testutils.WaitExpect(10000, func() bool {
-		gCkp = c.GetGCWaterMark()
-		return gCkp != nil
-	})
-	if gCkp == nil {
-		gCkp = c.checkpointCli.MaxGlobalCheckpoint()
-		if gCkp == nil {
-			return nil
-		}
-		logutil.Warnf("MaxCompared is nil, use maxGlobalCkp %v", gCkp.String())
-	}
-
-	for i, ckp := range debugCandidates {
-		maxEnd := scanWaterMark.GetEnd()
-		ckpEnd := ckp.GetEnd()
-		if ckpEnd.Equal(&maxEnd) {
-			debugCandidates = debugCandidates[:i+1]
-			break
-		}
-	}
-
-	start1 := debugCandidates[len(debugCandidates)-1].GetEnd()
-	start2 := scanWaterMark.GetEnd()
-	if !start1.Equal(&start2) {
-		err := moerr.NewInternalErrorNoCtx("TS Compare not equal")
-		logutil.Error(
-			"GC-COMPRE-ERROR",
-			zap.String("task", c.TaskNameLocked()),
-			zap.Error(err),
-			zap.String("start1", start1.ToString()),
-			zap.String("start2", start2.ToString()),
-		)
-		return err
-	}
-	buffer := MakeGCWindowBuffer(16 * mpool.MB)
-	defer buffer.Close(c.mp)
-
-	debugWindow, err := c.scanCheckpointsAsDebugWindow(
-		debugCandidates, buffer,
-	)
-	if err != nil {
-		logutil.Error(
-			"GC-SCAN-ERROR",
-			zap.Error(err),
-			zap.String("task", c.TaskNameLocked()),
-			zap.String("checkpoint", debugCandidates[0].String()),
-		)
-		// TODO
-		return err
-	}
-
-	snapshots, err := c.GetSnapshotsLocked()
-	if err != nil {
-		logutil.Error(
-			"GC-GET-SNAPSHOTS-ERROR",
-			zap.Error(err),
-			zap.String("task", c.TaskNameLocked()),
-		)
-		return err
-	}
-	defer logtail.CloseSnapshotList(snapshots)
-
-	pitr, err := c.GetPITRsLocked()
-	if err != nil {
-		logutil.Error(
-			"GC-GET-PITR-ERROR",
-			zap.Error(err),
-			zap.String("task", c.TaskNameLocked()),
-		)
-		return err
-	}
-
-	mergeWindow := c.GetScannedWindowLocked().Clone()
-	defer mergeWindow.Close()
-
-	accoutSnapshots := TransformToTSList(snapshots)
-	logutil.Info(
-		"GC-TRACE-MERGE-WINDOW",
-		zap.String("task", c.TaskNameLocked()),
-		zap.Int("files-count", len(mergeWindow.files)),
-	)
-	if _, _, err = mergeWindow.ExecuteGlobalCheckpointBasedGC(
-		c.ctx,
-		gCkp,
-		accoutSnapshots,
-		pitr,
-		c.mutation.snapshotMeta,
-		buffer,
-		c.config.canGCCacheSize,
-		c.config.estimateRows,
-		c.config.probility,
-		c.mp,
-		c.fs.Service,
-	); err != nil {
-		logutil.Error(
-			"GC-EXECUTE-GC-ERROR",
-			zap.Error(err),
-			zap.String("task", c.TaskNameLocked()),
-		)
-		return err
-	}
-
-	//logutil.Infof("debug table is %d, stats is %v", len(debugWindow.files.stats), debugWindow.files.stats[0].ObjectName().String())
-	if _, _, err = debugWindow.ExecuteGlobalCheckpointBasedGC(
-		c.ctx,
-		gCkp,
-		accoutSnapshots,
-		pitr,
-		c.mutation.snapshotMeta,
-		buffer,
-		c.config.canGCCacheSize,
-		c.config.estimateRows,
-		c.config.probility,
-		c.mp,
-		c.fs.Service,
-	); err != nil {
-		logutil.Error(
-			"GC-EXECUTE-GC-ERROR",
-			zap.Error(err),
-			zap.String("task", c.TaskNameLocked()),
-		)
-		return err
-	}
-
-	//logutil.Infof("debug table2 is %d, stats is %v", len(debugWindow.files.stats), debugWindow.files.stats[0].ObjectName().String())
-	objects1, objects2, equal := mergeWindow.Compare(debugWindow, buffer)
-	if !equal {
-		logutil.Error(
-			"GC-WINDOW-COMPARE-ERROR",
-			zap.String("task", c.TaskNameLocked()),
-			zap.String("merge-window", mergeWindow.String(objects1)),
-			zap.String("debug-window", debugWindow.String(objects2)),
-		)
-		return moerr.NewInternalErrorNoCtx("Compare is failed")
-	} else {
-		logutil.Info(
-			"GC-WINDOW-COMPARE-SUCCESS",
-			zap.String("task", c.TaskNameLocked()),
-			zap.String("merge-window", mergeWindow.String(objects1)),
-			zap.String("debug-window", debugWindow.String(objects2)),
-		)
-	}
-
-	if compacted == nil {
-		return nil
-	}
-	cend := compacted.GetEnd()
-	dend := debugCandidates[0].GetEnd()
-	if dend.GT(&cend) {
-		return nil
-	}
-	ickpObjects := make(map[string]*ObjectEntry, 0)
-	ok := false
-	gcWaterMark := cend
-	for _, ckp := range gckps {
-		end := ckp.GetEnd()
-		if end.GE(&gcWaterMark) {
-			gcWaterMark = ckp.GetEnd()
-		}
-	}
-	for i, ckp := range debugCandidates {
-		end := ckp.GetEnd()
-		if end.Equal(&gcWaterMark) {
-			debugCandidates = debugCandidates[:i+1]
-			ok = true
-			break
-		}
-	}
-	if !ok {
-		return nil
-	}
-
-	for _, ckp := range debugCandidates {
-		data, err := c.collectCkpData(ckp)
-		if err != nil {
-			return err
-		}
-		collectObjectsFromCheckpointData(data, ickpObjects)
-	}
-	cptCkpObjects := make(map[string]*ObjectEntry, 0)
-	data, err := c.collectCkpData(compacted)
-	if err != nil {
-		return err
-	}
-	collectObjectsFromCheckpointData(data, cptCkpObjects)
-
-	tList, pList := c.mutation.snapshotMeta.AccountToTableSnapshots(accoutSnapshots, pitr)
-	for name, entry := range ickpObjects {
-		if cptCkpObjects[name] != nil {
-			continue
-		}
-		if logtail.ObjectIsSnapshotRefers(
-			entry.stats, pList[entry.table], &entry.createTS, &entry.dropTS, tList[entry.table],
-		) {
-			logutil.Error(
-				"GC-SNAPSHOT-REFERS-ERROR",
-				zap.String("task", c.TaskNameLocked()),
-				zap.String("name", entry.stats.ObjectName().String()),
-				zap.String("pitr", pList[entry.table].ToString()),
-				zap.String("create-ts", entry.createTS.ToString()),
-				zap.String("drop-ts", entry.dropTS.ToString()),
-			)
-			return moerr.NewInternalError(c.ctx, "snapshot refers")
-		}
-	}
 	return nil
 }
 
@@ -1072,12 +603,10 @@ func (c *fastCleaner) Process() {
 	defer c.StopMutationTask()
 
 	startScanWaterMark := c.GetScanWaterMark()
-	startGCWaterMark := c.GetGCWaterMark()
 
 	var err error
 	defer func() {
 		endScanWaterMark := c.GetScanWaterMark()
-		endGCWaterMark := c.GetGCWaterMark()
 		logutil.Info(
 			"GC-TRACE-PROCESS",
 			zap.String("task", c.TaskNameLocked()),
@@ -1085,8 +614,6 @@ func (c *fastCleaner) Process() {
 			zap.Error(err),
 			zap.String("start-scan-watermark", startScanWaterMark.String()),
 			zap.String("end-scan-watermark", endScanWaterMark.String()),
-			zap.String("start-gc-watermark", startGCWaterMark.String()),
-			zap.String("end-gc-watermark", endGCWaterMark.String()),
 		)
 	}()
 

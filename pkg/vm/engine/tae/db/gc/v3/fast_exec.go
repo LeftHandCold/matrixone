@@ -47,7 +47,6 @@ type FastBasedGCJob struct {
 
 func NewFastBasedGCJob(
 	ts *types.TS,
-	globalCkpLoc objectio.Location,
 	sourcer engine.BaseReader,
 	pitr *logtail.PitrInfo,
 	accountSnapshots map[uint32][]types.TS,
