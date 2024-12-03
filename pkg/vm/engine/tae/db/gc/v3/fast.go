@@ -99,8 +99,7 @@ type fastCleaner struct {
 type FastCleanerOption func(cleaner *fastCleaner)
 
 func (c *fastCleaner) GetCheckpointGCWaterMark() *types.TS {
-	//TODO implement me
-	panic("implement me")
+	return &types.TS{}
 }
 
 func NewFastCleaner(
