@@ -357,7 +357,6 @@ func MakeFinalCanGCSinker(
 			name := stats.ObjectName().String()
 			dropTS := dropTSs[i]
 			tableID := tableIDs[i]
-			logutil.Infof("name333: %s, dropTS: %s", name, dropTS.ToString())
 			if !dropTS.IsEmpty() {
 				buffer[name] = struct{}{}
 				continue

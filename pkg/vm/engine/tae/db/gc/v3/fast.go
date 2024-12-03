@@ -652,12 +652,14 @@ func (c *fastCleaner) tryScanLocked(
 	// filter out the incremental checkpoints that do not meet the requirements
 	for _, ckp := range checkpoints {
 		if !c.checkExtras(ckp) {
+			logutil.Infof("skip incremental checkpoint %s", ckp.String())
 			continue
 		}
 		candidates = append(candidates, ckp)
 	}
 
 	if len(candidates) == 0 {
+		logutil.Infof("no incremental checkpoint to scan")
 		return
 	}
 
