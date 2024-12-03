@@ -175,16 +175,16 @@ func MakeSoftDeleteFilterCoarseFilter(
 					table:    tableIDs[i],
 				}
 				(*transObjects)[name] = object
-				return
+				continue
 			}
 			if dropTS.IsEmpty() {
-				return
+				continue
 			}
 			bm.Add(uint64(i))
 			logutil.Infof("SoftDeleteFilterCoarseFilter: %s, i: %d", name, i)
 			if (*transObjects)[name] != nil {
 				(*transObjects)[name].dropTS = dropTS
-				return
+				continue
 			}
 		}
 		return nil
