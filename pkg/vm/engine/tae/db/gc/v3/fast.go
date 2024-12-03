@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -599,170 +598,6 @@ func (c *fastCleaner) filterCheckpoints(
 	return checkpoints[:i+1], nil
 }
 
-func (c *fastCleaner) mergeCheckpointFilesLocked(
-	checkpointLowWaterMark *types.TS,
-	memoryBuffer *containers.OneSchemaBatchBuffer,
-	accountSnapshots map[uint32][]types.TS,
-	pitrs *logtail.PitrInfo,
-	gcFileCount int,
-) (err error) {
-	// checkpointLowWaterMark is empty only in the following cases:
-	// 1. no incremental and no gloabl checkpoint
-	// 2. one incremental checkpoint with empty start
-	// 3. no incremental checkpoint and one or more global checkpoints
-	// if there are global checkpoints and incremental checkpoints, the low water mark is:
-	// min(min(startTS of all incremental checkpoints),min(endTS of global checkpoints))
-	if checkpointLowWaterMark.IsEmpty() {
-		return
-	}
-
-	now := time.Now()
-
-	var (
-		tmpDelFiles       []string
-		deleteFiles       []string
-		tmpNewFiles       []string
-		newCheckpoint     *checkpoint.CheckpointEntry
-		checkpointMaxEnd  types.TS
-		toMergeEntries    []*checkpoint.CheckpointEntry
-		extraErrMsg       string
-		newCheckpointData *logtail.CheckpointData
-	)
-
-	defer func() {
-		if newCheckpointData != nil {
-			newCheckpointData.Close()
-		}
-		logger := logutil.Info
-		if err != nil {
-			logger = logutil.Error
-		}
-		logger(
-			"GC-TRACE-MERGE-CHECKPOINT-FILES",
-			zap.String("task", c.TaskNameLocked()),
-			zap.Duration("duration", time.Since(now)),
-			zap.Error(err),
-			zap.String("extra-err-msg", extraErrMsg),
-			zap.Strings("delete-files", deleteFiles),
-			zap.String("new-checkpoint", newCheckpoint.String()),
-			zap.String("checkpoint-max-end", checkpointMaxEnd.ToString()),
-			zap.Int("checkpoint-to-merge-len", len(toMergeEntries)),
-		)
-	}()
-
-	if toMergeEntries = c.getEntriesToMerge(checkpointLowWaterMark); len(toMergeEntries) == 0 {
-		return
-	}
-
-	checkpointMaxEnd = toMergeEntries[len(toMergeEntries)-1].GetEnd()
-	if checkpointMaxEnd.GT(checkpointLowWaterMark) {
-		panic(fmt.Sprintf("checkpointMaxEnd %s < checkpointLowWaterMark %s", checkpointMaxEnd.ToString(), checkpointLowWaterMark.ToString()))
-	}
-
-	if toMergeEntries, err = c.filterCheckpoints(
-		checkpointLowWaterMark,
-		toMergeEntries,
-	); err != nil {
-		return
-	}
-	if len(toMergeEntries) == 0 {
-		return
-	}
-
-	// get the scanned window, it should not be nil
-	window := c.GetScannedWindowLocked()
-	if checkpointMaxEnd.GT(&window.tsRange.end) {
-		panic(fmt.Sprintf("checkpointMaxEnd %s < window end %s", checkpointMaxEnd.ToString(), window.tsRange.end.ToString()))
-	}
-
-	sourcer := window.MakeFilesReader(c.ctx, c.fs.Service)
-	bf, err := BuildBloomfilter(
-		c.ctx,
-		Default_Coarse_EstimateRows,
-		Default_Coarse_Probility,
-		0,
-		sourcer.Read,
-		memoryBuffer,
-		c.mp,
-	)
-
-	if tmpDelFiles, tmpNewFiles, newCheckpoint, newCheckpointData, err = MergeCheckpoint(
-		c.ctx,
-		c.sid,
-		c.fs.Service,
-		toMergeEntries,
-		bf,
-		&checkpointMaxEnd,
-		c.checkpointCli,
-		c.mp,
-	); err != nil {
-		extraErrMsg = "MergeCheckpoint failed"
-		return err
-	}
-	logtail.FillUsageBatOfCompacted(
-		c.checkpointCli.GetCatalog().GetUsageMemo().(*logtail.TNUsageMemo),
-		newCheckpointData,
-		c.mutation.snapshotMeta,
-		accountSnapshots,
-		pitrs,
-		gcFileCount)
-	if newCheckpoint == nil {
-		panic("MergeCheckpoint new checkpoint is nil")
-	}
-	newFiles := tmpNewFiles
-	for _, stats := range c.GetScannedWindowLocked().files {
-		newFiles = append(newFiles, stats.ObjectName().String())
-	}
-
-	if err = c.appendFilesToWAL(newFiles...); err != nil {
-		logutil.Error(
-			"GC-TRACE-MERGE-CHECKPOINT-FILES",
-			zap.String("task", c.TaskNameLocked()),
-			zap.Int("file len", len(newFiles)),
-			zap.Error(err),
-		)
-		return
-	}
-
-	c.checkpointCli.UpdateCompacted(newCheckpoint)
-
-	// update checkpoint gc water mark
-	newWaterMark := newCheckpoint.GetEnd()
-	c.updateCheckpointGCWaterMark(&newWaterMark)
-
-	deleteFiles = tmpDelFiles
-	gckps := c.checkpointCli.GetAllGlobalCheckpoints()
-	for _, ckp := range gckps {
-		end := ckp.GetEnd()
-		if end.LT(&newWaterMark) {
-			nameMeta := blockio.EncodeCheckpointMetadataFileName(
-				checkpoint.CheckpointDir, checkpoint.PrefixMetadata,
-				ckp.GetStart(), ckp.GetEnd())
-			deleteFiles = append(deleteFiles, nameMeta)
-		}
-	}
-	if c.GCCheckpointEnabled() {
-		if err = c.fs.DelFiles(c.ctx, deleteFiles); err != nil {
-			extraErrMsg = "DelFiles failed"
-			return err
-		}
-	}
-
-	for _, file := range deleteFiles {
-		if strings.Contains(file, checkpoint.PrefixMetadata) {
-			info := strings.Split(file, checkpoint.CheckpointDir+"/")
-			name := info[1]
-			logutil.Info(
-				"GC-TRACE-DELETE-CHECKPOINT-FILE",
-				zap.String("task", c.TaskNameLocked()),
-				zap.String("file", name),
-			)
-			c.checkpointCli.RemoveCheckpointMetaFile(name)
-		}
-	}
-	return nil
-}
-
 func (c *fastCleaner) collectCkpData(
 	ckp *checkpoint.CheckpointEntry,
 ) (data *logtail.CheckpointData, err error) {
@@ -821,21 +656,7 @@ func (c *fastCleaner) tryGCLocked(
 		return
 	}
 
-	// gcWaterMark is not nil, which means some global checkpoint has been GC'ed
-	// if the GC'ed global checkpoint is greater than or equal to the max global checkpoint,
-	// it means no need to do GC again
-	gcWaterMark := c.GetGCWaterMark()
-	if gcWaterMark != nil {
-		gcWaterMarkTS := gcWaterMark.GetEnd()
-		maxGlobalCKPTS := maxGlobalCKP.GetEnd()
-		if gcWaterMarkTS.GE(&maxGlobalCKPTS) {
-			return
-		}
-	}
-
-	if err = c.tryGCAgainstGCKPLocked(
-		maxGlobalCKP, memoryBuffer,
-	); err != nil {
+	if err = c.tryGCAgainstGCKPLocked(memoryBuffer); err != nil {
 		logutil.Error(
 			"GC-TRY-GC-AGAINST-GCKP-ERROR",
 			zap.Error(err),
@@ -872,7 +693,6 @@ func (c *fastCleaner) tryGCLocked(
 // `gckp` is the global checkpoint that needs to be GC'ed against
 // `memoryBuffer` is the buffer used to read the data of the GC window
 func (c *fastCleaner) tryGCAgainstGCKPLocked(
-	gckp *checkpoint.CheckpointEntry,
 	memoryBuffer *containers.OneSchemaBatchBuffer,
 ) (err error) {
 	now := time.Now()
@@ -884,7 +704,6 @@ func (c *fastCleaner) tryGCAgainstGCKPLocked(
 			"GC-TRACE-TRY-GC-AGAINST-GCKP",
 			zap.String("task", c.TaskNameLocked()),
 			zap.Duration("duration", time.Since(now)),
-			zap.String("checkpoint", gckp.String()),
 			zap.Error(err),
 			zap.String("extra-err-msg", extraErrMsg),
 		)
@@ -901,7 +720,7 @@ func (c *fastCleaner) tryGCAgainstGCKPLocked(
 	}
 	accountSnapshots := TransformToTSList(snapshots)
 	filesToGC, err := c.doGCAgainstGlobalCheckpointLocked(
-		gckp, accountSnapshots, pitrs, memoryBuffer,
+		accountSnapshots, pitrs, memoryBuffer,
 	)
 	if err != nil {
 		extraErrMsg = "doGCAgainstGlobalCheckpointLocked failed"
@@ -917,35 +736,12 @@ func (c *fastCleaner) tryGCAgainstGCKPLocked(
 		extraErrMsg = fmt.Sprintf("ExecDelete %v failed", filesToGC)
 		return
 	}
-	if c.GetGCWaterMark() == nil {
-		return nil
-	}
-	waterMark := c.GetGCWaterMark().GetEnd()
-	mergeMark := types.TS{}
-	if c.GetCheckpointGCWaterMark() != nil {
-		mergeMark = *c.GetCheckpointGCWaterMark()
-	}
-	if !waterMark.GT(&mergeMark) {
-		return nil
-	}
-	scanMark := c.GetScanWaterMark().GetEnd()
-	if scanMark.IsEmpty() {
-		panic("scanMark is empty")
-	}
-	if waterMark.GT(&scanMark) {
-		waterMark = scanMark
-	}
-	err = c.mergeCheckpointFilesLocked(&waterMark, memoryBuffer, accountSnapshots, pitrs, len(filesToGC))
-	if err != nil {
-		extraErrMsg = fmt.Sprintf("mergeCheckpointFilesLocked %v failed", waterMark.ToString())
-	}
 	return
 }
 
 // at least one incremental checkpoint has been scanned
 // and the GC'ed water mark less than the global checkpoint
 func (c *fastCleaner) doGCAgainstGlobalCheckpointLocked(
-	gckp *checkpoint.CheckpointEntry,
 	accountSnapshots map[uint32][]types.TS,
 	pitrs *logtail.PitrInfo,
 	memoryBuffer *containers.OneSchemaBatchBuffer,
