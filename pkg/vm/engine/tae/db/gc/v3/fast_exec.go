@@ -165,6 +165,7 @@ func MakeSoftDeleteFilterCoarseFilter(
 			buf := bat.Vecs[0].GetRawBytesAt(i)
 			stats := (objectio.ObjectStats)(buf)
 			name := stats.ObjectName().UnsafeString()
+			logutil.Infof("SoftDeleteFilterCoarseFilter2222: %s, i: %d", name, i)
 			if dropTS.IsEmpty() && (*transObjects)[name] == nil {
 				object := &ObjectEntry{
 					stats:    &stats,

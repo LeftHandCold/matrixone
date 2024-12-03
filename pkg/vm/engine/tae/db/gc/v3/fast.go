@@ -530,6 +530,10 @@ func (c *fastCleaner) doGCAgainstGlobalCheckpointLocked(
 	// [t100, t400] [f10, f11]
 	// Also, it will update the GC metadata
 	scannedWindow := c.GetScannedWindowLocked()
+	logutil.Infof("doGCAgainstGlobalCheckpointLocked %d", len(scannedWindow.files))
+	if len(scannedWindow.files) > 0 {
+		logutil.Infof("doGCAgainstGlobalCheckpointLocked2 %s", scannedWindow.files[0].String())
+	}
 	if filesToGC, metafile, err = scannedWindow.ExecuteFastBasedGC(
 		c.ctx,
 		accountSnapshots,
