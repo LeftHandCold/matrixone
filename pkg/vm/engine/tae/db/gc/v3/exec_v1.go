@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/common/malloc"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -308,9 +309,11 @@ func MakeSnapshotAndPitrFineFilter(
 			pitr := tablePitrs[tableID]
 
 			if entry := transObjects[name]; entry != nil {
+				logutil.Infof("name: %s, createTS: %s, dropTS: %s", name, entry.createTS.ToString(), entry.dropTS.ToString())
 				if !logtail.ObjectIsSnapshotRefers(
 					entry.stats, pitr, &entry.createTS, &entry.dropTS, snapshots,
 				) {
+					logutil.Infof("name22: %s, createTS: %s, dropTS: %s", name, entry.createTS.ToString(), entry.dropTS.ToString())
 					bm.Add(uint64(i))
 				}
 				continue
@@ -354,6 +357,7 @@ func MakeFinalCanGCSinker(
 			name := stats.ObjectName().String()
 			dropTS := dropTSs[i]
 			tableID := tableIDs[i]
+			logutil.Infof("name333: %s, dropTS: %s", name, dropTS.ToString()
 			if !dropTS.IsEmpty() {
 				buffer[name] = struct{}{}
 				continue
