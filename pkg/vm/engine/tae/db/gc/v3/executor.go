@@ -16,6 +16,7 @@ package gc
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/common/bitmap"
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
@@ -190,6 +191,13 @@ func (exec *GCExecutor) Run(
 		}
 	}()
 
+	logutil.Infof("GCExecutor.Run: canGCObjects: %d, canGCMemTable: %d", len(canGCObjects), len(canGCMemTable))
+	if len(canGCMemTable) > 0 && canGCMemTable[0] != nil && len(canGCMemTable[0].Vecs) > 0 {
+		logutil.Infof("GCExecutor.Run: canGCMemTable: %v", canGCMemTable[0].Vecs[0].Length())
+	}
+	if len(canGCObjects) > 0 {
+		logutil.Infof("GCExecutor.Run: canGCObjects: %v", canGCObjects[0].String())
+	}
 	fineSourcer, release := MakeLoadFunc(
 		ctx,
 		canGCMemTable,
