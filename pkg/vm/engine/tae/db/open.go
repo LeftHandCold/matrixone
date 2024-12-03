@@ -253,18 +253,12 @@ func Open(ctx context.Context, dirname string, opts *options.Options) (db *DB, e
 	// TODO: WithGCInterval requires configuration parameters
 	gc2.SetDeleteTimeout(opts.GCCfg.GCDeleteTimeout)
 	gc2.SetDeleteBatchSize(opts.GCCfg.GCDeleteBatchSize)
-	cleaner := gc2.NewCheckpointCleaner(opts.Ctx,
-		opts.SID, fs, db.BGCheckpointRunner,
-		gc2.WithCanGCCacheSize(opts.GCCfg.CacheSize),
-		gc2.WithMaxMergeCheckpointCount(opts.GCCfg.GCMergeCount),
-		gc2.WithEstimateRows(opts.GCCfg.GCestimateRows),
-		gc2.WithGCProbility(opts.GCCfg.GCProbility),
-		gc2.WithCheckOption(opts.GCCfg.CheckGC),
-		gc2.WithGCCheckpointOption(!opts.CheckpointCfg.DisableGCCheckpoint))
+	cleaner := gc2.NewFastCleaner(opts.Ctx,
+		opts.SID, fs, db.BGCheckpointRunner)
 	cleaner.AddChecker(
 		func(item any) bool {
 			checkpoint := item.(*checkpoint.CheckpointEntry)
-			ts := types.BuildTS(time.Now().UTC().UnixNano()-int64(opts.GCCfg.GCTTL), 0)
+			ts := types.BuildTS(time.Now().UTC().UnixNano()-int64(5*time.Minute), 0)
 			endTS := checkpoint.GetEnd()
 			return !endTS.GE(&ts)
 		}, cmd_util.CheckerKeyTTL)
@@ -285,7 +279,7 @@ func Open(ctx context.Context, dirname string, opts *options.Options) (db *DB, e
 
 		gc.WithCronJob(
 			"disk-gc",
-			opts.GCCfg.ScanGCInterval,
+			5*time.Minute,
 			func(ctx context.Context) (err error) {
 				db.DiskCleaner.GC(ctx)
 				return
