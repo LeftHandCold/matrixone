@@ -21,6 +21,8 @@ import (
 	"slices"
 	"sort"
 
+	"go.uber.org/zap"
+
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -77,6 +79,16 @@ func NewLocalDataSource(
 			return nil, err
 		}
 		source.pState = state
+		if ok, _ := objectio.PartitionStateInjected(table.db.databaseName, table.tableName); ok {
+			logutil.Info(
+				"INJECT-TRACE-PS-NEW-LOCAL-DS",
+				zap.String("table-name", table.tableName),
+				zap.String("tbl", fmt.Sprintf("%p", table)),
+				zap.String("ps", fmt.Sprintf("%p", state)),
+				zap.Bool("is-snap", table.db.op.IsSnapOp()),
+				zap.String("txn", table.db.op.Txn().DebugString()),
+			)
+		}
 	}
 
 	source.table = table
@@ -819,6 +831,16 @@ func (ls *LocalDisttaeDataSource) applyWorkspaceFlushedS3Deletes(
 
 	s3FlushedDeletes := ls.table.getTxn().cn_flushed_s3_tombstone_object_stats_list
 
+	var tombstones []objectio.ObjectStats
+	s3FlushedDeletes.Range(func(key, value any) bool {
+		tombstones = append(tombstones, key.(objectio.ObjectStats))
+		return true
+	})
+
+	if len(tombstones) == 0 {
+		return
+	}
+
 	release := func() {}
 	if deletedRows == nil {
 		bm := objectio.GetReusableBitmap()
@@ -826,12 +848,6 @@ func (ls *LocalDisttaeDataSource) applyWorkspaceFlushedS3Deletes(
 		release = bm.Release
 	}
 	defer release()
-
-	var tombstones []objectio.ObjectStats
-	s3FlushedDeletes.Range(func(key, value any) bool {
-		tombstones = append(tombstones, key.(objectio.ObjectStats))
-		return true
-	})
 
 	curr := 0
 	getTombstone := func() (*objectio.ObjectStats, error) {
