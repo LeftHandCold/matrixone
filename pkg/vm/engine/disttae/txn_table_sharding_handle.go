@@ -32,7 +32,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/engine_util"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/gc"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
@@ -66,30 +66,29 @@ func (sr *shardingRemoteReader) updateCols(cols []string, tblDef *plan.TableDef)
 type streamHandle struct {
 	sync.Mutex
 	streamReaders map[types.Uuid]shardingRemoteReader
-	GCManager     *gc.Manager
+	gcJob         *tasks.CancelableJob
 }
 
 var streamHandler streamHandle
 
 func init() {
 	streamHandler.streamReaders = make(map[types.Uuid]shardingRemoteReader)
-	streamHandler.GCManager = gc.NewManager(
-		gc.WithCronJob(
-			"streamReaderGC",
-			StreamReaderLease,
-			func(ctx context.Context) error {
-				streamHandler.Lock()
-				defer streamHandler.Unlock()
-				for id, sr := range streamHandler.streamReaders {
-					if time.Now().After(sr.deadline) {
-						delete(streamHandler.streamReaders, id)
-					}
+	streamHandler.gcJob = tasks.NewCancelableCronJob(
+		"streamReaderGC",
+		StreamReaderLease,
+		func(ctx context.Context) {
+			streamHandler.Lock()
+			defer streamHandler.Unlock()
+			for id, sr := range streamHandler.streamReaders {
+				if time.Now().After(sr.deadline) {
+					delete(streamHandler.streamReaders, id)
 				}
-				return nil
-			},
-		),
+			}
+		},
+		true,
+		1,
 	)
-
+	streamHandler.gcJob.Start()
 }
 
 // HandleShardingReadRows handles sharding read rows
@@ -222,13 +221,13 @@ func HandleShardingReadRanges(
 	if err != nil {
 		return nil, err
 	}
-	ranges, err := tbl.doRanges(
-		ctx,
-		param.RangesParam.Exprs,
-		int(param.RangesParam.PreAllocSize),
-		engine.DataCollectPolicy(param.RangesParam.DataCollectPolicy),
-		int(param.RangesParam.TxnOffset),
-	)
+	rangesParam := engine.RangesParam{
+		BlockFilters:   param.RangesParam.Exprs,
+		PreAllocBlocks: int(param.RangesParam.PreAllocSize),
+		TxnOffset:      int(param.RangesParam.TxnOffset),
+		Policy:         engine.DataCollectPolicy(param.RangesParam.DataCollectPolicy),
+	}
+	ranges, err := tbl.doRanges(ctx, rangesParam)
 	if err != nil {
 		return nil, err
 	}

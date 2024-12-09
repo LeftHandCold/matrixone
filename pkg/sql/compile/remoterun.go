@@ -83,7 +83,6 @@ import (
 	plan2 "github.com/matrixorigin/matrixone/pkg/sql/plan"
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/engine_util"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
@@ -180,20 +179,13 @@ func generatePipeline(s *Scope, ctx *scopeContext, ctxId int32) (*pipeline.Pipel
 		// only encode the first one.
 		p.Qry = s.Plan
 	}
-	var data []byte
-	if s.NodeInfo.Data != nil {
-		if data, err = s.NodeInfo.Data.MarshalBinary(); err != nil {
-			return nil, -1, err
-		}
-	}
+
 	p.Node = &pipeline.NodeInfo{
-		Id:               s.NodeInfo.Id,
-		Addr:             s.NodeInfo.Addr,
-		Mcpu:             int32(s.NodeInfo.Mcpu),
-		Payload:          string(data),
-		NeedExpandRanges: s.NodeInfo.NeedExpandRanges,
-		CnCnt:            s.NodeInfo.CNCNT,
-		CnIdx:            s.NodeInfo.CNIDX,
+		Id:    s.NodeInfo.Id,
+		Addr:  s.NodeInfo.Addr,
+		Mcpu:  int32(s.NodeInfo.Mcpu),
+		CnCnt: s.NodeInfo.CNCNT,
+		CnIdx: s.NodeInfo.CNIDX,
 	}
 	ctx.pipe = p
 	ctx.scope = s
@@ -338,20 +330,8 @@ func generateScope(proc *process.Process, p *pipeline.Pipeline, ctx *scopeContex
 		s.NodeInfo.Id = p.Node.Id
 		s.NodeInfo.Addr = p.Node.Addr
 		s.NodeInfo.Mcpu = int(p.Node.Mcpu)
-		s.NodeInfo.NeedExpandRanges = p.Node.NeedExpandRanges
 		s.NodeInfo.CNCNT = p.Node.CnCnt
 		s.NodeInfo.CNIDX = p.Node.CnIdx
-
-		bs := []byte(p.Node.Payload)
-		var relData engine.RelData
-		if len(bs) > 0 {
-			rd, err := engine_util.UnmarshalRelationData(bs)
-			if err != nil {
-				return nil, err
-			}
-			relData = rd
-		}
-		s.NodeInfo.Data = relData
 	}
 	s.Proc = proc.NewNoContextChildProcWithChannel(int(p.ChildrenCount), p.ChannelBufferSize, p.NilBatchCnt)
 	{
@@ -729,22 +709,15 @@ func convertToPipelineInstruction(op vm.Operator, proc *process.Process, ctx *sc
 		}
 
 	case *external.External:
-		name2ColIndexSlice := make([]*pipeline.ExternalName2ColIndex, len(t.Es.Name2ColIndex))
-		i := 0
-		for k, v := range t.Es.Name2ColIndex {
-			name2ColIndexSlice[i] = &pipeline.ExternalName2ColIndex{Name: k, Index: v}
-			i++
-		}
 		in.ExternalScan = &pipeline.ExternalScan{
 			Attrs:           t.Es.Attrs,
+			ColumnListLen:   t.Es.ColumnListLen,
 			Cols:            t.Es.Cols,
 			FileSize:        t.Es.FileSize,
 			FileOffsetTotal: t.Es.FileOffsetTotal,
-			Name2ColIndex:   name2ColIndexSlice,
 			CreateSql:       t.Es.CreateSql,
 			FileList:        t.Es.FileList,
 			Filter:          t.Es.Filter.FilterExpr,
-			TbColToDataCol:  t.Es.TbColToDataCol,
 			StrictSqlMode:   t.Es.StrictSqlMode,
 		}
 		in.ProjectList = t.ProjectList
@@ -1257,21 +1230,16 @@ func convertToVmOperator(opr *pipeline.Instruction, ctx *scopeContext, eng engin
 		op = arg
 	case vm.External:
 		t := opr.GetExternalScan()
-		name2ColIndex := make(map[string]int32)
-		for _, n2i := range t.Name2ColIndex {
-			name2ColIndex[n2i.Name] = n2i.Index
-		}
 		op = external.NewArgument().WithEs(
 			&external.ExternalParam{
 				ExParamConst: external.ExParamConst{
 					Attrs:           t.Attrs,
+					ColumnListLen:   t.ColumnListLen,
 					FileSize:        t.FileSize,
 					FileOffsetTotal: t.FileOffsetTotal,
 					Cols:            t.Cols,
 					CreateSql:       t.CreateSql,
-					Name2ColIndex:   name2ColIndex,
 					FileList:        t.FileList,
-					TbColToDataCol:  t.TbColToDataCol,
 					StrictSqlMode:   t.StrictSqlMode,
 				},
 				ExParam: external.ExParam{

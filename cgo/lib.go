@@ -1,4 +1,4 @@
-// Copyright 2021 Matrix Origin
+// Copyright 2024 Matrix Origin
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,20 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package gc
+package cgo
 
-import (
-	"time"
-)
-
-type Option = func(*Manager)
-
-func WithCronJob(
-	name string,
-	interval time.Duration,
-	job Job,
-) Option {
-	return func(mgr *Manager) {
-		mgr.addJob(name, interval, job)
-	}
-}
+/*
+#cgo CFLAGS: -O3 -std=c99
+#cgo LDFLAGS: -lm
+*/
+import "C"

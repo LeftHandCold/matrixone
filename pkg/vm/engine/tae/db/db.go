@@ -27,13 +27,13 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
 	gc2 "github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/gc/v3"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/merge"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/gc"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/options"
@@ -47,8 +47,26 @@ var (
 	ErrClosed = moerr.NewInternalErrorNoCtx("tae: closed")
 )
 
+type DBTxnMode uint32
+
+const (
+	DBTxnMode_Write DBTxnMode = iota
+	DBTxnMode_Replay
+)
+
+type DBOption func(*DB)
+
+func WithTxnMode(mode DBTxnMode) DBOption {
+	return func(db *DB) {
+		db.TxnMode.Store(uint32(mode))
+	}
+}
+
 type DB struct {
-	Dir  string
+	Dir        string
+	TxnMode    atomic.Uint32
+	Controller *Controller
+
 	Opts *options.Options
 
 	usageMemo *logtail.TNUsageMemo
@@ -59,7 +77,7 @@ type DB struct {
 	LogtailMgr *logtail.Manager
 	Wal        wal.Driver
 
-	GCManager *gc.Manager
+	GCJobs *tasks.CancelableJobs
 
 	BGScanner          wb.IHeartbeater
 	BGCheckpointRunner checkpoint.Runner
@@ -73,6 +91,18 @@ type DB struct {
 	DBLocker io.Closer
 
 	Closed *atomic.Value
+}
+
+func (db *DB) GetTxnMode() DBTxnMode {
+	return DBTxnMode(db.TxnMode.Load())
+}
+
+func (db *DB) SwitchTxnMode(
+	ctx context.Context,
+	iarg int,
+	sarg string,
+) error {
+	return db.Controller.SwitchTxnMode(ctx, iarg, sarg)
 }
 
 func (db *DB) GetUsageMemo() *logtail.TNUsageMemo {
@@ -222,8 +252,19 @@ func (db *DB) Replay(dataFactory *tables.DataFactory, maxTs types.TS, lsn uint64
 	}
 }
 
-func (db *DB) AddFaultPoint(ctx context.Context, name string, freq string, action string, iarg int64, sarg string) error {
-	return fault.AddFaultPoint(ctx, name, freq, action, iarg, sarg)
+func (db *DB) AddFaultPoint(
+	ctx context.Context, name string, freq string,
+	action string, iarg int64, sarg string, constant bool,
+) error {
+	return fault.AddFaultPoint(ctx, name, freq, action, iarg, sarg, constant)
+}
+
+func (db *DB) ResetTxnHeartbeat() {
+	db.TxnMgr.ResetHeartbeat()
+}
+
+func (db *DB) StopTxnHeartbeat() {
+	db.TxnMgr.StopHeartbeat()
 }
 
 func (db *DB) Close() error {
@@ -231,7 +272,8 @@ func (db *DB) Close() error {
 		panic(err)
 	}
 	db.Closed.Store(ErrClosed)
-	db.GCManager.Stop()
+	db.Controller.Stop()
+	db.GCJobs.Reset()
 	db.BGScanner.Stop()
 	db.BGCheckpointRunner.Stop()
 	db.Runtime.Scheduler.Stop()

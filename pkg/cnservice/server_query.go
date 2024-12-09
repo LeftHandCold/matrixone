@@ -19,8 +19,6 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"go.uber.org/zap"
-
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/morpc"
 	"github.com/matrixorigin/matrixone/pkg/common/system"
@@ -40,6 +38,9 @@ import (
 	qclient "github.com/matrixorigin/matrixone/pkg/queryservice/client"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/function/ctl"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae"
+	"go.uber.org/zap"
 )
 
 func (s *service) initQueryService() error {
@@ -95,7 +96,8 @@ func (s *service) initQueryCommandHandler() {
 	s.queryService.AddHandleFunc(query.CmdMethod_FileServiceCache, s.handleFileServiceCacheRequest, false)
 	s.queryService.AddHandleFunc(query.CmdMethod_FileServiceCacheEvict, s.handleFileServiceCacheEvictRequest, false)
 	s.queryService.AddHandleFunc(query.CmdMethod_MetadataCache, s.handleMetadataCacheRequest, false)
-	s.queryService.AddHandleFunc(query.CmdMethod_FaultInjection, s.handleFaultInjection, false)
+	s.queryService.AddHandleFunc(query.CmdMethod_FaultInject, s.handleFaultInjection, false)
+	s.queryService.AddHandleFunc(query.CmdMethod_CtlMoTableStats, s.handleMoTableStats, false)
 }
 
 func (s *service) handleKillConn(ctx context.Context, req *query.Request, resp *query.Response, _ *morpc.Buffer) error {
@@ -147,12 +149,18 @@ func (s *service) handleTraceSpan(ctx context.Context, req *query.Request, resp 
 }
 
 func (s *service) handleFaultInjection(ctx context.Context, req *query.Request, resp *query.Response, _ *morpc.Buffer) error {
-	resp.TraceSpanResponse = new(query.TraceSpanResponse)
-	resp.FaultInjectionResponse.Resp = ctl.HandleCnFaultInjection(
-		ctx, req.FaultInjectionRequest.Name,
-		req.FaultInjectionRequest.Freq, req.FaultInjectionRequest.Action,
-		req.FaultInjectionRequest.Iarg, req.FaultInjectionRequest.Sarg,
+	resp.FaultInjectResponse = new(query.FaultInjectResponse)
+	resp.FaultInjectResponse.Resp = fault.HandleFaultInject(
+		ctx, req.FaultInjectRequest.Method, req.FaultInjectRequest.Parameters,
 	)
+	return nil
+}
+
+func (s *service) handleMoTableStats(ctx context.Context, req *query.Request, resp *query.Response, _ *morpc.Buffer) error {
+	ret := disttae.HandleMoTableStatsCtl(req.CtlMoTableStatsRequest.Cmd)
+	resp.CtlMoTableStatsResponse = query.CtlMoTableStatsResponse{
+		Resp: ret,
+	}
 	return nil
 }
 
