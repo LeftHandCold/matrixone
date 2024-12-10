@@ -22,7 +22,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
@@ -165,7 +164,6 @@ func MakeSoftDeleteFilterCoarseFilter(
 			buf := bat.Vecs[0].GetRawBytesAt(i)
 			stats := (objectio.ObjectStats)(buf)
 			name := stats.ObjectName().UnsafeString()
-			logutil.Infof("SoftDeleteFilterCoarseFilter2222: %s, i: %d", name, i)
 			if dropTS.IsEmpty() && (*transObjects)[name] == nil {
 				object := &ObjectEntry{
 					stats:    &stats,
@@ -181,7 +179,6 @@ func MakeSoftDeleteFilterCoarseFilter(
 				continue
 			}
 			bm.Add(uint64(i))
-			logutil.Infof("SoftDeleteFilterCoarseFilter: %s, i: %d", name, i)
 			if (*transObjects)[name] != nil {
 				(*transObjects)[name].dropTS = dropTS
 				continue
