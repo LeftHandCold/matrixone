@@ -281,6 +281,17 @@ func Open(
 	db.DiskCleaner = gc2.NewDiskCleaner(cleaner)
 	db.DiskCleaner.Start()
 
+	fastCleaner := gc2.NewFastCleaner(opts.Ctx,
+		opts.SID, fs, db.BGCheckpointRunner)
+	fastCleaner.AddChecker(
+		func(item any) bool {
+			checkpoint := item.(*checkpoint.CheckpointEntry)
+			ts := types.BuildTS(time.Now().UTC().UnixNano()-int64(5*time.Minute), 0)
+			endTS := checkpoint.GetEnd()
+			return !endTS.GE(&ts)
+		}, cmd_util.CheckerKeyTTL)
+	db.FastCleaner = gc2.NewDiskCleaner(fastCleaner)
+	db.FastCleaner.Start()
 	db.GCJobs = tasks.NewCancelableJobs()
 
 	db.GCJobs.AddJob(
@@ -290,6 +301,14 @@ func Open(
 			db.Runtime.PoolUsageReport()
 			db.Runtime.TransferDelsMap.Prune(opts.TransferTableTTL)
 			transferTable.RunTTL()
+		},
+		1,
+	)
+	db.GCJobs.AddJob(
+		"GC-Fast-Disk",
+		5*time.Minute,
+		func(ctx context.Context) {
+			db.FastCleaner.GC(ctx)
 		},
 		1,
 	)

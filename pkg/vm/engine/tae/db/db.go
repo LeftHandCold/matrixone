@@ -86,6 +86,8 @@ type DB struct {
 
 	DiskCleaner *gc2.DiskCleaner
 
+	FastCleaner *gc2.DiskCleaner
+
 	Runtime *dbutils.Runtime
 
 	DBLocker io.Closer
@@ -281,6 +283,7 @@ func (db *DB) Close() error {
 	db.LogtailMgr.Stop()
 	db.Catalog.Close()
 	db.DiskCleaner.Stop()
+	db.FastCleaner.Stop()
 	db.Wal.Close()
 	db.Runtime.TransferTable.Close()
 	db.usageMemo.Clear()
