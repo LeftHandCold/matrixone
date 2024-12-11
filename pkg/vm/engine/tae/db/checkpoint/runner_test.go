@@ -382,6 +382,7 @@ func TestICKPSeekLT(t *testing.T) {
 
 func TestBlockWriter_GetName(t *testing.T) {
 	defer testutils.AfterTest(t)()
+	blockio.Start("")
 	ctx := context.Background()
 
 	fsDir := "/Users/shenjiangwei/Work/code/view/matrixone/mo-data/shared"

@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -1557,7 +1558,16 @@ func (data *CheckpointData) readAll(
 			); err != nil {
 				return
 			}
+
 			for i := range bats {
+				if ObjectInfoIDX == uint16(idx) {
+					for j := 0; j < bats[i].Vecs[0].Length(); j++ {
+						objectStats := (objectio.ObjectStats)(bats[i].Vecs[2].GetDownstreamVector().GetBytesAt(j))
+						if strings.Contains(objectStats.String(), "0193afcc-2ac4-7ecf-9864-27ca86873171") {
+							logutil.Infof("objectStats: %s, extent %v", objectStats.String(), objectStats.Extent().String())
+						}
+					}
+				}
 				data.bats[idx].Append(bats[i])
 				bats[i].Close()
 			}
