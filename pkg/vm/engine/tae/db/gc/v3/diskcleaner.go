@@ -79,13 +79,13 @@ func (cleaner *DiskCleaner) process(items ...any) {
 		if err != nil {
 			panic(err)
 		}
-		cleaner.cleaner.TryGC()
+		cleaner.cleaner.Process(MessgeReplay)
 		if len(items) == 1 {
 			return
 		}
 	}
 
-	cleaner.cleaner.Process()
+	cleaner.cleaner.Process(MessgeNormal)
 
 }
 

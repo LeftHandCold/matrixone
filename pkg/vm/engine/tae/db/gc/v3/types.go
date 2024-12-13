@@ -141,8 +141,7 @@ var (
 
 type Cleaner interface {
 	Replay() error
-	Process()
-	TryGC() error
+	Process(msg int)
 	AddChecker(checker func(item any) bool, key string) int
 	RemoveChecker(key string) error
 	GetScanWaterMark() *checkpoint.CheckpointEntry
