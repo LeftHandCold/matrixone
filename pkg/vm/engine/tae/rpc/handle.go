@@ -121,7 +121,6 @@ func NewTAEHandle(ctx context.Context, path string, opt *options.Options) *Handl
 		db: tae,
 	}
 	h.txnCtxs = common.NewMap[string, *txnContext](runtime.GOMAXPROCS(0))
-	h.interceptMatchRegexp.Store(regexp.MustCompile(`.*bmsql_stock.*`))
 	h.GCJob = tasks.NewCancelableCronJob(
 		"clean-txn-cache",
 		MAX_TXN_COMMIT_LATENCY,
