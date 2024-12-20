@@ -31,7 +31,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logstore/store"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 	"go.uber.org/zap"
 )
@@ -196,7 +195,7 @@ func (c *fastCleaner) TaskNameLocked() string {
 	return c.mutation.taskState.name
 }
 
-func (c *fastCleaner) Replay() (err error) {
+func (c *fastCleaner) Replay(_ context.Context) (err error) {
 	return
 }
 
@@ -376,10 +375,11 @@ func (c *fastCleaner) filterCheckpoints(
 }
 
 func (c *fastCleaner) collectCkpData(
+	inputCtx context.Context,
 	ckp *checkpoint.CheckpointEntry,
 ) (data *logtail.CheckpointData, err error) {
 	return logtail.GetCheckpointData(
-		c.ctx, c.sid, c.fs.Service, ckp.GetLocation(), ckp.GetVersion())
+		inputCtx, c.sid, c.fs.Service, ckp.GetLocation(), ckp.GetVersion())
 }
 
 func (c *fastCleaner) GetPITRs() (*logtail.PitrInfo, error) {
@@ -394,7 +394,7 @@ func (c *fastCleaner) GetPITRsLocked() (*logtail.PitrInfo, error) {
 	return c.mutation.snapshotMeta.GetPITR(c.ctx, c.sid, ts, c.fs.Service, c.mp)
 }
 
-func (c *fastCleaner) TryGC() (err error) {
+func (c *fastCleaner) TryGC(_ context.Context) (err error) {
 	now := time.Now()
 	c.StartMutationTask("gc-try-gc")
 	defer c.StopMutationTask()
@@ -592,7 +592,7 @@ func (c *fastCleaner) DoCheck() error {
 	return nil
 }
 
-func (c *fastCleaner) Process() {
+func (c *fastCleaner) Process(inputCtx context.Context) (err error) {
 	if !c.GCEnabled() {
 		return
 	}
@@ -603,7 +603,6 @@ func (c *fastCleaner) Process() {
 
 	startScanWaterMark := c.GetScanWaterMark()
 
-	var err error
 	defer func() {
 		endScanWaterMark := c.GetScanWaterMark()
 		logutil.Info(
@@ -622,9 +621,10 @@ func (c *fastCleaner) Process() {
 	if err = c.tryScanLocked(memoryBuffer); err != nil {
 		return
 	}
-	if err := c.tryGCLocked(memoryBuffer); err != nil {
+	if err = c.tryGCLocked(memoryBuffer); err != nil {
 		return
 	}
+	return
 }
 
 // tryScanLocked scans the incremental checkpoints and tries to create a new GC window
@@ -740,18 +740,6 @@ func (c *fastCleaner) RemoveChecker(key string) error {
 
 // appendFilesToWAL append the GC meta files to WAL.
 func (c *fastCleaner) appendFilesToWAL(files ...string) error {
-	driver := c.checkpointCli.GetDriver()
-	if driver == nil {
-		return nil
-	}
-	entry, err := store.BuildFilesEntry(files)
-	if err != nil {
-		return err
-	}
-	_, err = driver.AppendEntry(store.GroupFiles, entry)
-	if err != nil {
-		return err
-	}
 	return nil
 }
 

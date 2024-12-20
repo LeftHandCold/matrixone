@@ -53,6 +53,11 @@ func BuildBloomfilter(
 	var done bool
 	for {
 		bat.CleanOnlyData()
+		select {
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		default:
+		}
 		if done, err = sourcer(ctx, bat.Attrs, nil, mp, bat); err != nil {
 			return
 		}
@@ -111,6 +116,11 @@ func (exec *GCExecutor) doFilter(
 	for {
 		bat.CleanOnlyData()
 		canGCBat.CleanOnlyData()
+		select {
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		default:
+		}
 		// 1. get next batch from sourcer
 		done, err := sourcer(ctx, bat.Attrs, nil, exec.mp, bat)
 		if err != nil {

@@ -367,6 +367,16 @@ func handleShowTableStatus(ses *Session, execCtx *ExecCtx, stmt *tree.ShowTableS
 	}
 
 	getRoleName := func(roleId uint32) (roleName string, err error) {
+		accountId, err := defines.GetAccountId(ctx)
+		if err != nil {
+			return
+		}
+
+		if accountId != sysAccountID && roleId == moAdminRoleID {
+			roleName = accountAdminRoleName
+			return
+		}
+
 		sql := getSqlForRoleNameOfRoleId(int64(roleId))
 
 		var rets []ExecResult
@@ -392,23 +402,24 @@ func handleShowTableStatus(ses *Session, execCtx *ExecCtx, stmt *tree.ShowTableS
 		}
 
 		// set session variable
-		if err = ses.SetSessionSysVar(ctx, "mo_table_stats.reset_update_time", "yes"); err != nil {
+		if err = ses.SetSessionSysVar(ctx, "mo_table_stats.force_update", "yes"); err != nil {
 			return
 		}
 		defer func() {
-			_ = ses.SetSessionSysVar(ctx, "mo_table_stats.reset_update_time", "no")
+			_ = ses.SetSessionSysVar(ctx, "mo_table_stats.force_update", "no")
 		}()
 
 		sqlBuilder := strings.Builder{}
-		sqlBuilder.WriteString("select tbl, mo_table_rows(db, tbl), mo_table_size(db, tbl) from (")
+		sqlBuilder.WriteString("select tbl, mo_table_rows(db, tbl), mo_table_size(db, tbl) from (values ")
 		for i, tblName := range tblNames {
-			if i > 0 {
-				sqlBuilder.WriteString(" union all ")
+			if i != 0 {
+				sqlBuilder.WriteString(", ")
 			}
-			sqlBuilder.WriteString(fmt.Sprintf("select '%s' as db, '%s' as tbl", dbName, tblName))
+			sqlBuilder.WriteString(fmt.Sprintf("row('%s', '%s')", dbName, tblName))
 		}
-		sqlBuilder.WriteString(") tmp")
+		sqlBuilder.WriteString(") as tmp(db, tbl)")
 
+		// get table stats
 		var rets []ExecResult
 		if rets, err = executeSQLInBackgroundSession(ctx, bh, sqlBuilder.String()); err != nil {
 			return
@@ -1023,7 +1034,6 @@ func doExplainStmt(reqCtx context.Context, ses *Session, stmt *tree.ExplainStmt)
 	if err != nil {
 		return err
 	}
-	es.CmpContext = ses.GetTxnCompileCtx()
 
 	//get query optimizer and execute Optimize
 	exPlan, err := buildPlan(reqCtx, ses, ses.GetTxnCompileCtx(), stmt.Statement)
