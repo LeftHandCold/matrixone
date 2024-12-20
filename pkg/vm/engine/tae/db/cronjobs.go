@@ -143,7 +143,7 @@ func AddCronJob(db *DB, name string, skipMode bool) (err error) {
 		return
 	case CronJobs_Name_Fast_GCDisk:
 		err = db.CronJobs.AddJob(
-			CronJobs_Name_GCDisk,
+			CronJobs_Name_Fast_GCDisk,
 			5*time.Minute,
 			func(ctx context.Context) {
 				db.DiskCleaner.GC(ctx)
