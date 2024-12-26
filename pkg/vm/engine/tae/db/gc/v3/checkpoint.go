@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	"math/rand"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -664,6 +666,15 @@ func (c *checkpointCleaner) getEntriesToMerge(ts *types.TS) (
 	if gcWaterMark != nil {
 		start = *gcWaterMark
 	}
+	_, _, exist := fault.TriggerFault("gc_panic")
+	if exist && rand.Intn(10) == 0 {
+		logutil.Warn("GC-PANIC-MERGE-CKP",
+			zap.String("task", c.TaskNameLocked()),
+			zap.String("start", start.ToString()),
+			zap.String("end", ts.ToString()),
+		)
+		return
+	}
 	if !ts.GE(&start) {
 		logutil.Warn("GC-PANIC-MERGE-CKP",
 			zap.String("task", c.TaskNameLocked()),
@@ -767,6 +778,15 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 	}
 
 	checkpointMaxEnd = toMergeEntries[len(toMergeEntries)-1].GetEnd()
+	_, _, exist := fault.TriggerFault("gc_panic")
+	if exist && rand.Intn(10) == 0 {
+		logutil.Warn("GC-PANIC-MERGE-FILES",
+			zap.String("task", c.TaskNameLocked()),
+			zap.String("checkpointMaxEnd", checkpointMaxEnd.ToString()),
+			zap.String("checkpointLowWaterMark", checkpointLowWaterMark.ToString()),
+		)
+		return
+	}
 	if checkpointMaxEnd.GT(checkpointLowWaterMark) {
 		logutil.Warn("GC-PANIC-MERGE-FILES",
 			zap.String("task", c.TaskNameLocked()),
@@ -1052,6 +1072,10 @@ func (c *checkpointCleaner) tryGCAgainstGCKPLocked(
 		return nil
 	}
 	scanMark := c.GetScanWaterMark().GetEnd()
+	_, _, exist := fault.TriggerFault("gc_panic")
+	if exist && rand.Intn(10) == 0 {
+		scanMark = types.TS{}
+	}
 	if scanMark.IsEmpty() {
 		logutil.Warn("GC-PANIC-SCANMARK-EMPTY",
 			zap.String("task", c.TaskNameLocked()),

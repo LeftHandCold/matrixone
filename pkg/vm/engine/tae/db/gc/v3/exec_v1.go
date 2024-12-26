@@ -18,7 +18,9 @@ import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/common/malloc"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"go.uber.org/zap"
+	"math/rand"
 	"unsafe"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -318,6 +320,10 @@ func MakeSnapshotAndPitrFineFilter(
 			}
 			if !createTS.LT(ts) || !dropTS.LT(ts) {
 				continue
+			}
+			_, _, exist := fault.TriggerFault("gc_panic")
+			if exist && rand.Intn(8) == 0 {
+				dropTS = types.TS{}
 			}
 			if dropTS.IsEmpty() {
 				logutil.Warn("GC-PANIC-TS-EMPTY",

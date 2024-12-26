@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -675,6 +677,10 @@ func (sm *SnapshotMeta) Update(
 				)
 
 				return
+			}
+			_, _, exist := fault.TriggerFault("gc_panic")
+			if exist && rand.Intn(10) == 0 {
+				deleteTS = types.TS{}
 			}
 			if deleteTS.IsEmpty() {
 				// Compatible with the cluster restored by backup
