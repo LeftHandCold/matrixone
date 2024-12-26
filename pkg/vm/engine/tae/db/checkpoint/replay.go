@@ -177,6 +177,7 @@ func (c *CkpReplayer) ReadCkpFiles() (err error) {
 					logutil.Infof("compacted checkpoint entry: %v", e.String())
 				}
 			}
+			logutil.Infof("replay compacted checkpoint file %s success, entry %v", file.name, entry[0].end.ToString())
 			r.tryAddNewCompactedCheckpointEntry(entry[0])
 			closeCB()
 		}

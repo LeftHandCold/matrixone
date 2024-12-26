@@ -885,6 +885,20 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 		}
 	}
 	if c.GCCheckpointEnabled() {
+		if rand.Intn(3) == 0 {
+			for _, file := range deleteFiles {
+				if strings.Contains(file, checkpoint.PrefixMetadata) {
+					info := strings.Split(file, checkpoint.CheckpointDir+"/")
+					name := info[1]
+					logutil.Info(
+						"GC-PANIC-DELETE-FILES",
+						zap.String("task", c.TaskNameLocked()),
+						zap.String("file", name),
+					)
+				}
+			}
+			panic("GC-PANIC-DELETE-FILES")
+		}
 		if err = c.fs.DelFiles(c.ctx, deleteFiles); err != nil {
 			extraErrMsg = "DelFiles failed"
 			return err
