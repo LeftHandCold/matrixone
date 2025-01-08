@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/lni/goutils/leaktest"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/clusterservice"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -32,7 +34,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/statsinfo"
 	plan2 "github.com/matrixorigin/matrixone/pkg/sql/plan"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/cache"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestGetStats(t *testing.T) {
@@ -41,7 +42,7 @@ func TestGetStats(t *testing.T) {
 	defer cancel()
 	gs := NewGlobalStats(ctx, nil, nil,
 		WithUpdateWorkerFactor(4),
-		WithStatsUpdater(func(key statsinfo.StatsInfoKey, info *statsinfo.StatsInfo) bool {
+		WithStatsUpdater(func(_ context.Context, key statsinfo.StatsInfoKey, info *statsinfo.StatsInfo) bool {
 			info.BlockNumber = 20
 			return true
 		}),
@@ -137,8 +138,9 @@ func insertTable(
 	assert.NoError(t, err)
 	_, err = fillRandomRowidAndZeroTs(bat, e.mp)
 	assert.NoError(t, err)
-	e.catalog.InsertTable(bat)
-	tableItem := e.catalog.GetTableByName(0, did, tname)
+	ccache := e.catalog.Load()
+	ccache.InsertTable(bat)
+	tableItem := ccache.GetTableByName(0, did, tname)
 	assert.NotNil(t, tableItem)
 	defs, err := catalog.GenColumnsFromDefs(
 		0,
@@ -161,7 +163,7 @@ func TestUpdateStats(t *testing.T) {
 				TableID:    1001,
 			}
 			stats := plan2.NewStatsInfo()
-			updated := e.globalStats.doUpdate(k, stats)
+			updated := e.globalStats.doUpdate(ctx, k, stats)
 			assert.False(t, updated)
 		})
 	})
@@ -180,7 +182,7 @@ func TestUpdateStats(t *testing.T) {
 				TableID:    tid,
 			}
 			stats := plan2.NewStatsInfo()
-			updated := e.globalStats.doUpdate(k, stats)
+			updated := e.globalStats.doUpdate(ctx, k, stats)
 			assert.False(t, updated)
 		})
 	})
@@ -199,7 +201,7 @@ func TestUpdateStats(t *testing.T) {
 				TableID:    tid,
 			}
 			stats := plan2.NewStatsInfo()
-			updated := e.globalStats.doUpdate(k, stats)
+			updated := e.globalStats.doUpdate(ctx, k, stats)
 			assert.True(t, updated)
 		}, WithApproxObjectNumUpdater(func() int64 {
 			return 10

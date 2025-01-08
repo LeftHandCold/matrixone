@@ -68,8 +68,7 @@ func extractRowFromEveryVector(
 			rowIndex = 0
 		}
 
-		err := extractRowFromVector(ctx, vec, i, row, rowIndex)
-		if err != nil {
+		if err := extractRowFromVector(ctx, vec, i, row, rowIndex); err != nil {
 			return err
 		}
 		rowIndex = rowIndexBackup
@@ -672,7 +671,7 @@ func AesCFBDecode(ctx context.Context, data string) (string, error) {
 	return AesCFBDecodeWithKey(ctx, data, []byte(AesKey))
 }
 
-func AesCFBDecodeWithKey(ctx context.Context, data string, aesKey []byte) (string, error) {
+var AesCFBDecodeWithKey = func(ctx context.Context, data string, aesKey []byte) (string, error) {
 	if len(aesKey) == 0 {
 		return "", moerr.NewInternalErrorNoCtx("AesKey is not initialized")
 	}

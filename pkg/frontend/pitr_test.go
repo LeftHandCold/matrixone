@@ -2943,7 +2943,7 @@ func Test_restoreViews(t *testing.T) {
 		bh.sql2result["rollback;"] = nil
 
 		viewMap := map[string]*tableInfo{}
-		err := restoreViews(ctx, ses, bh, "sp01", viewMap, 0)
+		err := restoreViews(ctx, ses, bh, "sp01", viewMap, 0, 0)
 		assert.Error(t, err)
 
 		sql := "select * from mo_catalog.mo_snapshots where sname = 'sp01'"
@@ -2955,7 +2955,7 @@ func Test_restoreViews(t *testing.T) {
 		mrs = newMrsForPitrRecord([][]interface{}{{uint64(0), "sys", "open", uint64(1), ""}})
 		bh.sql2result[sql] = mrs
 
-		err = restoreViews(ctx, ses, bh, "sp01", viewMap, 0)
+		err = restoreViews(ctx, ses, bh, "sp01", viewMap, 0, 0)
 		assert.NoError(t, err)
 
 		viewMap = map[string]*tableInfo{
@@ -2966,7 +2966,7 @@ func Test_restoreViews(t *testing.T) {
 				createSql: "create view view01",
 			},
 		}
-		err = restoreViews(ctx, ses, bh, "sp01", viewMap, 0)
+		err = restoreViews(ctx, ses, bh, "sp01", viewMap, 0, 0)
 		assert.Error(t, err)
 	})
 }
@@ -3396,4 +3396,33 @@ func Test_RestoreOtherAccount(t *testing.T) {
 		_, err = doRestorePitr(ctx, ses, stmt)
 		assert.Error(t, err)
 	})
+}
+
+func Test_getPitrLengthAndUnit(t *testing.T) {
+	ctx := defines.AttachAccountId(context.Background(), sysAccountID)
+
+	bh := &backgroundExecTest{}
+	bh.init()
+
+	bhStub := gostub.StubFunc(&NewBackgroundExec, bh)
+	defer bhStub.Reset()
+
+	sql := getSqlForGetLengthAndUnitFmt(0, "account", "acc1", "", "")
+	bh.sql2result[sql] = newMrsForPitrRecord([][]interface{}{
+		{1, "h"},
+	})
+	length, unit, ok, err := getPitrLengthAndUnit(ctx, bh, "account", "acc1", "", "")
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), length)
+	assert.Equal(t, "h", unit)
+	assert.True(t, ok)
+
+	sql = getSqlForGetLengthAndUnitFmt(0, "database", "", "db", "")
+	bh.sql2result[sql] = newMrsForPitrRecord([][]interface{}{})
+	_, _, ok, err = getPitrLengthAndUnit(ctx, bh, "database", "", "db", "")
+	assert.NoError(t, err)
+	assert.False(t, ok)
+
+	_, _, _, err = getPitrLengthAndUnit(ctx, bh, "table", "", "", "tbl")
+	assert.Error(t, err)
 }

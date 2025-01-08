@@ -46,7 +46,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
-	"github.com/matrixorigin/matrixone/pkg/sql/colexec/anti"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/apply"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/connector"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/deletion"
@@ -55,11 +54,8 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/fill"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/filter"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/group"
-	"github.com/matrixorigin/matrixone/pkg/sql/colexec/indexjoin"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/intersect"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/intersectall"
-	"github.com/matrixorigin/matrixone/pkg/sql/colexec/join"
-	"github.com/matrixorigin/matrixone/pkg/sql/colexec/left"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/lockop"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/loopjoin"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/merge"
@@ -71,11 +67,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/minus"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/multi_update"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/output"
-	"github.com/matrixorigin/matrixone/pkg/sql/colexec/product"
-	"github.com/matrixorigin/matrixone/pkg/sql/colexec/productl2"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/sample"
-	"github.com/matrixorigin/matrixone/pkg/sql/colexec/semi"
-	"github.com/matrixorigin/matrixone/pkg/sql/colexec/single"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/source"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/table_scan"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/value_scan"
@@ -95,6 +87,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/readutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/message"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
@@ -2039,61 +2032,6 @@ func (c *Compile) compileProjection(n *plan.Node, ss []*Scope) []*Scope {
 			} else {
 				c.setProjection(n, ss[i])
 			}
-		case *anti.AntiJoin:
-			if op.ProjectList == nil {
-				op.ProjectList = n.ProjectList
-			} else {
-				c.setProjection(n, ss[i])
-			}
-		case *indexjoin.IndexJoin:
-			if op.ProjectList == nil {
-				op.ProjectList = n.ProjectList
-			} else {
-				c.setProjection(n, ss[i])
-			}
-		case *join.InnerJoin:
-			if op.ProjectList == nil {
-				op.ProjectList = n.ProjectList
-			} else {
-				c.setProjection(n, ss[i])
-			}
-		case *left.LeftJoin:
-			if op.ProjectList == nil {
-				op.ProjectList = n.ProjectList
-			} else {
-				c.setProjection(n, ss[i])
-			}
-		case *loopjoin.LoopJoin:
-			if op.ProjectList == nil {
-				op.ProjectList = n.ProjectList
-			} else {
-				c.setProjection(n, ss[i])
-			}
-		case *product.Product:
-			if op.ProjectList == nil {
-				op.ProjectList = n.ProjectList
-			} else {
-				c.setProjection(n, ss[i])
-			}
-		case *productl2.Productl2:
-			if op.ProjectList == nil {
-				op.ProjectList = n.ProjectList
-			} else {
-				c.setProjection(n, ss[i])
-			}
-		case *semi.SemiJoin:
-			if op.ProjectList == nil {
-				op.ProjectList = n.ProjectList
-			} else {
-				c.setProjection(n, ss[i])
-			}
-		case *single.SingleJoin:
-			if op.ProjectList == nil {
-				op.ProjectList = n.ProjectList
-			} else {
-				c.setProjection(n, ss[i])
-			}
-
 		default:
 			c.setProjection(n, ss[i])
 		}
@@ -3305,12 +3243,14 @@ func (c *Compile) compileMultiUpdate(_ []*plan.Node, n *plan.Node, ss []*Scope) 
 		rs.setRootOperator(multiUpdateArg)
 		ss = []*Scope{rs}
 	} else {
-		for i := range ss {
-			multiUpdateArg := constructMultiUpdate(n, c.e)
-			multiUpdateArg.Action = multi_update.UpdateWriteTable
-			multiUpdateArg.SetAnalyzeControl(c.anal.curNodeIdx, currentFirstFlag)
-			ss[i].setRootOperator(multiUpdateArg)
+		if len(ss) > 0 {
+			rs := c.newMergeScope(ss)
+			ss = []*Scope{rs}
 		}
+		multiUpdateArg := constructMultiUpdate(n, c.e)
+		multiUpdateArg.Action = multi_update.UpdateWriteTable
+		multiUpdateArg.SetAnalyzeControl(c.anal.curNodeIdx, currentFirstFlag)
+		ss[0].setRootOperator(multiUpdateArg)
 	}
 	c.anal.isFirst = false
 	return ss, nil
@@ -3406,16 +3346,18 @@ func (c *Compile) compileLock(n *plan.Node, ss []*Scope) ([]*Scope, error) {
 	}
 
 	currentFirstFlag := c.anal.isFirst
-	for i := range ss {
-		var err error
-		var lockOpArg *lockop.LockOp
-		lockOpArg, err = constructLockOp(n, c.e)
-		if err != nil {
-			return nil, err
-		}
-		lockOpArg.SetAnalyzeControl(c.anal.curNodeIdx, currentFirstFlag)
-		ss[i].doSetRootOperator(lockOpArg)
+	if len(ss) > 0 {
+		rs := c.newMergeScope(ss)
+		ss = []*Scope{rs}
 	}
+	var err error
+	var lockOpArg *lockop.LockOp
+	lockOpArg, err = constructLockOp(n, c.e)
+	if err != nil {
+		return nil, err
+	}
+	lockOpArg.SetAnalyzeControl(c.anal.curNodeIdx, currentFirstFlag)
+	ss[0].doSetRootOperator(lockOpArg)
 	c.anal.isFirst = false
 	return ss, nil
 }
@@ -3986,7 +3928,7 @@ func (c *Compile) expandRanges(
 	blockFilterList []*plan.Expr, policy engine.DataCollectPolicy, rsp *engine.RangesShuffleParam) (engine.RelData, error) {
 
 	preAllocBlocks := 2
-	if policy&engine.Policy_CollectCommittedData != 0 {
+	if policy&engine.Policy_CollectCommittedPersistedData != 0 {
 		if !c.IsTpQuery() {
 			if len(blockFilterList) > 0 {
 				preAllocBlocks = 64
@@ -4015,7 +3957,8 @@ func (c *Compile) expandRanges(
 
 	if n.TableDef.Partition != nil {
 		begin := 0
-		if policy&engine.Policy_CollectUncommittedData != 0 {
+		if policy&engine.Policy_CollectCommittedInmemData != 0 ||
+			policy&engine.Policy_CollectUncommittedInmemData != 0 {
 			begin = 1 //skip empty block info
 		}
 		rangesParam.PreAllocBlocks = 2
@@ -4150,8 +4093,23 @@ func (c *Compile) handleDbRelContext(node *plan.Node, onRemoteCN bool) (engine.R
 	return rel, db, ctx, nil
 }
 
+func shouldScanOnCurrentCN(c *Compile, n *plan.Node, forceSingle bool) bool {
+	if len(c.cnList) == 1 ||
+		n.Stats.ForceOneCN ||
+		forceSingle {
+		return true
+	}
+
+	if !plan2.GetForceScanOnMultiCN() &&
+		n.Stats.BlockNum <= int32(plan2.BlockThresholdForOneCN) {
+		return true
+	}
+
+	return false
+}
+
 func (c *Compile) generateNodes(n *plan.Node) (engine.Nodes, error) {
-	_, _, _, err := c.handleDbRelContext(n, false)
+	rel, _, _, err := c.handleDbRelContext(n, false)
 	if err != nil {
 		return nil, err
 	}
@@ -4169,7 +4127,7 @@ func (c *Compile) generateNodes(n *plan.Node) (engine.Nodes, error) {
 
 	var nodes engine.Nodes
 	// scan on current CN
-	if len(c.cnList) == 1 || n.Stats.ForceOneCN || forceSingle || n.Stats.BlockNum <= int32(plan2.BlockThresholdForOneCN) {
+	if shouldScanOnCurrentCN(c, n, forceSingle) {
 		mcpu := c.generateCPUNumber(c.ncpu, int(n.Stats.BlockNum))
 		if forceSingle {
 			mcpu = 1
@@ -4184,13 +4142,22 @@ func (c *Compile) generateNodes(n *plan.Node) (engine.Nodes, error) {
 
 	// scan on multi CN
 	for i := range c.cnList {
-		nodes = append(nodes, engine.Node{
+		node := engine.Node{
 			Id:    c.cnList[i].Id,
 			Addr:  c.cnList[i].Addr,
 			Mcpu:  c.cnList[i].Mcpu,
 			CNCNT: int32(len(c.cnList)),
 			CNIDX: int32(i),
-		})
+		}
+		if node.Addr != c.addr {
+			uncommittedTombs, err := collectTombstones(c, n, rel, engine.Policy_CollectAllTombstones)
+			if err != nil {
+				return nil, err
+			}
+			node.Data = readutil.BuildEmptyRelData()
+			node.Data.AttachTombstones(uncommittedTombs)
+		}
+		nodes = append(nodes, node)
 	}
 	return nodes, nil
 }

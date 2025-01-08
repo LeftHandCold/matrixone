@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/pb/logtail"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
@@ -174,6 +176,13 @@ type delayedCacheApply struct {
 	sync.Mutex
 	replayed bool
 	flist    []func()
+}
+
+func (c *PushClient) dcaReset() {
+	c.dca.Lock()
+	defer c.dca.Unlock()
+	c.dca.replayed = false
+	c.dca.flist = c.dca.flist[:0]
 }
 
 func (c *PushClient) dcaTryDelay(isSub bool, f func()) (delayed bool) {
@@ -516,7 +525,7 @@ func (c *PushClient) subscribeTable(
 		if err != nil {
 			return err
 		}
-		logutil.Debugf("%s send subscribe tbl[db: %d, tbl: %d] request succeed", logTag, tblId.DbId, tblId.TbId)
+		logutil.Infof("%s send subscribe tbl[db: %d, tbl: %d] request succeed", logTag, tblId.DbId, tblId.TbId)
 		return nil
 	}
 }
@@ -571,6 +580,10 @@ func (c *PushClient) receiveOneLogtail(ctx context.Context, e *Engine) error {
 
 	// Client receives one logtail counter.
 	defer v2.LogTailClientReceiveCounter.Add(1)
+
+	if enabled, p := objectio.CNRecvErrInjected(); enabled && rand.Intn(100000) < p {
+		return moerr.NewInternalError(ctx, "FIND_TABLE random error")
+	}
 
 	resp := c.subscriber.receiveResponse(ctx)
 	if resp.err != nil {
@@ -724,6 +737,7 @@ func (c *PushClient) replayCatalogCache(ctx context.Context, e *Engine) (err err
 	var op client.TxnOperator
 	var result executor.Result
 	ts := c.receivedLogTailTime.getTimestamp()
+	ccache := e.catalog.Load()
 	typeTs := types.TimestampToTS(ts)
 	createByOpt := client.WithTxnCreateBy(
 		0,
@@ -765,7 +779,7 @@ func (c *PushClient) replayCatalogCache(ctx context.Context, e *Engine) (err err
 		if err = fillTsVecForSysTableQueryBatch(b, typeTs, result.Mp); err != nil {
 			return err
 		}
-		e.catalog.InsertDatabase(b)
+		ccache.InsertDatabase(b)
 	}
 
 	// read tables
@@ -780,7 +794,7 @@ func (c *PushClient) replayCatalogCache(ctx context.Context, e *Engine) (err err
 			return err
 		}
 		e.tryAdjustThreeTablesCreatedTimeWithBatch(b)
-		e.catalog.InsertTable(b)
+		ccache.InsertTable(b)
 	}
 
 	// read columns
@@ -796,7 +810,7 @@ func (c *PushClient) replayCatalogCache(ctx context.Context, e *Engine) (err err
 			if err = fillTsVecForSysTableQueryBatch(b, typeTs, result.Mp); err != nil {
 				return err
 			}
-			e.catalog.InsertColumns(b)
+			ccache.InsertColumns(b)
 		}
 	} else {
 		logutil.Info("FIND_TABLE merge mo_columns results")
@@ -810,10 +824,10 @@ func (c *PushClient) replayCatalogCache(ctx context.Context, e *Engine) (err err
 		if err = fillTsVecForSysTableQueryBatch(bat, typeTs, result.Mp); err != nil {
 			return err
 		}
-		e.catalog.InsertColumns(bat)
+		ccache.InsertColumns(bat)
 	}
 
-	e.catalog.UpdateStart(typeTs)
+	ccache.UpdateDuration(typeTs, types.MaxTs())
 	c.dcaConfirmAndApply()
 	return nil
 
@@ -824,6 +838,7 @@ func (c *PushClient) connect(ctx context.Context, e *Engine) {
 		c.startConsumers(ctx, e)
 
 		for {
+			c.dcaReset()
 			err := c.subSysTables(ctx)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
@@ -894,6 +909,7 @@ func (c *PushClient) connect(ctx context.Context, e *Engine) {
 
 		c.resume()
 
+		c.dcaReset()
 		err = c.subSysTables(ctx)
 		if err != nil {
 			c.pause(false)
@@ -1031,7 +1047,7 @@ func (c *PushClient) doGCPartitionState(ctx context.Context, e *Engine) {
 	for ids, part := range parts {
 		part.Truncate(ctx, ids, ts)
 	}
-	e.catalog.GC(ts.ToTimestamp())
+	e.catalog.Load().GC(ts.ToTimestamp())
 }
 
 func (c *PushClient) partitionStateGCTicker(ctx context.Context, e *Engine) {
@@ -1106,6 +1122,10 @@ func (c *PushClient) toSubIfUnsubscribed(ctx context.Context, dbId, tblId uint64
 			}(); err != nil {
 				return InvalidSubState, err
 			}
+		}
+		v, exist := c.subscribed.m[tblId]
+		if exist && v.SubState == Subscribed {
+			return Subscribed, nil
 		}
 		c.subscribed.m[tblId] = SubTableStatus{
 			DBID:     dbId,
@@ -1495,7 +1515,6 @@ func (s *logTailSubscriber) init(
 
 	s.sendSubscribe = s.subscribeTable
 	s.sendUnSubscribe = s.unSubscribeTable
-	s.setReady()
 	return nil
 }
 
@@ -2036,18 +2055,20 @@ func updatePartitionOfPush(
 				state.UpdateDuration(ckpStart, types.MaxTs())
 				if lazyLoad {
 					state.AppendCheckpoint(tl.CkpLocation, partition)
-				} else {
-					//Notice that the checkpoint duration is same among all mo system tables,
-					//such as mo_databases, mo_tables, mo_columns.
-					e.GetLatestCatalogCache().UpdateDuration(ckpStart, types.MaxTs())
 				}
+				// else {
+				//Notice that the checkpoint duration is same among all mo system tables,
+				//such as mo_databases, mo_tables, mo_columns.
+				//	e.GetLatestCatalogCache().UpdateDuration(ckpStart, types.MaxTs())
+
 				v2.LogtailUpdatePartitonUpdateTimestampsDurationHistogram.Observe(time.Since(t0).Seconds())
 			}
 		} else {
 			state.UpdateDuration(types.TS{}, types.MaxTs())
-			if !lazyLoad {
-				e.GetLatestCatalogCache().UpdateDuration(types.TS{}, types.MaxTs())
-			}
+			// leave this to replayCatalogCache
+			// if !lazyLoad {
+			// 	e.GetLatestCatalogCache().UpdateDuration(types.TS{}, types.MaxTs())
+			// }
 		}
 	}
 

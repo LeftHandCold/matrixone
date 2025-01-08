@@ -85,6 +85,8 @@ const (
 		`sink_password, ` +
 		`tables, ` +
 		`filters, ` +
+		`start_ts, ` +
+		`end_ts, ` +
 		`no_full, ` +
 		`additional_config ` +
 		`from ` +
@@ -278,8 +280,8 @@ func handleCreateCdc(ses *Session, execCtx *ExecCtx, create *tree.CreateCDC) err
 
 func doCreateCdc(ctx context.Context, ses *Session, create *tree.CreateCDC) (err error) {
 	service := ses.GetService()
-	ts := getPu(service).TaskService
-	if ts == nil {
+	taskService := getPu(service).TaskService
+	if taskService == nil {
 		return moerr.NewInternalError(ctx, "no task service is found")
 	}
 
@@ -297,6 +299,13 @@ func doCreateCdc(ctx context.Context, ses *Session, create *tree.CreateCDC) (err
 	if err != nil {
 		return err
 	}
+
+	bh := ses.GetBackgroundExec(ctx)
+	defer bh.Close()
+	if err = checkPitr(ctx, bh, ses.GetTenantName(), tablePts); err != nil {
+		return
+	}
+
 	jsonTables, err := cdc2.JsonEncode(tablePts)
 	if err != nil {
 		return
@@ -306,6 +315,23 @@ func doCreateCdc(ctx context.Context, ses *Session, create *tree.CreateCDC) (err
 	exclude := cdcTaskOptionsMap["Exclude"]
 	if _, err = regexp.Compile(exclude); err != nil {
 		return moerr.NewInternalErrorf(ctx, "invalid exclude expression: %s, err: %v", exclude, err)
+	}
+
+	var ts time.Time
+	startTs := cdcTaskOptionsMap[cdc2.StartTs]
+	if startTs != "" {
+		if ts, err = parseTimestamp(startTs, ses.timeZone); err != nil {
+			return moerr.NewInternalErrorf(ctx, "invalid startTs: %s, supported timestamp format: `%s`, or `%s`", startTs, time.DateTime, time.RFC3339)
+		}
+		startTs = ts.Format(time.RFC3339)
+	}
+
+	endTs := cdcTaskOptionsMap[cdc2.EndTs]
+	if endTs != "" {
+		if ts, err = parseTimestamp(endTs, ses.timeZone); err != nil {
+			return moerr.NewInternalErrorf(ctx, "invalid endTs: %s, supported timestamp format: `%s`, or `%s`", endTs, time.DateTime, time.RFC3339)
+		}
+		endTs = ts.Format(time.RFC3339)
 	}
 
 	//step 4: check source uri format and strip password
@@ -398,7 +424,7 @@ func doCreateCdc(ctx context.Context, ses *Session, create *tree.CreateCDC) (err
 		var encodedSinkPwd string
 		if !useConsole {
 			// TODO replace with creatorAccountId
-			if err = initAesKeyWrapper(ctx, tx, catalog.System_Account, service); err != nil {
+			if err = initAesKeyBySqlExecutor(ctx, tx, catalog.System_Account, service); err != nil {
 				return
 			}
 
@@ -427,8 +453,8 @@ func doCreateCdc(ctx context.Context, ses *Session, create *tree.CreateCDC) (err
 			"",
 			cdc2.SASCommon,
 			cdc2.SASCommon,
-			"", //1.3 does not support startTs
-			"", //1.3 does not support endTs
+			startTs,
+			endTs,
 			cdcTaskOptionsMap["ConfigFile"],
 			time.Now().UTC(),
 			CdcRunning,
@@ -451,7 +477,7 @@ func doCreateCdc(ctx context.Context, ses *Session, create *tree.CreateCDC) (err
 		return int(cdcTaskRowsAffected), nil
 	}
 
-	if _, err = ts.AddCdcTask(ctx, cdcTaskMetadata(cdcId.String()), details, addCdcTaskCallback); err != nil {
+	if _, err = taskService.AddCdcTask(ctx, cdcTaskMetadata(cdcId.String()), details, addCdcTaskCallback); err != nil {
 		return err
 	}
 	return
@@ -470,7 +496,7 @@ func cdcTaskMetadata(cdcId string) task.TaskMetadata {
 	}
 }
 
-func queryTable(
+var queryTable = func(
 	ctx context.Context,
 	tx taskservice.SqlExecutor,
 	query string,
@@ -499,6 +525,60 @@ func queryTable(
 		}
 	}
 	return false, nil
+}
+
+var checkPitr = func(ctx context.Context, bh BackgroundExec, accName string, pts *cdc2.PatternTuples) error {
+	// TODO min length
+	minPitrLen := int64(2)
+	checkPitrByLevel := func(level, dbName, tblName string) (bool, error) {
+		length, unit, ok, err := getPitrLengthAndUnit(ctx, bh, level, accName, dbName, tblName)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil
+		}
+		return !(unit == "h" && length < minPitrLen), nil
+	}
+
+	for _, pt := range pts.Pts {
+		dbName := pt.Source.Database
+		tblName := pt.Source.Table
+		level := cdc2.TableLevel
+		if dbName == cdc2.MatchAll && tblName == cdc2.MatchAll { // account level
+			level = cdc2.AccountLevel
+		} else if tblName == cdc2.MatchAll { // db level
+			level = cdc2.DbLevel
+		}
+
+		if ok, err := checkPitrByLevel(cdc2.AccountLevel, dbName, tblName); err != nil {
+			return err
+		} else if ok {
+			// covered by account level pitr
+			continue
+		}
+
+		if level == cdc2.DbLevel || level == cdc2.TableLevel {
+			if ok, err := checkPitrByLevel(cdc2.DbLevel, dbName, tblName); err != nil {
+				return err
+			} else if ok {
+				// covered by db level pitr
+				continue
+			}
+		}
+
+		if level == cdc2.TableLevel {
+			if ok, err := checkPitrByLevel(cdc2.TableLevel, dbName, tblName); err != nil {
+				return err
+			} else if ok {
+				// covered by table level pitr
+				continue
+			}
+		}
+
+		return moerr.NewInternalErrorf(ctx, "no account/db/table level pitr with enough length found for pattern: %s, min pitr length: %d h", pt.OriginString, minPitrLen)
+	}
+	return nil
 }
 
 // getPatternTuple pattern example:
@@ -648,6 +728,8 @@ func RegisterCdcExecutor(
 }
 
 type CdcTask struct {
+	sync.Mutex
+
 	logger *zap.Logger
 	ie     ie.InternalExecutor
 
@@ -664,7 +746,7 @@ type CdcTask struct {
 	sinkUri          cdc2.UriInfo
 	tables           cdc2.PatternTuples
 	exclude          *regexp.Regexp
-	startTs          types.TS
+	startTs, endTs   types.TS
 	noFull           bool
 	additionalConfig map[string]interface{}
 
@@ -804,12 +886,14 @@ func (cdc *CdcTask) Restart() (err error) {
 		}
 	}()
 
-	// delete previous records
-	if err = cdc.watermarkUpdater.DeleteAllFromDb(); err != nil {
-		return
+	if cdc.isRunning {
+		cdc.activeRoutine.CloseCancel()
+		cdc.isRunning = false
+		// let Start() go
+		cdc.holdCh <- 1
 	}
+
 	go func() {
-		// closed in Pause, need renew
 		cdc.activeRoutine = cdc2.NewCdcActiveRoutine()
 		_ = cdc.startFunc(context.Background())
 	}()
@@ -826,9 +910,9 @@ func (cdc *CdcTask) Pause() error {
 	if cdc.isRunning {
 		cdc.activeRoutine.ClosePause()
 		cdc.isRunning = false
+		// let Start() go
+		cdc.holdCh <- 1
 	}
-	// let Start() go
-	cdc.holdCh <- 1
 	return nil
 }
 
@@ -846,29 +930,9 @@ func (cdc *CdcTask) Cancel() (err error) {
 	if cdc.isRunning {
 		cdc.activeRoutine.CloseCancel()
 		cdc.isRunning = false
+		// let Start() go
+		cdc.holdCh <- 1
 	}
-	if err = cdc.watermarkUpdater.DeleteAllFromDb(); err != nil {
-		return err
-	}
-	// let Start() go
-	cdc.holdCh <- 1
-	return
-}
-
-func (cdc *CdcTask) resetWatermarkForTable(info *cdc2.DbTableInfo) (err error) {
-	dbName, tblName := info.SourceDbName, info.SourceTblName
-	// delete old watermark of table
-	cdc.watermarkUpdater.DeleteFromMem(dbName, tblName)
-	if err = cdc.watermarkUpdater.DeleteFromDb(dbName, tblName); err != nil {
-		return
-	}
-
-	// use start_ts as init watermark
-	// TODO handle no_full
-	if err = cdc.watermarkUpdater.InsertIntoDb(info, cdc.startTs); err != nil {
-		return
-	}
-	cdc.watermarkUpdater.UpdateMem(dbName, tblName, cdc.startTs)
 	return
 }
 
@@ -890,7 +954,7 @@ func (cdc *CdcTask) initAesKeyByInternalExecutor(ctx context.Context, accountId 
 		return err
 	}
 
-	cdc2.AesKey, err = decrypt(ctx, encryptedKey, []byte(getGlobalPuWrapper(cdc.cnUUID).SV.KeyEncryptionKey))
+	cdc2.AesKey, err = cdc2.AesCFBDecodeWithKey(ctx, encryptedKey, []byte(getGlobalPuWrapper(cdc.cnUUID).SV.KeyEncryptionKey))
 	return
 }
 
@@ -910,18 +974,24 @@ func (cdc *CdcTask) updateErrMsg(ctx context.Context, errMsg string) (err error)
 }
 
 func (cdc *CdcTask) handleNewTables(allAccountTbls map[uint32]cdc2.TblMap) {
+	// lock to avoid create pipelines for the same table
+	cdc.Lock()
+	defer cdc.Unlock()
+
 	accountId := uint32(cdc.cdcTask.Accounts[0].GetId())
 	ctx := defines.AttachAccountId(context.Background(), accountId)
 
 	txnOp, err := cdc2.GetTxnOp(ctx, cdc.cnEngine, cdc.cnTxnClient, "cdc-handleNewTables")
 	if err != nil {
 		logutil.Errorf("cdc task %s get txn op failed, err: %v", cdc.cdcTask.TaskName, err)
+		return
 	}
 	defer func() {
 		cdc2.FinishTxnOp(ctx, err, txnOp, cdc.cnEngine)
 	}()
 	if err = cdc.cnEngine.New(ctx, txnOp); err != nil {
 		logutil.Errorf("cdc task %s new engine failed, err: %v", cdc.cdcTask.TaskName, err)
+		return
 	}
 
 	for key, info := range allAccountTbls[accountId] {
@@ -930,16 +1000,17 @@ func (cdc *CdcTask) handleNewTables(allAccountTbls map[uint32]cdc2.TblMap) {
 			continue
 		}
 
-		if !cdc.matchAnyPattern(key, info) {
-			continue
-		}
-
 		if cdc.exclude != nil && cdc.exclude.MatchString(key) {
 			continue
 		}
 
-		logutil.Infof("cdc task find new table: %s", info)
-		if err = cdc.addExecPipelineForTable(ctx, info, txnOp); err != nil {
+		newTableInfo := info.Clone()
+		if !cdc.matchAnyPattern(key, newTableInfo) {
+			continue
+		}
+
+		logutil.Infof("cdc task find new table: %s", newTableInfo)
+		if err = cdc.addExecPipelineForTable(ctx, newTableInfo, txnOp); err != nil {
 			logutil.Errorf("cdc task %s add exec pipeline for table %s failed, err: %v", cdc.cdcTask.TaskName, key, err)
 		} else {
 			logutil.Infof("cdc task %s add exec pipeline for table %s successfully", cdc.cdcTask.TaskName, key)
@@ -984,7 +1055,6 @@ func (cdc *CdcTask) addExecPipelineForTable(ctx context.Context, info *cdc2.DbTa
 		if cdc.noFull {
 			watermark = types.TimestampToTS(txnOp.SnapshotTS())
 		}
-
 		if err = cdc.watermarkUpdater.InsertIntoDb(info, watermark); err != nil {
 			return
 		}
@@ -1030,9 +1100,11 @@ func (cdc *CdcTask) addExecPipelineForTable(ctx context.Context, info *cdc2.DbTa
 		sinker,
 		cdc.watermarkUpdater,
 		tableDef,
-		cdc.resetWatermarkForTable,
 		cdc.additionalConfig[cdc2.InitSnapshotSplitTxn].(bool),
 		cdc.runningReaders,
+		cdc.startTs,
+		cdc.endTs,
+		cdc.noFull,
 	)
 	go reader.Run(ctx, cdc.activeRoutine)
 
@@ -1113,18 +1185,50 @@ func (cdc *CdcTask) retrieveCdcTask(ctx context.Context) error {
 		}
 	}
 
+	convertToTs := func(tsStr string) (types.TS, error) {
+		t, err := parseTimestamp(tsStr, nil)
+		if err != nil {
+			return types.TS{}, err
+		}
+
+		return types.BuildTS(t.UnixNano(), 0), nil
+	}
+
+	// startTs
+	startTs, err := res.GetString(ctx, 0, 5)
+	if err != nil {
+		return err
+	}
+	if startTs == "" {
+		cdc.startTs = types.TS{}
+	} else {
+		if cdc.startTs, err = convertToTs(startTs); err != nil {
+			return err
+		}
+	}
+
+	// endTs
+	endTs, err := res.GetString(ctx, 0, 6)
+	if err != nil {
+		return err
+	}
+	if endTs == "" {
+		cdc.endTs = types.TS{}
+	} else {
+		if cdc.endTs, err = convertToTs(endTs); err != nil {
+			return err
+		}
+	}
+
 	// noFull
-	noFull, err := res.GetString(ctx, 0, 5)
+	noFull, err := res.GetString(ctx, 0, 7)
 	if err != nil {
 		return err
 	}
 	cdc.noFull, _ = strconv.ParseBool(noFull)
 
-	// startTs
-	cdc.startTs = types.TS{}
-
 	// additionalConfig
-	additionalConfigStr, err := res.GetString(ctx, 0, 6)
+	additionalConfigStr, err := res.GetString(ctx, 0, 8)
 	if err != nil {
 		return err
 	}
@@ -1554,13 +1658,10 @@ func getTaskCkp(ctx context.Context, bh BackgroundExec, accountId uint32, taskId
 }
 
 var (
-	queryTableWrapper  = queryTable
-	decrypt            = cdc2.AesCFBDecodeWithKey
 	getGlobalPuWrapper = getPu
-	initAesKeyWrapper  = initAesKeyBySqlExecutor
 )
 
-func initAesKeyBySqlExecutor(ctx context.Context, executor taskservice.SqlExecutor, accountId uint32, service string) (err error) {
+var initAesKeyBySqlExecutor = func(ctx context.Context, executor taskservice.SqlExecutor, accountId uint32, service string) (err error) {
 	if len(cdc2.AesKey) > 0 {
 		return nil
 	}
@@ -1569,7 +1670,7 @@ func initAesKeyBySqlExecutor(ctx context.Context, executor taskservice.SqlExecut
 	var ret bool
 	querySql := fmt.Sprintf(getDataKeyFormat, accountId, cdc2.InitKeyId)
 
-	ret, err = queryTableWrapper(ctx, executor, querySql, func(ctx context.Context, rows *sql.Rows) (bool, error) {
+	ret, err = queryTable(ctx, executor, querySql, func(ctx context.Context, rows *sql.Rows) (bool, error) {
 		if err = rows.Scan(&encryptedKey); err != nil {
 			return false, err
 		}
@@ -1581,6 +1682,21 @@ func initAesKeyBySqlExecutor(ctx context.Context, executor taskservice.SqlExecut
 		return moerr.NewInternalError(ctx, "no data key")
 	}
 
-	cdc2.AesKey, err = decrypt(ctx, encryptedKey, []byte(getGlobalPuWrapper(service).SV.KeyEncryptionKey))
+	cdc2.AesKey, err = cdc2.AesCFBDecodeWithKey(ctx, encryptedKey, []byte(getGlobalPuWrapper(service).SV.KeyEncryptionKey))
+	return
+}
+
+func parseTimestamp(tsStr string, tz *time.Location) (ts time.Time, err error) {
+	if tsStr == "" {
+		return
+	}
+
+	if tz != nil {
+		if ts, err = time.ParseInLocation(time.DateTime, tsStr, tz); err == nil {
+			return
+		}
+	}
+
+	ts, err = time.Parse(time.RFC3339, tsStr)
 	return
 }
