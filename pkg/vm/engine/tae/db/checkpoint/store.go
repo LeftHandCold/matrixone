@@ -738,6 +738,7 @@ func (s *runnerStore) GCNeeded() bool {
 	defer s.RUnlock()
 	// no gc intent, no need to GC
 	if s.gcIntent.IsEmpty() {
+		logutil.Infof("no gc intent, no need to GC")
 		return false
 	}
 	intent := s.gcIntent
@@ -747,6 +748,7 @@ func (s *runnerStore) GCNeeded() bool {
 		intent = safeTS
 	}
 	minTS := s.minTSLocked()
+	logutil.Infof("gc intent: %s, safeTS: %s, minTS: %s", intent.ToString(), safeTS.ToString(), minTS.ToString())
 	return minTS.LT(&intent)
 }
 

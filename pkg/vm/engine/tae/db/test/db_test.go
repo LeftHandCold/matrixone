@@ -7854,6 +7854,7 @@ func TestGCCheckpoint1(t *testing.T) {
 	for _, incremental := range incrementals {
 		startTS := incremental.GetStart()
 		prevEndNextTS := prevEnd.Next()
+		logutil.Infof("startTS: %s, prevEndNextTS: %s", startTS.ToString(), prevEndNextTS.ToString())
 		assert.True(t, startTS.Equal(&prevEndNextTS))
 		t.Log(incremental.String())
 	}
