@@ -103,7 +103,7 @@ func (node *persistedNode) Scan(
 		ts := txn.GetStartTS()
 		tsForAppendable = &ts
 	}
-	vecs, deletes, err := LoadPersistedColumnDatas(
+	vecs, deletes, err := LoadPersistedColumnDatas2(
 		ctx, readSchema, node.object.rt, id, colIdxes, location, mp, tsForAppendable,
 	)
 	if err != nil {
