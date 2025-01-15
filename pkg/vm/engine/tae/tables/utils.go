@@ -129,7 +129,7 @@ func LoadPersistedColumnDatas(
 		location,
 		fileservice.Policy(0),
 		true,
-		rt.VectorPool.Transient)
+		rt.VectorPool.Small)
 	if err != nil {
 		return nil, deletes, err
 	}
