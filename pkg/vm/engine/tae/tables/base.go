@@ -181,7 +181,7 @@ func (obj *baseObject) LoadPersistedCommitTS(bid uint16) (vec containers.Vector,
 		location,
 		fileservice.Policy(0),
 		true,
-		obj.rt.VectorPool.Transient,
+		obj.rt.VectorPool.Small,
 	)
 	if err != nil {
 		return

@@ -171,7 +171,7 @@ func (node *memoryNode) getDataWindowOnWriteSchema(
 		dest.GetVectorByName(objectio.TombstoneAttr_CommitTs_Attr).Extend(commitTSVec)
 		commitTSVec.Close() // TODO no copy
 	} else {
-		inner := node.data.CloneWindowWithPool(int(from), int(to-from), node.object.rt.VectorPool.Transient)
+		inner := node.data.CloneWindowWithPool(int(from), int(to-from), node.object.rt.VectorPool.Small)
 		batWithVer := &containers.BatchWithVersion{
 			Version:    node.writeSchema.Version,
 			NextSeqnum: uint16(node.writeSchema.Extra.NextColSeqnum),

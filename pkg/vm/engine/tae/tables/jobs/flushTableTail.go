@@ -236,7 +236,7 @@ func NewFlushTableTailTask(
 
 // impl DisposableVecPool
 func (task *flushTableTailTask) GetVector(typ *types.Type) (*vector.Vector, func()) {
-	v := task.rt.VectorPool.Transient.GetVector(typ)
+	v := task.rt.VectorPool.Small.GetVector(typ)
 	return v.GetDownstreamVector(), v.Close
 }
 
