@@ -229,6 +229,9 @@ func (h *Handle) HandleGetChangedTableList(
 	defer func() {
 		tt := now.ToTimestamp()
 		resp.Newest = &tt
+		if data != nil {
+			data.Close()
+		}
 	}()
 
 	if len(req.TableIds) == 0 {
