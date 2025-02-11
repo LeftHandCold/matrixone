@@ -471,6 +471,7 @@ func (c *checkpointCleaner) mutAddScannedLocked(window *GCWindow) {
 		c.mutation.scanned.Merge(window)
 		window.Close()
 	}
+	logutil.Infof("mutAddScannedLocked file count %d, %v-%v ", len(c.mutation.scanned.files), c.mutation.scanned.tsRange.start.ToString(), c.mutation.scanned.tsRange.end.ToString())
 }
 
 func (c *checkpointCleaner) GetScanWaterMark() *checkpoint.CheckpointEntry {
