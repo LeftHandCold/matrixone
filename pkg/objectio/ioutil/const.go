@@ -22,6 +22,7 @@ const defaultGCDir = "gc/"
 const (
 	// checkpint related
 	CheckpointExt = "ckp"
+	ScanMetaExt   = "scan"
 	CompactExt    = "cpt"
 
 	// gc related
@@ -36,7 +37,6 @@ const (
 
 	PrefixMetadata = "meta"
 	SuffixMetadata = ".ckp"
-	SuffixScanMeta = ".scan"
 
 	PrefixGCMeta   = "gc"
 	PrefixSnapMeta = "snap"

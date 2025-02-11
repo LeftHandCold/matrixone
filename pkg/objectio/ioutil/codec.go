@@ -145,7 +145,7 @@ func EncodeGCScanMetadataName(start, end types.TS) string {
 		PrefixGCMeta,
 		start.ToString(),
 		end.ToString(),
-		SuffixScanMeta,
+		ScanMetaExt,
 	)
 }
 
