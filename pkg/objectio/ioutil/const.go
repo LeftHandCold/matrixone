@@ -36,6 +36,7 @@ const (
 
 	PrefixMetadata = "meta"
 	SuffixMetadata = ".ckp"
+	SuffixScanMeta = ".scan"
 
 	PrefixGCMeta   = "gc"
 	PrefixSnapMeta = "snap"
