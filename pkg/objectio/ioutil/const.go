@@ -23,6 +23,7 @@ const (
 	// checkpint related
 	CheckpointExt = "ckp"
 	ScanMetaExt   = "scan"
+	FastMetaExt   = "fast"
 	CompactExt    = "cpt"
 
 	// gc related

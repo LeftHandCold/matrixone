@@ -61,6 +61,10 @@ func (m TSRangeFile) IsScanFile() bool {
 	return IsScanExt(m.ext)
 }
 
+func (m TSRangeFile) IsFastFile() bool {
+	return m.ext == FastMetaExt
+}
+
 func (m TSRangeFile) IsSnapshotExt() bool {
 	return m.ext == SnapshotExt
 }

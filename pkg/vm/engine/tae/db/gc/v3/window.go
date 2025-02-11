@@ -206,7 +206,7 @@ func (w *GCWindow) ExecuteFastBasedGC(
 	var metaFile string
 	var err error
 	if metaFile, err = w.writeMetaForRemainings(
-		ctx, filesNotGC, ioutil.EncodeGCMetadataName,
+		ctx, filesNotGC, ioutil.EncodeGCFastMetadataName,
 	); err != nil {
 		return nil, "", err
 	}

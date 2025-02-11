@@ -638,7 +638,7 @@ func (c *checkpointCleaner) deleteStaleCKPMetaFileLocked() (err error) {
 	metaFiles := c.CloneMetaFilesLocked()
 	filesToDelete := make([]string, 0)
 	for _, metaFile := range metaFiles {
-		if (!metaFile.IsCKPFile() && !metaFile.IsScanFile()) ||
+		if (!metaFile.IsCKPFile() && !metaFile.IsScanFile() && !metaFile.IsFastFile()) ||
 			(metaFile.RangeEqual(&window.tsRange.start, &window.tsRange.end)) {
 			logutil.Info(
 				"GC-TRACE-DELETE-CKP-FILE-SKIP",
@@ -1633,7 +1633,7 @@ func (c *checkpointCleaner) doGCAgainstFastLocked(
 	}
 	c.mutAddMetaFileLocked(metafile, ioutil.NewTSRangeFile(
 		metafile,
-		ioutil.CheckpointExt,
+		ioutil.FastMetaExt,
 		window.tsRange.start,
 		window.tsRange.end,
 	))

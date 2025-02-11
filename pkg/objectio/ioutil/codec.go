@@ -139,6 +139,16 @@ func EncodeGCMetadataName(start, end types.TS) string {
 	)
 }
 
+func EncodeGCFastMetadataName(start, end types.TS) string {
+	return fmt.Sprintf(
+		"%s_%s_%s.%s",
+		PrefixGCMeta,
+		start.ToString(),
+		end.ToString(),
+		FastMetaExt,
+	)
+}
+
 func EncodeGCScanMetadataName(start, end types.TS) string {
 	return fmt.Sprintf(
 		"%s_%s_%s.%s",
