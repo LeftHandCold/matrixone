@@ -344,6 +344,7 @@ func (c *checkpointCleaner) Replay(inputCtx context.Context) (err error) {
 
 			if meta.IsCKPFile() && maxConsumedStart.IsEmpty() {
 				gckp := c.checkpointCli.MaxGlobalCheckpoint()
+				logutil.Infof("maxGlobalCheckpoint: %s, maxConsumedEnd is %v", gckp.String(), maxConsumedEnd.ToString())
 				if gckp != nil {
 					end := gckp.GetEnd()
 					if end.LT(&maxConsumedEnd) {
