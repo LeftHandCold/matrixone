@@ -341,6 +341,16 @@ func (c *checkpointCleaner) Replay(inputCtx context.Context) (err error) {
 			maxConsumedStart = *meta.GetStart()
 			maxConsumedEnd = *meta.GetEnd()
 			gcFiles = append(gcFiles, meta.GetName())
+
+			if meta.IsCKPFile() && maxConsumedStart.IsEmpty() {
+				gckp := c.checkpointCli.MaxGlobalCheckpoint()
+				if gckp != nil {
+					end := gckp.GetEnd()
+					if end.LT(&maxConsumedEnd) {
+						c.updateGCWaterMark(gckp)
+					}
+				}
+			}
 		}
 	}
 
