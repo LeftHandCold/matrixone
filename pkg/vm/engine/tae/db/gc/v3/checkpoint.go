@@ -1791,6 +1791,7 @@ func (c *checkpointCleaner) scanCheckpointsLocked(
 
 	var (
 		snapSize, tableSize uint32
+		gcMetaFile          string
 	)
 	defer func() {
 		logutil.Info(
@@ -1800,7 +1801,9 @@ func (c *checkpointCleaner) scanCheckpointsLocked(
 			zap.Duration("duration", time.Since(now)),
 			zap.Uint32("snap-meta-size :", snapSize),
 			zap.Uint32("table-meta-size :", tableSize),
-			zap.String("snapshot-detail", c.mutation.snapshotMeta.String()))
+			zap.String("snapshot-detail", c.mutation.snapshotMeta.String()),
+			zap.String("scan-meta-file", gcMetaFile),
+		)
 	}()
 
 	var snapshotFile, accountFile ioutil.TSRangeFile
@@ -1857,7 +1860,6 @@ func (c *checkpointCleaner) scanCheckpointsLocked(
 	}
 
 	gcWindow = NewGCWindow(c.mp, c.fs)
-	var gcMetaFile string
 	if gcMetaFile, err = gcWindow.ScanCheckpoints(
 		ctx,
 		ckps,
