@@ -1877,7 +1877,7 @@ func (c *checkpointCleaner) scanCheckpointsLocked(
 		gcMetaFile,
 		ioutil.NewTSRangeFile(
 			gcMetaFile,
-			ioutil.CheckpointExt,
+			ioutil.ScanMetaExt,
 			gcWindow.tsRange.start,
 			gcWindow.tsRange.end,
 		),
