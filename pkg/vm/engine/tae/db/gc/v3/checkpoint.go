@@ -638,7 +638,7 @@ func (c *checkpointCleaner) deleteStaleCKPMetaFileLocked() (err error) {
 	metaFiles := c.CloneMetaFilesLocked()
 	filesToDelete := make([]string, 0)
 	for _, metaFile := range metaFiles {
-		if !metaFile.IsCKPFile() ||
+		if (!metaFile.IsCKPFile() && !metaFile.IsScanFile()) ||
 			(metaFile.RangeEqual(&window.tsRange.start, &window.tsRange.end)) {
 			logutil.Info(
 				"GC-TRACE-DELETE-CKP-FILE-SKIP",

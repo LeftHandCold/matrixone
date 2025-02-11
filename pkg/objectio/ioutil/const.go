@@ -55,6 +55,10 @@ func IsCKPExt(ext string) bool {
 	return ext == CheckpointExt
 }
 
+func IsScanExt(ext string) bool {
+	return ext == ScanMetaExt
+}
+
 func IsGCMetaExt(ext string) bool {
 	return ext == GCMetaExt
 }
