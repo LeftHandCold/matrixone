@@ -133,6 +133,7 @@ func (tableScan *TableScan) Call(proc *process.Process) (vm.CallResult, error) {
 					logutil.Infof("TableScan not found %v, %v, %v, %v", tableScan.TableID, tableScan.Reader.GetInfo())
 				}
 			}
+			tableScan.count = 0
 			return vm.CancelResult, err
 		}
 
