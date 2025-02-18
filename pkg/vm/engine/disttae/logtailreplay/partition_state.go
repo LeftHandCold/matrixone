@@ -405,6 +405,7 @@ func (p *PartitionState) HandleDataObjectList(
 				zap.String("commitTS", commitTSCol[idx].ToString()),
 				zap.String("deleteTS", objEntry.DeleteTime.ToString()),
 				zap.String("create", objEntry.CreateTime.ToString()),
+				zap.Bool("appendable", objEntry.GetAppendable()),
 				zap.Uint32("size", objEntry.Size()))
 		}
 		if objEntry.Size() == 0 || (objEntry.GetAppendable() && objEntry.DeleteTime.IsEmpty()) {

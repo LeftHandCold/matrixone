@@ -1200,6 +1200,10 @@ func MockShardingLocalReader() engine.Reader {
 	return &shardingLocalReader{}
 }
 
+func (r *shardingLocalReader) GetInfo() string {
+	return r.GetInfo()
+}
+
 func (r *shardingLocalReader) Read(
 	ctx context.Context,
 	cols []string,

@@ -16,6 +16,7 @@ package table_scan
 
 import (
 	"bytes"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -127,6 +128,11 @@ func (tableScan *TableScan) Call(proc *process.Process) (vm.CallResult, error) {
 
 		if isEnd {
 			e = err
+			if tableScan.TableID == 272519 || tableScan.TableID == 272526 {
+				if tableScan.count == 0 {
+					logutil.Infof("TableScan not found %v, %v, %v, %v", tableScan.TableID, tableScan.Reader.GetInfo())
+				}
+			}
 			return vm.CancelResult, err
 		}
 
@@ -145,6 +151,7 @@ func (tableScan *TableScan) Call(proc *process.Process) (vm.CallResult, error) {
 		analyzer.ScanBytes(tableScan.ctr.buf)
 		batSize := tableScan.ctr.buf.Size()
 		tableScan.ctr.maxAllocSize = max(tableScan.ctr.maxAllocSize, batSize)
+		tableScan.count++
 		break
 	}
 

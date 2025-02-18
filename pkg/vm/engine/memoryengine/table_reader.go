@@ -159,6 +159,9 @@ func (t *Table) BuildReaders(
 
 var _ engine.Reader = new(TableReader)
 
+func (t *TableReader) GetInfo() string {
+	return t.GetInfo()
+}
 func (t *TableReader) Read(
 	ctx context.Context,
 	colNames []string,

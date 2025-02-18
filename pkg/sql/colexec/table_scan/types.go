@@ -42,6 +42,8 @@ type TableScan struct {
 	Types   []plan.Type
 	TableID uint64
 
+	count int
+
 	vm.OperatorBase
 	colexec.Projection
 }

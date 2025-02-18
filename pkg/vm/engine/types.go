@@ -960,6 +960,7 @@ type Reader interface {
 	SetOrderBy([]*plan.OrderBySpec)
 	GetOrderBy() []*plan.OrderBySpec
 	SetFilterZM(objectio.ZoneMap)
+	GetInfo() string
 	//SetScanType()
 }
 

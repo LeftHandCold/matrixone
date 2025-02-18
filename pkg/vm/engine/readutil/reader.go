@@ -251,10 +251,17 @@ type mergeReader struct {
 type EmptyReader struct {
 }
 
+func (r *EmptyReader) GetInfo() string {
+	return r.GetInfo()
+}
 func NewMergeReader(readers []engine.Reader) *mergeReader {
 	return &mergeReader{
 		rds: readers,
 	}
+}
+
+func (r *mergeReader) GetInfo() string {
+	return r.GetInfo()
 }
 
 func (r *mergeReader) SetFilterZM(zm objectio.ZoneMap) {
@@ -397,6 +404,10 @@ func (r *reader) GetOrderBy() []*plan.OrderBySpec {
 
 func (r *reader) SetFilterZM(zm objectio.ZoneMap) {
 	r.source.SetFilterZM(zm)
+}
+
+func (r *reader) GetInfo() string {
+	return fmt.Sprintf("readerGetInfo %s-%s-%s", r.name, r.ts.String(), r.filterState.memFilter.String())
 }
 
 func (r *reader) Read(
