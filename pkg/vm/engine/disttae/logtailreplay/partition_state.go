@@ -115,7 +115,6 @@ func (p *PartitionState) handleDataObjectEntry(ctx context.Context, objEntry obj
 	if commitTS.GT(&p.lastFlushTimestamp) {
 		p.lastFlushTimestamp = commitTS
 	}
-
 	if objEntry.Size() == 0 || (objEntry.GetAppendable() && objEntry.DeleteTime.IsEmpty()) {
 		// CN doesn't consume the create event of appendable object
 		return
@@ -399,11 +398,19 @@ func (p *PartitionState) HandleDataObjectList(
 		objEntry.ObjectStats = objectio.ObjectStats(statsVec.GetBytesAt(idx))
 		objEntry.CreateTime = createTSCol[idx]
 		objEntry.DeleteTime = deleteTSCol[idx]
+		if p.tid == 272519 || p.tid == 272526 {
+			logutil.Info("handleDataObjectEntry",
+				zap.Uint64("tid", p.tid),
+				zap.String("objName", objEntry.ObjectName().String()),
+				zap.String("commitTS", commitTSCol[idx].ToString()),
+				zap.String("deleteTS", objEntry.DeleteTime.ToString()),
+				zap.String("create", objEntry.CreateTime.ToString()),
+				zap.Uint32("size", objEntry.Size()))
+		}
 		if objEntry.Size() == 0 || (objEntry.GetAppendable() && objEntry.DeleteTime.IsEmpty()) {
 			// CN doesn't consume the create event of appendable object
 			continue
 		}
-
 		old, exist := p.dataObjectsNameIndex.Get(objEntry)
 		if exist {
 			// why check the deleteTime here? consider this situation:
