@@ -42,11 +42,7 @@ type Scheduler struct {
 }
 
 func NewScheduler(rt *dbutils.Runtime, sched *CNMergeScheduler) *Scheduler {
-	policySlice := []policy{
-		newObjOverlapPolicy(),
-		newObjCompactPolicy(rt.Fs),
-		newTombstonePolicy(),
-	}
+	var policySlice []policy
 	op := &Scheduler{
 		LoopProcessor: new(catalog.LoopProcessor),
 		policies:      newPolicyGroup(policySlice...),
