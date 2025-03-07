@@ -914,7 +914,7 @@ func (sm *SnapshotMeta) GetPITR(
 
 			bat, _, err := blockio.BlockDataReadBackup(ctx, &blk, ds, idxes, types.TS{}, fs)
 			if err != nil {
-				if moerr.IsMoErrCode(err, moerr.ErrNotFound) {
+				if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
 					logutil.Warnf("PITR object %s not found", object.stats.ObjectName().String())
 					if sm.pitr.objects[object.stats.ObjectName().SegmentId()] != nil {
 						delete(sm.pitr.objects, object.stats.ObjectName().SegmentId())
