@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"sort"
 	"sync"
 	"time"
@@ -439,6 +440,10 @@ func (sm *SnapshotMeta) updateTableInfo(
 					logutil.Warn("GC-PANIC-UPDATE-TABLE-P2",
 						zap.Uint64("tid", tid),
 						zap.Uint64("old-tid", sm.pitr.tid))
+					sm.pitr.objects = nil
+					sm.pitr.tombstones = nil
+					sm.pitr.objects = make(map[objectio.Segmentid]*objectInfo)
+					sm.pitr.tombstones = make(map[objectio.Segmentid]*objectInfo)
 				}
 				sm.pitr.tid = tid
 			}
@@ -909,6 +914,16 @@ func (sm *SnapshotMeta) GetPITR(
 
 			bat, _, err := blockio.BlockDataReadBackup(ctx, &blk, ds, idxes, types.TS{}, fs)
 			if err != nil {
+				if moerr.IsMoErrCode(err, moerr.ErrNotFound) {
+					logutil.Warnf("PITR object %s not found", object.stats.ObjectName().String())
+					if sm.pitr.objects[object.stats.ObjectName().SegmentId()] != nil {
+						delete(sm.pitr.objects, object.stats.ObjectName().SegmentId())
+						continue
+					}
+					logutil.Warnf("PITR tombstone %s not found", object.stats.ObjectName().String())
+					delete(sm.pitr.tombstones, object.stats.ObjectName().SegmentId())
+					continue
+				}
 				return nil, err
 			}
 			defer bat.Clean(mp)
