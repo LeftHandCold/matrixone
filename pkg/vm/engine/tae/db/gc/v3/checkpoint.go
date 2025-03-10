@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/ckputil"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -431,9 +432,11 @@ func (c *checkpointCleaner) Replay(inputCtx context.Context) (err error) {
 		accountSnapshots := TransformToTSList(snapshots)
 		logtail.CloseSnapshotList(snapshots)
 		var ckpBatch *batch.Batch
+		logutil.Infof("gc-replay GetCheckpointData start")
 		if ckpBatch, err = ckpData.GetCheckpointData(ctx); err != nil {
 			return
 		}
+		logutil.Infof("gc-replay GetCheckpointData end ckpBatch %d-%d", ckpBatch.Vecs[0].Length(), ckpBatch.Vecs[ckputil.TableObjectsAttr_DeleteTS_Idx].Length())
 		logtail.FillUsageBatOfCompacted(
 			ctx,
 			c.checkpointCli.GetCatalog().GetUsageMemo().(*logtail.TNUsageMemo),

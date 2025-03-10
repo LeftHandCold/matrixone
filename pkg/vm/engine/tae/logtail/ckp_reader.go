@@ -482,6 +482,9 @@ func getCKPDataForV12(
 	readFn(dataLocations, ObjectInfoIDX, dataBatch)
 	tombstoneBatch = makeRespBatchFromSchema(ObjectInfoSchema, mp)
 	readFn(tombstoneLocations, TombstoneObjectInfoIDX, tombstoneBatch)
+	logutil.Infof("dataBatch len is %d-%d, tombstoneBatch len is %d-%d",
+		dataBatch.Vecs[0].Length(), dataBatch.Vecs[4].Length(),
+		tombstoneBatch.Vecs[0].Length(), tombstoneBatch.Vecs[4].Length())
 	return
 }
 
