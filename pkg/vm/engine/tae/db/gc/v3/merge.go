@@ -154,13 +154,14 @@ func MergeCheckpoint(
 	if err != nil {
 		return
 	}
+	logutil.Infof("GC-Merge-Checkpoint: merge %d objects, delete len %d", objectBatch.Vecs[0].Length(), objectBatch.Vecs[4].Length())
 
 	tombstoneBatch := containers.ToCNBatch(ckpData.GetTombstoneObjectBatchs())
 	err = mergeutil.SortColumnsByIndex(tombstoneBatch.Vecs, tidColIdx, pool)
 	if err != nil {
 		return
 	}
-
+	logutil.Infof("GC-Merge-Checkpoint: merge %d tombstoneBatch, delete len %d", tombstoneBatch.Vecs[0].Length(), tombstoneBatch.Vecs[4].Length())
 	// Update checkpoint Dat[meta]
 	tableInsertOff := make(map[uint64]*tableOffset)
 	tableTombstoneOff := make(map[uint64]*tableOffset)
