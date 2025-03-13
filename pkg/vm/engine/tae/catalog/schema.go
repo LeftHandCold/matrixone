@@ -607,6 +607,7 @@ func (s *Schema) ReadFromBatch(bat *containers.Batch, offset int, targetTid uint
 	nameVec := bat.GetVectorByName(pkgcatalog.SystemColAttr_RelName)
 	tidVec := bat.GetVectorByName(pkgcatalog.SystemColAttr_RelID)
 	defer func() {
+		logutil.Infof("xxxxxxxxx")
 		slices.SortStableFunc(s.ColDefs, func(i, j *ColDef) int {
 			return i.Idx - j.Idx
 		})
@@ -617,6 +618,7 @@ func (s *Schema) ReadFromBatch(bat *containers.Batch, offset int, targetTid uint
 		}
 		name := string(nameVec.Get(offset).([]byte))
 		id := tidVec.Get(offset).(uint64)
+		logutil.Infof("read schema %s %d %s offset %d", name, id, offset)
 		// every schema has 1 rowid column as last column, if have one, break
 		if name != s.Name || targetTid != id {
 			break

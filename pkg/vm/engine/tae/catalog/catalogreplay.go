@@ -355,6 +355,7 @@ func (catalog *Catalog) ReplayMOTables(ctx context.Context, txnNode *txnbase.Txn
 		extra := tblBat.GetVectorByName(pkgcatalog.SystemRelAttr_ExtraInfo).Get(i).([]byte)
 		schema.MustRestoreExtra(extra)
 		if err := schema.Finalize(true); err != nil {
+			logutil.Infof("schema %s finalize failed, err %v, len %d, %d, tid %d", schema.Name, err, colBat.Length(), tid)
 			panic(err)
 		}
 		catalog.onReplayCreateTable(dbid, tid, schema, txnNode, dataF)
