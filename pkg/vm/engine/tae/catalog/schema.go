@@ -895,7 +895,7 @@ func (s *Schema) Finalize(withoutPhyAddr bool) (err error) {
 		// Check column sequence idx validility
 		if idx != def.Idx {
 			for idx1, def1 := range s.ColDefs {
-				logutil.Infof("schema: Finalize: idx %d, def %v", idx1, def1.Name)
+				logutil.Infof("schema: Finalize: idx %d, def %v %d %d", idx1, def1.Name, def1.Idx, def1.SortIdx)
 			}
 			return moerr.NewInvalidInputNoCtx(fmt.Sprintf("schema: wrong column index %d specified for \"%s\"", def.Idx, def.Name))
 		}
