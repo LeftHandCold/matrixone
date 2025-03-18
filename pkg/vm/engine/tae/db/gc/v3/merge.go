@@ -49,6 +49,7 @@ func MergeCheckpoint(
 	fs fileservice.FileService,
 ) (deleteFiles, newFiles []string, checkpointEntry *checkpoint.CheckpointEntry, ckpData *batch.Batch, err error) {
 	ckpData = ckputil.NewObjectListBatch()
+	defer ckpData.Clean(pool)
 	datas := make([]*logtail.CKPReader, 0)
 	deleteFiles = make([]string, 0)
 	for _, ckpEntry := range ckpEntries {
