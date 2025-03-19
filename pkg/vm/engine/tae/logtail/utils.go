@@ -1467,6 +1467,29 @@ func (data *CheckpointData) readMetaBatch(
 	return
 }
 
+type tableAndLength struct {
+	tid    uint64
+	length uint64
+}
+
+type tableinfoo struct {
+	tid    uint64
+	add    uint64
+	delete uint64
+	block  uint32
+}
+
+type blockinfo struct {
+	id    string
+	count uint64
+	delta map[string]*deltaLocinfo
+}
+
+type deltaLocinfo struct {
+	loction string
+	count   uint64
+}
+
 func buildMeta(bat *containers.Batch, locations map[string]objectio.Location, metas map[uint64]*CheckpointMeta) {
 	tidVec := vector.MustFixedColWithTypeCheck[uint64](bat.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector())
 	insVec := bat.GetVectorByName(SnapshotMetaAttr_BlockInsertBatchLocation).GetDownstreamVector()
@@ -1476,7 +1499,6 @@ func buildMeta(bat *containers.Batch, locations map[string]objectio.Location, me
 	var usageInsVec, usageDelVec *vector.Vector
 	usageInsVec = bat.GetVectorByName(CheckpointMetaAttr_StorageUsageInsLocation).GetDownstreamVector()
 	usageDelVec = bat.GetVectorByName(CheckpointMetaAttr_StorageUsageDelLocation).GetDownstreamVector()
-
 	for i := 0; i < len(tidVec); i++ {
 		tid := tidVec[i]
 		if tid == 0 {
@@ -1501,10 +1523,14 @@ func buildMeta(bat *containers.Batch, locations map[string]objectio.Location, me
 
 		tableMeta := NewCheckpointMeta()
 		tableMeta.DecodeFromString(tmp)
+		if tid > 10000000 {
+			logutil.Infof("tid:%d, tableMeta:%v", tid, tableMeta.String())
+		}
 		metas[tid] = tableMeta
 	}
-
-	for _, meta := range metas {
+	tables := make([]*tableAndLength, 0)
+	for tid, meta := range metas {
+		length := uint64(0)
 		for _, table := range meta.tables {
 			if table == nil {
 				continue
@@ -1513,12 +1539,38 @@ func buildMeta(bat *containers.Batch, locations map[string]objectio.Location, me
 			it := table.locations.MakeIterator()
 			for it.HasNext() {
 				block := it.Next()
+				length += block.GetEndOffset() - block.GetStartOffset()
 				if !block.GetLocation().IsEmpty() {
 					locations[block.GetLocation().Name().String()] = block.GetLocation()
 				}
 			}
+
 		}
+		tables = append(tables, &tableAndLength{
+			tid:    tid,
+			length: length,
+		})
 	}
+
+	sort.Slice(tables, func(i, j int) bool {
+		return tables[i].length > tables[j].length
+	})
+	logutil.Infof("lalala table count %d", len(tables))
+	if len(tables) == 0 {
+		return
+	}
+	/*for i := range tables {
+		logutil.Infof("sss table %d, length is %d", tables[i].tid, tables[i].length)
+	}*/
+	y := 0
+	for i := range tables {
+		if y > 1000 {
+			break
+		}
+		y++
+		logutil.Infof("lalala111 table %d, length is %d", tables[i].tid, tables[i].length)
+	}
+
 }
 
 func (data *CheckpointData) replayMetaBatch(version uint32) {
@@ -1535,6 +1587,7 @@ func (data *CheckpointData) readAll(
 	data.replayMetaBatch(version)
 	checkpointDataSize := uint64(0)
 	readDuration := time.Now()
+	logutil.Infof("readAll start %d", len(data.locations))
 	for _, val := range data.locations {
 		var reader *blockio.BlockReader
 		reader, err = blockio.NewObjectReader(data.sid, service, val)
@@ -1543,6 +1596,7 @@ func (data *CheckpointData) readAll(
 		}
 		var bats []*containers.Batch
 		now := time.Now()
+		logutil.Infof("checkpointDataReferVersions[version] is %d", len(checkpointDataReferVersions[version]))
 		for idx := range checkpointDataReferVersions[version] {
 			if uint16(idx) == MetaIDX || uint16(idx) == TNMetaIDX {
 				continue
@@ -1565,6 +1619,7 @@ func (data *CheckpointData) readAll(
 			common.AnyField("read cost", time.Since(now)))
 		checkpointDataSize += uint64(val.Extent().End())
 	}
+	logutil.Infof(" rows %d, tombstone %d", data.bats[ObjectInfoIDX].Length(), data.bats[TombstoneObjectInfoIDX].Length())
 	logutil.Info("read-all", common.OperationField("read"),
 		common.OperandField("checkpoint"),
 		common.AnyField("size", checkpointDataSize),

@@ -618,6 +618,7 @@ func ReplayCheckpointEntries(bat *containers.Batch, checkpointVersion int) (entr
 		var ckpLSN, truncateLSN uint64
 		ckpLSN = bat.GetVectorByName(CheckpointAttr_CheckpointLSN).Get(i).(uint64)
 		truncateLSN = bat.GetVectorByName(CheckpointAttr_TruncateLSN).Get(i).(uint64)
+		logutil.Infof("cnLoc: %v, tnLoc: %v, ckp: %v %v", cnLoc.String(), tnLoc.String(), start.ToString(), end.ToString())
 		checkpointEntry := &CheckpointEntry{
 			start:       start,
 			end:         end,

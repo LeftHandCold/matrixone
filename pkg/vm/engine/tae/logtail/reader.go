@@ -189,7 +189,6 @@ func (r *CheckpointReader) LoadBatchData(
 		return true, nil
 	}
 	key := r.locations[0]
-	var reader *blockio.BlockReader
 	reader, err := blockio.NewObjectReader(r.sid, r.fs, key)
 	if err != nil {
 		return false, err
