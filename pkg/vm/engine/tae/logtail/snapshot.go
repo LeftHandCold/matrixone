@@ -311,6 +311,7 @@ func copyObjectsLocked(
 		newMap[k] = make(map[objectio.Segmentid]*objectInfo)
 		for kk, vv := range v {
 			if !vv.deleteAt.IsEmpty() {
+				logutil.Infof("copyObjectsLocked: delete object %s, drop %v", kk.String(), vv.deleteAt.ToString())
 				delete(v, kk)
 				continue
 			}
@@ -898,6 +899,7 @@ func (sm *SnapshotMeta) GetPITR(
 	tombstonesStats := make([]objectio.ObjectStats, 0)
 	for key, tombstone := range sm.pitr.tombstones {
 		if !tombstone.deleteAt.IsEmpty() {
+			logutil.Infof("PITR: %s, %s", key.String(), tombstone.deleteAt.ToString())
 			delete(sm.pitr.tombstones, key)
 			continue
 		}
