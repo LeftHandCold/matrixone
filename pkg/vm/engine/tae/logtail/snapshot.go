@@ -1247,6 +1247,7 @@ func (sm *SnapshotMeta) Rebuild(
 	sm.Lock()
 	defer sm.Unlock()
 	insCreateTSs := vector.MustFixedColWithTypeCheck[types.TS](ins.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector())
+	insDropTSs := vector.MustFixedColWithTypeCheck[types.TS](ins.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
 	insTides := vector.MustFixedColWithTypeCheck[uint64](ins.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector())
 	for i := 0; i < ins.Length(); i++ {
 		var objectStats objectio.ObjectStats
@@ -1254,8 +1255,13 @@ func (sm *SnapshotMeta) Rebuild(
 		objectStats.UnMarshal(buf)
 		createTS := insCreateTSs[i]
 		tid := insTides[i]
+		dropTS := insDropTSs[i]
 		if tid == sm.pitr.tid {
 			if (*objects2)[objectStats.ObjectName().SegmentId()] == nil {
+				if !dropTS.IsEmpty() {
+					logutil.Infof("GC-Rebuild-ERROR: pitr object %s dropTS %s", objectStats.ObjectName().String(), dropTS.ToString())
+					continue
+				}
 				(*objects2)[objectStats.ObjectName().SegmentId()] = &objectInfo{
 					stats:    objectStats,
 					createAt: createTS,
@@ -1279,7 +1285,10 @@ func (sm *SnapshotMeta) Rebuild(
 			(*objects)[tid] = make(map[objectio.Segmentid]*objectInfo)
 		}
 		if (*objects)[tid][objectStats.ObjectName().SegmentId()] == nil {
-
+			if !dropTS.IsEmpty() {
+				logutil.Infof("GC-Rebuild-ERROR: snapshot object %s dropTS %s", objectStats.ObjectName().String(), dropTS.ToString())
+				continue
+			}
 			(*objects)[tid][objectStats.ObjectName().SegmentId()] = &objectInfo{
 				stats:    objectStats,
 				createAt: createTS,
