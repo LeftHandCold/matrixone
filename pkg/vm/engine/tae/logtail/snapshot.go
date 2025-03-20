@@ -1262,18 +1262,21 @@ func (sm *SnapshotMeta) Rebuild(
 	sm.Lock()
 	defer sm.Unlock()
 	insCreateTSs := vector.MustFixedColWithTypeCheck[types.TS](ins.GetVectorByName(catalog.EntryNode_CreateAt).GetDownstreamVector())
+	insDropTSs := vector.MustFixedColWithTypeCheck[types.TS](ins.GetVectorByName(catalog.EntryNode_DeleteAt).GetDownstreamVector())
 	insTides := vector.MustFixedColWithTypeCheck[uint64](ins.GetVectorByName(SnapshotAttr_TID).GetDownstreamVector())
 	for i := 0; i < ins.Length(); i++ {
 		var objectStats objectio.ObjectStats
 		buf := ins.GetVectorByName(catalog.ObjectAttr_ObjectStats).Get(i).([]byte)
 		objectStats.UnMarshal(buf)
 		createTS := insCreateTSs[i]
+		dropTS := insDropTSs[i]
 		tid := insTides[i]
 		if tid == sm.pitr.tid {
 			if (*objects2)[objectStats.ObjectName().SegmentId()] == nil {
 				(*objects2)[objectStats.ObjectName().SegmentId()] = &objectInfo{
 					stats:    objectStats,
 					createAt: createTS,
+					deleteAt: dropTS,
 				}
 				logutil.Info(
 					"GC-Rebuild-P1",
@@ -1298,12 +1301,14 @@ func (sm *SnapshotMeta) Rebuild(
 			(*objects)[tid][objectStats.ObjectName().SegmentId()] = &objectInfo{
 				stats:    objectStats,
 				createAt: createTS,
+				deleteAt: dropTS,
 			}
 			logutil.Info(
 				"GC-Rebuild-P3",
 				zap.Uint64("table-id", tid),
 				zap.String("object-name", objectStats.ObjectName().String()),
 				zap.String("create-at", createTS.ToString()),
+				zap.String("delete-at", dropTS.ToString()),
 			)
 			continue
 		}
