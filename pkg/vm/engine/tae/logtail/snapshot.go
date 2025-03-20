@@ -310,6 +310,10 @@ func copyObjectsLocked(
 	for k, v := range objects {
 		newMap[k] = make(map[objectio.Segmentid]*objectInfo)
 		for kk, vv := range v {
+			if !vv.deleteAt.IsEmpty() {
+				delete(v, kk)
+				continue
+			}
 			newMap[k][kk] = vv
 		}
 	}
@@ -892,7 +896,11 @@ func (sm *SnapshotMeta) GetPITR(
 ) (*PitrInfo, error) {
 	idxes := []uint16{ColPitrLevel, ColPitrObjId, ColPitrLength, ColPitrUnit}
 	tombstonesStats := make([]objectio.ObjectStats, 0)
-	for _, tombstone := range sm.pitr.tombstones {
+	for key, tombstone := range sm.pitr.tombstones {
+		if !tombstone.deleteAt.IsEmpty() {
+			delete(sm.pitr.tombstones, key)
+			continue
+		}
 		tombstonesStats = append(tombstonesStats, tombstone.stats)
 	}
 	checkpointTS := types.BuildTS(time.Now().UTC().UnixNano(), 0)
