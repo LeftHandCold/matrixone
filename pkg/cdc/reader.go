@@ -296,7 +296,10 @@ func (reader *tableReader) readTableWithTxn(
 			return
 		}
 		// both nil denote no more data (end of this tail)
-		if insertData == nil && deleteData == nil {
+		if (insertData == nil && deleteData == nil) ||
+			(insertData != nil && insertData.RowCount() == 0 && deleteData != nil && deleteData.RowCount() == 0) ||
+			(insertData != nil && insertData.RowCount() == 0 && deleteData == nil) ||
+			(deleteData != nil && deleteData.RowCount() == 0 && insertData == nil) {
 			// heartbeat, send remaining data in sinker
 			reader.sinker.Sink(ctx, &DecoderOutput{
 				noMoreData: true,
