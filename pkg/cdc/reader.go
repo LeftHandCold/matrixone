@@ -326,7 +326,6 @@ func (reader *tableReader) readTableWithTxn(
 			}
 			if reader.tableDef.Name == "bmsql_order_line" {
 				irow := 0
-				leng := 0
 				drow := 0
 				if insertData != nil {
 					irow = insertData.RowCount()
