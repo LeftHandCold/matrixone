@@ -295,18 +295,6 @@ func (reader *tableReader) readTableWithTxn(
 		if err != nil {
 			return
 		}
-		if reader.tableDef.Name == "bmsql_order_line" {
-			irow := 0
-			drow := 0
-			if insertData != nil {
-				irow = insertData.RowCount()
-			}
-			if deleteData != nil {
-				drow = deleteData.RowCount()
-			}
-			logutil.Infof("insertData: %v, deleteData: %v, fromTs %v, toTs %v",
-				irow, drow, fromTs.ToString(), toTs.ToString())
-		}
 		// both nil denote no more data (end of this tail)
 		if insertData == nil && deleteData == nil {
 			// heartbeat, send remaining data in sinker
@@ -345,10 +333,23 @@ func (reader *tableReader) readTableWithTxn(
 				if deleteData != nil {
 					drow = deleteData.RowCount()
 				}
-				logutil.Infof("insertData: %v, deleteData: %v, fromTs %v, toTs %v",
+				logutil.Infof("nil insertData: %v, deleteData: %v, fromTs %v, toTs %v",
 					irow, drow, fromTs.ToString(), toTs.ToString())
 			}
 			return
+		} else {
+			if reader.tableDef.Name == "bmsql_order_line" {
+				irow := 0
+				drow := 0
+				if insertData != nil {
+					irow = insertData.RowCount()
+				}
+				if deleteData != nil {
+					drow = deleteData.RowCount()
+				}
+				logutil.Infof("not nil insertData: %v, deleteData: %v, fromTs %v, toTs %v",
+					irow, drow, fromTs.ToString(), toTs.ToString())
+			}
 		}
 
 		addStartMetrics(insertData, deleteData)
