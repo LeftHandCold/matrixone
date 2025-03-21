@@ -868,6 +868,9 @@ func (p *ChangeHandler) Next(ctx context.Context, mp *mpool.MPool) (data, tombst
 			err = nil
 			p.totalDuration += time.Since(t0)
 			if data != nil {
+				if data.Vecs[0].Length() == 0 && p.table == "bmsql_order_line" {
+					logutil.Infof(" OkExpectedEOF data length is 0 insertData start %v, end %v", p.start.ToString(), p.end.ToString())
+				}
 				p.dataLength += data.Vecs[0].Length()
 			}
 			if tombstone != nil {

@@ -326,6 +326,7 @@ func (reader *tableReader) readTableWithTxn(
 			}
 			if reader.tableDef.Name == "bmsql_order_line" {
 				irow := 0
+				leng := 0
 				drow := 0
 				if insertData != nil {
 					irow = insertData.RowCount()
@@ -341,14 +342,16 @@ func (reader *tableReader) readTableWithTxn(
 			if reader.tableDef.Name == "bmsql_order_line" {
 				irow := 0
 				drow := 0
+				leng := 0
 				if insertData != nil {
 					irow = insertData.RowCount()
+					leng = insertData.Vecs[0].Length()
 				}
 				if deleteData != nil {
 					drow = deleteData.RowCount()
 				}
-				logutil.Infof("not nil insertData: %v, deleteData: %v, fromTs %v, toTs %v",
-					irow, drow, fromTs.ToString(), toTs.ToString())
+				logutil.Infof("not nil insertData: %v, %d, deleteData: %v, fromTs %v, toTs %v",
+					irow, leng, drow, fromTs.ToString(), toTs.ToString())
 			}
 		}
 
