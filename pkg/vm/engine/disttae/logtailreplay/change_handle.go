@@ -709,6 +709,7 @@ type ChangeHandler struct {
 	start, end types.TS
 	fs         fileservice.FileService
 	minTS      types.TS
+	table      string
 
 	LogThreshold time.Duration
 }
@@ -720,6 +721,7 @@ func NewChangesHandler(
 	maxRow uint32,
 	mp *mpool.MPool,
 	fs fileservice.FileService,
+	table string,
 ) (changeHandle *ChangeHandler, err error) {
 	if state.start.GT(&start) {
 		return nil, moerr.NewErrStaleReadNoCtx(state.start.ToString(), start.ToString())
@@ -732,6 +734,7 @@ func NewChangesHandler(
 		minTS:        state.start,
 		LogThreshold: LogThreshold,
 		scheduler:    tasks.NewParallelJobScheduler(LoadParallism),
+		table:        table,
 	}
 	changeHandle.tombstoneHandle, err = NewBaseHandler(state, changeHandle, start, end, mp, true, fs, ctx)
 	if err != nil {
@@ -824,6 +827,9 @@ func (p *ChangeHandler) Next(ctx context.Context, mp *mpool.MPool) (data, tombst
 		p.totalDuration += time.Since(t0)
 		if data != nil {
 			p.dataLength += data.Vecs[0].Length()
+			if data.Vecs[0].Length() == 0 && p.table == "bmsql_order_line" {
+				logutil.Infof("data length is 0 insertData start %v, end %v", p.start.ToString(), p.end.ToString())
+			}
 		}
 		if tombstone != nil {
 			p.tombstoneLength += tombstone.Vecs[0].Length()
