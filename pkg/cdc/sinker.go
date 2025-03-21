@@ -250,30 +250,13 @@ var NewMysqlSinker = func(
 	s.insertColSeparator = []byte(",")
 	s.insertRowSuffix = []byte(")")
 	s.insertRowSeparator = []byte(",")
-	if isMO && len(tableDef.Pkey.Names) > 1 {
-		//                                     deleteRowSeparator
-		//      |<- deletePrefix  ->| 			       v
-		// e.g. delete from t1 where pk1=a1 and pk2=a2 or pk1=b1 and pk2=b2 or pk1=c1 and pk2=c2 ...;
-		//                                   ^
-		//                            deleteColSeparator
+	if len(tableDef.Pkey.Names) > 1 {
 		s.deletePrefix = []byte(fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE ", s.dbTblInfo.SinkDbName, s.dbTblInfo.SinkTblName))
 		s.deleteSuffix = []byte(";")
 		s.deleteRowPrefix = []byte("")
 		s.deleteColSeparator = []byte(" and ")
 		s.deleteRowSuffix = []byte("")
 		s.deleteRowSeparator = []byte(" or ")
-	} else {
-		//                                     	    deleteRowSeparator
-		//      | <-------- deletePrefix --------> |       v
-		// e.g. delete from t1 where (pk1, pk2) in ((a1,a2),(b1,b2),(c1,c2) ...);
-		//                                             ^
-		//                                      deleteColSeparator
-		s.deletePrefix = []byte(fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s IN (", s.dbTblInfo.SinkDbName, s.dbTblInfo.SinkTblName, genPrimaryKeyStr(tableDef)))
-		s.deleteSuffix = []byte(");")
-		s.deleteRowPrefix = []byte("(")
-		s.deleteColSeparator = []byte(",")
-		s.deleteRowSuffix = []byte(")")
-		s.deleteRowSeparator = []byte(",")
 	}
 	s.tsInsertPrefix = make([]byte, 0, 1024)
 	s.tsDeletePrefix = make([]byte, 0, 1024)
