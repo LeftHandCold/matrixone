@@ -331,6 +331,22 @@ func (reader *tableReader) readTableWithTxn(
 				if err == nil {
 					reader.wMarkUpdater.UpdateMem(reader.info.SourceDbName, reader.info.SourceTblName, toTs)
 				}
+			} else {
+				if reader.tableDef.Name == "bmsql_order_line" {
+					logutil.Infof("cdc tableReader(%v) sinker error: %v", reader.info.String(), err.Error())
+				}
+			}
+			if reader.tableDef.Name == "bmsql_order_line" {
+				irow := 0
+				drow := 0
+				if insertData != nil {
+					irow = insertData.RowCount()
+				}
+				if deleteData != nil {
+					drow = deleteData.RowCount()
+				}
+				logutil.Infof("insertData: %v, deleteData: %v, fromTs %v, toTs %v",
+					irow, drow, fromTs.ToString(), toTs.ToString())
 			}
 			return
 		}
