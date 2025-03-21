@@ -296,8 +296,16 @@ func (reader *tableReader) readTableWithTxn(
 			return
 		}
 		if reader.tableDef.Name == "bmsql_order_line" {
+			irow := 0
+			drow := 0
+			if insertData != nil {
+				irow = insertData.RowCount()
+			}
+			if deleteData != nil {
+				drow = deleteData.RowCount()
+			}
 			logutil.Infof("insertData: %v, deleteData: %v, fromTs %v, toTs %v",
-				insertData.RowCount(), deleteData.RowCount(), fromTs.ToString(), toTs.ToString())
+				irow, drow, fromTs.ToString(), toTs.ToString())
 		}
 		// both nil denote no more data (end of this tail)
 		if insertData == nil && deleteData == nil {
