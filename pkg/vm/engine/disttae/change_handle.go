@@ -53,6 +53,7 @@ func (tbl *txnTable) CollectChanges(
 		objectio.BlockMaxRows,
 		mp,
 		tbl.getTxn().engine.fs,
+		tbl.tableName,
 	)
 }
 
