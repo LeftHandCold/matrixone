@@ -580,6 +580,11 @@ func (s *mysqlSinker) sinkInsert(ctx context.Context, insertIter *atomicBatchRow
 }
 
 func (s *mysqlSinker) sinkDelete(ctx context.Context, deleteIter *atomicBatchRowIter) (err error) {
+	defer func() {
+		if err != nil {
+			logutil.Infof("sinkDelete failed, err: %v", err)
+		}
+	}()
 	// if last row is not insert row, need complete the last sql first
 	if s.preRowType != DeleteRow {
 		if s.isNonEmptyInsertStmt() {
