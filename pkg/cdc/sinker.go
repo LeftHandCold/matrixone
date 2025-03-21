@@ -36,7 +36,7 @@ import (
 const (
 	// sqlBufReserved leave 5 bytes for mysql driver
 	sqlBufReserved         = 5
-	sqlPrintLen            = 200
+	sqlPrintLen            = 1000
 	fakeSql                = "fakeSql"
 	createTable            = "create table"
 	createTableIfNotExists = "create table if not exists"
