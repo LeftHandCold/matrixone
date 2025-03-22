@@ -705,6 +705,7 @@ func (s *mysqlSinker) appendSqlBuf(rowType RowType) (err error) {
 		ss1 := time.Now()
 		s.sqlBufSendCh <- s.sqlBuf[:s.preSqlBufLen]
 		count2 = len(s.sqlBuf[:s.preSqlBufLen])
+		count3 = len(s.sqlBufSendCh)
 		f2 = time.Since(ss1)
 		ss2 := time.Now()
 		s.curBufIdx ^= 1
@@ -729,7 +730,6 @@ func (s *mysqlSinker) appendSqlBuf(rowType RowType) (err error) {
 		s.sqlBuf = appendBytes(s.sqlBuf, s.deleteRowSeparator)
 	}
 	s.sqlBuf = append(s.sqlBuf, s.rowBuf...)
-	count3 = len(s.sqlBuf)
 	f4 = time.Since(ss3)
 	return
 }
