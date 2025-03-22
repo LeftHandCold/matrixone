@@ -355,15 +355,16 @@ func (reader *tableReader) readTableWithTxn(
 		}
 
 		addStartMetrics(insertData, deleteData)
-
 		switch curHint {
 		case engine.ChangesHandle_Snapshot:
 			// output sql in a txn
+			s := time.Now()
 			if !hasBegin && !reader.initSnapshotSplitTxn {
 				reader.sinker.SendBegin()
 				hasBegin = true
 			}
-
+			d1 := time.Since(s)
+			s1 := time.Now()
 			// transform into insert instantly
 			reader.sinker.Sink(ctx, &DecoderOutput{
 				outputTyp:     OutputTypeSnapshot,
@@ -371,14 +372,21 @@ func (reader *tableReader) readTableWithTxn(
 				fromTs:        fromTs,
 				toTs:          toTs,
 			})
+			d2 := time.Since(s1)
 			addSnapshotEndMetrics(insertData)
 			insertData.Clean(reader.mp)
+			d := time.Since(s)
+			if d.Seconds() > 5 && reader.tableDef.Name == "bmsql_order_line" {
+				logutil.Infof("sink insertData slow: %v, %v %v, deleteData: %v, fromTs %v, toTs %v",
+					d, d1, d2, fromTs.ToString(), toTs.ToString())
+			}
 		case engine.ChangesHandle_Tail_wip:
 			insertAtmBatch = allocateAtomicBatchIfNeed(insertAtmBatch)
 			deleteAtmBatch = allocateAtomicBatchIfNeed(deleteAtmBatch)
 			insertAtmBatch.Append(packer, insertData, reader.insTsColIdx, reader.insCompositedPkColIdx)
 			deleteAtmBatch.Append(packer, deleteData, reader.delTsColIdx, reader.delCompositedPkColIdx)
 		case engine.ChangesHandle_Tail_done:
+			s := time.Now()
 			insertAtmBatch = allocateAtomicBatchIfNeed(insertAtmBatch)
 			deleteAtmBatch = allocateAtomicBatchIfNeed(deleteAtmBatch)
 			insertAtmBatch.Append(packer, insertData, reader.insTsColIdx, reader.insCompositedPkColIdx)
@@ -396,7 +404,8 @@ func (reader *tableReader) readTableWithTxn(
 				reader.sinker.SendBegin()
 				hasBegin = true
 			}
-
+			d1 := time.Since(s)
+			s1 := time.Now()
 			reader.sinker.Sink(ctx, &DecoderOutput{
 				outputTyp:      OutputTypeTail,
 				insertAtmBatch: insertAtmBatch,
@@ -404,6 +413,7 @@ func (reader *tableReader) readTableWithTxn(
 				fromTs:         fromTs,
 				toTs:           toTs,
 			})
+			d2 := time.Since(s1)
 			addTailEndMetrics(insertAtmBatch)
 			addTailEndMetrics(deleteAtmBatch)
 			insertAtmBatch.Close()
@@ -411,6 +421,11 @@ func (reader *tableReader) readTableWithTxn(
 			// reset, allocate new when next wip/done
 			insertAtmBatch = nil
 			deleteAtmBatch = nil
+			d := time.Since(s)
+			if d.Seconds() > 5 && reader.tableDef.Name == "bmsql_order_line" {
+				logutil.Infof("sink insertData slow2: %v, %v %v, deleteData: %v, fromTs %v, toTs %v",
+					d, d1, d2, fromTs.ToString(), toTs.ToString())
+			}
 		}
 	}
 }
