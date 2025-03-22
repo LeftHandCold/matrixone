@@ -361,7 +361,7 @@ func (s *mysqlSinker) Run(ctx context.Context, ar *ActiveRoutine) {
 			}
 			dd = time.Since(ss)
 			if dd.Seconds() > 50 && s.dbTblInfo.SinkTblName == "bmsql_order_line" {
-				logutil.Infof("s.mysql.Send insertData slow %v, sql %v", dd, s.dbTblInfo.SinkTblName, sqlBuf[l:])
+				logutil.Infof("s.mysql.Send insertData slow %v, sql %s", dd, s.dbTblInfo.SinkTblName, sqlBuf[l:])
 			}
 		}
 	}
