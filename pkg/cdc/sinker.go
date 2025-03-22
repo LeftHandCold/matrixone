@@ -578,6 +578,16 @@ func (s *mysqlSinker) sinkTail(ctx context.Context, insertBatch, deleteBatch *At
 
 func (s *mysqlSinker) sinkInsert(ctx context.Context, insertIter *atomicBatchRowIter) (err error) {
 	// if last row is not insert row, need complete the last sql first
+	var count1, count2, count3 int
+	var f1, f2, f3, f4 time.Duration
+	ss := time.Now()
+	defer func() {
+		dd := time.Since(ss)
+		if dd.Seconds() > 5 && s.dbTblInfo.SinkTblName == "bmsql_order_line" {
+			logutil.Infof("sinkTail sinkInsert insertData slow: %v, %v %v %v %v, count1 %d, count2 %d, count3 %d",
+				dd, f1, f2, f3, f4, count1, count2, count3)
+		}
+	}()
 	if s.preRowType != InsertRow {
 		if s.isNonEmptyDeleteStmt() {
 			s.sqlBuf = appendBytes(s.sqlBuf, s.deleteSuffix)
@@ -585,28 +595,48 @@ func (s *mysqlSinker) sinkInsert(ctx context.Context, insertIter *atomicBatchRow
 		}
 		s.sqlBuf = append(s.sqlBuf[:s.preSqlBufLen], s.tsInsertPrefix...)
 		s.preRowType = InsertRow
+		count1 = len(s.sqlBuf)
 	}
+	f1 = time.Since(ss)
+	ss1 := time.Now()
 
 	// step1: get row from the batch
 	if err = insertIter.Row(ctx, s.insertRow); err != nil {
 		return
 	}
+	count2 = len(s.insertRow)
+	f2 = time.Since(ss1)
+	ss3 := time.Now()
 
 	// step2: transform rows into sql parts
 	if err = s.getInsertRowBuf(ctx); err != nil {
 		return
 	}
+	count3 = s.preSqlBufLen
+	f3 = time.Since(ss3)
+	ss4 := time.Now()
 
 	// step3: append to sqlBuf
 	if err = s.appendSqlBuf(InsertRow); err != nil {
 		return
 	}
+	f4 = time.Since(ss4)
 
 	return
 }
 
 func (s *mysqlSinker) sinkDelete(ctx context.Context, deleteIter *atomicBatchRowIter) (err error) {
 	// if last row is not insert row, need complete the last sql first
+	var count1, count2, count3 int
+	var f1, f2, f3, f4 time.Duration
+	ss := time.Now()
+	defer func() {
+		dd := time.Since(ss)
+		if dd.Seconds() > 5 && s.dbTblInfo.SinkTblName == "bmsql_order_line" {
+			logutil.Infof("sinkTail sinkDelete insertData slow: %v, %v %v %v %v, count1 %d, count2 %d, count3 %d",
+				dd, f1, f2, f3, f4, count1, count2, count3)
+		}
+	}()
 	if s.preRowType != DeleteRow {
 		if s.isNonEmptyInsertStmt() {
 			s.sqlBuf = appendBytes(s.sqlBuf, s.insertSuffix)
@@ -615,22 +645,27 @@ func (s *mysqlSinker) sinkDelete(ctx context.Context, deleteIter *atomicBatchRow
 		s.sqlBuf = append(s.sqlBuf[:s.preSqlBufLen], s.tsDeletePrefix...)
 		s.preRowType = DeleteRow
 	}
-
+	f1 = time.Since(ss)
+	ss1 := time.Now()
 	// step1: get row from the batch
 	if err = deleteIter.Row(ctx, s.deleteRow); err != nil {
 		return
 	}
-
+	count2 = len(s.deleteRow)
+	f2 = time.Since(ss1)
+	ss3 := time.Now()
 	// step2: transform rows into sql parts
 	if err = s.getDeleteRowBuf(ctx); err != nil {
 		return
 	}
+	f3 = time.Since(ss3)
+	ss4 := time.Now()
 
 	// step3: append to sqlBuf
 	if err = s.appendSqlBuf(DeleteRow); err != nil {
 		return
 	}
-
+	f4 = time.Since(ss4)
 	return
 }
 
