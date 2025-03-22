@@ -338,6 +338,8 @@ func (s *mysqlSinker) Run(ctx context.Context, ar *ActiveRoutine) {
 				s.err = err
 			}
 		} else if bytes.Equal(sqlBuf, commit) {
+			ss := time.Now()
+			var dd time.Duration
 			if err := s.mysql.SendCommit(ctx); err != nil {
 				logutil.Errorf("cdc mysqlSinker(%v) SendCommit, err: %v", s.dbTblInfo, err)
 				// record error
@@ -350,10 +352,18 @@ func (s *mysqlSinker) Run(ctx context.Context, ar *ActiveRoutine) {
 				s.err = err
 			}
 		} else {
+			ss := time.Now()
+			var dd time.Duration
+			l := min(200, len(sqlBuf[sqlBufReserved:]))
 			if err := s.mysql.Send(ctx, ar, sqlBuf, true); err != nil {
-				logutil.Errorf("cdc mysqlSinker(%v) send sql failed, err: %v, sql: %s", s.dbTblInfo, err, sqlBuf[sqlBufReserved:])
+				dd = time.Since(ss)
+				logutil.Errorf("cdc mysqlSinker(%v) send sql failed, err: %v, dd %v, sql: %s", s.dbTblInfo, err, dd, sqlBuf[l:])
 				// record error
 				s.err = err
+			}
+			dd = time.Since(ss)
+			if dd.Seconds() > 50 && s.dbTblInfo.SinkTblName == "bmsql_order_line" {
+				logutil.Infof("s.mysql.Send insertData slow %v, sql %v", dd, s.dbTblInfo.SinkTblName, sqlBuf[l:])
 			}
 		}
 	}
