@@ -423,7 +423,7 @@ func (reader *tableReader) readTableWithTxn(
 			deleteAtmBatch = nil
 			d := time.Since(s)
 			if d.Seconds() > 5 && reader.tableDef.Name == "bmsql_order_line" {
-				logutil.Infof("sink insertData slow2: %v, %v %v, deleteData: %v, fromTs %v, toTs %v",
+				logutil.Infof("sink insertData slow2: %v, %v %v, fromTs %v, toTs %v",
 					d, d1, d2, fromTs.ToString(), toTs.ToString())
 			}
 		}

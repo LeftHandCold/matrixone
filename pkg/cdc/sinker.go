@@ -406,9 +406,19 @@ func (s *mysqlSinker) Sink(ctx context.Context, data *DecoderOutput) {
 	s.tsDeletePrefix = append(s.tsDeletePrefix, s.deletePrefix...)
 
 	if data.outputTyp == OutputTypeSnapshot {
+		ss := time.Now()
 		s.sinkSnapshot(ctx, data.checkpointBat)
+		end := time.Since(ss)
+		if end.Seconds() > 50 && s.dbTblInfo.SinkTblName == "bmsql_order_line" {
+			logutil.Infof("sinkSnapshot insertData slow %v", end, s.dbTblInfo.SinkTblName)
+		}
 	} else if data.outputTyp == OutputTypeTail {
+		ss := time.Now()
 		s.sinkTail(ctx, data.insertAtmBatch, data.deleteAtmBatch)
+		end := time.Since(ss)
+		if end.Seconds() > 50 && s.dbTblInfo.SinkTblName == "bmsql_order_line" {
+			logutil.Infof("sinkTail insertData slow %v", end, s.dbTblInfo.SinkTblName)
+		}
 	} else {
 		s.err = moerr.NewInternalError(ctx, fmt.Sprintf("cdc mysqlSinker unexpected output type: %v", data.outputTyp))
 	}
