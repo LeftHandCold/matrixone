@@ -672,6 +672,16 @@ func (s *mysqlSinker) sinkDelete(ctx context.Context, deleteIter *atomicBatchRow
 // appendSqlBuf appends rowBuf to sqlBuf if not exceed its cap
 // otherwise, send sql to downstream first, then reset sqlBuf and append
 func (s *mysqlSinker) appendSqlBuf(rowType RowType) (err error) {
+	var count1, count2, count3 int
+	var f1, f2, f3, f4 time.Duration
+	ss := time.Now()
+	defer func() {
+		dd := time.Since(ss)
+		if dd.Seconds() > 5 && s.dbTblInfo.SinkTblName == "bmsql_order_line" {
+			logutil.Infof("sinkTail appendSqlBuf insertData slow: %v, %v %v %v %v, count1 %d, count2 %d, count3 %d",
+				dd, f1, f2, f3, f4, count1, count2, count3)
+		}
+	}()
 	suffixLen := len(s.insertSuffix)
 	if rowType == DeleteRow {
 		suffixLen = len(s.deleteSuffix)
@@ -688,9 +698,15 @@ func (s *mysqlSinker) appendSqlBuf(rowType RowType) (err error) {
 			s.sqlBuf = appendBytes(s.sqlBuf, s.deleteSuffix)
 			s.preSqlBufLen = len(s.sqlBuf)
 		}
+		count1 = s.preSqlBufLen
 
 		// send it to downstream
+		f1 = time.Since(ss)
+		ss1 := time.Now()
 		s.sqlBufSendCh <- s.sqlBuf[:s.preSqlBufLen]
+		count2 = len(s.sqlBuf[:s.preSqlBufLen])
+		f2 = time.Since(ss1)
+		ss2 := time.Now()
 		s.curBufIdx ^= 1
 		s.sqlBuf = s.sqlBufs[s.curBufIdx]
 
@@ -701,7 +717,9 @@ func (s *mysqlSinker) appendSqlBuf(rowType RowType) (err error) {
 		} else {
 			s.sqlBuf = append(s.sqlBuf[:s.preSqlBufLen], s.tsDeletePrefix...)
 		}
+		f3 = time.Since(ss2)
 	}
+	ss3 := time.Now()
 
 	// append bytes
 	if s.isNonEmptyInsertStmt() {
@@ -711,6 +729,8 @@ func (s *mysqlSinker) appendSqlBuf(rowType RowType) (err error) {
 		s.sqlBuf = appendBytes(s.sqlBuf, s.deleteRowSeparator)
 	}
 	s.sqlBuf = append(s.sqlBuf, s.rowBuf...)
+	count3 = len(s.sqlBuf)
+	f4 = time.Since(ss3)
 	return
 }
 
