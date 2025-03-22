@@ -338,8 +338,6 @@ func (s *mysqlSinker) Run(ctx context.Context, ar *ActiveRoutine) {
 				s.err = err
 			}
 		} else if bytes.Equal(sqlBuf, commit) {
-			ss := time.Now()
-			var dd time.Duration
 			if err := s.mysql.SendCommit(ctx); err != nil {
 				logutil.Errorf("cdc mysqlSinker(%v) SendCommit, err: %v", s.dbTblInfo, err)
 				// record error
