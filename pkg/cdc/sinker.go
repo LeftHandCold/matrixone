@@ -510,17 +510,25 @@ func (s *mysqlSinker) sinkSnapshot(ctx context.Context, bat *batch.Batch) {
 // for the same ts, delete first, then insert
 func (s *mysqlSinker) sinkTail(ctx context.Context, insertBatch, deleteBatch *AtomicBatch) {
 	var err error
-
+	var count1, count2, count3 int64
+	var f1, f2, f3 time.Duration
+	ss := time.Now()
 	insertIter := insertBatch.GetRowIterator().(*atomicBatchRowIter)
 	deleteIter := deleteBatch.GetRowIterator().(*atomicBatchRowIter)
 	defer func() {
 		insertIter.Close()
 		deleteIter.Close()
+		d := time.Since(ss)
+		if d.Seconds() > 5 && s.dbTblInfo.SinkTblName == "bmsql_order_line" {
+			logutil.Infof("sinkTail insertData slow: %v, %v %v %v, count1 %d, count2 %d, count3 %d",
+				d, f1, f2, f3, count1, count2, count3)
+		}
 	}()
 
 	// output sql until one iterator reach the end
 	insertIterHasNext, deleteIterHasNext := insertIter.Next(), deleteIter.Next()
 	for insertIterHasNext && deleteIterHasNext {
+		count1++
 		insertItem, deleteItem := insertIter.Item(), deleteIter.Item()
 		// compare ts, ignore pk
 		if insertItem.Ts.LT(&deleteItem.Ts) {
@@ -539,9 +547,11 @@ func (s *mysqlSinker) sinkTail(ctx context.Context, insertBatch, deleteBatch *At
 			deleteIterHasNext = deleteIter.Next()
 		}
 	}
-
+	f1 = time.Since(ss)
+	ss2 := time.Now()
 	// output the rest of insert iterator
 	for insertIterHasNext {
+		count2++
 		if err = s.sinkInsert(ctx, insertIter); err != nil {
 			s.err = err
 			return
@@ -549,9 +559,12 @@ func (s *mysqlSinker) sinkTail(ctx context.Context, insertBatch, deleteBatch *At
 		// get next item
 		insertIterHasNext = insertIter.Next()
 	}
+	f2 = time.Since(ss2)
+	ss3 := time.Now()
 
 	// output the rest of delete iterator
 	for deleteIterHasNext {
+		count3++
 		if err = s.sinkDelete(ctx, deleteIter); err != nil {
 			s.err = err
 			return
@@ -559,6 +572,8 @@ func (s *mysqlSinker) sinkTail(ctx context.Context, insertBatch, deleteBatch *At
 		// get next item
 		deleteIterHasNext = deleteIter.Next()
 	}
+
+	f3 = time.Since(ss3)
 }
 
 func (s *mysqlSinker) sinkInsert(ctx context.Context, insertIter *atomicBatchRowIter) (err error) {
