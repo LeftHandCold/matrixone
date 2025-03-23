@@ -64,7 +64,7 @@ var NewSinker = func(
 		return NewConsoleSinker(dbTblInfo, watermarkUpdater), nil
 	}
 
-	sink, err := NewMysqlSink(sinkUri.User, sinkUri.Password, sinkUri.Ip, sinkUri.Port, retryTimes, retryDuration, sendSqlTimeout)
+	sink, err := NewMysqlSink(sinkUri.User, sinkUri.Password, sinkUri.Ip, sinkUri.Port, retryTimes, retryDuration, sendSqlTimeout, dbTblInfo.SinkTblName)
 	if err != nil {
 		return nil, err
 	}
