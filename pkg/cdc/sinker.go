@@ -847,17 +847,22 @@ func (s *mysqlSink) Send(ctx context.Context, ar *ActiveRoutine, sqlBuf []byte, 
 		Name:  mysql.ReuseQueryBuf,
 		Value: sqlBuf,
 	}
-
+	i := 0
 	f := func() (err error) {
+		ss := time.Now()
 		if s.tx != nil {
 			_, err = s.tx.Exec(fakeSql, reuseQueryArg)
 		} else {
 			_, err = s.conn.Exec(fakeSql, reuseQueryArg)
 		}
-
+		dd := time.Since(ss)
 		if err != nil {
 			logutil.Errorf("cdc mysqlSink Send failed, err: %v, sql: %s", err, sqlBuf[sqlBufReserved:min(len(sqlBuf), sqlPrintLen)])
 			//logutil.Errorf("cdc mysqlSink Send failed, err: %v, sql: %s", err, sqlBuf[sqlBufReserved:])
+		}
+		i++
+		if dd.Seconds() > 50 && s.table == "bmsql_order_line" {
+			logutil.Infof("s.mysql.retry.f insertData slow %v, times %d, e is nil %v", dd, i, err == nil)
 		}
 		//logutil.Infof("cdc mysqlSink Send success, sql: %s", sqlBuf[sqlBufReserved:])
 		return
