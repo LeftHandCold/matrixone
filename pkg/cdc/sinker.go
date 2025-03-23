@@ -361,7 +361,7 @@ func (s *mysqlSinker) Run(ctx context.Context, ar *ActiveRoutine) {
 			}
 			dd = time.Since(ss)
 			if dd.Seconds() > 50 && s.dbTblInfo.SinkTblName == "bmsql_order_line" {
-				logutil.Infof("s.mysql.Send insertData slow %v, sql %s", dd, s.dbTblInfo.SinkTblName, sqlBuf[l:])
+				logutil.Infof("s.mysql.Send insertData slow %v", dd, s.dbTblInfo.SinkTblName)
 			}
 		}
 	}
@@ -814,6 +814,7 @@ type mysqlSink struct {
 	retryTimes    int
 	retryDuration time.Duration
 	timeout       string
+	table         string
 }
 
 var NewMysqlSink = func(
@@ -822,6 +823,7 @@ var NewMysqlSink = func(
 	retryTimes int,
 	retryDuration time.Duration,
 	timeout string,
+	ops ...string,
 ) (Sink, error) {
 	ret := &mysqlSink{
 		user:          user,
@@ -831,6 +833,9 @@ var NewMysqlSink = func(
 		retryTimes:    retryTimes,
 		retryDuration: retryDuration,
 		timeout:       timeout,
+	}
+	if len(ops) > 0 {
+		ret.table = ops[0]
 	}
 	err := ret.connect()
 	return ret, err
@@ -861,7 +866,13 @@ func (s *mysqlSink) Send(ctx context.Context, ar *ActiveRoutine, sqlBuf []byte, 
 	if !needRetry {
 		return f()
 	}
-	return s.retry(ctx, ar, f)
+	ss := time.Now()
+	err := s.retry(ctx, ar, f)
+	dd := time.Since(ss)
+	if dd.Seconds() > 50 && s.table == "bmsql_order_line" {
+		logutil.Infof("s.mysql.retry insertData slow %v, times %d, du %d", dd, s.retryTimes, s.retryDuration)
+	}
+	return err
 }
 
 func (s *mysqlSink) SendBegin(ctx context.Context) (err error) {
