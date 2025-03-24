@@ -859,6 +859,9 @@ func (s *mysqlSink) Send(ctx context.Context, ar *ActiveRoutine, sqlBuf []byte, 
 		if err != nil {
 			logutil.Errorf("cdc mysqlSink Send failed, err: %v, sql: %s", err, sqlBuf[sqlBufReserved:min(len(sqlBuf), sqlPrintLen)])
 			//logutil.Errorf("cdc mysqlSink Send failed, err: %v, sql: %s", err, sqlBuf[sqlBufReserved:])
+			if moerr.IsMoErrCode(err, moerr.ErrDuplicateEntry) {
+				err = nil
+			}
 		}
 		i++
 		if dd.Seconds() > 50 && s.table == "bmsql_order_line" {
