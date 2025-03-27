@@ -371,7 +371,9 @@ func (sm *SnapshotMeta) updateTableInfo(
 		moTable[id] = &objectInfo{
 			stats:    stats,
 			createAt: createTS,
-			deleteAt: deleteTS,
+		}
+		if !deleteTS.IsEmpty() {
+			moTable[id].deleteAt = deleteTS
 		}
 	}
 	collectObjects(ctx, &objects, nil, data, ckputil.ObjectType_Data, collector)
