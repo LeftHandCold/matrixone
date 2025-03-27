@@ -335,6 +335,7 @@ type tombstone struct {
 	rowid types.Rowid
 	pk    types.Tuple
 	ts    types.TS
+	name  string
 }
 
 func (sm *SnapshotMeta) updateTableInfo(
@@ -363,6 +364,7 @@ func (sm *SnapshotMeta) updateTableInfo(
 			return
 		}
 		id := stats.ObjectName().SegmentId()
+		logutil.Infof("id is %v, create %v, drop %v", id.String(), createTS.ToString(), deleteTS.ToString())
 		moTable := (*objects)[tid]
 
 		// dropped object will overwrite the created object, updating the deleteAt
@@ -389,6 +391,8 @@ func (sm *SnapshotMeta) updateTableInfo(
 			panic(fmt.Sprintf("mo_table object %v blk cnt %v",
 				info.stats.ObjectName(), info.stats.BlkCnt()))
 		}
+		name1 := info.stats.ObjectName().String()
+		logutil.Infof("orderedInfos name is %v, create ts %v, drop ts %v", name1, info.createAt.ToString(), info.deleteAt.ToString())
 		if !info.deleteAt.IsEmpty() {
 			sm.aobjDelTsMap[info.deleteAt] = struct{}{}
 		}
@@ -497,6 +501,7 @@ func (sm *SnapshotMeta) updateTableInfo(
 
 		commitTsVec := vector.MustFixedColWithTypeCheck[types.TS](objectBat.Vecs[len(objectBat.Vecs)-1])
 		rowIDVec := vector.MustFixedColWithTypeCheck[types.Rowid](objectBat.Vecs[0])
+		name := info.stats.ObjectName().String()
 		for i := 0; i < len(commitTsVec); i++ {
 			pk, _, _, _ := types.DecodeTuple(objectBat.Vecs[1].GetRawBytesAt(i))
 			commitTs := commitTsVec[i]
@@ -511,6 +516,7 @@ func (sm *SnapshotMeta) updateTableInfo(
 				rowid: rowIDVec[i],
 				pk:    pk,
 				ts:    commitTs,
+				name:  name,
 			})
 		}
 	}
@@ -525,8 +531,8 @@ func (sm *SnapshotMeta) updateTableInfo(
 			continue
 		}
 		if len(sm.tablePKIndex[pk]) == 0 {
-			logutil.Warnf("[UpdateTableInfoWarn] delete table %v not found @ rowid %v, commit %v, start is %v, end is %v",
-				del.pk.ErrString(nil), del.rowid.String(), del.ts.ToString(), startts.ToString(), endts.ToString())
+			logutil.Warnf("[UpdateTableInfoWarn] delete table %v not found @ rowid %v, commit %v, start is %v, end is %v, name is %v",
+				del.pk.ErrString(nil), del.rowid.String(), del.ts.ToString(), startts.ToString(), endts.ToString(), del.name)
 			continue
 		}
 		table := sm.tablePKIndex[pk][0]
