@@ -678,6 +678,7 @@ func (sm *SnapshotMeta) Update(
 					zap.Uint64("table-id", tid),
 					zap.String("object-name", id.String()),
 					zap.String("create-at", createTS.ToString()),
+					zap.String("delete-at", deleteTS.ToString()),
 					zap.String("task", taskName),
 				)
 
