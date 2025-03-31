@@ -146,6 +146,17 @@ func (node *InternalType) Format(ctx *FmtCtx) {
 	switch fs {
 	case "set", "enum":
 		logutil.Infof("node.DisplayWith is %v", node.EnumValues)
+		if len(node.EnumValues) > 0 {
+			ctx.WriteByte('(')
+			for i, enum := range node.EnumValues {
+				ctx.WriteString(enum)
+				if i < len(node.EnumValues) {
+					ctx.WriteByte(',')
+				}
+
+			}
+			ctx.WriteByte(')')
+		}
 	case "char":
 		logutil.Infof("node.DisplayWith is %v", node)
 		if node.DisplayWith >= 0 {
