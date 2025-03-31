@@ -146,6 +146,7 @@ func (node *InternalType) Format(ctx *FmtCtx) {
 	switch fs {
 	case "set", "enum":
 	case "char":
+		logutil.Infof("node.DisplayWith is %v", node)
 		if node.DisplayWith >= 0 {
 			logutil.Infof("node.DisplayWith is %v", node.DisplayWith)
 			ctx.WriteByte('(')
