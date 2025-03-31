@@ -694,6 +694,7 @@ func buildCreateSequence(stmt *tree.CreateSequence, ctx CompilerContext) (*Plan,
 }
 
 func buildCreateTable(stmt *tree.CreateTable, ctx CompilerContext) (*Plan, error) {
+	snapshot := &Snapshot{TS: &timestamp.Timestamp{}}
 	if stmt.IsAsLike {
 		var err error
 		oldTable := stmt.LikeTableName
@@ -701,7 +702,6 @@ func buildCreateTable(stmt *tree.CreateTable, ctx CompilerContext) (*Plan, error
 		tblName := formatStr(string(oldTable.ObjectName))
 		dbName := formatStr(string(oldTable.SchemaName))
 
-		snapshot := &Snapshot{TS: &timestamp.Timestamp{}}
 		if dbName, err = databaseIsValid(getSuitableDBName(dbName, ""), ctx, snapshot); err != nil {
 			return nil, err
 		}
@@ -932,6 +932,9 @@ func buildCreateTable(stmt *tree.CreateTable, ctx CompilerContext) (*Plan, error
 					Properties: properties,
 				},
 			}})
+
+		sqlString, _, _ := ConstructCreateTableSQL(ctx, createTable.TableDef, snapshot, true)
+		createTable.TableDef.Defs[len(createTable.TableDef.Defs)-1].GetProperties().Properties[1].Value = sqlString
 	}
 
 	builder := NewQueryBuilder(plan.Query_SELECT, ctx, false, false)
