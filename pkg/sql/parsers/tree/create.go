@@ -1338,6 +1338,7 @@ func (node *ColumnTableDef) Format(ctx *FmtCtx) {
 			ctx.WriteString(prefix)
 			if a != nil {
 				a.Format(ctx)
+				logutil.Infof("ColumnTableDef11 is %v, a is %v", ctx.String(), a)
 			}
 		}
 	}
