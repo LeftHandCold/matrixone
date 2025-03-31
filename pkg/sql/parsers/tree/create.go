@@ -16,6 +16,7 @@ package tree
 
 import (
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"strconv"
 	"strings"
 
@@ -1004,6 +1005,7 @@ func (node *CreateTable) Format(ctx *FmtCtx) {
 					ctx.WriteByte(' ')
 				}
 				def.Format(ctx)
+				logutil.Infof("ctx.Stringctx.String() %v", ctx.String())
 			}
 			ctx.WriteByte(')')
 		}
