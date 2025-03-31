@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"strings"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
@@ -32,6 +33,9 @@ import (
 func ConstructCreateTableSQL(ctx CompilerContext, tableDef *plan.TableDef, snapshot *Snapshot, useDbName bool) (string, tree.Statement, error) {
 	var err error
 	var createStr string
+	defer func() {
+		logutil.Infof("sConstructCreateTableSQL is %v", createStr)
+	}()
 
 	tblName := tableDef.Name
 	schemaName := tableDef.DbName
