@@ -421,6 +421,10 @@ func (db *txnDatabase) createWithID(
 					case catalog.SystemRelAttr_Kind:
 						tbl.relKind = property.Value
 					case catalog.SystemRelAttr_CreateSQL:
+						if v := ctx.Value(defines.SqlKey{}); v != nil {
+							logutil.Infof("get sqlkey from ctx %v", v.(string))
+						}
+						logutil.Infof("fsfdsfsf %v", property.Value)
 						tbl.createSql = property.Value
 					case catalog.PropSchemaExtra:
 						tbl.extraInfo = api.MustUnmarshalTblExtra([]byte(property.Value))
