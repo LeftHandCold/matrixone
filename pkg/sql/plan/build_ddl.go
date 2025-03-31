@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"slices"
 	"strconv"
 	"strings"
@@ -567,6 +568,7 @@ func buildAlterSequenceTableDef(stmt *tree.AlterSequence, ctx CompilerContext, a
 			Value: ctx.GetRootSql(),
 		},
 	}
+	logutil.Infof("ctx.GetRootSql( is  %v", ctx.GetRootSql())
 
 	as.TableDef.Defs = append(as.TableDef.Defs, &plan.TableDef_DefType{
 		Def: &plan.TableDef_DefType_Properties{
@@ -898,6 +900,7 @@ func buildCreateTable(stmt *tree.CreateTable, ctx CompilerContext) (*Plan, error
 				Value: string(json_byte),
 			},
 		}
+		logutil.Infof("json_byte is  %v", json_byte)
 		createTable.TableDef.TableType = catalog.SystemExternalRel
 		createTable.TableDef.Defs = append(createTable.TableDef.Defs, &plan.TableDef_DefType{
 			Def: &plan.TableDef_DefType_Properties{
@@ -926,6 +929,7 @@ func buildCreateTable(stmt *tree.CreateTable, ctx CompilerContext) (*Plan, error
 				Value: fmtCtx.String(),
 			},
 		}
+		logutil.Infof("fmtCtx.String() is  %v", fmtCtx.String())
 		createTable.TableDef.Defs = append(createTable.TableDef.Defs, &plan.TableDef_DefType{
 			Def: &plan.TableDef_DefType_Properties{
 				Properties: &plan.PropertiesDef{
