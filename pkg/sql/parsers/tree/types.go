@@ -15,6 +15,7 @@
 package tree
 
 import (
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"strconv"
 	"strings"
 
@@ -146,6 +147,7 @@ func (node *InternalType) Format(ctx *FmtCtx) {
 	case "set", "enum":
 	case "char":
 		if node.DisplayWith >= 0 {
+			logutil.Infof("node.DisplayWith is %v", node.DisplayWith)
 			ctx.WriteByte('(')
 			ctx.WriteString(strconv.FormatInt(int64(node.DisplayWith), 10))
 			ctx.WriteByte(')')
