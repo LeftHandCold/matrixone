@@ -1325,10 +1325,8 @@ type ColumnTableDef struct {
 }
 
 func (node *ColumnTableDef) Format(ctx *FmtCtx) {
+	logutil.Infof("ColumnTableDef is %v", ctx.String())
 	node.Name.Format(ctx)
-	defer func() {
-		logutil.Infof("ColumnTableDef is %v", ctx.String())
-	}()
 	ctx.WriteByte(' ')
 	node.Type.(*T).InternalType.Format(ctx)
 
