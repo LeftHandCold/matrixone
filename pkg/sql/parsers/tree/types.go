@@ -149,8 +149,10 @@ func (node *InternalType) Format(ctx *FmtCtx) {
 		if len(node.EnumValues) > 0 {
 			ctx.WriteByte('(')
 			for i, enum := range node.EnumValues {
+				ctx.WriteByte('"')
 				ctx.WriteString(enum)
-				if i < len(node.EnumValues) {
+				ctx.WriteByte('"')
+				if i < len(node.EnumValues)-1 {
 					ctx.WriteByte(',')
 				}
 
