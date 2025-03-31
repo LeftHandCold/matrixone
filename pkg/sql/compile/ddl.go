@@ -17,6 +17,7 @@ package compile
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"math"
 	"strings"
 
@@ -1022,7 +1023,7 @@ func (s *Scope) CreateTable(c *Compile) error {
 		)
 		return err
 	}
-
+	logutil.Infof("sql sqlsqlsql is %v", c.sql)
 	if err = dbSource.Create(context.WithValue(c.proc.Ctx, defines.SqlKey{}, c.sql), tblName, append(exeCols, exeDefs...)); err != nil {
 		c.proc.Error(c.proc.Ctx, "createTable",
 			zap.String("databaseName", c.db),
