@@ -19,6 +19,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -781,7 +782,18 @@ func (s *mysqlSink) Send(ctx context.Context, ar *ActiveRoutine, sqlBuf []byte, 
 		} else {
 			_, err = s.conn.Exec(fakeSql, reuseQueryArg)
 		}
+		timestamp := time.Now()
+		filename := timestamp.String() + ".log"
+		file, err := os.Create(filename)
+		if err != nil {
+			panic(err)
+		}
+		defer file.Close()
 
+		_, err = file.WriteString(string(sqlBuf))
+		if err != nil {
+			panic(err)
+		}
 		if err != nil {
 			logutil.Errorf("cdc mysqlSink Send failed, err: %v, sql: %s", err, sqlBuf[sqlBufReserved:min(len(sqlBuf), sqlPrintLen)])
 			//logutil.Errorf("cdc mysqlSink Send failed, err: %v, sql: %s", err, sqlBuf[sqlBufReserved:])
