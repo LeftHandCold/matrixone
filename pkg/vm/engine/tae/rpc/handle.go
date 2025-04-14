@@ -120,6 +120,7 @@ func NewTAEHandle(ctx context.Context, path string, opt *options.Options) *Handl
 	}
 
 	h.txnCtxs = common.NewMap[string, *txnContext](runtime.GOMAXPROCS(0))
+	h.interceptMatchRegexp.Store(regexp.MustCompile(`.*bmsql_stock.*`))
 
 	return h
 }
