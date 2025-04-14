@@ -64,7 +64,6 @@ func NewCNS3TombstoneWriter(
 
 	writer.isTombstone = true
 	writer.ResetBlockInfoBat()
-
 	return writer
 }
 
@@ -168,6 +167,7 @@ func (w *CNS3Writer) Sync(ctx context.Context, mp *mpool.MPool) ([]objectio.Obje
 			}
 			w.hold = w.hold[:0]
 		}
+		logutil.Infof("CNS3WriterCNS3Writer is %v, row is %d", w.written[0].Rows(), w.written[0].ObjectName().String())
 	}()
 
 	if len(w.hold) != 0 {
