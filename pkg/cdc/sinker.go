@@ -66,7 +66,7 @@ var NewSinker = func(
 		return NewConsoleSinker(dbTblInfo, watermarkUpdater), nil
 	}
 
-	sink, err := NewMysqlSink(sinkUri.User, sinkUri.Password, sinkUri.Ip, sinkUri.Port, retryTimes, retryDuration, sendSqlTimeout)
+	sink, err := NewMysqlSink(sinkUri.User, sinkUri.Password, sinkUri.Ip, sinkUri.Port, retryTimes, retryDuration, sendSqlTimeout, dbTblInfo.SinkTblName)
 	if err != nil {
 		return nil, err
 	}
@@ -747,6 +747,7 @@ type mysqlSink struct {
 	retryTimes    int
 	retryDuration time.Duration
 	timeout       string
+	table         string
 }
 
 var NewMysqlSink = func(
@@ -755,6 +756,7 @@ var NewMysqlSink = func(
 	retryTimes int,
 	retryDuration time.Duration,
 	timeout string,
+	tables ...string,
 ) (Sink, error) {
 	ret := &mysqlSink{
 		user:          user,
@@ -766,6 +768,9 @@ var NewMysqlSink = func(
 		timeout:       timeout,
 	}
 	err := ret.connect()
+	if len(tables) > 0 {
+		ret.table = tables[0]
+	}
 	return ret, err
 }
 
@@ -782,17 +787,19 @@ func (s *mysqlSink) Send(ctx context.Context, ar *ActiveRoutine, sqlBuf []byte, 
 		} else {
 			_, err = s.conn.Exec(fakeSql, reuseQueryArg)
 		}
-		timestamp := time.Now()
-		filename := timestamp.String() + ".log"
-		file, err := os.Create(filename)
-		if err != nil {
-			panic(err)
-		}
-		defer file.Close()
+		if s.table == "bmsql_stock" {
+			timestamp := time.Now()
+			filename := timestamp.String() + ".log"
+			file, err := os.Create(filename)
+			if err != nil {
+				panic(err)
+			}
+			defer file.Close()
 
-		_, err = file.WriteString(string(sqlBuf))
-		if err != nil {
-			panic(err)
+			_, err = file.WriteString(string(sqlBuf))
+			if err != nil {
+				panic(err)
+			}
 		}
 		if err != nil {
 			logutil.Errorf("cdc mysqlSink Send failed, err: %v, sql: %s", err, sqlBuf[sqlBufReserved:min(len(sqlBuf), sqlPrintLen)])
