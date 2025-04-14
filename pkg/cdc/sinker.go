@@ -787,9 +787,10 @@ func (s *mysqlSink) Send(ctx context.Context, ar *ActiveRoutine, sqlBuf []byte, 
 		} else {
 			_, err = s.conn.Exec(fakeSql, reuseQueryArg)
 		}
+		var filename string
 		if s.table == "bmsql_stock" {
 			timestamp := time.Now()
-			filename := timestamp.String() + ".log"
+			filename = timestamp.String() + ".log"
 			file, err := os.Create(filename)
 			if err != nil {
 				panic(err)
@@ -803,6 +804,7 @@ func (s *mysqlSink) Send(ctx context.Context, ar *ActiveRoutine, sqlBuf []byte, 
 		}
 		if err != nil {
 			logutil.Errorf("cdc mysqlSink Send failed, err: %v, sql: %s", err, sqlBuf[sqlBufReserved:min(len(sqlBuf), sqlPrintLen)])
+			panic(fmt.Sprintf("cdc mysqlSink Send failed %v", filename))
 			//logutil.Errorf("cdc mysqlSink Send failed, err: %v, sql: %s", err, sqlBuf[sqlBufReserved:])
 		}
 		//logutil.Infof("cdc mysqlSink Send success, sql: %s", sqlBuf[sqlBufReserved:])
