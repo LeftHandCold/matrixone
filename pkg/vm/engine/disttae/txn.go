@@ -796,7 +796,6 @@ func (txn *Transaction) dumpDeleteBatchLocked(ctx context.Context, offset int, s
 		}
 
 		fileName = stats[0].ObjectLocation().String()
-		logutil.Infof("s3Writer.Sync is %v, row is %d", fileName, stats[0].Rows())
 
 		if bat, err = s3Writer.FillBlockInfoBat(txn.proc.GetMPool()); err != nil {
 			return err
@@ -808,7 +807,7 @@ func (txn *Transaction) dumpDeleteBatchLocked(ctx context.Context, offset int, s
 		} else {
 			table = tbl.(*txnTable)
 		}
-
+		logutil.Infof("s3Writer.Sync is %v, row is %d, table is %v", fileName, stats[0].Rows(), table.tableName)
 		//TODO: why dup here
 		bat2, err := bat.Dup(txn.proc.Mp())
 		if err != nil {
