@@ -245,7 +245,7 @@ var NewMysqlSinker = func(
 	s.rowBuf = make([]byte, 0, 1024)
 
 	// prefix and suffix
-	s.insertPrefix = []byte(fmt.Sprintf("REPLACE INTO `%s`.`%s` VALUES ", s.dbTblInfo.SinkDbName, s.dbTblInfo.SinkTblName))
+	s.insertPrefix = []byte(fmt.Sprintf("INSERT INTO `%s`.`%s` VALUES ", s.dbTblInfo.SinkDbName, s.dbTblInfo.SinkTblName))
 	s.insertSuffix = []byte(";")
 	s.insertRowPrefix = []byte("(")
 	s.insertColSeparator = []byte(",")
