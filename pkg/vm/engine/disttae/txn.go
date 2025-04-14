@@ -796,6 +796,7 @@ func (txn *Transaction) dumpDeleteBatchLocked(ctx context.Context, offset int, s
 		}
 
 		fileName = stats[0].ObjectLocation().String()
+		logutil.Infof("s3Writer.Sync is %v, row is %d", fileName, stats[0].Rows())
 
 		if bat, err = s3Writer.FillBlockInfoBat(txn.proc.GetMPool()); err != nil {
 			return err
