@@ -167,7 +167,7 @@ var (
 	defaultMaxLogMessageSize = 16 << 10
 
 	// largestEntryLimit is the max size for reading file to csv buf
-	LargestEntryLimit = 10 * 1024 * 1024
+	LargestEntryLimit = 1000 * 1024 * 1024
 
 	CNPrimaryCheck atomic.Bool
 
