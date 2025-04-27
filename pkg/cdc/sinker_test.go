@@ -1027,8 +1027,8 @@ func Test_Error(t *testing.T) {
 		password:      "123456",
 		ip:            "127.0.0.1",
 		port:          3306,
-		retryTimes:    3,
-		retryDuration: 3 * time.Second,
+		retryTimes:    CDCDefaultRetryTimes,
+		retryDuration: CDCDefaultRetryDuration,
 		conn:          db,
 	}
 	defer sink.Close()
