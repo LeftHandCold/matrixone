@@ -562,6 +562,7 @@ var openDb = sql.Open
 var tryConn = func(dsn string) (*sql.DB, error) {
 	db, err := openDb("mysql-mo", dsn)
 	if err != nil {
+		logutil.Infof("tryConn is %v", err.Error())
 		return nil, err
 	} else {
 		db.SetConnMaxLifetime(time.Minute * 3)
