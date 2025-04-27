@@ -99,19 +99,19 @@ func (opts *CDCCreateTaskOptions) ValidateAndFill(
 
 	// extract source uri and check connection
 	// target field: SrcUri
-	{
-		if opts.SrcUri, opts.SrcUriInfo, err = cdc.ExtractUriInfo(
-			ctx, req.SourceUri, cdc.CDCSourceUriPrefix,
-		); err != nil {
-			return
-		}
-		if _, err = cdc.OpenDbConn(
-			opts.SrcUriInfo.User, opts.SrcUriInfo.Password, opts.SrcUriInfo.Ip, opts.SrcUriInfo.Port, cdc.CDCDefaultSendSqlTimeout,
-		); err != nil {
-			err = moerr.NewInternalErrorf(ctx, "failed to connect to source, please check the connection, err: %v", err)
-			return
-		}
-	}
+	//{
+	//	if opts.SrcUri, opts.SrcUriInfo, err = cdc.ExtractUriInfo(
+	//		ctx, req.SourceUri, cdc.CDCSourceUriPrefix,
+	//	); err != nil {
+	//		return
+	//	}
+	//	if _, err = cdc.OpenDbConn(
+	//		opts.SrcUriInfo.User, opts.SrcUriInfo.Password, opts.SrcUriInfo.Ip, opts.SrcUriInfo.Port, cdc.CDCDefaultSendSqlTimeout,
+	//	); err != nil {
+	//		err = moerr.NewInternalErrorf(ctx, "failed to connect to source, please check the connection, err: %v", err)
+	//		return
+	//	}
+	//}
 
 	// 1. Converts sink type to lowercase
 	// 2. Enables console sink if configured and requested
