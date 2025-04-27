@@ -544,7 +544,7 @@ var OpenDbConn = func(user, password string, ip string, port int, timeout string
 	logutil.Infof("openDbConn timeout = %s", timeout)
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/?readTimeout=%s&timeout=%s&writeTimeout=%s&multiStatements=true",
 		user, password, ip, port, timeout, timeout, timeout)
-	logutil.Infof("user is %v", user)
+	logutil.Infof("user is %v,,,, dsn is %v", user, dsn)
 	for i := 0; i < 3; i++ {
 		if db, err = tryConn(dsn); err == nil {
 			// TODO check table existence
