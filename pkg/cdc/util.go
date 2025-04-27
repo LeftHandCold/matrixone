@@ -573,6 +573,7 @@ var tryConn = func(dsn string) (*sql.DB, error) {
 		//ping opens the connection
 		err = db.Ping()
 		if err != nil {
+			logutil.Infof("PingPingPing is %v", err.Error())
 			return nil, err
 		}
 	}
