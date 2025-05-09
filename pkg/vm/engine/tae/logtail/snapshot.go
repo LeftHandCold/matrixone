@@ -926,7 +926,7 @@ func (sm *SnapshotMeta) GetPITR(
 				} else if unit == PitrUnitDay {
 					ts = gcTime.AddDate(0, 0, 1-leng)
 				} else if unit == PitrUnitHour {
-					ts = gcTime.Add(-time.Duration(leng) * time.Hour)
+					ts = gcTime.Add(-time.Duration(leng) * time.Minute)
 				} else if unit == PitrUnitMinute {
 					ts = gcTime.Add(-time.Duration(leng) * time.Minute)
 				}
