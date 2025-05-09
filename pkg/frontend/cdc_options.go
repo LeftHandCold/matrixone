@@ -17,6 +17,7 @@ package frontend
 import (
 	"context"
 	"encoding/json"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"regexp"
 	"strconv"
 	"strings"
@@ -329,6 +330,7 @@ func (opts *CDCCreateTaskOptions) handleLevel(
 	if patterTupples, err = CDCParsePitrGranularity(
 		ctx, level, req.Tables,
 	); err != nil {
+		logutil.Infof("CDCParsePitrGranularity is %v", err.Error())
 		err = moerr.NewInternalErrorf(ctx, "invalid level: %s", level)
 		return
 	}
