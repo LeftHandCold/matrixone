@@ -362,7 +362,7 @@ func MakeFinalCanGCSinker(
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
 			buf := bat.Vecs[0].GetRawBytesAt(i)
 			stats := (*objectio.ObjectStats)(unsafe.Pointer(&buf[0]))
-			name := stats.ObjectName().String()
+			name := stats.ObjectName().UnsafeString()
 			dropTS := dropTSs[i]
 			tableID := tableIDs[i]
 			if !dropTS.IsEmpty() {
