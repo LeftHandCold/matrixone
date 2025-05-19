@@ -17,6 +17,8 @@ package objectio
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
 	"math"
 	"os"
 	"path"
@@ -336,6 +338,62 @@ func TestNewObjectReader(t *testing.T) {
 	assert.Equal(t, uint32(1), meta.BlockCount())
 	meta, _ = metaHeader.SubMeta(24)
 	assert.Equal(t, uint32(1), meta.BlockCount())
+}
+
+func TestNewObjectReader2(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+	fsDir := "/Users/shenjiangwei/Work/local/tae/matrixone/mo-data"
+	c := fileservice.Config{
+		Name:    defines.LocalFileServiceName,
+		Backend: "S3",
+		S3: fileservice.ObjectStorageArguments{
+			Endpoint: "disk",
+			Bucket:   fsDir,
+		},
+	}
+	service, err := fileservice.NewFileService(ctx, c, nil)
+	assert.Nil(t, err)
+	objectReader, _ := NewObjectReaderWithStr("0196d32a-6db7-784d-be30-7674a0cc495a_00000", service)
+	ext := NewExtent(1, 1922707, 2323, 9523)
+	objectReader.CacheMetaExtent(&ext)
+	metaHeader, err := objectReader.ReadMeta(context.Background(), nil)
+	assert.Nil(t, err)
+	meta := metaHeader.MustDataMeta()
+	cols := meta.BlockHeader().ColumnCount()
+	ioVec := fileservice.IOVector{
+		FilePath: "0196d32a-6db7-784d-be30-7674a0cc495a_00000",
+		Entries:  make([]fileservice.IOEntry, 0, int(cols)*int(meta.BlockCount())),
+	}
+	for i := uint32(0); i < meta.BlockCount(); i++ {
+		for seqnum := uint16(0); seqnum < cols; seqnum++ {
+			blkmeta := meta.GetBlockMeta(i)
+			if seqnum > blkmeta.GetMaxSeqnum() || blkmeta.ColumnMeta(seqnum).DataType() == 0 {
+				// prefetch, do not generate
+				panic("ReadAllBlocksWithMeta expect no schema changes")
+			}
+			col := blkmeta.ColumnMeta(seqnum)
+			ext := col.Location()
+			ioVec.Entries = append(ioVec.Entries, fileservice.IOEntry{
+				Offset: int64(ext.Offset()),
+				Size:   int64(ext.Length()),
+
+				ToCacheData: constructorFactory(int64(ext.OriginSize()), ext.Alg()),
+			})
+
+		}
+	}
+
+	err = service.Read(ctx, &ioVec)
+	assert.Nil(t, err)
+	//TODO when to call ioVec.Release?
+	for i, vec := range ioVec.Entries {
+		header := DecodeIOEntryHeader(vec.CachedData.Bytes())
+		if header.Type != IOET_ColData {
+			panic("sdfsdfs")
+		}
+		logutil.Infof("i is %v, vec is %v, cols %d, header is %v", i, len(vec.CachedData.Bytes()), cols, header.String())
+	}
 }
 
 func newBatch(mp *mpool.MPool) *batch.Batch {
