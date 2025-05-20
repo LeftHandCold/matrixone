@@ -172,8 +172,8 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 		return err
 	}
 
-	e.result.filesToGC = make([]string, 0, 20)
-	finalSinker, err := MakeFinalCanGCSinker(&e.result.filesToGC)
+	filesToGCMap := make(map[string]struct{})
+	finalSinker, err := MakeFinalCanGCSinker(filesToGCMap)
 	if err != nil {
 		return err
 	}
@@ -192,6 +192,10 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 
 	e.result.filesNotGC = make([]objectio.ObjectStats, 0, len(newFiles))
 	e.result.filesNotGC = append(e.result.filesNotGC, newFiles...)
+	e.result.filesToGC = make([]string, 0, len(filesToGCMap))
+	for name := range filesToGCMap {
+		e.result.filesToGC = append(e.result.filesToGC, name)
+	}
 	return nil
 }
 
@@ -343,16 +347,14 @@ func MakeSnapshotAndPitrFineFilter(
 }
 
 func MakeFinalCanGCSinker(
-	filesToGC *[]string,
+	filesToGCMap map[string]struct{},
 ) (
 	SinkerFn,
 	error,
 ) {
-	buffer := make(map[string]struct{}, 100)
 	return func(
 		ctx context.Context, bat *batch.Batch,
 	) error {
-		clear(buffer)
 		var dropTSs []types.TS
 		var tableIDs []uint64
 		if bat.Vecs[0].Length() > 0 {
@@ -362,19 +364,21 @@ func MakeFinalCanGCSinker(
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
 			buf := bat.Vecs[0].GetRawBytesAt(i)
 			stats := (*objectio.ObjectStats)(unsafe.Pointer(&buf[0]))
-			name := stats.ObjectName().String()
 			dropTS := dropTSs[i]
 			tableID := tableIDs[i]
 			if !dropTS.IsEmpty() {
-				buffer[name] = struct{}{}
+				if _, ok := filesToGCMap[stats.ObjectName().UnsafeString()]; !ok {
+					name := stats.ObjectName().String()
+					filesToGCMap[name] = struct{}{}
+				}
 				continue
 			}
 			if !logtail.IsMoTable(tableID) {
-				buffer[name] = struct{}{}
+				if _, ok := filesToGCMap[stats.ObjectName().UnsafeString()]; !ok {
+					name := stats.ObjectName().String()
+					filesToGCMap[name] = struct{}{}
+				}
 			}
-		}
-		for name := range buffer {
-			*filesToGC = append(*filesToGC, name)
 		}
 		return nil
 	}, nil
