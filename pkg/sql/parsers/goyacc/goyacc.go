@@ -616,7 +616,7 @@ outer:
 				}
 				j = chfind(2, tokname)
 				if j >= NTBASE {
-					lerrorf(ruleline, "nonterminal %s illegal after %%prec", nontrst[j-NTBASE].name)
+					lerrorf(ruleline, "nonterminal "+nontrst[j-NTBASE].name+" illegal after %%prec")
 				}
 				levprd[nprod] = toklev[j]
 				t = gettok()
@@ -1744,7 +1744,7 @@ more:
 		}
 		if pempty[i] != OK {
 			fatfl = 0
-			errorf("nonterminal %s never derives any token string", nontrst[i].name)
+			errorf("nonterminal " + nontrst[i].name + " never derives any token string")
 		}
 	}
 
