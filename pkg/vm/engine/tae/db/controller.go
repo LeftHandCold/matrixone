@@ -682,7 +682,7 @@ func (c *Controller) AssembleDB(ctx context.Context) (err error) {
 		db.BGFlusher.Stop()
 		return nil
 	})
-	db.DiskCleaner.Start()
+	//db.DiskCleaner.Start()
 	rollbackSteps.Add("stop disk cleaner", func() error {
 		db.DiskCleaner.Stop()
 		return nil
