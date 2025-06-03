@@ -279,6 +279,7 @@ func (exec *txnExecutor) Exec(
 		}
 	}()
 	if err != nil {
+		logutil.Infof("parsers.Parse is %v", err.Error())
 		return executor.Result{}, err
 	}
 
@@ -293,6 +294,7 @@ func (exec *txnExecutor) Exec(
 
 		err := txnOp.GetWorkspace().IncrStatementID(exec.ctx, false)
 		if err != nil {
+			logutil.Infof("IncrStatementID is %v", err.Error())
 			return executor.Result{}, err
 		}
 	}
