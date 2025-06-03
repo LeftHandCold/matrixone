@@ -335,6 +335,7 @@ func (exec *txnExecutor) Exec(
 
 	pn, err := plan.BuildPlan(compileContext, stmts[0], false)
 	if err != nil {
+		logutil.Infof("BuildPlan is %v", err.Error())
 		return executor.Result{}, err
 	}
 
@@ -366,6 +367,7 @@ func (exec *txnExecutor) Exec(
 				// our current internal sql will never read too much data.
 				rows, err := bat.Dup(exec.s.mp)
 				if err != nil {
+					logutil.Infof("Dup is %v", err.Error())
 					return err
 				}
 				if streaming {
@@ -392,6 +394,7 @@ func (exec *txnExecutor) Exec(
 		if streaming {
 			err_chan <- err
 		}
+		logutil.Infof("Compile is %v", err.Error())
 		return executor.Result{}, err
 	}
 	var runResult *util.RunResult
@@ -405,6 +408,7 @@ func (exec *txnExecutor) Exec(
 				bat.Clean(exec.s.mp)
 			}
 		}
+		logutil.Infof("Run is %v", err.Error())
 		return executor.Result{}, err
 	}
 
