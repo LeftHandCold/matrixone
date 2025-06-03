@@ -116,8 +116,10 @@ func (s *sqlExecutor) Exec(
 		ctx,
 		func(exec executor.TxnExecutor) error {
 			v, err := exec.Exec(sql, opts.StatementOption())
-			panic(fmt.Sprintf("exec.Exec is err %v", err.Error()))
 			res = v
+			if err != nil {
+				panic(fmt.Sprintf("exec.Exec is err %v", err.Error()))
+			}
 			return err
 		},
 		opts.WithSQL(sql))
