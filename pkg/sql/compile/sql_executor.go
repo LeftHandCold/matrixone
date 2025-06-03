@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"go.uber.org/zap"
@@ -115,6 +116,7 @@ func (s *sqlExecutor) Exec(
 		ctx,
 		func(exec executor.TxnExecutor) error {
 			v, err := exec.Exec(sql, opts.StatementOption())
+			panic(fmt.Sprintf("exec.Exec is err %v", err.Error()))
 			res = v
 			return err
 		},

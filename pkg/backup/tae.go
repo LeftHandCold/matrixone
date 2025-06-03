@@ -106,6 +106,11 @@ func BackupData(
 		return err
 	}
 	count := config.Parallelism
+	sql2 := "create  pitr pitr_db for database tpcc  range 2 h"
+	res, err = exec.Exec(ctx, sql2, opts)
+	if err != nil {
+		return err
+	}
 	return execBackup(ctx, sid, srcFs, dstFs, fileName, int(count), config.BackupTs, config.BackupType, nil)
 }
 
