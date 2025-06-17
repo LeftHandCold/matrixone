@@ -26,7 +26,7 @@ import (
 )
 
 var deleteTimeout = 10 * time.Minute
-var deleteBatchSize = 1000
+var deleteBatchSize = 100
 
 func SetDeleteBatchSize(cnt int) {
 	deleteBatchSize = cnt
