@@ -223,7 +223,8 @@ func (cleaner *DiskCleaner) forceScheduleJob(jt tasks.JobType) (err error) {
 	return
 }
 
-var count := 0
+var count = 0
+
 // only can be executed in StateStep_Write
 // otherwise, return moerr.NewTxnControlErrorNoCtxf("GC-Not-Write-Mode")
 func (cleaner *DiskCleaner) scheduleGCJob(ctx context.Context) (err error) {
