@@ -106,6 +106,7 @@ func (g *Deleter) DeleteMany(
 		now := time.Now()
 		deleteCtx, cancel := context.WithTimeout(ctx, g.deleteTimeout)
 		defer cancel()
+		time.Sleep(5 * time.Minute)
 		err = g.fs.Delete(deleteCtx, toDeletePaths[i:end]...)
 		logutil.Info(
 			"GC-ExecDelete-Group",

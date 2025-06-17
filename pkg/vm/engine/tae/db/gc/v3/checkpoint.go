@@ -1508,7 +1508,6 @@ func (c *checkpointCleaner) Process(inputCtx context.Context) (err error) {
 		return context.Cause(ctx)
 	default:
 	}
-	time.Sleep(5 * time.Minute)
 	memoryBuffer := MakeGCWindowBuffer(16 * mpool.MB)
 	defer memoryBuffer.Close(c.mp)
 
