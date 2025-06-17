@@ -223,6 +223,7 @@ func (cleaner *DiskCleaner) forceScheduleJob(jt tasks.JobType) (err error) {
 	return
 }
 
+var count := 0
 // only can be executed in StateStep_Write
 // otherwise, return moerr.NewTxnControlErrorNoCtxf("GC-Not-Write-Mode")
 func (cleaner *DiskCleaner) scheduleGCJob(ctx context.Context) (err error) {
@@ -230,6 +231,8 @@ func (cleaner *DiskCleaner) scheduleGCJob(ctx context.Context) (err error) {
 		err = moerr.NewTxnControlErrorNoCtxf("GC-Not-Write-Mode")
 		return
 	}
+	count++
+	logutil.Infof("scheduleGCJob is %d", count)
 	_, err = cleaner.processQueue.Enqueue(JT_GCExecute)
 	return
 }
@@ -302,6 +305,7 @@ func (cleaner *DiskCleaner) doReplayAndExecute(ctx context.Context) (err error) 
 
 func (cleaner *DiskCleaner) process(items ...any) {
 	for _, item := range items {
+		logutil.Infof("DiskCleaner process1 is %v", item)
 		switch v := item.(type) {
 		case tasks.JobType:
 			ctx := cleaner.runningCtx.Load()

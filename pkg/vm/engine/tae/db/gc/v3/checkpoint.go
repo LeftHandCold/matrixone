@@ -1470,7 +1470,7 @@ func (c *checkpointCleaner) Process(inputCtx context.Context) (err error) {
 		return
 	}
 	now := time.Now()
-
+	time.Sleep(5 * time.Minute)
 	c.StartMutationTask("gc-process")
 	defer c.StopMutationTask()
 
