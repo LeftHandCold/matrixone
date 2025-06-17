@@ -1470,7 +1470,6 @@ func (c *checkpointCleaner) Process(inputCtx context.Context) (err error) {
 		return
 	}
 	now := time.Now()
-	time.Sleep(5 * time.Minute)
 	c.StartMutationTask("gc-process")
 	defer c.StopMutationTask()
 
@@ -1509,7 +1508,7 @@ func (c *checkpointCleaner) Process(inputCtx context.Context) (err error) {
 		return context.Cause(ctx)
 	default:
 	}
-
+	time.Sleep(5 * time.Minute)
 	memoryBuffer := MakeGCWindowBuffer(16 * mpool.MB)
 	defer memoryBuffer.Close(c.mp)
 
