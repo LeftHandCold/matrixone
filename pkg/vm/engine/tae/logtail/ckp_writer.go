@@ -296,6 +296,7 @@ func (data *CheckpointData_V2) Sync(
 		return
 	}
 	location = objectio.BuildLocation(name, blks[0].GetExtent(), 0, blks[0].GetID())
+	logutil.Infof("CKP WriteTo end location %v", location.Name().String())
 	ckpfiles = make([]string, 0)
 	for _, obj := range files {
 		ckpfiles = append(ckpfiles, obj.ObjectName().String())
