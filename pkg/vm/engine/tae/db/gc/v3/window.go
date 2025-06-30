@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio/mergeutil"
@@ -195,17 +196,35 @@ func (w *GCWindow) ScanCheckpoints(
 		}
 		ckpReader, err := getCkpReader(ctx, checkpointEntries[0])
 		if err != nil {
-			return false, err
+			if !moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+				return false, err
+			}
+			logutil.Warn("GC-TRACE-SCAN-WARN-SKIP-P1",
+				zap.String("ckp", checkpointEntries[0].String()))
+			checkpointEntries = checkpointEntries[1:]
+			return false, nil
 		}
 		if processCkpData != nil {
 			if err = processCkpData(checkpointEntries[0], ckpReader); err != nil {
-				return false, err
+				if !moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+					return false, err
+				}
+				logutil.Warn("GC-TRACE-SCAN-WARN-SKIP-P2",
+					zap.String("ckp", checkpointEntries[0].String()))
+				checkpointEntries = checkpointEntries[1:]
+				return false, nil
 			}
 		}
 		objects := make(map[string]*ObjectEntry)
 		collectObjectsFromCheckpointData(ctx, ckpReader, objects)
 		if err = collectMapData(objects, bat, mp); err != nil {
-			return false, err
+			if !moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+				return false, err
+			}
+			logutil.Warn("GC-TRACE-SCAN-WARN-SKIP-P3",
+				zap.String("ckp", checkpointEntries[0].String()))
+			checkpointEntries = checkpointEntries[1:]
+			return false, nil
 		}
 		checkpointEntries = checkpointEntries[1:]
 		return false, nil

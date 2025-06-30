@@ -17,7 +17,6 @@ package logtail
 import (
 	"context"
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sort"
 	"time"
 
@@ -269,7 +268,6 @@ func (data *CheckpointData_V2) Sync(
 	for _, file := range files {
 		data.rows += int(file.Rows())
 		data.size += int(file.Size())
-		logutil.Infof("CKP WriteTo end! file is %v", file.ObjectName().String())
 	}
 	if len(inMems) != 0 {
 		panic("logic error")
@@ -296,7 +294,6 @@ func (data *CheckpointData_V2) Sync(
 		return
 	}
 	location = objectio.BuildLocation(name, blks[0].GetExtent(), 0, blks[0].GetID())
-	logutil.Infof("CKP WriteTo end location %v", location.Name().String())
 	ckpfiles = make([]string, 0)
 	for _, obj := range files {
 		ckpfiles = append(ckpfiles, obj.ObjectName().String())
