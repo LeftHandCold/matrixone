@@ -17,6 +17,7 @@ package logtail
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sort"
 	"time"
 
@@ -269,6 +270,7 @@ func (data *CheckpointData_V2) WriteTo(
 	for _, file := range files {
 		data.rows += int(file.Rows())
 		data.size += int(file.Size())
+		logutil.Infof("CKP WriteTo end! file is %v", file.ObjectName().String())
 	}
 	if len(inMems) != 0 {
 		panic("logic error")
