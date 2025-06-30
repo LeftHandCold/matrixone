@@ -1736,8 +1736,12 @@ func (c *checkpointCleaner) scanCheckpointsLocked(
 		saveSnapshot,
 		memoryBuffer,
 	); err != nil {
-		gcWindow.Close()
-		gcWindow = nil
+		if !moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+			gcWindow.Close()
+			gcWindow = nil
+			return
+		}
+		err = nil
 		return
 	}
 	newFiles = append(newFiles, ioutil.MakeFullName(gcWindow.dir, gcMetaFile))
