@@ -330,9 +330,10 @@ func MakeSnapshotAndPitrFineFilter(
 					if !logtail.ObjectIsSnapshotRefers(
 						entry.stats, pitr, &entry.createTS, &entry.dropTS, snapshots,
 					) {
-						logutil.Infof("name is %v, table is %d", name, tableID)
+						logutil.Infof("name is %v, table is %d, create %v, drop %v", name, tableID, entry.createTS.ToString(), entry.dropTS.ToString())
 						bm.Add(uint64(i))
 					}
+					logutil.Infof("name2 is %v, table is %d, create %v, drop %v", name, tableID, entry.createTS.ToString(), entry.dropTS.ToString())
 					continue
 				}
 			}
@@ -349,8 +350,10 @@ func MakeSnapshotAndPitrFineFilter(
 			if !logtail.ObjectIsSnapshotRefers(
 				&stats, pitr, &createTS, &deleteTS, snapshots,
 			) {
+				logutil.Infof("name3 is %v, table is %d, create %v, drop %v", name, tableID, createTS.ToString(), deleteTS.ToString())
 				bm.Add(uint64(i))
 			}
+			logutil.Infof("name4 is %v, table is %d, create %v, drop %v", name, tableID, createTS.ToString(), deleteTS.ToString())
 		}
 		return nil
 	}, nil
