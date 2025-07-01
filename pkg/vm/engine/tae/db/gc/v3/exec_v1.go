@@ -177,6 +177,9 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if e.result.vecToGC != nil {
+		logutil.Infof("e.result.vecToGC.Length()e.result.vecToGC.Length() is %d", e.result.vecToGC.Length())
+	}
 
 	newFiles, err := e.Run(
 		ctx,

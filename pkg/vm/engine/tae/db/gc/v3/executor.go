@@ -16,6 +16,7 @@ package gc
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/common/bitmap"
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
@@ -64,6 +65,7 @@ func BuildBloomfilter(
 		if done {
 			break
 		}
+		logutil.Infof("bat.Vecsssss[columnIdx] is %d", bat.Vecs[columnIdx].Length())
 		bf.Add(bat.Vecs[columnIdx])
 	}
 	return
