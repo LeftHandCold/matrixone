@@ -175,6 +175,7 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 		sourcer.Read,
 		buffer,
 		w.mp,
+		true,
 	)
 	if err != nil {
 		return nil, "", err
