@@ -383,7 +383,10 @@ func MakeFinalCanGCSinker(
 				); err != nil {
 					return err
 				}
+				logutil.Infof("statsstats1 is %v", stats.ObjectName().UnsafeString())
 				continue
+			} else {
+				logutil.Infof("statsstats1111 is %v", stats.ObjectName().UnsafeString())
 			}
 			if !logtail.IsMoTable(tableID) {
 				if err := vector.AppendBytes(
@@ -391,7 +394,9 @@ func MakeFinalCanGCSinker(
 				); err != nil {
 					return err
 				}
+				logutil.Infof("statsstats2 is %v", stats.ObjectName().UnsafeString())
 			}
+			logutil.Infof("statsstats555 is %v", stats.ObjectName().UnsafeString())
 		}
 		return nil
 	}, nil
