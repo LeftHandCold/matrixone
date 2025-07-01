@@ -312,6 +312,7 @@ func MakeSnapshotAndPitrFineFilter(
 		createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
 		deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
 		tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
+		logutil.Infof("bat.Vecs[0].Length()bat.Vecs[0].Length() is %d", bat.Vecs[0].Length())
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
 			buf := bat.Vecs[0].GetRawBytesAt(i)
 			stats := (objectio.ObjectStats)(buf)
@@ -326,6 +327,7 @@ func MakeSnapshotAndPitrFineFilter(
 			if transObjects[name] != nil {
 				tables := transObjects[name]
 				if entry := tables[tableID]; entry != nil {
+					logutil.Infof("name is %v, table is %d", name, tableID)
 					if !logtail.ObjectIsSnapshotRefers(
 						entry.stats, pitr, &entry.createTS, &entry.dropTS, snapshots,
 					) {
@@ -335,6 +337,7 @@ func MakeSnapshotAndPitrFineFilter(
 				}
 			}
 			if !createTS.LT(ts) || !deleteTS.LT(ts) {
+				logutil.Infof("name is %v, table is %d, ts is %v, createTS %v, deletTs %v", name, tableID, ts.ToString(), createTS.ToString(), deleteTS.ToString())
 				continue
 			}
 			if deleteTS.IsEmpty() {
