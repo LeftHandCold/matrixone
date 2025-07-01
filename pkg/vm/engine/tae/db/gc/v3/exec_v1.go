@@ -177,9 +177,6 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if e.result.vecToGC != nil {
-		logutil.Infof("e.result.vecToGC.Length()e.result.vecToGC.Length() is %d", e.result.vecToGC.Length())
-	}
 
 	newFiles, err := e.Run(
 		ctx,
@@ -195,6 +192,9 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 
 	e.result.filesNotGC = make([]objectio.ObjectStats, 0, len(newFiles))
 	e.result.filesNotGC = append(e.result.filesNotGC, newFiles...)
+	if e.result.vecToGC != nil {
+		logutil.Infof("e.result.vecToGC.Length()e.result.vecToGC.Length() is %d", e.result.vecToGC.Length())
+	}
 	return nil
 }
 
