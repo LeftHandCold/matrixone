@@ -16,13 +16,12 @@ package gc
 
 import (
 	"context"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
-
 	"github.com/matrixorigin/matrixone/pkg/common/bitmap"
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio/mergeutil"
@@ -46,6 +45,7 @@ func BuildBloomfilter(
 	sourcer SourerFn,
 	buffer containers.IBatchBuffer,
 	mp *mpool.MPool,
+	test ...bool,
 ) (bf *bloomfilter.BloomFilter, err error) {
 	nbf := bloomfilter.New(int64(rowCount), probability)
 	bf = &nbf
@@ -65,7 +65,15 @@ func BuildBloomfilter(
 		if done {
 			break
 		}
-		logutil.Infof("bat.Vecsssss[columnIdx] is %d", bat.Vecs[columnIdx].Length())
+		if len(test) > 0 {
+			logutil.Infof("bf bat len %d", bat.Vecs[columnIdx].Length())
+			for i := 0; i < bat.Vecs[columnIdx].Length(); i++ {
+				buf := bat.Vecs[0].GetRawBytesAt(i)
+				stats := (objectio.ObjectStats)(buf)
+				name := stats.ObjectName().UnsafeString()
+				logutil.Infof("bf name is %v", name)
+			}
+		}
 		bf.Add(bat.Vecs[columnIdx])
 	}
 	return

@@ -312,7 +312,6 @@ func MakeSnapshotAndPitrFineFilter(
 		createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
 		deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
 		tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
-		logutil.Infof("bat.Vecs[0].Length()bat.Vecs[0].Length() is %d", bat.Vecs[0].Length())
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
 			buf := bat.Vecs[0].GetRawBytesAt(i)
 			stats := (objectio.ObjectStats)(buf)
@@ -330,16 +329,16 @@ func MakeSnapshotAndPitrFineFilter(
 					if !logtail.ObjectIsSnapshotRefers(
 						entry.stats, pitr, &entry.createTS, &entry.dropTS, snapshots,
 					) {
-						logutil.Infof("name is %v, table is %d, create %v, drop %v", name, tableID, entry.createTS.ToString(), entry.dropTS.ToString())
+						logutil.Debugf("name is %v, table is %d, create %v, drop %v", name, tableID, entry.createTS.ToString(), entry.dropTS.ToString())
 						bm.Add(uint64(i))
 					} else {
-						logutil.Infof("name2 is %v, table is %d, create %v, drop %v", name, tableID, entry.createTS.ToString(), entry.dropTS.ToString())
+						logutil.Debugf("name2 is %v, table is %d, create %v, drop %v", name, tableID, entry.createTS.ToString(), entry.dropTS.ToString())
 					}
 					continue
 				}
 			}
 			if !createTS.LT(ts) || !deleteTS.LT(ts) {
-				logutil.Infof("name is %v, table is %d, ts is %v, createTS %v, deletTs %v", name, tableID, ts.ToString(), createTS.ToString(), deleteTS.ToString())
+				logutil.Debugf("name is %v, table is %d, ts is %v, createTS %v, deletTs %v", name, tableID, ts.ToString(), createTS.ToString(), deleteTS.ToString())
 				continue
 			}
 			if deleteTS.IsEmpty() {
@@ -351,10 +350,10 @@ func MakeSnapshotAndPitrFineFilter(
 			if !logtail.ObjectIsSnapshotRefers(
 				&stats, pitr, &createTS, &deleteTS, snapshots,
 			) {
-				logutil.Infof("name3 is %v, table is %d, create %v, drop %v", name, tableID, createTS.ToString(), deleteTS.ToString())
+				logutil.Debugf("name3 is %v, table is %d, create %v, drop %v", name, tableID, createTS.ToString(), deleteTS.ToString())
 				bm.Add(uint64(i))
 			} else {
-				logutil.Infof("name4 is %v, table is %d, create %v, drop %v", name, tableID, createTS.ToString(), deleteTS.ToString())
+				logutil.Debugf("name4 is %v, table is %d, create %v, drop %v", name, tableID, createTS.ToString(), deleteTS.ToString())
 			}
 		}
 		return nil
@@ -388,10 +387,10 @@ func MakeFinalCanGCSinker(
 				); err != nil {
 					return err
 				}
-				logutil.Infof("statsstats1 is %v", stats.ObjectName().UnsafeString())
+				logutil.Debugf("statsstats1 is %v", stats.ObjectName().UnsafeString())
 				continue
 			} else {
-				logutil.Infof("statsstats1111 is %v", stats.ObjectName().UnsafeString())
+				logutil.Debugf("statsstats1111 is %v", stats.ObjectName().UnsafeString())
 			}
 			if !logtail.IsMoTable(tableID) {
 				if err := vector.AppendBytes(
@@ -399,9 +398,10 @@ func MakeFinalCanGCSinker(
 				); err != nil {
 					return err
 				}
-				logutil.Infof("statsstats2 is %v", stats.ObjectName().UnsafeString())
+				logutil.Debugf("statsstats2 is %v", stats.ObjectName().UnsafeString())
+			} else {
+				logutil.Debugf("statsstats555 is %v", stats.ObjectName().UnsafeString())
 			}
-			logutil.Infof("statsstats555 is %v", stats.ObjectName().UnsafeString())
 		}
 		return nil
 	}, nil

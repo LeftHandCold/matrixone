@@ -182,10 +182,11 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	filesToGC := make([]string, 0, 20)
 	bf.Test(vecToGC,
 		func(exists bool, i int) {
+			buf := vecToGC.GetRawBytesAt(i)
+			stats := (objectio.ObjectStats)(buf)
+			name := stats.ObjectName().UnsafeString()
+			logutil.Infof("test name is %v", name)
 			if !exists {
-				buf := vecToGC.GetRawBytesAt(i)
-				stats := (objectio.ObjectStats)(buf)
-				name := stats.ObjectName().UnsafeString()
 				filesToGC = append(filesToGC, name)
 				return
 			}
