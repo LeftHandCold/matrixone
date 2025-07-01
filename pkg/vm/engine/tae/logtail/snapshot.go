@@ -1708,29 +1708,25 @@ func ObjectIsSnapshotRefers(
 
 	// if dropTS is empty, it means the object is not dropped
 	if dropTS.IsEmpty() {
-		common.DoIfDebugEnabled(func() {
-			logutil.Debug(
-				"GCJOB-DEBUG-1",
-				zap.String("obj", obj.ObjectName().String()),
-				zap.String("create-ts", createTS.ToString()),
-				zap.String("drop-ts", createTS.ToString()),
-			)
-		})
+		logutil.Info(
+			"GCJOB-DEBUG-1",
+			zap.String("obj", obj.ObjectName().String()),
+			zap.String("create-ts", createTS.ToString()),
+			zap.String("drop-ts", createTS.ToString()),
+		)
 		return true
 	}
 
 	// if pitr is not empty, and pitr is greater than dropTS, it means the object is not dropped
 	if pitr != nil && !pitr.IsEmpty() {
 		if dropTS.GT(pitr) {
-			common.DoIfDebugEnabled(func() {
-				logutil.Debug(
-					"GCJOB-PITR-PIN",
-					zap.String("name", obj.ObjectName().String()),
-					zap.String("pitr", pitr.ToString()),
-					zap.String("create-ts", createTS.ToString()),
-					zap.String("drop-ts", dropTS.ToString()),
-				)
-			})
+			logutil.Info(
+				"GCJOB-PITR-PIN",
+				zap.String("name", obj.ObjectName().String()),
+				zap.String("pitr", pitr.ToString()),
+				zap.String("create-ts", createTS.ToString()),
+				zap.String("drop-ts", dropTS.ToString()),
+			)
 			return true
 		}
 	}

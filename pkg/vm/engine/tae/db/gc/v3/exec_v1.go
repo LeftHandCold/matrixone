@@ -327,10 +327,10 @@ func MakeSnapshotAndPitrFineFilter(
 			if transObjects[name] != nil {
 				tables := transObjects[name]
 				if entry := tables[tableID]; entry != nil {
-					logutil.Infof("name is %v, table is %d", name, tableID)
 					if !logtail.ObjectIsSnapshotRefers(
 						entry.stats, pitr, &entry.createTS, &entry.dropTS, snapshots,
 					) {
+						logutil.Infof("name is %v, table is %d", name, tableID)
 						bm.Add(uint64(i))
 					}
 					continue
