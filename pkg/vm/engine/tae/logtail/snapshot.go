@@ -443,7 +443,7 @@ func (sm *SnapshotMeta) updateTableInfo(
 			db := dbs[i]
 			var tuple types.Tuple
 			tuple, _, _, err = types.DecodeTuple(
-				objectBat.Vecs[len(objectBat.Vecs)-3].GetRawBytesAt(i))
+				objectBat.Vecs[19].GetRawBytesAt(i))
 			if err != nil {
 				return err
 			}

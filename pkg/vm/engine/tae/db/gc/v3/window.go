@@ -224,7 +224,6 @@ func (w *GCWindow) ScanCheckpoints(
 		}
 		if processCkpData != nil {
 			if err = processCkpData(checkpointEntries[0], ckpReader); err != nil {
-				panic("err is")
 				return false, err
 			}
 		}
