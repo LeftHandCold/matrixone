@@ -709,6 +709,16 @@ func (s *runnerStore) MaxGlobalCheckpoint() *CheckpointEntry {
 	return nil
 }
 
+func (s *runnerStore) MinGlobalCheckpoint() *CheckpointEntry {
+	s.RLock()
+	global, _ := s.globals.Min()
+	s.RUnlock()
+	if global != nil && global.IsFinished() {
+		return global
+	}
+	return nil
+}
+
 func (s *runnerStore) IsStale(ts *types.TS) bool {
 	waterMark := s.gcWatermark.Load()
 	if waterMark == nil {

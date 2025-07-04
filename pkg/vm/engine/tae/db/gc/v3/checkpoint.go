@@ -1560,31 +1560,31 @@ func (c *checkpointCleaner) tryScanLocked(
 	candidates := make([]*checkpoint.CheckpointEntry, 0)
 	var rebuild []*checkpoint.CheckpointEntry
 	if maxScannedTS.IsEmpty() {
-		maxGCkp := c.checkpointCli.MaxGlobalCheckpoint()
+		minGCkp := c.checkpointCli.MinGlobalCheckpoint()
 		minCkp := c.checkpointCli.MinIncrementalCheckpoint()
 		var start types.TS
 		if minCkp != nil {
 			start = minCkp.GetStart()
 		}
-		if !start.IsEmpty() && maxGCkp != nil {
+		if !start.IsEmpty() && minGCkp != nil {
 			rebuild = make([]*checkpoint.CheckpointEntry, 0)
-			maxScannedTS = maxGCkp.GetEnd()
+			maxScannedTS = minGCkp.GetEnd()
 			cpt := c.checkpointCli.GetCompacted()
 			if cpt == nil {
 				logutil.Info("GC-PANIC-REBUILD-TABLE",
-					zap.String("max gCkp", maxGCkp.String()),
+					zap.String("max gCkp", minGCkp.String()),
 					zap.String("start", start.ToString()))
 			} else {
 				rebuild = append(rebuild, cpt)
 			}
-			rebuild = append(rebuild, maxGCkp)
+			rebuild = append(rebuild, minGCkp)
 			gcWaterMark := c.GetGCWaterMark()
 			if gcWaterMark != nil {
 				logutil.Warn("GC-PANIC-REBUILD-GC-WATER-MARK",
-					zap.String("max gCkp", maxGCkp.String()),
+					zap.String("max gCkp", minGCkp.String()),
 					zap.String("gcWaterMark", gcWaterMark.String()))
 			}
-			c.updateGCWaterMark(maxGCkp)
+			c.updateGCWaterMark(minGCkp)
 			tryGC = false
 		}
 	}

@@ -52,6 +52,7 @@ type RunnerReader interface {
 	GetAllCheckpointsForBackup(compact *CheckpointEntry) []*CheckpointEntry
 
 	MaxGlobalCheckpoint() *CheckpointEntry
+	MinGlobalCheckpoint() *CheckpointEntry
 	MaxIncrementalCheckpoint() *CheckpointEntry
 	MinIncrementalCheckpoint() *CheckpointEntry
 	GetDirtyCollector() logtail.Collector
@@ -110,6 +111,10 @@ func (r *runner) MaxLSNInRange(end types.TS) uint64 {
 
 func (r *runner) MaxGlobalCheckpoint() *CheckpointEntry {
 	return r.store.MaxGlobalCheckpoint()
+}
+
+func (r *runner) MinGlobalCheckpoint() *CheckpointEntry {
+	return r.store.MinGlobalCheckpoint()
 }
 
 func (r *runner) MaxIncrementalCheckpoint() *CheckpointEntry {
