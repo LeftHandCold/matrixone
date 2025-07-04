@@ -442,10 +442,18 @@ func (sm *SnapshotMeta) updateTableInfo(
 			account := accounts[i]
 			db := dbs[i]
 			var tuple types.Tuple
-			tuple, _, _, err = types.DecodeTuple(
-				objectBat.Vecs[19].GetRawBytesAt(i))
-			if err != nil {
-				return err
+			if rebuild {
+				tuple, _, _, err = types.DecodeTuple(
+					objectBat.Vecs[19].GetRawBytesAt(i))
+				if err != nil {
+					return err
+				}
+			} else {
+				tuple, _, _, err = types.DecodeTuple(
+					objectBat.Vecs[len(objectBat.Vecs)-3].GetRawBytesAt(i))
+				if err != nil {
+					return err
+				}
 			}
 			pk := tuple.ErrString(nil)
 			if name == catalog2.MO_SNAPSHOTS {
