@@ -424,7 +424,11 @@ func (sm *SnapshotMeta) updateTableInfo(
 		accounts := vector.MustFixedColWithTypeCheck[uint32](objectBat.Vecs[11])
 		var creates []types.TS
 		if rebuild {
-			creates = vector.MustFixedColWithTypeCheck[types.TS](objectBat.Vecs[8])
+			ts := vector.MustFixedColWithTypeCheck[types.Timestamp](objectBat.Vecs[8])
+			creates = make([]types.TS, len(ts))
+			for i, t := range ts {
+				creates[i] = types.BuildTS(t.Unix(), 0)
+			}
 		} else {
 			creates = vector.MustFixedColWithTypeCheck[types.TS](objectBat.Vecs[len(objectBat.Vecs)-1])
 		}
