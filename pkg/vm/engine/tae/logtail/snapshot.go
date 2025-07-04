@@ -422,7 +422,12 @@ func (sm *SnapshotMeta) updateTableInfo(
 		nameArea := objectBat.Vecs[1].GetArea()
 		dbs := vector.MustFixedColWithTypeCheck[uint64](objectBat.Vecs[3])
 		accounts := vector.MustFixedColWithTypeCheck[uint32](objectBat.Vecs[11])
-		creates := vector.MustFixedColWithTypeCheck[types.TS](objectBat.Vecs[len(objectBat.Vecs)-1])
+		var creates []types.TS
+		if rebuild {
+			creates = vector.MustFixedColWithTypeCheck[types.TS](objectBat.Vecs[8])
+		} else {
+			creates = vector.MustFixedColWithTypeCheck[types.TS](objectBat.Vecs[len(objectBat.Vecs)-1])
+		}
 		for i := 0; i < len(tids); i++ {
 			createAt := creates[i]
 			if createAt.LT(&startts) || createAt.GT(&endts) {
