@@ -1558,6 +1558,7 @@ func (c *checkpointCleaner) tryScanLocked(
 		maxScannedTS = scanWaterMark.GetEnd()
 	}
 	candidates := make([]*checkpoint.CheckpointEntry, 0)
+	var rebuild []*checkpoint.CheckpointEntry
 	if maxScannedTS.IsEmpty() {
 		maxGCkp := c.checkpointCli.MaxGlobalCheckpoint()
 		minCkp := c.checkpointCli.MinIncrementalCheckpoint()
@@ -1566,6 +1567,7 @@ func (c *checkpointCleaner) tryScanLocked(
 			start = minCkp.GetStart()
 		}
 		if !start.IsEmpty() && maxGCkp != nil {
+			rebuild = make([]*checkpoint.CheckpointEntry, 0)
 			maxScannedTS = maxGCkp.GetEnd()
 			cpt := c.checkpointCli.GetCompacted()
 			if cpt == nil {
@@ -1573,9 +1575,9 @@ func (c *checkpointCleaner) tryScanLocked(
 					zap.String("max gCkp", maxGCkp.String()),
 					zap.String("start", start.ToString()))
 			} else {
-				candidates = append(candidates, cpt)
+				rebuild = append(rebuild, cpt)
 			}
-			candidates = append(candidates, maxGCkp)
+			rebuild = append(rebuild, maxGCkp)
 			gcWaterMark := c.GetGCWaterMark()
 			if gcWaterMark != nil {
 				logutil.Warn("GC-PANIC-REBUILD-GC-WATER-MARK",
@@ -1610,7 +1612,7 @@ func (c *checkpointCleaner) tryScanLocked(
 	var window *GCWindow
 	var tmpNewFiles []string
 	if window, tmpNewFiles, err = c.scanCheckpointsLocked(
-		ctx, candidates, memoryBuffer,
+		ctx, candidates, rebuild, memoryBuffer,
 	); err != nil {
 		logutil.Error(
 			"GC-SCAN-WINDOW-ERROR",
@@ -1705,6 +1707,7 @@ func (c *checkpointCleaner) appendFilesToWAL(files ...string) error {
 func (c *checkpointCleaner) scanCheckpointsLocked(
 	ctx context.Context,
 	ckps []*checkpoint.CheckpointEntry,
+	rebuildCkps []*checkpoint.CheckpointEntry,
 	memoryBuffer *containers.OneSchemaBatchBuffer,
 ) (gcWindow *GCWindow, newFiles []string, err error) {
 	now := time.Now()
@@ -1777,7 +1780,33 @@ func (c *checkpointCleaner) scanCheckpointsLocked(
 	}
 
 	gcWindow = NewGCWindow(c.mp, c.fs)
-	var gcMetaFile string
+	var gcRebuildFile, gcMetaFile string
+	if len(rebuildCkps) == 2 {
+		if gcRebuildFile, err = gcWindow.ScanCheckpoints(
+			ctx,
+			rebuildCkps,
+			c.getCkpReader,
+			c.mutRebuildSnapshotMetaLocked,
+			saveSnapshot,
+			memoryBuffer,
+		); err != nil {
+			gcWindow.Close()
+			gcWindow = nil
+			return
+		}
+		newFiles = append(newFiles, ioutil.MakeFullName(gcWindow.dir, gcRebuildFile))
+		c.mutAddMetaFileLocked(snapshotFile.GetName(), snapshotFile)
+		c.mutAddMetaFileLocked(accountFile.GetName(), accountFile)
+		c.mutAddMetaFileLocked(
+			gcRebuildFile,
+			ioutil.NewTSRangeFile(
+				gcRebuildFile,
+				ioutil.CheckpointExt,
+				gcWindow.tsRange.start,
+				gcWindow.tsRange.end,
+			),
+		)
+	}
 	if gcMetaFile, err = gcWindow.ScanCheckpoints(
 		ctx,
 		ckps,
@@ -1816,6 +1845,22 @@ func (c *checkpointCleaner) mutUpdateSnapshotMetaLocked(
 		ckp.GetStart(),
 		ckp.GetEnd(),
 		c.TaskNameLocked(),
+		false,
+	)
+}
+
+func (c *checkpointCleaner) mutRebuildSnapshotMetaLocked(
+	ckp *checkpoint.CheckpointEntry,
+	data *logtail.CKPReader,
+) error {
+	return c.mutation.snapshotMeta.Update(
+		c.ctx,
+		c.fs,
+		data,
+		ckp.GetStart(),
+		ckp.GetEnd(),
+		c.TaskNameLocked(),
+		true,
 	)
 }
 

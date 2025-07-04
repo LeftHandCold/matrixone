@@ -341,6 +341,7 @@ func (sm *SnapshotMeta) updateTableInfo(
 	ctx context.Context,
 	fs fileservice.FileService,
 	data *CKPReader, startts, endts types.TS,
+	rebuild bool,
 ) error {
 	var objects map[uint64]map[objectio.Segmentid]*objectInfo
 	var tombstones map[uint64]map[objectio.Segmentid]*objectInfo
@@ -358,7 +359,10 @@ func (sm *SnapshotMeta) updateTableInfo(
 		if !IsMoTable(tid) {
 			return
 		}
-		if !stats.GetAppendable() {
+		if rebuild && stats.GetAppendable() {
+			return
+		}
+		if !rebuild && !stats.GetAppendable() {
 			// mo_table only consumes appendable object
 			return
 		}
@@ -629,6 +633,7 @@ func (sm *SnapshotMeta) Update(
 	data *CKPReader,
 	startts, endts types.TS,
 	taskName string,
+	rebuild bool,
 ) (err error) {
 	sm.Lock()
 	defer sm.Unlock()
@@ -655,6 +660,7 @@ func (sm *SnapshotMeta) Update(
 		data,
 		startts,
 		endts,
+		rebuild,
 	); err != nil {
 		return
 	}
@@ -1491,7 +1497,7 @@ func (sm *SnapshotMeta) InitTableInfo(
 ) {
 	sm.Lock()
 	defer sm.Unlock()
-	sm.updateTableInfo(ctx, fs, data, startts, endts)
+	sm.updateTableInfo(ctx, fs, data, startts, endts, false)
 }
 
 func (sm *SnapshotMeta) TableInfoString() string {
