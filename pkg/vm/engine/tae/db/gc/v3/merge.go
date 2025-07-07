@@ -74,7 +74,13 @@ func MergeCheckpoint(
 			nil,
 			&types.TS{},
 		); err != nil {
-			return
+			if !moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+				return
+			}
+			logutil.Warn("GC-TRACE-MERGE-CKP-SKIP-P1",
+				zap.String("task", taskName),
+				zap.String("ckp", ckpEntry.String()))
+			continue
 		}
 		ckpReaders = append(ckpReaders, reader)
 		var nameMeta string
@@ -123,7 +129,12 @@ func MergeCheckpoint(
 		}
 		var objectBatch *batch.Batch
 		if objectBatch, err = reader.GetCheckpointData(ctx); err != nil {
-			return
+			if !moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+				return
+			}
+			logutil.Warn("GC-TRACE-MERGE-CKP-SKIP-P2",
+				zap.String("task", taskName))
+			continue
 		}
 		defer objectBatch.Clean(common.CheckpointAllocator)
 		statsVec := objectBatch.Vecs[ckputil.TableObjectsAttr_ID_Idx]
