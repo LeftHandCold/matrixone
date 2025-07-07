@@ -166,15 +166,13 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	}
 	w.files = filesNotGC
 	sourcer = w.MakeFilesReader(ctx, fs)
-	bfBuffer := MakeGCWindowBuffer(16 * mpool.MB)
-	defer bfBuffer.Close(w.mp)
 	bf, err = BuildBloomfilter(
 		ctx,
 		Default_Coarse_EstimateRows,
 		Default_Coarse_Probility,
 		0,
 		sourcer.Read,
-		bfBuffer,
+		buffer,
 		w.mp,
 	)
 	if err != nil {

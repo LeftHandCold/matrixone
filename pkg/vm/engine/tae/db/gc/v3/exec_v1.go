@@ -16,11 +16,9 @@ package gc
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/common/malloc"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"go.uber.org/zap"
-	"unsafe"
-
-	"github.com/matrixorigin/matrixone/pkg/common/malloc"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -368,8 +366,7 @@ func MakeFinalCanGCSinker(
 			tableIDs = vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
 		}
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
-			buf := bat.Vecs[0].GetRawBytesAt(i)
-			stats := (*objectio.ObjectStats)(unsafe.Pointer(&buf[0]))
+			stats := objectio.ObjectStats(bat.Vecs[0].GetBytesAt(i))
 			dropTS := dropTSs[i]
 			tableID := tableIDs[i]
 			if !dropTS.IsEmpty() {
