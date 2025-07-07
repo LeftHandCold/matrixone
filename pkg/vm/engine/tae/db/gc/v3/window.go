@@ -179,24 +179,13 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 		return nil, "", err
 	}
 	filesToGC := make([]string, 0, 20)
-	buf, err := vecToGC.MarshalBinary()
-	if err != nil {
-		return nil, "", err
-	}
-	vec := vector.NewVec(types.Type{})
-	if err = vec.UnmarshalBinary(buf); err != nil {
-		return nil, "", err
-	}
-	bf.Test(vec,
+	bf.Test(vecToGC,
 		func(exists bool, i int) {
 			if !exists {
-				stats := (objectio.ObjectStats)(vec.GetBytesAt(i))
-				name := stats.ObjectName().UnsafeString()
-				filesToGC = append(filesToGC, name)
+				filesToGC = append(filesToGC, string(vecToGC.GetBytesAt(i)))
 				return
 			}
 		})
-	bf.Clean()
 	return filesToGC, metaFile, nil
 }
 

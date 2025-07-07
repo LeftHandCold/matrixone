@@ -369,7 +369,7 @@ func MakeFinalCanGCSinker(
 			tableID := tableIDs[i]
 			if !dropTS.IsEmpty() {
 				if err := vector.AppendBytes(
-					vec, stats[:], false, mp,
+					vec, []byte(stats.ObjectName().UnsafeString()), false, mp,
 				); err != nil {
 					return err
 				}
@@ -377,7 +377,7 @@ func MakeFinalCanGCSinker(
 			}
 			if !logtail.IsMoTable(tableID) {
 				if err := vector.AppendBytes(
-					vec, stats[:], false, mp,
+					vec, []byte(stats.ObjectName().UnsafeString()), false, mp,
 				); err != nil {
 					return err
 				}

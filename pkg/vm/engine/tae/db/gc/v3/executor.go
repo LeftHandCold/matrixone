@@ -102,7 +102,7 @@ func BuildBloomfilter2(
 		for i := 0; i < bat.Vecs[columnIdx].Length(); i++ {
 			stats := objectio.ObjectStats(bat.Vecs[columnIdx].GetBytesAt(i))
 			if err = vector.AppendBytes(
-				vecToGC, stats[:], false, mp,
+				vecToGC, []byte(stats.ObjectName().UnsafeString()), false, mp,
 			); err != nil {
 				return nil, err
 			}
