@@ -65,12 +65,6 @@ func BuildBloomfilter(
 			break
 		}
 		bf.Add(bat.Vecs[columnIdx])
-		for i := 0; i < bat.Vecs[columnIdx].Length(); i++ {
-			buf := bat.Vecs[columnIdx].GetRawBytesAt(i)
-			stats := (objectio.ObjectStats)(buf)
-			name := stats.ObjectName().UnsafeString()
-			logutil.Infof("BuildBloomfilter is %v", name)
-		}
 	}
 	return
 }
