@@ -182,6 +182,7 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	}
 	filesToGC := make([]string, 0, 20)
 	logutil.Infof("GCBuildBloomfilter end ")
+	logutil.Infof("GCTest is start")
 	bf.Test(vecToGC,
 		func(exists bool, i int) {
 			if !exists {
@@ -193,6 +194,7 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 				return
 			}
 		})
+	bf.Clean()
 	logutil.Infof("GCTest is end")
 	return filesToGC, metaFile, nil
 }
