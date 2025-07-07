@@ -167,6 +167,7 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	}
 	w.files = filesNotGC
 	sourcer = w.MakeFilesReader(ctx, fs)
+	logutil.Infof("GCBuildBloomfilter start ")
 	bf, err = BuildBloomfilter(
 		ctx,
 		Default_Coarse_EstimateRows,
@@ -180,6 +181,7 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 		return nil, "", err
 	}
 	filesToGC := make([]string, 0, 20)
+	logutil.Infof("GCBuildBloomfilter end ")
 	bf.Test(vecToGC,
 		func(exists bool, i int) {
 			if !exists {
@@ -191,6 +193,7 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 				return
 			}
 		})
+	logutil.Infof("GCTest is end")
 	return filesToGC, metaFile, nil
 }
 
