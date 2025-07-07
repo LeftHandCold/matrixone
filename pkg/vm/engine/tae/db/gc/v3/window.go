@@ -23,8 +23,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/objectio/mergeutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
-	"github.com/matrixorigin/matrixone/pkg/vm/engine/ckputil"
-
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
 
@@ -168,13 +166,8 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	}
 	w.files = filesNotGC
 	sourcer = w.MakeFilesReader(ctx, fs)
-	attrs, attrTypes := ckputil.DataScan_TableIDAtrrs, ckputil.DataScan_TableIDTypes
-	bfBuffer := containers.NewOneSchemaBatchBuffer(
-		mpool.MB*16,
-		attrs,
-		attrTypes,
-	)
-	defer buffer.Close(w.mp)
+	bfBuffer := MakeGCWindowBuffer(16 * mpool.MB)
+	defer bfBuffer.Close(w.mp)
 	bf, err = BuildBloomfilter(
 		ctx,
 		Default_Coarse_EstimateRows,
