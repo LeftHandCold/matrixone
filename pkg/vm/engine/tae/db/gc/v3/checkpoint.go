@@ -1542,7 +1542,7 @@ func (c *checkpointCleaner) tryScanLocked(
 	}
 
 	// get up to 10 incremental checkpoints starting from the max scanned timestamp
-	checkpoints := c.checkpointCli.ICKPSeekLT(maxScannedTS, 10)
+	checkpoints := c.checkpointCli.ICKPSeekLT(maxScannedTS, 30)
 
 	// quick return if there is no incremental checkpoint
 	if len(checkpoints) == 0 {
