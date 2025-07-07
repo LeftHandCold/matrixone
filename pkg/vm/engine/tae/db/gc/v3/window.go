@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio/mergeutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
@@ -158,7 +157,7 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	defer vecToGC.Free(w.mp)
 	var metaFile string
 	var err error
-	var bf *bloomfilter.BloomFilter
+	var bf map[string]struct{}
 	if metaFile, err = w.writeMetaForRemainings(
 		ctx, filesNotGC,
 	); err != nil {
@@ -166,10 +165,8 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	}
 	w.files = filesNotGC
 	sourcer = w.MakeFilesReader(ctx, fs)
-	bf, err = BuildBloomfilter(
+	bf, err = BuildMap(
 		ctx,
-		Default_Coarse_EstimateRows,
-		Default_Coarse_Probility,
 		0,
 		sourcer.Read,
 		buffer,
@@ -179,17 +176,13 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 		return nil, "", err
 	}
 	filesToGC := make([]string, 0, 20)
-	bf.Test(vecToGC,
-		func(exists bool, i int) {
-			if !exists {
-				buf := vecToGC.GetRawBytesAt(i)
-				stats := (objectio.ObjectStats)(buf)
-				name := stats.ObjectName().UnsafeString()
-				filesToGC = append(filesToGC, name)
-				return
-			}
-		})
-	bf.Clean()
+	for i := 0; i < vecToGC.Length(); i++ {
+		stats := (objectio.ObjectStats)(vecToGC.GetBytesAt(i))
+		name := stats.ObjectName().UnsafeString()
+		if _, ok := bf[name]; !ok {
+			filesToGC = append(filesToGC, name)
+		}
+	}
 	return filesToGC, metaFile, nil
 }
 

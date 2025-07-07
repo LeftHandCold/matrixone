@@ -75,6 +75,41 @@ func BuildBloomfilter(
 	return
 }
 
+func BuildMap(
+	ctx context.Context,
+	columnIdx int,
+	sourcer SourerFn,
+	buffer containers.IBatchBuffer,
+	mp *mpool.MPool,
+) (baseMap map[string]struct{}, err error) {
+	baseMap = make(map[string]struct{}, 0)
+	bat := buffer.Fetch()
+	defer buffer.Putback(bat, mp)
+	var done bool
+	for {
+		bat.CleanOnlyData()
+		select {
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		default:
+		}
+		if done, err = sourcer(ctx, bat.Attrs, nil, mp, bat); err != nil {
+			return
+		}
+		if done {
+			break
+		}
+
+		for i := 0; i < bat.Vecs[columnIdx].Length(); i++ {
+			stats := (objectio.ObjectStats)(bat.Vecs[columnIdx].GetBytesAt(i))
+			name := stats.ObjectName().UnsafeString()
+			logutil.Infof("BuildBloomfilter is %v", name)
+			baseMap[name] = struct{}{}
+		}
+	}
+	return
+}
+
 func NewGCExecutor(
 	buffer *containers.OneSchemaBatchBuffer,
 	isBufferOwner bool,
