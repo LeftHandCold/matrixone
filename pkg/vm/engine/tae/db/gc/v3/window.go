@@ -23,6 +23,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/objectio/mergeutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/ckputil"
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
@@ -167,22 +168,26 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	}
 	w.files = filesNotGC
 	sourcer = w.MakeFilesReader(ctx, fs)
-	logutil.Infof("GCBuildBloomfilter start ")
+	attrs, attrTypes := ckputil.DataScan_TableIDAtrrs, ckputil.DataScan_TableIDTypes
+	bfBuffer := containers.NewOneSchemaBatchBuffer(
+		mpool.MB*16,
+		attrs,
+		attrTypes,
+	)
+	defer buffer.Close(w.mp)
 	bf, err = BuildBloomfilter(
 		ctx,
 		Default_Coarse_EstimateRows,
 		Default_Coarse_Probility,
 		0,
 		sourcer.Read,
-		buffer,
+		bfBuffer,
 		w.mp,
 	)
 	if err != nil {
 		return nil, "", err
 	}
 	filesToGC := make([]string, 0, 20)
-	logutil.Infof("GCBuildBloomfilter end ")
-	logutil.Infof("GCTest is start")
 	bf.Test(vecToGC,
 		func(exists bool, i int) {
 			if !exists {
@@ -190,12 +195,9 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 				stats := (objectio.ObjectStats)(buf)
 				name := stats.ObjectName().UnsafeString()
 				filesToGC = append(filesToGC, name)
-				logutil.Infof("GCFile is %v", name)
 				return
 			}
 		})
-	bf.Clean()
-	logutil.Infof("GCTest is end")
 	return filesToGC, metaFile, nil
 }
 
