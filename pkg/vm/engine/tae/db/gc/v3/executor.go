@@ -20,6 +20,8 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -65,6 +67,48 @@ func BuildBloomfilter(
 			break
 		}
 		bf.Add(bat.Vecs[columnIdx])
+	}
+	return
+}
+
+func BuildBloomfilter2(
+	ctx context.Context,
+	rowCount int,
+	probability float64,
+	columnIdx int,
+	sourcer SourerFn,
+	buffer containers.IBatchBuffer,
+	mp *mpool.MPool,
+) (bf *bloomfilter.BloomFilter, err error) {
+	nbf := bloomfilter.New(int64(rowCount), probability)
+	bf = &nbf
+	bat := buffer.Fetch()
+	defer buffer.Putback(bat, mp)
+	var done bool
+	for {
+		bat.CleanOnlyData()
+		select {
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		default:
+		}
+		if done, err = sourcer(ctx, bat.Attrs, nil, mp, bat); err != nil {
+			return
+		}
+		if done {
+			break
+		}
+		vecToGC := vector.NewVec(types.New(types.T_varchar, types.MaxVarcharLen, 0))
+		for i := 0; i < bat.Vecs[columnIdx].Length(); i++ {
+			stats := objectio.ObjectStats(bat.Vecs[columnIdx].GetBytesAt(i))
+			if err = vector.AppendBytes(
+				vecToGC, stats[:], false, mp,
+			); err != nil {
+				return nil, err
+			}
+		}
+		bf.Add(vecToGC)
+		vecToGC.Free(mp)
 	}
 	return
 }
