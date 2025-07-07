@@ -21,6 +21,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio/mergeutil"
@@ -64,6 +65,12 @@ func BuildBloomfilter(
 			break
 		}
 		bf.Add(bat.Vecs[columnIdx])
+		for i := 0; i < bat.Vecs[columnIdx].Length(); i++ {
+			buf := bat.Vecs[columnIdx].GetRawBytesAt(i)
+			stats := (objectio.ObjectStats)(buf)
+			name := stats.ObjectName().UnsafeString()
+			logutil.Infof("BuildBloomfilter is %v", name)
+		}
 	}
 	return
 }

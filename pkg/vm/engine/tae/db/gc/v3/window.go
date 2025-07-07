@@ -187,6 +187,7 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 				stats := (objectio.ObjectStats)(buf)
 				name := stats.ObjectName().UnsafeString()
 				filesToGC = append(filesToGC, name)
+				logutil.Infof("GCFile is %v", name)
 				return
 			}
 		})
