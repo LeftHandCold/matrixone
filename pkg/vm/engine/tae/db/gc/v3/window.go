@@ -191,6 +191,7 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 				return
 			}
 		})
+	bf.Clean()
 	return filesToGC, metaFile, nil
 }
 
