@@ -190,8 +190,7 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	bf.Test(vec,
 		func(exists bool, i int) {
 			if !exists {
-				buf := vecToGC.GetRawBytesAt(i)
-				stats := (objectio.ObjectStats)(buf)
+				stats := (objectio.ObjectStats)(vec.GetBytesAt(i))
 				name := stats.ObjectName().UnsafeString()
 				filesToGC = append(filesToGC, name)
 				return
@@ -568,8 +567,7 @@ func (w *GCWindow) Compare(
 			dbs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[3])
 			tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
 			for i := 0; i < bat.Vecs[0].Length(); i++ {
-				buf := bat.Vecs[0].GetRawBytesAt(i)
-				stats := (objectio.ObjectStats)(buf)
+				stats := (objectio.ObjectStats)(bat.Vecs[0].GetBytesAt(i))
 				name := stats.ObjectName().String()
 				tableID := tableIDs[i]
 				createTS := createTSs[i]

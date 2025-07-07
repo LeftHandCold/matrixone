@@ -254,8 +254,7 @@ func MakeBloomfilterCoarseFilter(
 					return
 				}
 
-				buf := bat.Vecs[0].GetRawBytesAt(i)
-				stats := (objectio.ObjectStats)(buf)
+				stats := (objectio.ObjectStats)(bat.Vecs[0].GetBytesAt(i))
 				name := stats.ObjectName().UnsafeString()
 				tid := tableIDs[i]
 				if dropTS.IsEmpty() &&
@@ -309,8 +308,7 @@ func MakeSnapshotAndPitrFineFilter(
 		deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
 		tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
-			buf := bat.Vecs[0].GetRawBytesAt(i)
-			stats := (objectio.ObjectStats)(buf)
+			stats := (objectio.ObjectStats)(bat.Vecs[0].GetBytesAt(i))
 			name := stats.ObjectName().UnsafeString()
 			tableID := tableIDs[i]
 			createTS := createTSs[i]
