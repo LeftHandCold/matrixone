@@ -19,6 +19,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/malloc"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"go.uber.org/zap"
+	"strings"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -367,6 +368,9 @@ func MakeFinalCanGCSinker(
 			stats := objectio.ObjectStats(bat.Vecs[0].GetBytesAt(i))
 			dropTS := dropTSs[i]
 			tableID := tableIDs[i]
+			if strings.Contains(stats.ObjectName().UnsafeString(), "35dc7fa890c3") {
+				logutil.Infof("MakeFinalCanGCSinker is %v", stats.String())
+			}
 			if !dropTS.IsEmpty() {
 				if err := vector.AppendBytes(
 					vec, []byte(stats.ObjectName().UnsafeString()), false, mp,

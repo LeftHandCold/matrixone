@@ -31,6 +31,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/readutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
+	"strings"
 )
 
 type GCJob = CheckpointBasedGCJob
@@ -101,6 +102,9 @@ func BuildBloomfilter2(
 		vecToGC := vector.NewVec(types.New(types.T_varchar, types.MaxVarcharLen, 0))
 		for i := 0; i < bat.Vecs[columnIdx].Length(); i++ {
 			stats := objectio.ObjectStats(bat.Vecs[columnIdx].GetBytesAt(i))
+			if strings.Contains(stats.ObjectName().UnsafeString(), "35dc7fa890c3") {
+				logutil.Infof("BuildBloomfilter2 is %v", stats.String())
+			}
 			if err = vector.AppendBytes(
 				vecToGC, []byte(stats.ObjectName().UnsafeString()), false, mp,
 			); err != nil {
