@@ -102,8 +102,9 @@ func BuildBloomfilter2(
 		vecToGC := vector.NewVec(types.New(types.T_varchar, types.MaxVarcharLen, 0))
 		for i := 0; i < bat.Vecs[columnIdx].Length(); i++ {
 			stats := objectio.ObjectStats(bat.Vecs[columnIdx].GetBytesAt(i))
+			createts := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
 			if strings.Contains(stats.ObjectName().UnsafeString(), "35dc7fa890c3") {
-				logutil.Infof("BuildBloomfilter2 is %v", stats.String())
+				logutil.Infof("BuildBloomfilter2 is %v, create is %v", stats.String(), createts[i].ToString())
 			}
 			if err = vector.AppendBytes(
 				vecToGC, []byte(stats.ObjectName().UnsafeString()), false, mp,

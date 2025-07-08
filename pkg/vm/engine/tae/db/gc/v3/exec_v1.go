@@ -358,9 +358,10 @@ func MakeFinalCanGCSinker(
 	return func(
 		ctx context.Context, bat *batch.Batch,
 	) error {
-		var dropTSs []types.TS
+		var dropTSs, createts []types.TS
 		var tableIDs []uint64
 		if bat.Vecs[0].Length() > 0 {
+			createts = vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
 			dropTSs = vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
 			tableIDs = vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
 		}
@@ -369,7 +370,7 @@ func MakeFinalCanGCSinker(
 			dropTS := dropTSs[i]
 			tableID := tableIDs[i]
 			if strings.Contains(stats.ObjectName().UnsafeString(), "35dc7fa890c3") {
-				logutil.Infof("MakeFinalCanGCSinker is %v", stats.String())
+				logutil.Infof("MakeFinalCanGCSinker is %v, create ts is %v", stats.String(), createts[i].ToString())
 			}
 			if !dropTS.IsEmpty() {
 				if err := vector.AppendBytes(
