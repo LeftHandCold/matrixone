@@ -584,13 +584,13 @@ func ReWriteCheckpointAndBlockFromKey(
 			) error {
 				if objectType == objectType2 {
 					appendable := stats.GetAppendable()
-					commitTS := createAt
-					if !deleteAt.IsEmpty() {
-						commitTS = deleteAt
-					}
-					if commitTS.LT(&ts) {
-						panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
-					}
+					//commitTS := createAt
+					//if !deleteAt.IsEmpty() {
+					//	commitTS = deleteAt
+					//}
+					//if commitTS.LT(&ts) {
+					//	panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
+					//}
 					if deleteAt.IsEmpty() {
 						i++
 						return nil
