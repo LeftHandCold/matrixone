@@ -386,12 +386,12 @@ func execBackup(
 	}
 
 	// copy checkpoint and gc meta
-	sizeList, minTs, err := CopyCheckpointDir(ctx, srcFs, dstFs, "ckp", end)
+	sizeList, minTs, err := CopyCheckpointDir(ctx, srcFs, dstFs, "ckp", start)
 	if err != nil {
 		return err
 	}
 	taeFileList = append(taeFileList, sizeList...)
-	sizeList, err = CopyGCDir(ctx, srcFs, dstFs, "gc", end, minTs)
+	sizeList, err = CopyGCDir(ctx, srcFs, dstFs, "gc", start, minTs)
 	if err != nil {
 		return err
 	}
