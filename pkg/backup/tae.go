@@ -358,7 +358,7 @@ func execBackup(
 	}
 
 	// trim checkpoint and block
-	var cnLoc, mergeStart, mergeEnd string
+	var cnLoc, mergeEnd string
 	var end, start types.TS
 	var version uint64
 	if trimInfo != "" {
