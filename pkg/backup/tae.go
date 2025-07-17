@@ -358,7 +358,7 @@ func execBackup(
 	}
 
 	// trim checkpoint and block
-	var cnLoc, mergeEnd string
+	var cnLoc, mergeStart, mergeEnd string
 	var end, start types.TS
 	var version uint64
 	if trimInfo != "" {
@@ -370,8 +370,9 @@ func execBackup(
 		cnLoc = ckpStr[0]
 		mergeEnd = ckpStr[2]
 		// tnLoc = ckpStr[3]
+		mergeStart = ckpStr[4]
 		end = types.StringToTS(mergeEnd)
-		start = types.StringToTS(mergeEnd)
+		start = types.StringToTS(mergeStart)
 		version, err = strconv.ParseUint(ckpStr[1], 10, 32)
 		if err != nil {
 			return err
@@ -385,12 +386,12 @@ func execBackup(
 	}
 
 	// copy checkpoint and gc meta
-	sizeList, minTs, err := CopyCheckpointDir(ctx, srcFs, dstFs, "ckp", start)
+	sizeList, minTs, err := CopyCheckpointDir(ctx, srcFs, dstFs, "ckp", end)
 	if err != nil {
 		return err
 	}
 	taeFileList = append(taeFileList, sizeList...)
-	sizeList, err = CopyGCDir(ctx, srcFs, dstFs, "gc", start, minTs)
+	sizeList, err = CopyGCDir(ctx, srcFs, dstFs, "gc", end, minTs)
 	if err != nil {
 		return err
 	}
@@ -407,7 +408,7 @@ func execBackup(
 			tnLocation      objectio.Location
 		)
 		cnLocation, tnLocation, checkpointFiles, err = logtail.ReWriteCheckpointAndBlockFromKey(ctx, sid, srcFs, dstFs,
-			cnLocation, lastData, uint32(version), start)
+			cnLocation, lastData, uint32(version), end)
 		for _, name := range checkpointFiles {
 			dentry, err := dstFs.StatFile(ctx, name)
 			if err != nil {
@@ -417,7 +418,7 @@ func execBackup(
 				path:     dentry.Name,
 				size:     dentry.Size,
 				needCopy: true,
-				ts:       start,
+				ts:       end,
 			})
 		}
 		if err != nil {
@@ -435,7 +436,7 @@ func execBackup(
 			path:     "ckp/" + dentry.Name,
 			size:     dentry.Size,
 			needCopy: true,
-			ts:       start,
+			ts:       end,
 		})
 	}
 	reWriteDuration += time.Since(now)
@@ -445,7 +446,7 @@ func execBackup(
 		}
 	}
 	//save tae files size
-	err = saveTaeFilesList(ctx, dstFs, taeFileList, backupTime, start.ToString(), typ)
+	err = saveTaeFilesList(ctx, dstFs, taeFileList, backupTime, end.ToString(), typ)
 	if err != nil {
 		return err
 	}
