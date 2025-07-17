@@ -372,7 +372,7 @@ func execBackup(
 		// tnLoc = ckpStr[3]
 		mergeStart = ckpStr[4]
 		end = types.StringToTS(mergeEnd)
-		start = types.StringToTS(mergeStart)
+		start = types.StringToTS(mergeEnd)
 		version, err = strconv.ParseUint(ckpStr[1], 10, 32)
 		if err != nil {
 			return err
