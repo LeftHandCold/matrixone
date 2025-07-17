@@ -110,7 +110,7 @@ func (collector *BaseCollector_V2) visitObject(entry *catalog.ObjectEntry) error
 
 func (collector *BaseCollector_V2) visitObjectForBackup(entry *catalog.ObjectEntry) error {
 	createTS := entry.GetCreatedAt()
-	if createTS.GT(&collector.start) {
+	if createTS.GT(&collector.end) {
 		return nil
 	}
 	return collector.visitObject(entry)

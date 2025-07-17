@@ -236,7 +236,14 @@ func (db *DB) ForceCheckpointForBackup(
 	ts types.TS,
 ) (location string, err error) {
 	t0 := time.Now()
-	err = db.ForceCheckpoint(ctx, ts)
+	start := types.TS{}
+	maxEntry := db.BGCheckpointRunner.MaxIncrementalCheckpoint()
+	if maxEntry != nil {
+		maxEnd := maxEntry.GetEnd()
+		start = maxEnd.Next()
+	}
+	end := ts
+	err = db.BGFlusher.ForceFlush(ctx, ts)
 	t1 := time.Now()
 
 	defer func() {
@@ -253,19 +260,9 @@ func (db *DB) ForceCheckpointForBackup(
 			zap.Error(err),
 		)
 	}()
-
 	if err != nil {
 		return
 	}
-
-	maxEntry := db.BGCheckpointRunner.MaxIncrementalCheckpoint()
-	maxEnd := maxEntry.GetEnd()
-	start := maxEnd.Next()
-	end := db.TxnMgr.Now()
-	if err = db.BGFlusher.ForceFlush(ctx, end); err != nil {
-		return
-	}
-
 	location, err = db.BGCheckpointRunner.CreateSpecialCheckpointFile(
 		ctx, start, end,
 	)
