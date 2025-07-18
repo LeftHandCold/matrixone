@@ -310,7 +310,7 @@ func addObjectToObjectData(
 	objectsData *map[string]*objData,
 ) {
 	name := stats.ObjectName().String()
-	if (*objectsData)[name] != nil {
+	if (*objectsData)[name] != nil && !isABlk {
 		panic(fmt.Sprintf("object already exists: %v, aobject: %v, drop: %v", name, isABlk))
 	}
 	object := &objData{
