@@ -275,7 +275,15 @@ func execBackup(
 ) error {
 	backupTime := names[0]
 	trimInfo := names[1]
-	names = names[1:]
+	names = names[0:]
+	var ckpStr []string
+	if trimInfo != "" {
+		ckpStr = strings.Split(trimInfo, ":")
+		if len(ckpStr) != 5 {
+			return moerr.NewInternalError(ctx, fmt.Sprintf("invalid checkpoint string: %v", ckpStr))
+		}
+		names[0] = ckpStr[0]
+	}
 	files := make(map[string]*objectio.BackupObject, 0)
 	gcFileMap := make(map[string]string)
 	softDeletes := make(map[string]bool)
@@ -302,12 +310,12 @@ func execBackup(
 		if len(name) == 0 {
 			continue
 		}
-		ckpStr := strings.Split(name, ":")
-		if len(ckpStr) != 2 && i > 0 {
-			return moerr.NewInternalError(ctx, fmt.Sprintf("invalid checkpoint string: %v", ckpStr))
+		ckpStr2 := strings.Split(name, ":")
+		if len(ckpStr2) != 2 && i > 0 {
+			return moerr.NewInternalError(ctx, fmt.Sprintf("invalid checkpoint string: %v", ckpStr2))
 		}
-		metaLoc := ckpStr[0]
-		version, err := strconv.ParseUint(ckpStr[1], 10, 32)
+		metaLoc := ckpStr2[0]
+		version, err := strconv.ParseUint(ckpStr2[1], 10, 32)
 		if err != nil {
 			return err
 		}
@@ -363,11 +371,6 @@ func execBackup(
 	var end, start types.TS
 	var version uint64
 	if trimInfo != "" {
-		var err error
-		ckpStr := strings.Split(trimInfo, ":")
-		if len(ckpStr) != 5 {
-			return moerr.NewInternalError(ctx, fmt.Sprintf("invalid checkpoint string: %v", ckpStr))
-		}
 		cnLoc = ckpStr[0]
 		mergeEnd = ckpStr[2]
 		// tnLoc = ckpStr[3]
