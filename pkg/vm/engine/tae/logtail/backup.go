@@ -591,10 +591,10 @@ func ReWriteCheckpointAndBlockFromKey(
 					//if commitTS.LT(&ts) {
 					//	panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
 					//}
-					//if deleteAt.IsEmpty() {
-					//	i++
-					//	return nil
-					//}
+					if deleteAt.IsEmpty() && appendable {
+						i++
+						return nil
+					}
 					if createAt.GE(&ts) {
 						panic(any(fmt.Sprintf("createAt equal to ts: %v-%v", createAt.ToString(), ts.ToString())))
 					}
