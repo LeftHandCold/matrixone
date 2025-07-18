@@ -282,7 +282,7 @@ func execBackup(
 		if len(ckpStr) != 5 {
 			return moerr.NewInternalError(ctx, fmt.Sprintf("invalid checkpoint string: %v", ckpStr))
 		}
-		names[0] = ckpStr[0]
+		names[0] = fmt.Sprintf("%v:%v", ckpStr[0], ckpStr[1])
 	}
 	files := make(map[string]*objectio.BackupObject, 0)
 	gcFileMap := make(map[string]string)
