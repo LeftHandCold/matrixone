@@ -70,6 +70,7 @@ func getFileNames(ctx context.Context, retBytes [][][]byte) ([]string, error) {
 				continue
 			}
 			fileName = append(fileName, x)
+			logutil.Infof("fileName is %v", fileName)
 		}
 	}
 	return fileName, err
