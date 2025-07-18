@@ -609,7 +609,7 @@ func ReWriteCheckpointAndBlockFromKey(
 		)
 	}
 
-	initData2 := func(
+	/*initData2 := func(
 		od *map[string]*objData,
 		objectType int8,
 		dataType objectio.DataMetaType,
@@ -641,7 +641,7 @@ func ReWriteCheckpointAndBlockFromKey(
 				return nil
 			},
 		)
-	}
+	}*/
 
 	initData(&objectsData, ckputil.ObjectType_Data, objectio.SchemaData)
 	initData(&tombstonesData, ckputil.ObjectType_Tombstone, objectio.SchemaTombstone)
