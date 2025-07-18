@@ -584,6 +584,9 @@ func ReWriteCheckpointAndBlockFromKey(
 			) error {
 				if objectType == objectType2 {
 					appendable := stats.GetAppendable()
+					if !appendable {
+						logutil.Infof("initData name:%v, objectType2: %d, create %v, delete %v, rowId %v", stats.ObjectName().UnsafeString(), objectType2, createAt.ToString(), deleteAt.ToString(), rowID.String())
+					}
 					//commitTS := createAt
 					//if !deleteAt.IsEmpty() {
 					//	commitTS = deleteAt
