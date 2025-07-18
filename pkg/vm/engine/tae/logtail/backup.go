@@ -594,7 +594,7 @@ func ReWriteCheckpointAndBlockFromKey(
 					//if commitTS.LT(&ts) {
 					//	panic(any(fmt.Sprintf("commitTs less than ts: %v-%v", commitTS.ToString(), ts.ToString())))
 					//}
-					if deleteAt.IsEmpty() && appendable {
+					if deleteAt.IsEmpty() {
 						i++
 						return nil
 					}
@@ -645,7 +645,7 @@ func ReWriteCheckpointAndBlockFromKey(
 
 	initData(&objectsData, ckputil.ObjectType_Data, objectio.SchemaData)
 	initData(&tombstonesData, ckputil.ObjectType_Tombstone, objectio.SchemaTombstone)
-	initData2(&tombstonesData2, ckputil.ObjectType_Tombstone, objectio.SchemaTombstone)
+	//initData2(&tombstonesData2, ckputil.ObjectType_Tombstone, objectio.SchemaTombstone)
 
 	phaseNumber = 3
 
