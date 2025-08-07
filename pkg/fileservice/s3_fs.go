@@ -22,6 +22,7 @@ import (
 	"iter"
 	pathpkg "path"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -247,6 +248,7 @@ func (s *S3FS) keyToPath(key string) string {
 }
 
 func (s *S3FS) List(ctx context.Context, dirPath string) iter.Seq2[*DirEntry, error] {
+	logutil.Infof("call list %v", string(debug.Stack()))
 	return func(yield func(*DirEntry, error) bool) {
 		ctx, span := trace.Start(ctx, "S3FS.List")
 		defer span.End()
