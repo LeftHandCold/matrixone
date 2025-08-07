@@ -247,18 +247,14 @@ func (s *S3FS) keyToPath(key string) string {
 	return path
 }
 
-func (s *S3FS) List(ctx context.Context, dirPath string) (seq iter.Seq2[*DirEntry, error]) {
+func (s *S3FS) List(ctx context.Context, dirPath string) iter.Seq2[*DirEntry, error] {
 	return func(yield func(*DirEntry, error) bool) {
 		ctx, span := trace.Start(ctx, "S3FS.List")
 		defer span.End()
 		start := time.Now()
 		defer func() {
-			l := 0
-			for _ = range seq {
-				l++
-			}
-			logutil.Infof("call list: duration %v,dirPath is %v, len %d, stack %v",
-				time.Since(start).Milliseconds(), dirPath, l, string(debug.Stack()))
+			logutil.Infof("call list: duration %v,dirPath is %v, stack %v",
+				time.Since(start).Milliseconds(), dirPath, string(debug.Stack()))
 			metric.FSReadDurationList.Observe(time.Since(start).Seconds())
 		}()
 

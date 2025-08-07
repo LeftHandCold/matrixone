@@ -227,7 +227,15 @@ func (m *Merge) Main(ctx context.Context) error {
 	var totalSize int64
 
 	m.logger.Debug(fmt.Sprintf("merge task with max file: %v MB", m.MaxFileSize/mpool.MB))
+	a := 0
+	ff := 0
+	start := time.Now()
+	defer func() {
+		logutil.Infof("Call Main list: duration %v,account is %d, file %d",
+			time.Since(start).Milliseconds(), a, ff)
+	}()
 	for account, err := range m.fs.List(ctx, "/") {
+		account++
 		if err != nil {
 			return err
 		}
@@ -255,6 +263,7 @@ func (m *Merge) Main(ctx context.Context) error {
 			files = files[:0]
 			totalSize = 0
 			for f, err := range m.fs.List(ctx, rootPath) {
+				ff++
 				if err != nil {
 					return err
 				}
