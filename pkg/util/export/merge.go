@@ -235,7 +235,7 @@ func (m *Merge) Main(ctx context.Context) error {
 			time.Since(start).Milliseconds(), a, ff)
 	}()
 	for account, err := range m.fs.List(ctx, "/") {
-		account++
+		a++
 		if err != nil {
 			return err
 		}
