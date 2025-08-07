@@ -253,8 +253,8 @@ func (s *S3FS) List(ctx context.Context, dirPath string) iter.Seq2[*DirEntry, er
 		defer span.End()
 		start := time.Now()
 		defer func() {
-			logutil.Infof("call list: duration %v,dirPath is %v, stack %v",
-				time.Since(start).Milliseconds(), dirPath, string(debug.Stack()))
+			logutil.Infof("call list:fs: %v keyPrefix: %v duration %v,dirPath is %v, stack %v",
+				s.name, s.keyPrefix, time.Since(start).Milliseconds(), dirPath, string(debug.Stack()))
 			metric.FSReadDurationList.Observe(time.Since(start).Seconds())
 		}()
 
