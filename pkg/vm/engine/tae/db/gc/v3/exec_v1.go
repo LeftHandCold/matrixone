@@ -352,7 +352,7 @@ func MakeSnapshotAndPitrFineFilter(
 				if entry := tables[tableID]; entry != nil {
 
 					// The table has not been dropped, and the deleteTS is empty, so it cannot be deleted.
-					if deleteTS.IsEmpty() {
+					if entry.dropTS.IsEmpty() {
 						continue
 					}
 
