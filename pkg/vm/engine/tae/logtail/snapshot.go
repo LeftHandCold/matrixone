@@ -839,7 +839,9 @@ func (sm *SnapshotMeta) GetSnapshot(
 					return nil, err
 				}
 				tsList := vector.MustFixedColWithTypeCheck[int64](bat.Vecs[0])
+				logutil.Infof("objMap is %v", object.stats.ObjectName().String())
 				typeList := vector.MustFixedColWithTypeCheck[types.Enum](bat.Vecs[1])
+				logutil.Infof("objMap end %v", object.stats.ObjectName().String())
 				acctList := vector.MustFixedColWithTypeCheck[uint64](bat.Vecs[2])
 				for r := 0; r < bat.Vecs[0].Length(); r++ {
 					ts := tsList[r]
