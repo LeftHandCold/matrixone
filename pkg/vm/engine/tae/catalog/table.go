@@ -642,6 +642,13 @@ func (entry *TableEntry) RecurLoop(processor Processor) (err error) {
 	defer objIt.Release()
 	for ok := objIt.Last(); ok; ok = objIt.Prev() {
 		objectEntry := objIt.Item()
+		if entry.DeleteBefore(objectEntry.DeletedAt) {
+			if objectEntry.IsCEntry() && objectEntry.HasDCounterpart() {
+				logutil.Infof("objectEntryxxxx name is %v", objectEntry.String())
+			} else {
+				logutil.Infof("RecurLoop name is %v", objectEntry.String())
+			}
+		}
 		// exclude C entries having drop intent(category-b)
 		if objectEntry.IsCEntry() && objectEntry.HasDCounterpart() {
 			continue
