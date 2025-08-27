@@ -206,7 +206,7 @@ func dataProcess(b *bloomfilter.BloomFilter, vec *vector.Vector, pool *mpool.MPo
 	for i := 0; i < vec.Length(); i++ {
 		stats := objectio.ObjectStats(vec.GetBytesAt(i))
 		if err := vector.AppendBytes(
-			gcVec, []byte(stats.ObjectName().UnsafeString()), false, pool,
+			gcVec, []byte(stats.ObjectName().String()), false, pool,
 		); err != nil {
 			return err
 		}

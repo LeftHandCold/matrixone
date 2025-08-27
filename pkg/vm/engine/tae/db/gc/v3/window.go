@@ -185,6 +185,8 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 			if !exists {
 				filesToGC = append(filesToGC, string(vecToGC.GetBytesAt(i)))
 				return
+			} else {
+				logutil.Infof("filesNotGC %v", string(vecToGC.GetBytesAt(i)))
 			}
 		})
 	return filesToGC, metaFile, nil
