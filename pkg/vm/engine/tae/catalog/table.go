@@ -642,7 +642,7 @@ func (entry *TableEntry) RecurLoop(processor Processor) (err error) {
 	defer objIt.Release()
 	for ok := objIt.Last(); ok; ok = objIt.Prev() {
 		objectEntry := objIt.Item()
-		if entry.DeleteBefore(objectEntry.DeletedAt) {
+		if entry.DeleteAfter(objectEntry.DeletedAt) {
 			if objectEntry.IsCEntry() && objectEntry.HasDCounterpart() {
 				logutil.Infof("objectEntryxxxx name is %v", objectEntry.String())
 			} else {
