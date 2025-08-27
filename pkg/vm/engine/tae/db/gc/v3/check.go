@@ -249,6 +249,8 @@ func (c *gcChecker) Verify(ctx context.Context, mp *mpool.MPool) (returnStr stri
 		returnStr += fmt.Sprintf("'checkpoints': %d,", ckpObjectCount)
 		returnStr += fmt.Sprintf("'windows': %d}", windowCount)
 	}
+
+	logutil.Infof("c.cleaner.mutation.snapshotMeta.TableInfoString() is %v", c.cleaner.mutation.snapshotMeta.TableInfoString())
 	//returnStr += lostStr
 	return
 }
