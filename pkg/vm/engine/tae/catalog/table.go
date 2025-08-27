@@ -665,6 +665,7 @@ func (entry *TableEntry) RecurLoop(processor Processor) (err error) {
 		if objectEntry.IsCEntry() && objectEntry.HasDCounterpart() {
 			continue
 		}
+		logutil.Infof("RecurLoop OnTombstone name is %v", objectEntry.String())
 		if err = processor.OnTombstone(objectEntry); err != nil {
 			if moerr.IsMoErrCode(err, moerr.OkStopCurrRecur) {
 				continue
