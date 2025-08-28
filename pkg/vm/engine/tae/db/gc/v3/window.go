@@ -269,6 +269,9 @@ func (w *GCWindow) ScanCheckpoints(
 	); err != nil {
 		return
 	}
+	for _, file := range newFiles {
+		logutil.Infof("ScanCheckpoints is %v-%v, file %v", w.tsRange.start.ToString(), w.tsRange.end.ToString(), file)
+	}
 	w.files = append(w.files, newFiles...)
 	return metaFile, nil
 }
