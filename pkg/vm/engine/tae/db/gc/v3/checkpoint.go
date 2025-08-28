@@ -336,7 +336,7 @@ func (c *checkpointCleaner) Replay(inputCtx context.Context) (err error) {
 		c.mutation.metaFiles[meta.GetName()] = meta
 	}
 
-	gcFiles := make([]string, 0)
+	var gcFile string
 	for _, meta := range tsFiles {
 		if meta.IsSnapshotExt() || meta.IsAcctExt() {
 			continue
@@ -344,7 +344,8 @@ func (c *checkpointCleaner) Replay(inputCtx context.Context) (err error) {
 		if maxConsumedStart.IsEmpty() || maxConsumedStart.LT(meta.GetEnd()) {
 			maxConsumedStart = *meta.GetStart()
 			maxConsumedEnd = *meta.GetEnd()
-			gcFiles = append(gcFiles, meta.GetName())
+			logutil.Infof("meta.GetName() %v", meta.GetName())
+			gcFile = meta.GetName()
 		}
 	}
 
@@ -359,31 +360,29 @@ func (c *checkpointCleaner) Replay(inputCtx context.Context) (err error) {
 			return
 		}
 	}
-	if len(gcFiles) == 0 {
+	if gcFile == "" {
 		return
 	}
 	logger := logutil.Info
-	for _, name := range gcFiles {
-		start := time.Now()
-		window := NewGCWindow(c.mp, c.fs)
-		if err = window.ReadTable(
-			ctx,
-			ioutil.MakeGCFullName(name),
-			c.fs,
-		); err != nil {
-			logger = logutil.Error
-		}
-		logger(
-			"GC-REPLAY-READ-TABLE",
-			zap.String("name", name),
-			zap.Duration("duration", time.Since(start)),
-			zap.Error(err),
-		)
-		if err != nil {
-			return
-		}
-		c.mutAddScannedLocked(window)
+	start := time.Now()
+	window := NewGCWindow(c.mp, c.fs)
+	if err = window.ReadTable(
+		ctx,
+		ioutil.MakeGCFullName(gcFile),
+		c.fs,
+	); err != nil {
+		logger = logutil.Error
 	}
+	logger(
+		"GC-REPLAY-READ-TABLE",
+		zap.String("name", gcFile),
+		zap.Duration("duration", time.Since(start)),
+		zap.Error(err),
+	)
+	if err != nil {
+		return
+	}
+	c.mutAddScannedLocked(window)
 	if snapFile != "" {
 		if err = c.mutation.snapshotMeta.ReadMeta(
 			ctx,
