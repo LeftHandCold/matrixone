@@ -276,15 +276,16 @@ func MakeBloomfilterCoarseFilter(
 					return
 				}
 
-				bm.Add(uint64(i))
 				createTS := createTSs[i]
 				dropTS := dropTSs[i]
-				if !createTS.LT(ts) || !dropTS.LT(ts) {
-					return
-				}
-
 				buf := bat.Vecs[0].GetRawBytesAt(i)
 				stats := (objectio.ObjectStats)(buf)
+				if !createTS.LT(ts) || !dropTS.LT(ts) {
+					logutil.Infof("FilterFn error %v, ts is %v,  c %v, d %v", stats.ObjectName().String(), ts.ToString(), createTS.ToString(), dropTS.ToString())
+					return
+				}
+				logutil.Infof("FilterFn is %v", stats.ObjectName().String())
+				bm.Add(uint64(i))
 				name := stats.ObjectName().String()
 				tid := tableIDs[i]
 				if (*transObjects)[name] == nil ||
