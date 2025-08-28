@@ -240,6 +240,6 @@ func addObjectToBatch(
 	if err != nil {
 		return err
 	}
-	logutil.Infof("addObjectToBatch name is %v, create %v, drop %v, table %d", stats.ObjectName().String(), object.createTS, object.dropTS, object.table)
+	logutil.Infof("addObjectToBatch name is %v, create %v, drop %v, table %d", stats.ObjectName().String(), object.createTS.ToString(), object.dropTS.ToString(), object.table)
 	return nil
 }
