@@ -354,6 +354,7 @@ func MakeSnapshotAndPitrFineFilter(
 
 					// The table has not been dropped, and the dropTS is empty, so it cannot be deleted.
 					if entry.dropTS.IsEmpty() {
+						logutil.Infof("MakeSnapshotAndPitrFineFilter empty %v", name)
 						continue
 					}
 
