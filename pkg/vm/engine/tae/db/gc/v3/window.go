@@ -468,7 +468,10 @@ func loader(
 		if err != nil {
 			return err
 		}
-		bat.Append(cxt, mp, data)
+		_, err = bat.Append(cxt, mp, data)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 
