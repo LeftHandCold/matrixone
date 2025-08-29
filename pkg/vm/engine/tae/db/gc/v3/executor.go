@@ -267,13 +267,7 @@ func (exec *GCExecutor) Run(
 	); err != nil {
 		return
 	}
-
-	if err = cannotGCSinker.Sync(ctx); err != nil {
-		return
-	}
-	var cannotGCMemTable []*batch.Batch
-	newFiles, cannotGCMemTable = cannotGCSinker.GetResult()
-
+	cannotGCMemTable := cannotGCSinker.GetInMemoryData()
 	for _, bat := range cannotGCMemTable {
 		createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
 		deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
@@ -285,9 +279,13 @@ func (exec *GCExecutor) Run(
 			tableID := tableIDs[i]
 			createTS := createTSs[i]
 			deleteTS := deleteTSs[i]
-			logutil.Infof("cannotGCMemTable name %v, tableid %v, createTs %v, deleteTs %v", name, tableID, createTS.ToString(), deleteTS.ToString())
+			logutil.Infof("cannotGCSinker GetInMemoryData name %v, tableid %v, createTs %v, deleteTs %v", name, tableID, createTS.ToString(), deleteTS.ToString())
 		}
 	}
+	if err = cannotGCSinker.Sync(ctx); err != nil {
+		return
+	}
+	newFiles, _ = cannotGCSinker.GetResult()
 	for _, file := range newFiles {
 		logutil.Infof("newFileis %v", file.ObjectName().String())
 	}
