@@ -119,6 +119,7 @@ func (exec *GCExecutor) doFilter(
 	filter FilterFn,
 	cannotGCSinker SinkerFn,
 	canGCSinker SinkerFn,
+	test ...bool,
 ) error {
 	bat := exec.getBuffer()
 	canGCBat := exec.getBuffer()
@@ -160,6 +161,20 @@ func (exec *GCExecutor) doFilter(
 			return err
 		}
 		bat.Shrink(exec.sels, true)
+		if len(test) > 0 {
+			createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
+			deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
+			tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
+			for i := 0; i < bat.Vecs[0].Length(); i++ {
+				buf := bat.Vecs[0].GetRawBytesAt(i)
+				stats := (objectio.ObjectStats)(buf)
+				name := stats.ObjectName().String()
+				tableID := tableIDs[i]
+				createTS := createTSs[i]
+				deleteTS := deleteTSs[i]
+				logutil.Infof("cannotGCSinker name %v, tableid %v, createTs %v, deleteTs %v", name, tableID, createTS.ToString(), deleteTS.ToString())
+			}
+		}
 		if err := cannotGCSinker(ctx, bat); err != nil {
 			return err
 		}
@@ -234,6 +249,7 @@ func (exec *GCExecutor) Run(
 		fineFilter,
 		cannotGCSinker.Write,
 		finalCanGCSinker,
+		true,
 	); err != nil {
 		return
 	}
