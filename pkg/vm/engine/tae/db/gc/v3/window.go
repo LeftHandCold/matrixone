@@ -133,6 +133,11 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 
 	sourcer := w.MakeFilesReader(ctx, fs)
 
+	files := "GC befor"
+	for _, file := range w.files {
+		files += fmt.Sprintf(",%v", file.ObjectName().String())
+	}
+
 	gcTS := gCkp.GetEnd()
 	job := NewCheckpointBasedGCJob(
 		&gcTS,
@@ -165,6 +170,11 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 		return nil, "", err
 	}
 	w.files = filesNotGC
+	files2 := "GC after"
+	for _, file := range filesNotGC {
+		files2 += fmt.Sprintf(",%v", file.ObjectName().String())
+	}
+	logutil.Infof("window %v-%v,  gc %v; %v", w.tsRange.start.ToString(), w.tsRange.end.ToString(), files, files2)
 	sourcer = w.MakeFilesReader(ctx, fs)
 	bf, err = BuildBloomfilter(
 		ctx,
