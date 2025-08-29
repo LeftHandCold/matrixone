@@ -20,8 +20,10 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio/mergeutil"
@@ -239,8 +241,23 @@ func (exec *GCExecutor) Run(
 	if err = cannotGCSinker.Sync(ctx); err != nil {
 		return
 	}
+	var cannotGCMemTable []*batch.Batch
+	newFiles, cannotGCMemTable = cannotGCSinker.GetResult()
 
-	newFiles, _ = cannotGCSinker.GetResult()
+	for _, bat := range cannotGCMemTable {
+		createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
+		deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
+		tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			buf := bat.Vecs[0].GetRawBytesAt(i)
+			stats := (objectio.ObjectStats)(buf)
+			name := stats.ObjectName().String()
+			tableID := tableIDs[i]
+			createTS := createTSs[i]
+			deleteTS := deleteTSs[i]
+			logutil.Infof("cannotGCMemTable name %v, tableid %v, createTs %v, deleteTs %v", name, tableID, createTS.ToString(), deleteTS.ToString())
+		}
+	}
 
 	return
 }
