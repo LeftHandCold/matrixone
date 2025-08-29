@@ -81,6 +81,10 @@ func (c *gcChecker) Verify(ctx context.Context, mp *mpool.MPool) (returnStr stri
 			if err != nil {
 				return err
 			}
+			if done {
+				break
+			}
+
 			createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
 			deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
 			dbs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[3])
@@ -92,6 +96,7 @@ func (c *gcChecker) Verify(ctx context.Context, mp *mpool.MPool) (returnStr stri
 				tableID := tableIDs[i]
 				createTS := createTSs[i]
 				dropTS := deleteTSs[i]
+				logutil.Infof("Verify name %v", name)
 				object := &ObjectEntry{
 					createTS: createTS,
 					dropTS:   dropTS,
@@ -99,9 +104,6 @@ func (c *gcChecker) Verify(ctx context.Context, mp *mpool.MPool) (returnStr stri
 					table:    tableID,
 				}
 				objects[name] = object
-			}
-			if done {
-				break
 			}
 		}
 		return nil
