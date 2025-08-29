@@ -151,6 +151,20 @@ func (exec *GCExecutor) doFilter(
 		if err != nil {
 			return err
 		}
+		if len(test) == 0 {
+			createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
+			deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
+			tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
+			for i := 0; i < bat.Vecs[0].Length(); i++ {
+				buf := bat.Vecs[0].GetRawBytesAt(i)
+				stats := (objectio.ObjectStats)(buf)
+				name := stats.ObjectName().String()
+				tableID := tableIDs[i]
+				createTS := createTSs[i]
+				deleteTS := deleteTSs[i]
+				logutil.Infof("fiter exec name %v, tableid %v, createTs %v, deleteTs %v", name, tableID, createTS.ToString(), deleteTS.ToString())
+			}
+		}
 		if err := filter(ctx, &exec.bm, bat, exec.mp); err != nil {
 			return err
 		}
