@@ -274,7 +274,9 @@ func (exec *GCExecutor) Run(
 			logutil.Infof("cannotGCMemTable name %v, tableid %v, createTs %v, deleteTs %v", name, tableID, createTS.ToString(), deleteTS.ToString())
 		}
 	}
-
+	for _, file := range newFiles {
+		logutil.Infof("newFileis %v", file.ObjectName().String())
+	}
 	return
 }
 
