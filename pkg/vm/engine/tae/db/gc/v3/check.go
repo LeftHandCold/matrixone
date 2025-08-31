@@ -71,7 +71,7 @@ func (c *gcChecker) Verify(ctx context.Context, mp *mpool.MPool) (returnStr stri
 	defer buffer.Putback(bat, mp)
 	objects := make(map[string]*ObjectEntry)
 
-	buildObjects := func(table *GCWindow,
+	buildObjects := func(
 		objects map[string]*ObjectEntry,
 		loadfn func(context.Context, []string, *plan.Expr, *mpool.MPool, *batch.Batch) (bool, error),
 	) error {
@@ -114,14 +114,15 @@ func (c *gcChecker) Verify(ctx context.Context, mp *mpool.MPool) (returnStr stri
 		returnStr += "{'verify': 'OK', 'msg': 'Not-GC'}"
 		return
 	}
-	logutil.Infof("sancWindow.files[0] is %v, count %d", sancWindow.files[0].ObjectName().String(), sancWindow.files[0].BlkCnt())
 	maxTS := sancWindow.tsRange.end
 	window := sancWindow.Clone()
+	logutil.Infof("sancWindow.Clone is %v, count %d", window.files[0].ObjectName().String(), window.files[0].BlkCnt())
 	windowCount := len(window.files)
 	for _, stats := range window.files {
 		objects[stats.ObjectName().String()] = &ObjectEntry{}
 	}
-	err := buildObjects(&window, objects, window.LoadBatchData)
+	logutil.Infof("sancWindow.Clone22 is %v, count %d", window.files[0].ObjectName().String(), window.files[0].BlkCnt())
+	err := buildObjects(objects, window.LoadBatchData)
 	if err != nil {
 		returnStr += fmt.Sprintf("{'verify': '%v'}", err.Error())
 		return
