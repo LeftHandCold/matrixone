@@ -76,7 +76,6 @@ func (c *gcChecker) Verify(ctx context.Context, mp *mpool.MPool) (returnStr stri
 		loadfn func(context.Context, []string, *plan.Expr, *mpool.MPool, *batch.Batch) (bool, error),
 	) error {
 		for {
-			bat.CleanOnlyData()
 			done, err := loadfn(context.Background(), nil, nil, mp, bat)
 			if err != nil {
 				return err
@@ -96,7 +95,9 @@ func (c *gcChecker) Verify(ctx context.Context, mp *mpool.MPool) (returnStr stri
 				tableID := tableIDs[i]
 				createTS := createTSs[i]
 				dropTS := deleteTSs[i]
-				logutil.Infof("Verify name %v", name)
+				if name == "0198f54e-7f13-7442-b3d0-d7269dc6cabb_00000" {
+					logutil.Infof("cannotGCSinker GetInMemoryData name %v", name)
+				}
 				object := &ObjectEntry{
 					createTS: createTS,
 					dropTS:   dropTS,

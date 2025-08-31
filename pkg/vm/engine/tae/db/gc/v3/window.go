@@ -556,7 +556,6 @@ func (w *GCWindow) Compare(
 		loadfn func(context.Context, []string, *plan.Expr, *mpool.MPool, *batch.Batch) (bool, error),
 	) error {
 		for {
-			bat.CleanOnlyData()
 			done, err := loadfn(context.Background(), nil, nil, w.mp, bat)
 			if err != nil {
 				logutil.Error(
