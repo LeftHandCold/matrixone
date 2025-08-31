@@ -392,14 +392,13 @@ func TestNewObjectReade1r(t *testing.T) {
 	assert.Nil(t, err)
 	files, err := service.List(ctx, "")
 	assert.Nil(t, err)
-	dup := make(map[string]struct{})
 	logutil.Infof("files: %v", files)
 	for _, f := range files {
 		if f.Name == "01923e22-e836-70de-976a-42a51e85d688_00000" {
 			continue
 		}
 
-		if f.Name != "01923e29-83da-7b3e-ad2a-5340ca77b60e_00000" {
+		if f.Name != "0198f550-6fc5-7cc8-baef-f5897be09f78_00000" {
 			continue
 		}
 		reader, err := blockio.NewFileReader(service, f.Name)
@@ -417,40 +416,41 @@ func TestNewObjectReade1r(t *testing.T) {
 		location := objectio.BuildLocation(name1, *reader.GetObjectReader().GetMetaExtent(), 51, 1)
 		_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
 		//applyDelete(bats[0], bb)
-		ts := types.TS{}
 
-		for y, bat := range bats {
-			if y != 0 {
-				continue
-			}
+		for _, bat := range bats {
 			for i := 0; i < bat.Vecs[0].Length(); i++ {
-				num := objectio.HackBytes2Rowid(bat.Vecs[0].GetRawBytesAt(i))
-				ts.Unmarshal(bat.Vecs[1].GetRawBytesAt(i))
-				num3, _, _ := types.DecodeTuple(bat.Vecs[1].GetRawBytesAt(i))
-				if _, ok := dup[num.String()]; ok {
-					logutil.Infof("numdup is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", num.String(), ts.ToString(), i, y, num3.String())
-					panic("dup")
-				}
-				logutil.Infof("name is %vnum111 is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", f.Name, num.String(), ts.ToString(), i, y, num3.String())
-
-				if strings.Contains(num3.String(), "22941221") {
-					logutil.Infof("name is %vnum111 is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", f.Name, num.String(), ts.ToString(), i, y, num3.String())
-				}
-				if strings.Contains(num.String(), "42a51e85d688") {
-					//logutil.Infof("name is %vnum1222 is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", f.Name, num.String(), ts.ToString(), i, y, num3.String())
-				}
-				//logutil.Infof("num111 is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", num.String(), ts.ToString(), i, y, num3.String())
-				//dup[num.String()] = struct{}{}
-				//_, ro := num.Decode()
-				//logutil.Infof("num is %d, cmmit is %v,i is %d", ro, ts.ToString(), i)
-				//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
-				//num := types.DecodeInt32(bats[0].Vecs[0].GetRawBytesAt(i))
-				//logutil.Infof("num is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", num.String(), ts.ToString(), i, y, num3.String())
-				if strings.Contains(num.String(), "01923e22-e836-70de-976a-42a51e85d688") {
-					//logutil.Infof("num is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", num.String(), ts.ToString(), i, y, num3.String())
-				}
-				//logutil.Infof("num is %v, cmmit is %v,i is %d", num.String(), ts.ToString(), i)
+				buf := bat.Vecs[0].GetRawBytesAt(i)
+				stats := (objectio.ObjectStats)(buf)
+				name := stats.ObjectName().String()
+				logutil.Infof("cannotGCSinker GetInMemoryData name %v, %d", name, len(bats))
+				//logutil.Infof("cannotGCSinker GetInMemoryData name %v", name)
 			}
+			//num := objectio.HackBytes2Rowid(bat.Vecs[0].GetRawBytesAt(i))
+			//ts.Unmarshal(bat.Vecs[1].GetRawBytesAt(i))
+			//num3, _, _ := types.DecodeTuple(bat.Vecs[1].GetRawBytesAt(i))
+			//if _, ok := dup[num.String()]; ok {
+			//	logutil.Infof("numdup is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", num.String(), ts.ToString(), i, y, num3.String())
+			//	panic("dup")
+			//}
+			//logutil.Infof("name is %vnum111 is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", f.Name, num.String(), ts.ToString(), i, y, num3.String())
+			//
+			//if strings.Contains(num3.String(), "22941221") {
+			//	logutil.Infof("name is %vnum111 is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", f.Name, num.String(), ts.ToString(), i, y, num3.String())
+			//}
+			//if strings.Contains(num.String(), "42a51e85d688") {
+			//	//logutil.Infof("name is %vnum1222 is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", f.Name, num.String(), ts.ToString(), i, y, num3.String())
+			//}
+			////logutil.Infof("num111 is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", num.String(), ts.ToString(), i, y, num3.String())
+			////dup[num.String()] = struct{}{}
+			////_, ro := num.Decode()
+			////logutil.Infof("num is %d, cmmit is %v,i is %d", ro, ts.ToString(), i)
+			////ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
+			////num := types.DecodeInt32(bats[0].Vecs[0].GetRawBytesAt(i))
+			////logutil.Infof("num is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", num.String(), ts.ToString(), i, y, num3.String())
+			//if strings.Contains(num.String(), "01923e22-e836-70de-976a-42a51e85d688") {
+			//	//logutil.Infof("num is %v, cmmit is %v,i is %d, y is %d， num 3 is %v", num.String(), ts.ToString(), i, y, num3.String())
+			//}
+			//logutil.Infof("num is %v, cmmit is %v,i is %d", num.String(), ts.ToString(), i)
 		}
 	}
 	//logutil.Infof("bats[0].Vecs[1].String() is %v", bats[0].Vecs[0].String())
@@ -459,7 +459,7 @@ func TestNewObjectReade1r(t *testing.T) {
 func TestNewObjectReader1(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
-	name := "cd78288f-cecc-11ee-a7ee-fefcfef4c117_00000"
+	name := "0198f550-6fc5-7cc8-baef-f5897be09f78_00000"
 
 	fsDir := "/Users/shenjiangwei/Work/code/matrixone/mo-data/shared"
 	c := fileservice.Config{
@@ -485,12 +485,15 @@ func TestNewObjectReader1(t *testing.T) {
 	_, err = blockio.LoadTombstoneColumns(context.Background(), []uint16{0}, nil, service, location, nil)*/
 	//applyDelete(bats[0], bb)
 	//ts := types.TS{}
-	for y, bat := range bats {
+	for _, bat := range bats {
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
-			id := vector.GetFixedAt[int64](bat.Vecs[0], i)
-			if id == 1756143097500782593 || i == 587 || i == 588 {
-				logutil.Infof("id is %d, row is %d, blockiddd is %v, y is %v", id, i, name, y)
+			buf := bat.Vecs[0].GetRawBytesAt(i)
+			stats := (objectio.ObjectStats)(buf)
+			name = stats.ObjectName().String()
+			if name == "0198f54e-7f13-7442-b3d0-d7269dc6cabb_00000" {
+				logutil.Infof("cannotGCSinker GetInMemoryData name %v, %d", name, len(bats))
 			}
+			//logutil.Infof("cannotGCSinker GetInMemoryData name %v", name)
 
 			//ts.Unmarshal(bats[0].Vecs[1].GetRawBytesAt(i))
 			/*num := types.DecodeInt32(bat.Vecs[0].GetRawBytesAt(i))
