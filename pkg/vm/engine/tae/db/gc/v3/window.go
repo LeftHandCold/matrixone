@@ -462,6 +462,7 @@ func loader(
 	bat *batch.Batch,
 	mp *mpool.MPool,
 ) error {
+	logutil.Infof("stats.BlkCnt() is %d", stats.BlkCnt())
 	for id := uint32(0); id < stats.BlkCnt(); id++ {
 		stats.ObjectLocation().SetID(uint16(id))
 		data, _, err := ioutil.LoadOneBlock(cxt, fs, stats.ObjectLocation(), objectio.SchemaData)
