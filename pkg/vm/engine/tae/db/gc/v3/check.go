@@ -114,6 +114,7 @@ func (c *gcChecker) Verify(ctx context.Context, mp *mpool.MPool) (returnStr stri
 		returnStr += "{'verify': 'OK', 'msg': 'Not-GC'}"
 		return
 	}
+	logutil.Infof("sancWindow.files[0] is %v, count %d", sancWindow.files[0].ObjectName().String(), sancWindow.files[0].BlkCnt())
 	maxTS := sancWindow.tsRange.end
 	window := sancWindow.Clone()
 	windowCount := len(window.files)
