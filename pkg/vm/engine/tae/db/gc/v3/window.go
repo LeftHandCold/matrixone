@@ -465,6 +465,7 @@ func loader(
 	logutil.Infof("stats.BlkCnt() is %d", stats.BlkCnt())
 	for id := uint32(0); id < stats.BlkCnt(); id++ {
 		stats.ObjectLocation().SetID(uint16(id))
+		logutil.Infof("stats.ObjectLocation() is %v", stats.ObjectLocation().String())
 		data, _, err := ioutil.LoadOneBlock(cxt, fs, stats.ObjectLocation(), objectio.SchemaData)
 		if err != nil {
 			return err
