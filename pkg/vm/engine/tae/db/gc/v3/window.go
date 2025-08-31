@@ -482,6 +482,7 @@ func (w *GCWindow) rebuildTable(bat *batch.Batch) {
 	for i := 0; i < bat.Vecs[0].Length(); i++ {
 		var stats objectio.ObjectStats
 		stats.UnMarshal(bat.Vecs[0].GetRawBytesAt(i))
+		logutil.Infof("stats is %v, count %d", stats.ObjectName().String(), stats.BlkCnt())
 		w.files = append(w.files, stats)
 	}
 }
