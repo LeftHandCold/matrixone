@@ -206,7 +206,7 @@ func dataProcess(b *bloomfilter.BloomFilter, vec *vector.Vector, pool *mpool.MPo
 	for i := 0; i < vec.Length(); i++ {
 		stats := objectio.ObjectStats(vec.GetBytesAt(i))
 		if err := vector.AppendBytes(
-			gcVec, []byte(stats.ObjectName().UnsafeString()), false, pool,
+			gcVec, []byte(stats.ObjectName().String()), false, pool,
 		); err != nil {
 			return err
 		}
@@ -263,7 +263,7 @@ func MakeBloomfilterCoarseFilter(
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
 			stats := objectio.ObjectStats(bat.Vecs[0].GetBytesAt(i))
 			if err = vector.AppendBytes(
-				nameVec, []byte(stats.ObjectName().UnsafeString()), false, mp,
+				nameVec, []byte(stats.ObjectName().String()), false, mp,
 			); err != nil {
 				return err
 			}
@@ -276,16 +276,15 @@ func MakeBloomfilterCoarseFilter(
 					return
 				}
 
-				bm.Add(uint64(i))
 				createTS := createTSs[i]
 				dropTS := dropTSs[i]
 				if !createTS.LT(ts) || !dropTS.LT(ts) {
 					return
 				}
-
+				bm.Add(uint64(i))
 				buf := bat.Vecs[0].GetRawBytesAt(i)
 				stats := (objectio.ObjectStats)(buf)
-				name := stats.ObjectName().UnsafeString()
+				name := stats.ObjectName().String()
 				tid := tableIDs[i]
 				if (*transObjects)[name] == nil ||
 					(*transObjects)[name][tableIDs[i]] == nil {
@@ -339,7 +338,7 @@ func MakeSnapshotAndPitrFineFilter(
 		for i := 0; i < bat.Vecs[0].Length(); i++ {
 			buf := bat.Vecs[0].GetRawBytesAt(i)
 			stats := (objectio.ObjectStats)(buf)
-			name := stats.ObjectName().UnsafeString()
+			name := stats.ObjectName().String()
 			tableID := tableIDs[i]
 			createTS := createTSs[i]
 			deleteTS := deleteTSs[i]
@@ -405,7 +404,7 @@ func MakeFinalCanGCSinker(
 			tableID := tableIDs[i]
 			if !dropTS.IsEmpty() {
 				if err := vector.AppendBytes(
-					vec, []byte(stats.ObjectName().UnsafeString()), false, mp,
+					vec, []byte(stats.ObjectName().String()), false, mp,
 				); err != nil {
 					return err
 				}
@@ -413,7 +412,7 @@ func MakeFinalCanGCSinker(
 			}
 			if !logtail.IsMoTable(tableID) {
 				if err := vector.AppendBytes(
-					vec, []byte(stats.ObjectName().UnsafeString()), false, mp,
+					vec, []byte(stats.ObjectName().String()), false, mp,
 				); err != nil {
 					return err
 				}
