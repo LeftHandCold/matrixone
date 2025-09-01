@@ -20,8 +20,10 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio/mergeutil"
@@ -117,6 +119,7 @@ func (exec *GCExecutor) doFilter(
 	filter FilterFn,
 	cannotGCSinker SinkerFn,
 	canGCSinker SinkerFn,
+	test ...bool,
 ) error {
 	bat := exec.getBuffer()
 	canGCBat := exec.getBuffer()
@@ -148,6 +151,20 @@ func (exec *GCExecutor) doFilter(
 		if err != nil {
 			return err
 		}
+		if len(test) == 0 {
+			createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
+			deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
+			tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
+			for i := 0; i < bat.Vecs[0].Length(); i++ {
+				buf := bat.Vecs[0].GetRawBytesAt(i)
+				stats := (objectio.ObjectStats)(buf)
+				name := stats.ObjectName().String()
+				tableID := tableIDs[i]
+				createTS := createTSs[i]
+				deleteTS := deleteTSs[i]
+				logutil.Infof("fiter exec name %v, tableid %v, createTs %v, deleteTs %v", name, tableID, createTS.ToString(), deleteTS.ToString())
+			}
+		}
 		if err := filter(ctx, &exec.bm, bat, exec.mp); err != nil {
 			return err
 		}
@@ -158,6 +175,20 @@ func (exec *GCExecutor) doFilter(
 			return err
 		}
 		bat.Shrink(exec.sels, true)
+		if len(test) > 0 {
+			createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
+			deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
+			tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
+			for i := 0; i < bat.Vecs[0].Length(); i++ {
+				buf := bat.Vecs[0].GetRawBytesAt(i)
+				stats := (objectio.ObjectStats)(buf)
+				name := stats.ObjectName().String()
+				tableID := tableIDs[i]
+				createTS := createTSs[i]
+				deleteTS := deleteTSs[i]
+				logutil.Infof("cannotGCSinker name %v, tableid %v, createTs %v, deleteTs %v", name, tableID, createTS.ToString(), deleteTS.ToString())
+			}
+		}
 		if err := cannotGCSinker(ctx, bat); err != nil {
 			return err
 		}
@@ -232,16 +263,32 @@ func (exec *GCExecutor) Run(
 		fineFilter,
 		cannotGCSinker.Write,
 		finalCanGCSinker,
+		true,
 	); err != nil {
 		return
 	}
-
+	cannotGCMemTable := cannotGCSinker.GetInMemoryData()
+	for _, bat := range cannotGCMemTable {
+		createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
+		deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
+		tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
+		for i := 0; i < bat.Vecs[0].Length(); i++ {
+			buf := bat.Vecs[0].GetRawBytesAt(i)
+			stats := (objectio.ObjectStats)(buf)
+			name := stats.ObjectName().String()
+			tableID := tableIDs[i]
+			createTS := createTSs[i]
+			deleteTS := deleteTSs[i]
+			logutil.Infof("cannotGCSinker GetInMemoryData name %v, tableid %v, createTs %v, deleteTs %v", name, tableID, createTS.ToString(), deleteTS.ToString())
+		}
+	}
 	if err = cannotGCSinker.Sync(ctx); err != nil {
 		return
 	}
-
 	newFiles, _ = cannotGCSinker.GetResult()
-
+	for _, file := range newFiles {
+		logutil.Infof("newFileis %v", file.ObjectName().String())
+	}
 	return
 }
 

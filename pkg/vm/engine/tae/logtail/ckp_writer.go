@@ -17,6 +17,7 @@ package logtail
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"sort"
 	"time"
 
@@ -219,6 +220,11 @@ func collectObjectBatch(
 		}
 	}
 	data.SetRowCount(data.Vecs[0].Length())
+	if srcObjectEntry.IsTombstone {
+		logutil.Infof("xxt %v-%v-%v", srcObjectEntry.String())
+	} else {
+		logutil.Infof("xxo %v-%v-%v", srcObjectEntry.String())
+	}
 	return
 }
 

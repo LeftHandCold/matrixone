@@ -344,6 +344,7 @@ func (c *checkpointCleaner) Replay(inputCtx context.Context) (err error) {
 		if maxConsumedStart.IsEmpty() || maxConsumedStart.LT(meta.GetEnd()) {
 			maxConsumedStart = *meta.GetStart()
 			maxConsumedEnd = *meta.GetEnd()
+			logutil.Infof("meta.GetName() %v", meta.GetName())
 			gcFiles = append(gcFiles, meta.GetName())
 		}
 	}
@@ -381,6 +382,9 @@ func (c *checkpointCleaner) Replay(inputCtx context.Context) (err error) {
 		)
 		if err != nil {
 			return
+		}
+		for _, file := range window.files {
+			logutil.Infof("window is %v-%v, file : %v", window.tsRange.start.ToString(), window.tsRange.end.ToString(), file.ObjectName().String())
 		}
 		c.mutAddScannedLocked(window)
 	}

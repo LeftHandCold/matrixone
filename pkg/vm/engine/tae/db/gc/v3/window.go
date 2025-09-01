@@ -133,6 +133,11 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 
 	sourcer := w.MakeFilesReader(ctx, fs)
 
+	files := "GC befor"
+	for _, file := range w.files {
+		files += fmt.Sprintf(",%v", file.ObjectName().String())
+	}
+
 	gcTS := gCkp.GetEnd()
 	job := NewCheckpointBasedGCJob(
 		&gcTS,
@@ -165,6 +170,11 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 		return nil, "", err
 	}
 	w.files = filesNotGC
+	files2 := "GC after"
+	for _, file := range filesNotGC {
+		files2 += fmt.Sprintf(",%v", file.ObjectName().String())
+	}
+	logutil.Infof("window %v-%v,  gc %v; %v", w.tsRange.start.ToString(), w.tsRange.end.ToString(), files, files2)
 	sourcer = w.MakeFilesReader(ctx, fs)
 	bf, err = BuildBloomfilter(
 		ctx,
@@ -185,6 +195,8 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 			if !exists {
 				filesToGC = append(filesToGC, string(vecToGC.GetBytesAt(i)))
 				return
+			} else {
+				logutil.Infof("filesNotGC %v", string(vecToGC.GetBytesAt(i)))
 			}
 		})
 	return filesToGC, metaFile, nil
@@ -230,6 +242,7 @@ func (w *GCWindow) ScanCheckpoints(
 			return false, err
 		}
 		checkpointEntries = checkpointEntries[1:]
+		logutil.Infof("getOneBatch row %d", bat.Vecs[0].Length())
 		return false, nil
 	}
 	sinker := w.getSinker(0, buffer)
@@ -248,11 +261,19 @@ func (w *GCWindow) ScanCheckpoints(
 		)
 		return
 	}
+	bats := sinker.GetInMemoryData()
+	for _, bat := range bats {
+		logutil.Infof("sinker row %d", bat.Vecs[0].Length())
+	}
 
 	if onScanDone != nil {
 		if err = onScanDone(); err != nil {
 			return
 		}
+	}
+	bats = sinker.GetInMemoryData()
+	for _, bat := range bats {
+		logutil.Infof("sinker1 row %d", bat.Vecs[0].Length())
 	}
 
 	if err = sinker.Sync(ctx); err != nil {
@@ -266,6 +287,9 @@ func (w *GCWindow) ScanCheckpoints(
 		ctx, newFiles,
 	); err != nil {
 		return
+	}
+	for _, file := range newFiles {
+		logutil.Infof("ScanCheckpoints is %v-%v, file %v, rows %d", w.tsRange.start.ToString(), w.tsRange.end.ToString(), file.ObjectName().String(), file.Rows())
 	}
 	w.files = append(w.files, newFiles...)
 	return metaFile, nil
@@ -383,15 +407,17 @@ func collectMapData(
 	if len(objects) == 0 {
 		return nil
 	}
+	rows := 0
 	for _, tables := range objects {
 		for _, entry := range tables {
+			rows++
 			err := addObjectToBatch(bat, entry.stats, entry, mp)
 			if err != nil {
 				return err
 			}
 		}
 	}
-	batch.SetLength(bat, len(objects))
+	batch.SetLength(bat, rows)
 	return nil
 }
 
@@ -449,11 +475,16 @@ func loader(
 ) error {
 	for id := uint32(0); id < stats.BlkCnt(); id++ {
 		stats.ObjectLocation().SetID(uint16(id))
-		data, _, err := ioutil.LoadOneBlock(cxt, fs, stats.ObjectLocation(), objectio.SchemaData)
+		location := stats.ObjectLocation()
+		location.SetID(uint16(id))
+		data, _, err := ioutil.LoadOneBlock(cxt, fs, location, objectio.SchemaData)
 		if err != nil {
 			return err
 		}
-		bat.Append(cxt, mp, data)
+		_, err = bat.Append(cxt, mp, data)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 
@@ -463,6 +494,7 @@ func (w *GCWindow) rebuildTable(bat *batch.Batch) {
 	for i := 0; i < bat.Vecs[0].Length(); i++ {
 		var stats objectio.ObjectStats
 		stats.UnMarshal(bat.Vecs[0].GetRawBytesAt(i))
+		logutil.Infof("stats is %v, count %d", stats.ObjectName().String(), stats.BlkCnt())
 		w.files = append(w.files, stats)
 	}
 }
@@ -538,7 +570,6 @@ func (w *GCWindow) Compare(
 		loadfn func(context.Context, []string, *plan.Expr, *mpool.MPool, *batch.Batch) (bool, error),
 	) error {
 		for {
-			bat.CleanOnlyData()
 			done, err := loadfn(context.Background(), nil, nil, w.mp, bat)
 			if err != nil {
 				logutil.Error(
