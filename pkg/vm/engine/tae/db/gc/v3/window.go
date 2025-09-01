@@ -242,6 +242,7 @@ func (w *GCWindow) ScanCheckpoints(
 			return false, err
 		}
 		checkpointEntries = checkpointEntries[1:]
+		logutil.Infof("getOneBatch row %d", bat.Vecs[0].Length())
 		return false, nil
 	}
 	sinker := w.getSinker(0, buffer)
@@ -260,11 +261,19 @@ func (w *GCWindow) ScanCheckpoints(
 		)
 		return
 	}
+	bats := sinker.GetInMemoryData()
+	for _, bat := range bats {
+		logutil.Infof("sinker row %d", bat.Vecs[0].Length())
+	}
 
 	if onScanDone != nil {
 		if err = onScanDone(); err != nil {
 			return
 		}
+	}
+	bats = sinker.GetInMemoryData()
+	for _, bat := range bats {
+		logutil.Infof("sinker1 row %d", bat.Vecs[0].Length())
 	}
 
 	if err = sinker.Sync(ctx); err != nil {
@@ -280,7 +289,7 @@ func (w *GCWindow) ScanCheckpoints(
 		return
 	}
 	for _, file := range newFiles {
-		logutil.Infof("ScanCheckpoints is %v-%v, file %v", w.tsRange.start.ToString(), w.tsRange.end.ToString(), file.ObjectName().String())
+		logutil.Infof("ScanCheckpoints is %v-%v, file %v, rows %d", w.tsRange.start.ToString(), w.tsRange.end.ToString(), file.ObjectName().String(), file.Rows())
 	}
 	w.files = append(w.files, newFiles...)
 	return metaFile, nil
