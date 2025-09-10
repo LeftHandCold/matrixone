@@ -16,8 +16,10 @@ package ivfflat
 
 import (
 	"fmt"
+	"math/rand"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -99,7 +101,11 @@ func (idx *IvfflatSearchIndex[T]) searchEntries(proc *process.Process, query []T
 
 	var res executor.Result
 	var ok bool
-
+	if rand.Intn(1000) < 3 {
+		time.Sleep(1 * time.Second)
+		err = moerr.NewInternalError(proc.Ctx, "mock error searchEntries")
+		return
+	}
 	select {
 	case res, ok = <-stream_chan:
 		if !ok {
@@ -245,10 +251,9 @@ func (idx *IvfflatSearchIndex[T]) Search(proc *process.Process, idxcfg vectorind
 			// brute force search with selected centroids
 			sql_closed := false
 			for !sql_closed {
-				var err2 error
-				sql_closed, err2 = idx.searchEntries(proc, query, distfn, heap, stream_chan, error_chan)
-				if err2 != nil {
-					errs <- err2
+				sql_closed, err = idx.searchEntries(proc, query, distfn, heap, stream_chan, error_chan)
+				if err != nil {
+					errs <- err
 					return
 				}
 			}
