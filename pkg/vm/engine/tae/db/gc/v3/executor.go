@@ -118,22 +118,29 @@ func (exec *GCExecutor) doFilter(
 	cannotGCSinker SinkerFn,
 	canGCSinker SinkerFn,
 ) error {
+	// Use error handler for structured error handling
+	errorHandler := NewErrorHandler("GCExecutor-doFilter")
+	timer := NewOperationTimer("do_filter")
+	defer timer.LogDuration()
+
 	bat := exec.getBuffer()
 	canGCBat := exec.getBuffer()
 	defer exec.putBuffer(bat)
 	defer exec.putBuffer(canGCBat)
+
 	for {
 		bat.CleanOnlyData()
 		canGCBat.CleanOnlyData()
-		select {
-		case <-ctx.Done():
-			return context.Cause(ctx)
-		default:
+
+		// Check context cancellation with structured error
+		if err := ContextualError(ctx, "filter_processing"); err != nil {
+			return errorHandler.HandleError(err, "context_check")
 		}
+
 		// 1. get next batch from sourcer
 		done, err := sourcer(ctx, bat.Attrs, nil, exec.mp, bat)
 		if err != nil {
-			return err
+			return errorHandler.HandleError(err, "sourcer_read")
 		}
 		if done {
 			break
@@ -144,25 +151,32 @@ func (exec *GCExecutor) doFilter(
 		//    bit 0 means the row cannot be GC'ed
 		exec.bm.Clear()
 		exec.bm.TryExpandWithSize(bat.RowCount())
-		err = mergeutil.SortColumnsByIndex(bat.Vecs, 2, exec.mp)
+
+		err = mergeutil.SortColumnsByIndex(bat.Vecs, DeleteTSColumnIdx, exec.mp)
 		if err != nil {
-			return err
+			return errorHandler.HandleError(err, "sort_columns")
 		}
+
 		if err := filter(ctx, &exec.bm, bat, exec.mp); err != nil {
-			return err
+			return errorHandler.HandleError(err, "filter_execution")
 		}
+
 		// 3. sink the batch to the corresponding sinker
 		exec.sels = exec.sels[:0]
 		bitmap.ToArray(&exec.bm, &exec.sels)
+
 		if err := canGCBat.Union(bat, exec.sels, exec.mp); err != nil {
-			return err
+			return errorHandler.HandleError(err, "batch_union")
 		}
+
 		bat.Shrink(exec.sels, true)
+
 		if err := cannotGCSinker(ctx, bat); err != nil {
-			return err
+			return errorHandler.HandleError(err, "cannot_gc_sink")
 		}
+
 		if err := canGCSinker(ctx, canGCBat); err != nil {
-			return err
+			return errorHandler.HandleError(err, "can_gc_sink")
 		}
 	}
 

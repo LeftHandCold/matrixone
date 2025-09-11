@@ -48,19 +48,35 @@ func MergeCheckpoint(
 	pool *mpool.MPool,
 	fs fileservice.FileService,
 ) (deleteFiles, newFiles []string, checkpointEntry *checkpoint.CheckpointEntry, ckpData *batch.Batch, err error) {
+	// Use error handler and timer for structured logging
+	errorHandler := NewErrorHandler(taskName)
+	timer := NewOperationTimer("merge_checkpoint")
+	defer func() {
+		if err != nil {
+			timer.LogError(err,
+				zap.Int("entry_count", len(ckpEntries)),
+				zap.String("sid", sid),
+			)
+		} else {
+			timer.LogDuration(
+				zap.Int("entry_count", len(ckpEntries)),
+				zap.String("sid", sid),
+			)
+		}
+	}()
+
 	ckpData = ckputil.NewObjectListBatch()
 	datas := make([]*logtail.CKPReader, 0)
 	deleteFiles = make([]string, 0)
+
 	for _, ckpEntry := range ckpEntries {
-		select {
-		case <-ctx.Done():
-			err = context.Cause(ctx)
+		// Check context cancellation with structured error
+		if err = ContextualError(ctx, "merge_checkpoint_processing"); err != nil {
+			err = errorHandler.HandleError(err, "context_check")
 			return
-		default:
 		}
-		logutil.Info(
-			"GC-Merge-Checkpoint",
-			zap.String("task", taskName),
+
+		errorHandler.HandleInfo("Processing checkpoint entry",
 			zap.String("entry", ckpEntry.String()),
 		)
 		var data *logtail.CKPReader

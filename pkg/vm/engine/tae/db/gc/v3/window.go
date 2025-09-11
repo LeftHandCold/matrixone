@@ -425,21 +425,29 @@ func (w *GCWindow) LoadBatchData(
 	if len(w.files) == 0 {
 		return true, nil
 	}
+
+	// Use error handler for structured error handling
+	errorHandler := NewErrorHandler("GCWindow-LoadBatchData")
+	timer := NewOperationTimer("load_batch_data")
+
 	bat.CleanOnlyData()
 	err := loader(ctx, w.fs, &w.files[0], bat, mp)
-	logger := logutil.Info
+
 	if err != nil {
-		logger = logutil.Error
+		timer.LogError(err,
+			zap.Int("file_count", len(w.files)),
+			zap.String("file", w.files[0].ObjectName().String()),
+		)
+		return false, errorHandler.HandleError(err, "load_batch_data",
+			zap.String("file", w.files[0].ObjectName().String()),
+		)
 	}
-	logger(
-		"GCWindow-LoadBatchData",
-		zap.Int("cnt", len(w.files)),
+
+	timer.LogDuration(
+		zap.Int("file_count", len(w.files)),
 		zap.String("file", w.files[0].ObjectName().String()),
-		zap.Error(err),
 	)
-	if err != nil {
-		return false, err
-	}
+
 	w.files = w.files[1:]
 	return false, nil
 }

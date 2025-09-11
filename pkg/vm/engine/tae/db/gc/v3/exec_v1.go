@@ -36,11 +36,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 )
 
-const (
-	Default_Coarse_EstimateRows = 10000000
-	Default_Coarse_Probility    = 0.00001
-	Default_CanGC_TailSize      = 64 * malloc.MB
-)
+// Use constants from constants.go - these are now defined there
 
 type GCJobExecutorOption func(*GCJob)
 
@@ -130,13 +126,13 @@ func (e *CheckpointBasedGCJob) Close() error {
 
 func (e *CheckpointBasedGCJob) fillDefaults() {
 	if e.config.coarseEstimateRows <= 0 {
-		e.config.coarseEstimateRows = Default_Coarse_EstimateRows
+		e.config.coarseEstimateRows = DefaultCoarseEstimateRows
 	}
 	if e.config.coarseProbility <= 0 {
-		e.config.coarseProbility = Default_Coarse_Probility
+		e.config.coarseProbility = DefaultCoarseProbility
 	}
 	if e.config.canGCCacheSize <= 0 {
-		e.config.canGCCacheSize = Default_CanGC_TailSize
+		e.config.canGCCacheSize = DefaultCanGCTailSize
 	}
 }
 
@@ -327,87 +323,34 @@ func MakeSnapshotAndPitrFineFilter(
 	filter FilterFn,
 	err error,
 ) {
-	tableSnapshots, tablePitrs := snapshotMeta.AccountToTableSnapshots(
-		accountSnapshots,
-		pitrs,
+	// Create error handler for this filter
+	errorHandler := NewErrorHandler("SnapshotAndPitrFineFilter")
+
+	// Create filter context
+	filterCtx := NewFilterContext(
+		ts, accountSnapshots, pitrs, snapshotMeta,
+		iscpTables, transObjects, errorHandler,
 	)
+
+	// Build filter chain using the new system
+	filterChain := NewFilterChainBuilder(errorHandler).
+		WithLogic(FilterLogicAND).
+		AddSnapshotFilter(filterCtx).
+		AddISCPFilter(iscpTables).
+		AddTransObjectFilter(transObjects).
+		AddTimeBasedFilter(ts).
+		Build()
+
+	// Create batch processor
+	processor := NewBatchFilterProcessor(filterChain, errorHandler)
+
 	return func(
 		ctx context.Context,
 		bm *bitmap.Bitmap,
 		bat *batch.Batch,
 		mp *mpool.MPool,
 	) error {
-		createTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[1])
-		deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[2])
-		tableIDs := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[4])
-		for i := 0; i < bat.Vecs[0].Length(); i++ {
-			buf := bat.Vecs[0].GetRawBytesAt(i)
-			stats := (objectio.ObjectStats)(buf)
-			name := stats.ObjectName().UnsafeString()
-			tableID := tableIDs[i]
-			createTS := createTSs[i]
-			deleteTS := deleteTSs[i]
-
-			snapshots := tableSnapshots[tableID]
-			pitr := tablePitrs[tableID]
-
-			if transObjects[name] != nil {
-				tables := transObjects[name]
-				if entry := tables[tableID]; entry != nil {
-
-					// The table has not been dropped, and the dropTS is empty, so it cannot be deleted.
-					if entry.dropTS.IsEmpty() {
-						continue
-					}
-
-					if !logtail.ObjectIsSnapshotRefers(
-						entry.stats, pitr, &entry.createTS, &entry.dropTS, snapshots,
-					) {
-						if iscpTables == nil {
-							bm.Add(uint64(i))
-							continue
-						}
-						if iscpTS, ok := iscpTables[entry.table]; ok {
-							if entry.stats.GetCNCreated() || entry.stats.GetAppendable() {
-								if (!entry.dropTS.IsEmpty() && entry.dropTS.LT(&iscpTS)) ||
-									entry.createTS.GT(&iscpTS) {
-									continue
-								}
-							}
-						}
-						bm.Add(uint64(i))
-					}
-					continue
-				}
-			}
-			if !createTS.LT(ts) || !deleteTS.LT(ts) {
-				continue
-			}
-			if deleteTS.IsEmpty() {
-				logutil.Warn("GC-PANIC-TS-EMPTY",
-					zap.String("name", name),
-					zap.String("createTS", createTS.ToString()))
-				continue
-			}
-			if !logtail.ObjectIsSnapshotRefers(
-				&stats, pitr, &createTS, &deleteTS, snapshots,
-			) {
-				if iscpTables == nil {
-					bm.Add(uint64(i))
-					continue
-				}
-				if iscpTS, ok := iscpTables[tableID]; ok {
-					if stats.GetCNCreated() || stats.GetAppendable() {
-						if (!deleteTS.IsEmpty() && deleteTS.LT(&iscpTS)) ||
-							createTS.GT(&iscpTS) {
-							continue
-						}
-					}
-				}
-				bm.Add(uint64(i))
-			}
-		}
-		return nil
+		return processor.ProcessBatch(ctx, bm, bat, mp)
 	}, nil
 }
 

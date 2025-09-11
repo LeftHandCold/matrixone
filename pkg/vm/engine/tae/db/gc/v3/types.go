@@ -30,33 +30,7 @@ import (
 
 type BatchType int8
 
-const CurrentVersion = uint16(3)
-
-const (
-	ObjectList BatchType = iota
-	TombstoneList
-)
-
-const (
-	CreateBlock BatchType = iota
-	DeleteBlock
-	DropTable
-	DropDB
-	DeleteFile
-	Tombstone
-)
-
-const (
-	GCAttrObjectName = "name"
-	GCAttrBlockId    = "block_id"
-	GCAttrTableId    = "table_id"
-	GCAttrDBId       = "db_id"
-	GCAttrCommitTS   = "commit_ts"
-	GCCreateTS       = "create_time"
-	GCDeleteTS       = "delete_time"
-	GCAttrTombstone  = "tombstone"
-	GCAttrVersion    = "version"
-)
+// Use constants from constants.go - these are now defined there
 
 var (
 	BlockSchemaAttr = []string{
@@ -165,11 +139,7 @@ var ObjectTableMetaTypes []types.Type
 
 var FSinkerFactory ioutil.FileSinkerFactory
 
-const ObjectTablePrimaryKeyIdx = 0
-const ObjectTableVersion = 0
-const (
-	DefaultInMemoryStagedSize = mpool.MB * 32
-)
+// Use constants from constants.go - these are now defined there
 
 func init() {
 	ObjectTableAttrs = []string{

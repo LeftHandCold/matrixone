@@ -90,12 +90,8 @@ type checkpointCleaner struct {
 		gcCheckpointEnabled atomic.Bool
 	}
 
-	config struct {
-		canGCCacheSize          int
-		maxMergeCheckpointCount int
-		estimateRows            int
-		probility               float64
-	}
+	// Use the new unified config manager
+	configManager ConfigManager
 
 	// checker is to check whether the checkpoint can be consumed
 	checker struct {
@@ -124,7 +120,9 @@ func WithCanGCCacheSize(
 	size int,
 ) CheckpointCleanerOption {
 	return func(e *checkpointCleaner) {
-		e.config.canGCCacheSize = size
+		config := e.configManager.GetConfig()
+		config.CanGCCacheSize = size
+		e.configManager.UpdateConfig(config)
 	}
 }
 
@@ -132,7 +130,9 @@ func WithMaxMergeCheckpointCount(
 	count int,
 ) CheckpointCleanerOption {
 	return func(e *checkpointCleaner) {
-		e.config.maxMergeCheckpointCount = count
+		config := e.configManager.GetConfig()
+		config.MaxMergeCheckpointCount = count
+		e.configManager.UpdateConfig(config)
 	}
 }
 
@@ -140,7 +140,9 @@ func WithGCProbility(
 	probility float64,
 ) CheckpointCleanerOption {
 	return func(e *checkpointCleaner) {
-		e.config.probility = probility
+		config := e.configManager.GetConfig()
+		config.CoarseProbility = probility
+		e.configManager.UpdateConfig(config)
 	}
 }
 
@@ -148,7 +150,9 @@ func WithEstimateRows(
 	rows int,
 ) CheckpointCleanerOption {
 	return func(e *checkpointCleaner) {
-		e.config.estimateRows = rows
+		config := e.configManager.GetConfig()
+		config.CoarseEstimateRows = rows
+		e.configManager.UpdateConfig(config)
 	}
 }
 
@@ -731,7 +735,7 @@ func (c *checkpointCleaner) getEntriesToMerge(lowWaterMark *types.TS) (
 		return
 	}
 	compacted := c.checkpointCli.GetCompacted()
-	ickps := c.checkpointCli.ICKPRange(&start, lowWaterMark, c.config.maxMergeCheckpointCount)
+	ickps := c.checkpointCli.ICKPRange(&start, lowWaterMark, c.configManager.GetMaxMergeCheckpointCount())
 	if compacted != nil && len(ickps) > 0 {
 		entries = make([]*checkpoint.CheckpointEntry, 0, 1+len(ickps))
 		entries = append(entries, compacted)
@@ -1068,47 +1072,62 @@ func (c *checkpointCleaner) tryGCAgainstGCKPLocked(
 	gckp *checkpoint.CheckpointEntry,
 	memoryBuffer *containers.OneSchemaBatchBuffer,
 ) (err error) {
-	now := time.Now()
+	// Create error handler for this operation
+	errorHandler := NewErrorHandler(c.TaskNameLocked())
+	timer := NewOperationTimer("tryGCAgainstGCKP")
+	
 	var snapshots map[uint32]containers.Vector
-	var extraErrMsg string
 	defer func() {
 		logtail.CloseSnapshotList(snapshots)
-		logutil.Info(
-			"GC-TRACE-TRY-GC-AGAINST-GCKP",
-			zap.String("task", c.TaskNameLocked()),
-			zap.Duration("duration", time.Since(now)),
-			zap.String("checkpoint", gckp.String()),
-			zap.Error(err),
-			zap.String("extra-err-msg", extraErrMsg),
-		)
+		if err != nil {
+			timer.LogError(err, zap.String("checkpoint", gckp.String()))
+		} else {
+			timer.LogDuration(zap.String("checkpoint", gckp.String()))
+		}
 	}()
+
+	// Get PITRs with error handling
 	pitrs, err := c.GetPITRsLocked(ctx)
 	if err != nil {
-		extraErrMsg = "GetPITRs failed"
-		return
+		return errorHandler.HandleError(
+			NewPITRReadError(err, time.Now()),
+			"get_pitrs",
+			zap.String("checkpoint", gckp.String()),
+		)
 	}
+
+	// Get snapshots with error handling
 	snapshots, err = c.mutation.snapshotMeta.GetSnapshot(ctx, c.sid, c.fs, c.mp)
 	if err != nil {
-		extraErrMsg = "GetSnapshot failed"
-		return
+		return errorHandler.HandleError(
+			NewSnapshotReadError(err, c.sid),
+			"get_snapshots",
+			zap.String("checkpoint", gckp.String()),
+		)
 	}
+
 	accountSnapshots := TransformToTSList(snapshots)
+	
+	// Execute GC against global checkpoint
 	filesToGC, err := c.doGCAgainstGlobalCheckpointLocked(
 		ctx, gckp, accountSnapshots, pitrs, memoryBuffer,
 	)
 	if err != nil {
-		extraErrMsg = "doGCAgainstGlobalCheckpointLocked failed"
-		return
+		return errorHandler.HandleError(
+			NewGCError(ErrCodeFilterExecution, ErrMsgGCExecutionFailed, err),
+			"gc_execution",
+			zap.String("checkpoint", gckp.String()),
+		)
 	}
-	// Delete files after doGCAgainstGlobalCheckpointLocked
-	// TODO:Requires Physical Removal Policy
-	if err = c.deleter.DeleteMany(
-		ctx,
-		c.TaskNameLocked(),
-		filesToGC,
-	); err != nil {
-		extraErrMsg = fmt.Sprintf("ExecDelete %v failed", filesToGC)
-		return
+
+	// Delete files with error handling
+	if err = c.deleter.DeleteMany(ctx, c.TaskNameLocked(), filesToGC); err != nil {
+		return errorHandler.HandleError(
+			NewFileDeleteError(err, filesToGC),
+			"file_deletion",
+			zap.String("checkpoint", gckp.String()),
+			zap.Int("file_count", len(filesToGC)),
+		)
 	}
 	if c.GetGCWaterMark() == nil {
 		return nil
