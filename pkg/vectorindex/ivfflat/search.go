@@ -16,11 +16,6 @@ package ivfflat
 
 import (
 	"fmt"
-	"math/rand"
-	"strconv"
-	"sync"
-	"time"
-
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -31,6 +26,8 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vectorindex/metric"
 	"github.com/matrixorigin/matrixone/pkg/vectorindex/sqlexec"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
+	"strconv"
+	"sync"
 )
 
 var runSql = sqlexec.RunSql
@@ -101,11 +98,11 @@ func (idx *IvfflatSearchIndex[T]) searchEntries(proc *process.Process, query []T
 
 	var res executor.Result
 	var ok bool
-	if rand.Intn(1000) < 3 {
-		time.Sleep(1 * time.Second)
-		//err = moerr.NewInternalError(proc.Ctx, "mock error searchEntries")
-		//return
-	}
+	//if rand.Intn(1000) < 3 {
+	//	time.Sleep(1 * time.Second)
+	//	//err = moerr.NewInternalError(proc.Ctx, "mock error searchEntries")
+	//	//return
+	//}
 	select {
 	case res, ok = <-stream_chan:
 		if !ok {
