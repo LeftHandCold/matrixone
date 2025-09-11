@@ -103,8 +103,8 @@ func (idx *IvfflatSearchIndex[T]) searchEntries(proc *process.Process, query []T
 	var ok bool
 	if rand.Intn(1000) < 3 {
 		time.Sleep(1 * time.Second)
-		err = moerr.NewInternalError(proc.Ctx, "mock error searchEntries")
-		return
+		//err = moerr.NewInternalError(proc.Ctx, "mock error searchEntries")
+		//return
 	}
 	select {
 	case res, ok = <-stream_chan:
