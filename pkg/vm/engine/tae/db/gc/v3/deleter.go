@@ -20,7 +20,9 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/matrixorigin/matrixone/pkg/backup"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 )
@@ -92,6 +94,52 @@ func (g *Deleter) DeleteMany(
 
 	toDeletePaths := g.toDeletePaths
 
+	// Filter out paths that are protected by backup
+	filteredPaths := make([]string, 0, len(toDeletePaths))
+	protectedPaths := make([]string, 0)
+
+	if backup.GlobalBackupProtectionManager != nil {
+		for _, path := range toDeletePaths {
+			// For GC operations, we need to check if any active backup protects this path
+			// We use the current timestamp as a conservative approach
+			isProtected := backup.GlobalBackupProtectionManager.IsProtected(types.MaxTs(), path)
+			if isProtected {
+				protectedPaths = append(protectedPaths, path)
+				logutil.Info(
+					"GC-Skip-Protected-File",
+					zap.String("task", taskName),
+					zap.String("path", path),
+				)
+			} else {
+				filteredPaths = append(filteredPaths, path)
+			}
+		}
+	} else {
+		filteredPaths = toDeletePaths
+	}
+
+	if len(protectedPaths) > 0 {
+		logutil.Info(
+			"GC-Protected-Files-Skipped",
+			zap.String("task", taskName),
+			zap.Int("protected-cnt", len(protectedPaths)),
+			zap.Int("total-cnt", len(toDeletePaths)),
+		)
+	}
+
+	// Update toDeletePaths to only include non-protected paths
+	toDeletePaths = filteredPaths
+	cnt = len(toDeletePaths)
+
+	if cnt == 0 {
+		logutil.Info(
+			"GC-No-Files-To-Delete",
+			zap.String("task", taskName),
+		)
+		g.toDeletePaths = g.toDeletePaths[:0]
+		return
+	}
+
 	for i := 0; i < cnt; i += g.deleteBatchSize {
 		select {
 		case <-ctx.Done():
@@ -120,8 +168,10 @@ func (g *Deleter) DeleteMany(
 			return
 		}
 		err = nil
-		g.toDeletePaths = toDeletePaths[end:]
 	}
+
+	// Reset toDeletePaths after deletion
+	g.toDeletePaths = make([]string, 0)
 
 	if cap(g.toDeletePaths) > 5000 {
 		g.toDeletePaths = make([]string, 0, 1000)

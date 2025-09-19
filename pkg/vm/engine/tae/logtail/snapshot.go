@@ -1129,105 +1129,78 @@ func (sm *SnapshotMeta) GetPITR(
 				}
 			}
 			pitrInfo.database[id] = pitrTS
-		} else if level == PitrLevelTable {
-			id := uint64(account)
-			p := pitrInfo.tables[id]
-			if !p.IsEmpty() {
-				logutil.Warn("GC-PANIC-DUP-PIRT-P3",
-					zap.String("level", "table"),
-					zap.Uint64("id", id),
-					zap.String("old", p.ToString()),
-					zap.String("new", pitrTS.ToString()),
-				)
-				if p.LT(&pitrTS) {
-					return nil
-				}
-			}
-			pitrInfo.tables[id] = pitrTS
-		}
-		// TODO: info to debug
-		logutil.Info(
-			"GC-GetPITR",
-			zap.String("level", level),
-			zap.Uint64("id", account),
-			zap.String("ts", pitrTS.ToString()),
-		)
-		return nil
-	}
-
-	err := pitrClone.processObjects(ctx, fs, idxes, ds, mp, processor)
-	if err != nil {
-		return nil, err
-	}
-	return pitrInfo, nil
-}
-
 func (sm *SnapshotMeta) GetISCP(
 	ctx context.Context,
 	sid string,
 	fs fileservice.FileService,
 	mp *mpool.MPool,
-) (map[uint64]types.TS, error) {
+) (*IscpInfo, error) {
 	idxes := []uint16{ColIscpTableId, ColIscpWatermark, ColIscpDropAt}
-
-	sm.RLock()
-	iscpClone := sm.iscp.clone()
-	sm.RUnlock()
-
+	tombstonesStats := make([]objectio.ObjectStats, 0)
+	for _, obj := range sm.iscp.tombstones {
+		tombstonesStats = append(tombstonesStats, obj.stats)
+	}
 	checkpointTS := types.BuildTS(time.Now().UTC().UnixNano(), 0)
-	ds := NewSnapshotDataSource(ctx, fs, checkpointTS, iscpClone.getTombstonesStats())
-	tables := make(map[uint64]types.TS)
-
-	processor := func(bat *batch.Batch, r int) error {
-		tableIDList := vector.MustFixedColWithTypeCheck[uint64](bat.Vecs[0])
-		watermarkList := bat.Vecs[1]
-		dropAtList := bat.Vecs[2]
-
-		tableID := tableIDList[r]
-		watermark := watermarkList.GetBytesAt(r)
-		if !dropAtList.IsNull(uint64(r)) {
-			return nil
-		}
-
-		var iscpTS types.TS
-		if len(watermark) > 0 {
-			iscpTS = types.StringToTS(util.UnsafeBytesToString(watermark))
-		} else {
-			iscpTS = types.TS{}
-		}
-
-		// For the same tableID, take the smallest TS
-		existingTS := tables[tableID]
-		if existingTS.IsEmpty() || iscpTS.LT(&existingTS) {
-			tables[tableID] = iscpTS
-		}
-
-		logutil.Info(
-			"GC-GetISCP",
-			zap.Uint64("table", tableID),
-			zap.String("watermark", iscpTS.ToString()),
-		)
-		return nil
+	ds := NewSnapshotDataSource(ctx, fs, checkpointTS, tombstonesStats)
+	iscpInfo := &IscpInfo{
+		tables: make(map[uint64]types.TS),
 	}
+	for _, object := range sm.iscp.objects {
+		select {
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		default:
+		}
+		location := object.stats.ObjectLocation()
+		name := object.stats.ObjectName()
+		for i := uint32(0); i < object.stats.BlkCnt(); i++ {
+			loc := objectio.BuildLocation(name, location.Extent(), 0, uint16(i))
+			blk := objectio.BlockInfo{
+				BlockID: *objectio.BuildObjectBlockid(name, uint16(i)),
+				MetaLoc: objectio.ObjectLocation(loc),
+			}
 
-	err := iscpClone.processObjects(ctx, fs, idxes, ds, mp, processor)
-	if err != nil {
-		return nil, err
+			bat, _, err := blockio.BlockDataReadBackup(ctx, &blk, ds, idxes, types.TS{}, fs)
+			if err != nil {
+				return nil, err
+			}
+			defer bat.Clean(mp)
+			tableIDList := vector.MustFixedColWithTypeCheck[uint64](bat.Vecs[0])
+			watermarkList := bat.Vecs[1]
+			dropAtList := bat.Vecs[2]
+			for r := 0; r < bat.Vecs[0].Length(); r++ {
+				tableID := tableIDList[r]
+				watermark := watermarkList.GetStringAt(r)
+				dropAtBytes := dropAtList.GetRawBytesAt(r)
+
+				// 跳过已删除的job
+				if len(dropAtBytes) > 0 {
+					continue
+				}
+
+				// 解析watermark为timestamp
+				var iscpTS types.TS
+				if len(watermark) > 0 {
+					// 这里应该根据实际的watermark格式来解析
+					iscpTS = types.BuildTS(time.Now().UnixNano(), 0)
+				} else {
+					iscpTS = types.BuildTS(time.Now().UnixNano(), 0)
+				}
+:q				existingTS := iscpInfo.tables[tableID]
+				if existingTS.IsEmpty() || iscpTS.LT(&existingTS) {
+					iscpInfo.tables[tableID] = iscpTS
+				}
+
+				logutil.Info(
+					"GC-GetISCP",
+					zap.Uint64("table", tableID),
+					zap.String("watermark", watermark),
+					zap.String("ts", iscpTS.ToString()),
+				)
+			}
+		}
 	}
-	return tables, nil
-}
-
-func (sm *SnapshotMeta) SetTid(tid uint64) {
-	sm.snapshotTableIDs[tid] = struct{}{}
-}
-
-func (sm *SnapshotMeta) SaveMeta(name string, fs fileservice.FileService) (uint32, error) {
-	if len(sm.objects) == 0 && len(sm.pitr.objects) == 0 && len(sm.iscp.objects) == 0 {
-		return 0, nil
-	}
-	bat := containers.NewBatch()
-	deltaBat := containers.NewBatch()
-	for i, attr := range objectInfoSchemaAttr {
+	return iscpInfo, nil
 		bat.AddVector(attr, containers.MakeVector(objectInfoSchemaTypes[i], common.DebugAllocator))
 		deltaBat.AddVector(attr, containers.MakeVector(objectInfoSchemaTypes[i], common.DebugAllocator))
 	}

@@ -59,6 +59,7 @@ var (
 	MoTableStats             = strings.ToUpper("MoTableStats")
 	WorkspaceThreshold       = strings.ToUpper("WorkspaceThreshold")
 	TableExtra               = strings.ToUpper("table-extra")
+	BackupProtectionMethod   = strings.ToUpper("BACKUP_PROTECTION")
 )
 
 var (
@@ -102,6 +103,7 @@ var (
 		MoTableStats:             handleMoTableStats,
 		WorkspaceThreshold:       handleWorkspaceThreshold,
 		TableExtra:               handleTableExtra,
+		BackupProtectionMethod:   handleBackupProtection(),
 	}
 )
 

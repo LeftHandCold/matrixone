@@ -17,7 +17,9 @@ package rpc
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/backup"
 	"github.com/matrixorigin/matrixone/pkg/clusterservice"
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	querypb "github.com/matrixorigin/matrixone/pkg/pb/query"
@@ -1050,4 +1052,75 @@ func (h *Handle) HandleFaultInject(
 ) (cb func(), err error) {
 	resp.ReturnStr = fault.HandleFaultInject(ctx, req.Method, req.Parameter)
 	return nil, nil
+}
+
+func (h *Handle) HandleBackupProtection(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req *cmd_util.BackupProtectionCmd,
+	resp *api.TNStringResponse,
+) (cb func(), err error) {
+	// Initialize backup protection manager if it doesn't exist
+	if backup.GlobalBackupProtectionManager == nil {
+		backup.InitBackupProtectionManager()
+	}
+
+	mgr := backup.GlobalBackupProtectionManager
+	response := struct {
+		Success     bool                       `json:"success"`
+		Message     string                     `json:"message"`
+		Protections []*backup.BackupProtection `json:"protections,omitempty"`
+	}{Success: true}
+
+	switch strings.ToLower(req.Action) {
+	case "add":
+		if req.BackupID == "" || req.BackupTS == "" {
+			response.Success = false
+			response.Message = "backup_id and backup_ts are required for add action"
+		} else {
+			backupTS := types.StringToTS(req.BackupTS)
+			mgr.AddProtection(req.BackupID, backupTS, req.ProtectedPaths)
+			response.Message = "Backup protection added successfully"
+		}
+
+	case "remove":
+		if req.BackupID == "" {
+			response.Success = false
+			response.Message = "backup_id is required for remove action"
+		} else {
+			mgr.RemoveProtection(req.BackupID)
+			response.Message = "Backup protection removed successfully"
+		}
+
+	case "heartbeat":
+		if req.BackupID == "" {
+			response.Success = false
+			response.Message = "backup_id is required for heartbeat action"
+		} else {
+			if mgr.UpdateHeartbeat(req.BackupID) {
+				response.Message = "Heartbeat updated successfully"
+			} else {
+				response.Success = false
+				response.Message = "Backup protection not found"
+			}
+		}
+
+	case "list":
+		response.Protections = mgr.GetActiveProtections()
+		response.Message = "Active backup protections retrieved"
+
+	default:
+		response.Success = false
+		response.Message = "Unknown action: " + req.Action
+	}
+
+	// Convert response to JSON
+	respJSON, err := json.Marshal(response)
+	if err != nil {
+		resp.ReturnStr = "Failed to marshal response"
+		return
+	}
+
+	resp.ReturnStr = string(respJSON)
+	return
 }
