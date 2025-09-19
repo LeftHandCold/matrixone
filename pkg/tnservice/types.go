@@ -18,6 +18,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/lockservice"
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	"github.com/matrixorigin/matrixone/pkg/taskservice"
+	"github.com/matrixorigin/matrixone/pkg/util/executor"
 )
 
 // StorageType txn storage type
@@ -52,4 +53,6 @@ type Service interface {
 	GetTaskService() (taskservice.TaskService, bool)
 	// GetLockTableAllocator returns lock table allocator
 	GetLockTableAllocator() lockservice.LockTableAllocator
+	// GetSQLExecutor returns internal SQL executor
+	GetSQLExecutor() executor.SQLExecutor
 }

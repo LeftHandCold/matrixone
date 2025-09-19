@@ -31,6 +31,7 @@ func ExampleGCV4Usage() error {
 
 	// 1. 创建配置
 	config := DefaultConfig()
+	config.UUID = "example-uuid" // 设置服务UUID，实际使用时应该是真实的TN service UUID
 	config.DatabaseName = "mo_catalog"
 	config.BatchSize = 500
 	config.EnableMonitoring = true

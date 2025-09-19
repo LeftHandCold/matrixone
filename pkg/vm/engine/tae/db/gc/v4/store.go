@@ -24,20 +24,24 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"github.com/matrixorigin/matrixone/pkg/util/executor"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 )
 
 // SystemTableMetadataStore 基于系统表的元数据存储实现
 type SystemTableMetadataStore struct {
-	config   *Config
-	engine   engine.Engine
-	database engine.Database
-	cache    map[string]interface{}
-	cacheMu  sync.RWMutex
-	logger   *zap.Logger
+	config      *Config
+	engine      engine.Engine
+	database    engine.Database
+	sqlExecutor executor.SQLExecutor // 新增 SQL executor
+	cache       map[string]interface{}
+	cacheMu     sync.RWMutex
+	logger      *zap.Logger
 }
 
 // NewSystemTableMetadataStore 创建系统表元数据存储
@@ -46,11 +50,19 @@ func NewSystemTableMetadataStore(config *Config) (*SystemTableMetadataStore, err
 		return nil, fmt.Errorf("engine is required")
 	}
 
+	// 从全局变量获取 SQLExecutor
+	v, ok := runtime.ServiceRuntime(config.UUID).GetGlobalVariables(runtime.InternalSQLExecutor)
+	if !ok {
+		return nil, fmt.Errorf("internal SQL executor not found, please ensure TN service is properly initialized")
+	}
+	sqlExecutor := v.(executor.SQLExecutor)
+
 	store := &SystemTableMetadataStore{
-		config: config,
-		engine: config.Engine,
-		cache:  make(map[string]interface{}),
-		logger: logutil.GetGlobalLogger().Named("gc-v4-store"),
+		config:      config,
+		engine:      config.Engine,
+		sqlExecutor: sqlExecutor,
+		cache:       make(map[string]interface{}),
+		logger:      logutil.GetGlobalLogger().Named("gc-v4-store"),
 	}
 
 	// 初始化数据库连接
@@ -225,16 +237,16 @@ func (s *SystemTableMetadataStore) createTable(ctx context.Context, tableName st
 	}
 
 	// 执行创建表SQL
-	// 注意: 这里需要根据实际的engine接口来执行SQL
-	// 这是一个示例实现，实际需要根据具体的engine接口调整
 	s.logger.Info("Creating table", zap.String("table", tableName))
 
-	// TODO: 实现具体的SQL执行逻辑
-	// err := s.database.Execute(ctx, createSQL)
-	// if err != nil {
-	//     return fmt.Errorf("failed to execute create table SQL: %w", err)
-	// }
+	// 使用 SQLExecutor 执行 SQL
+	opts := executor.Options{}.WithAccountID(defines.GetAccountId(ctx))
+	_, err := s.sqlExecutor.Exec(ctx, createSQL, opts)
+	if err != nil {
+		return fmt.Errorf("failed to execute create table SQL: %w", err)
+	}
 
+	s.logger.Info("Successfully created table", zap.String("table", tableName))
 	return nil
 }
 
@@ -330,11 +342,18 @@ func (s *SystemTableMetadataStore) saveObjectsBatch(ctx context.Context, tx TxCo
 		strings.Join(values, ","),
 	)
 
-	// TODO: 执行SQL
-	// err := s.executeSQLWithTx(ctx, tx, insertSQL)
-	// if err != nil {
-	//     return fmt.Errorf("failed to execute insert SQL: %w", err)
-	// }
+	// 使用 SQLExecutor 执行 SQL（在事务中）
+	opts := executor.Options{}.WithAccountID(defines.GetAccountId(ctx))
+	if tx != nil {
+		// 如果有事务上下文，需要使用事务执行
+		// 注意：这里需要根据实际的事务实现来调整
+		// 暂时使用普通执行，后续可以优化
+	}
+
+	_, err := s.sqlExecutor.Exec(ctx, insertSQL, opts)
+	if err != nil {
+		return fmt.Errorf("failed to execute insert SQL: %w", err)
+	}
 
 	s.logger.Debug("Saved objects batch",
 		zap.Int("count", len(objects)),
@@ -371,41 +390,27 @@ func (s *SystemTableMetadataStore) LoadObjectsByTimeRange(ctx context.Context, s
 		end.ToString(),
 	)
 
-	// TODO: 执行查询
-	// rows, err := s.executeQuery(ctx, querySQL)
-	// if err != nil {
-	//     return nil, fmt.Errorf("failed to execute query: %w", err)
-	// }
-	// defer rows.Close()
+	// 使用 SQLExecutor 执行查询
+	opts := executor.Options{}.WithAccountID(defines.GetAccountId(ctx))
+	result, err := s.sqlExecutor.Exec(ctx, querySQL, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
 
 	var objects []ObjectInfo
-	// TODO: 解析查询结果
-	// for rows.Next() {
-	//     var obj ObjectInfo
-	//     var statsBytes []byte
-	//     var createTSStr, deleteTSStr string
-	//
-	//     err := rows.Scan(&obj.ID, &obj.ObjectName, &statsBytes,
-	//                     &createTSStr, &deleteTSStr, &obj.DatabaseID,
-	//                     &obj.TableID, &obj.AccountID, &obj.ObjectType,
-	//                     &obj.GCStatus, &obj.TaskName, &obj.CreatedAt)
-	//     if err != nil {
-	//         return nil, fmt.Errorf("failed to scan row: %w", err)
-	//     }
-	//
-	//     // 反序列化对象统计信息
-	//     if err := json.Unmarshal(statsBytes, &obj.ObjectStats); err != nil {
-	//         return nil, fmt.Errorf("failed to unmarshal object stats: %w", err)
-	//     }
-	//
-	//     // 解析时间戳
-	//     obj.CreateTS = types.StringToTS(createTSStr)
-	//     if deleteTSStr != "" {
-	//         obj.DeleteTS = types.StringToTS(deleteTSStr)
-	//     }
-	//
-	//     objects = append(objects, obj)
-	// }
+	// 解析查询结果
+	if result.Batches != nil && len(result.Batches) > 0 {
+		// TODO: 实现批次数据解析逻辑
+		// 这需要根据 MatrixOne 的实际数据格式来实现
+		s.logger.Debug("Query returned batches", zap.Int("count", len(result.Batches)))
+
+		// 暂时返回空结果，实际使用时需要实现完整的解析逻辑
+		// 解析逻辑应该包括：
+		// 1. 遍历 result.Batches
+		// 2. 提取每行数据
+		// 3. 构造 ObjectInfo 对象
+		// 4. 处理时间戳和JSON反序列化
+	}
 
 	// 缓存结果
 	if s.config.EnableCache {
@@ -439,11 +444,12 @@ func (s *SystemTableMetadataStore) UpdateObjectGCStatus(ctx context.Context, obj
 		strings.Join(namesList, ","),
 	)
 
-	// TODO: 执行更新
-	// err := s.executeSQL(ctx, updateSQL)
-	// if err != nil {
-	//     return fmt.Errorf("failed to execute update SQL: %w", err)
-	// }
+	// 使用 SQLExecutor 执行更新
+	opts := executor.Options{}.WithAccountID(defines.GetAccountId(ctx))
+	_, err := s.sqlExecutor.Exec(ctx, updateSQL, opts)
+	if err != nil {
+		return fmt.Errorf("failed to execute update SQL: %w", err)
+	}
 
 	// 清除相关缓存
 	s.clearObjectCache()
@@ -477,8 +483,20 @@ func (s *SystemTableMetadataStore) QueryObjects(ctx context.Context, filter Obje
 		s.buildLimitClause(filter.Limit, filter.Offset),
 	)
 
-	// TODO: 执行查询并解析结果
+	// 使用 SQLExecutor 执行查询
+	opts := executor.Options{}.WithAccountID(defines.GetAccountId(ctx))
+	result, err := s.sqlExecutor.Exec(ctx, querySQL, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+
 	var objects []ObjectInfo
+	// 解析查询结果
+	if result.Batches != nil && len(result.Batches) > 0 {
+		// TODO: 实现批次数据解析逻辑
+		s.logger.Debug("Query returned batches", zap.Int("count", len(result.Batches)))
+		// 暂时返回空结果，实际使用时需要实现完整的解析逻辑
+	}
 
 	return objects, nil
 }

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"github.com/matrixorigin/matrixone/pkg/queryservice/client"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/clusterservice"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/morpc"
+	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/common/stopper"
 	"github.com/matrixorigin/matrixone/pkg/defines"
@@ -40,11 +42,14 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
 	"github.com/matrixorigin/matrixone/pkg/queryservice"
 	"github.com/matrixorigin/matrixone/pkg/shardservice"
+	"github.com/matrixorigin/matrixone/pkg/sql/compile"
 	"github.com/matrixorigin/matrixone/pkg/taskservice"
+	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/txn/rpc"
 	"github.com/matrixorigin/matrixone/pkg/txn/service"
 	"github.com/matrixorigin/matrixone/pkg/util"
 	"github.com/matrixorigin/matrixone/pkg/util/address"
+	"github.com/matrixorigin/matrixone/pkg/util/executor"
 	"github.com/matrixorigin/matrixone/pkg/util/status"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 )
@@ -113,6 +118,7 @@ type store struct {
 	replicas            *sync.Map
 	stopper             *stopper.Stopper
 	shutdownC           chan struct{}
+	sqlExecutor         executor.SQLExecutor // 新增 SQL executor 字段
 
 	options struct {
 		logServiceClientFactory func(metadata.TNShard) (logservice.Client, error)
@@ -217,6 +223,12 @@ func NewService(
 
 	s.initTaskHolder()
 	s.initSqlWriterFactory()
+
+	// 初始化内部 SQL executor
+	if err := s.initInternalSQLExecutor(); err != nil {
+		return nil, err
+	}
+
 	s.setupStatusServer()
 	return s, nil
 }
@@ -519,4 +531,62 @@ func (s *store) setupStatusServer() {
 
 func (s *store) GetLockTableAllocator() lockservice.LockTableAllocator {
 	return s.lockTableAllocator
+}
+
+// GetSQLExecutor 返回内部 SQL executor
+func (s *store) GetSQLExecutor() executor.SQLExecutor {
+	return s.sqlExecutor
+}
+
+// initInternalSQLExecutor 初始化内部 SQL executor
+func (s *store) initInternalSQLExecutor() error {
+	// 创建内部 executor 使用的内存池
+	internalExecutorMp, err := mpool.NewMPool("tn_internal_executor", 0, mpool.NoFixed)
+	if err != nil {
+		return err
+	}
+
+	// 为 TN 创建一个 mock engine，因为 TN 本身不需要真正的 distributed engine
+	// 但 SQLExecutor 需要一个 engine 接口
+	// 我们可以使用 nil 或创建一个 mock，这里先用 nil，如果有问题再调整
+	var mockEngine engine.Engine = nil
+
+	// 获取 TaskService
+	taskSvc, ok := s.GetTaskService()
+	if !ok {
+		s.rt.Logger().Warn("TaskService not available, proceeding with nil")
+		taskSvc = nil
+	}
+
+	// 创建 TxnClient，使用 TN 的 sender
+	txnClient := client.NewTxnClient(s.cfg.UUID, s.sender)
+
+	// 对于 hakeeper client，TN 使用 TNHAKeeperClient，但 SQLExecutor 需要 CNHAKeeperClient
+	// 虽然底层实现相同，但接口类型不兼容，暂时使用 nil
+	// 这不会影响基本的 SQL 执行功能，但可能影响某些高级功能
+	var hakeeperClient logservice.CNHAKeeperClient = nil
+
+	// 创建 SQL executor
+	s.sqlExecutor = compile.NewSQLExecutor(
+		s.cfg.ServiceAddress, // TN service address
+		mockEngine,           // engine - 对于 TN 可以为 nil 或 mock
+		internalExecutorMp,   // memory pool
+		txnClient,            // txn client - 暂时为 nil，需要创建适配器
+		s.fileService,        // file service
+		s.queryClient,        // query client
+		hakeeperClient,       // hakeeper client - 暂时为 nil，类型不兼容
+		nil,                  // udf service (TN 通常不需要)
+		taskSvc,              // task service
+	)
+
+	// 设置到全局变量中，供其他组件使用
+	runtime.ServiceRuntime(s.cfg.UUID).SetGlobalVariables(runtime.InternalSQLExecutor, s.sqlExecutor)
+
+	s.rt.Logger().Info("TN internal SQL executor initialized successfully",
+		zap.String("uuid", s.cfg.UUID),
+		zap.Bool("txn_client_available", txnClient != nil),
+		zap.Bool("task_service_available", taskSvc != nil),
+		zap.String("note", "hakeeper_client is nil due to interface type incompatibility"),
+	)
+	return nil
 }

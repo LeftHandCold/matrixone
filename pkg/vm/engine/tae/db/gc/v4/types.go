@@ -353,6 +353,9 @@ type TableStats struct {
 
 // Config GC v4配置
 type Config struct {
+	// 服务配置
+	UUID string `json:"uuid"` // 服务 UUID，用于获取 SQLExecutor
+
 	// 数据库连接配置
 	Engine       engine.Engine `json:"-"`
 	DatabaseName string        `json:"database_name"`
