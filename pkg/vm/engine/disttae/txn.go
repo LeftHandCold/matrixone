@@ -1669,6 +1669,8 @@ func (txn *Transaction) Commit(ctx context.Context) ([]txn.TxnRequest, error) {
 			zap.String("txn", txn.op.Txn().DebugString()),
 		)
 	})
+	start := time.Now()
+	s := time.Now()
 
 	defer txn.delTransaction()
 	if txn.readOnly.Load() {
@@ -1678,16 +1680,26 @@ func (txn *Transaction) Commit(ctx context.Context) ([]txn.TxnRequest, error) {
 	if err := txn.IncrStatementID(ctx, true); err != nil {
 		return nil, err
 	}
+	t1 := time.Since(start)
 
+	start = time.Now()
 	if err := txn.transferTombstonesByCommit(ctx); err != nil {
 		return nil, err
 	}
+	t2 := time.Since(start)
 
+	start = time.Now()
 	if err := txn.mergeTxnWorkspaceLocked(ctx); err != nil {
 		return nil, err
 	}
+	t3 := time.Since(start)
+	start = time.Now()
 	if err := txn.dumpBatchLocked(ctx, -1); err != nil {
 		return nil, err
+	}
+	t4 := time.Since(start)
+	if time.Since(s) > time.Minute {
+		logutil.Infof("txn %v, %v , %v, %v, %v ", string(txn.op.Txn().ID), t1, t2, t3, t4)
 	}
 
 	txn.traceWorkspaceLocked(true)
