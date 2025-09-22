@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	gotrace "runtime/trace"
 	"slices"
 	"sort"
@@ -2492,6 +2493,9 @@ func processLoadLocal(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, 
 	for {
 		skipWrite, readTime, writeTime, err = readThenWrite(ses, execCtx, param, writer, mysqlRrWr, skipWrite, epoch)
 		err = errorConvertToEnumFailed
+		if rand.Intn(10) > 6 {
+			time.Sleep(50 * time.Millisecond)
+		}
 		if err != nil {
 			if errors.Is(err, errorInvalidLength0) {
 				err = nil
