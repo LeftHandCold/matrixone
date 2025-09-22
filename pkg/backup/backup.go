@@ -95,10 +95,9 @@ func Backup(
 
 	// step 2 : setup backup protection
 	backupID := uuid.New().String()
-	protectedPaths := []string{"shared/ckp", "shared/gc", ""} // protect checkpoint, gc metadata and all data files
 
 	// Add backup protection
-	if err = addBackupProtection(ctx, sid, backupID, cfg.BackupTs, protectedPaths); err != nil {
+	if err = addBackupProtection(ctx, sid, backupID, cfg.BackupTs); err != nil {
 		logutil.Warn("failed to add backup protection", zap.Error(err))
 		// Continue with backup even if protection setup fails
 	}
@@ -292,7 +291,7 @@ func fromCsvBytes(data []byte) ([][]string, error) {
 }
 
 // addBackupProtection adds backup protection via mo_ctl
-func addBackupProtection(ctx context.Context, sid string, backupID string, backupTS types.TS, protectedPaths []string) error {
+func addBackupProtection(ctx context.Context, sid string, backupID string, backupTS types.TS) error {
 	v, ok := runtime.ServiceRuntime(sid).GetGlobalVariables(runtime.InternalSQLExecutor)
 	if !ok {
 		return moerr.NewNotSupported(ctx, "no implement sqlExecutor")
@@ -301,10 +300,9 @@ func addBackupProtection(ctx context.Context, sid string, backupID string, backu
 	exec := v.(executor.SQLExecutor)
 
 	protectionReq := map[string]interface{}{
-		"action":          "add",
-		"backup_id":       backupID,
-		"backup_ts":       backupTS.ToString(),
-		"protected_paths": protectedPaths,
+		"action":    "add",
+		"backup_id": backupID,
+		"backup_ts": backupTS.ToString(),
 	}
 
 	reqJSON, err := json.Marshal(protectionReq)

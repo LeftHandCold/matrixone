@@ -36,8 +36,7 @@ const (
 
 // BackupProtectionCmd represents a backup protection command
 type BackupProtectionCmd struct {
-	Action         string   `json:"action"`
-	BackupID       string   `json:"backup_id"`
-	BackupTS       string   `json:"backup_ts"`
-	ProtectedPaths []string `json:"protected_paths"`
+	Action   string `json:"action"`
+	BackupID string `json:"backup_id"`
+	BackupTS string `json:"backup_ts"`
 }

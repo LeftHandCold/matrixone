@@ -29,9 +29,8 @@ func TestBackupProtectionManager(t *testing.T) {
 	// Test adding protection
 	backupID := "test-backup-123"
 	backupTS := types.BuildTS(time.Now().UnixNano(), 0)
-	protectedPaths := []string{"shared/ckp", "shared/gc"}
 
-	mgr.AddProtection(backupID, backupTS, protectedPaths)
+	mgr.AddProtection(backupID, backupTS)
 
 	// Test heartbeat update
 	assert.True(t, mgr.UpdateHeartbeat(backupID))
@@ -39,13 +38,11 @@ func TestBackupProtectionManager(t *testing.T) {
 
 	// Test protection check
 	testTS := types.BuildTS(time.Now().UnixNano()-1000, 0) // earlier than backup
-	assert.True(t, mgr.IsProtected(testTS, "shared/ckp/test.ckp"))
-	assert.True(t, mgr.IsProtected(testTS, "shared/gc/test.gc"))
-	assert.True(t, mgr.IsProtected(testTS, "data/test.dat")) // empty paths protect all
+	assert.True(t, mgr.IsProtected(testTS))
 
 	// Test with timestamp after backup (should not be protected)
 	futureTS := types.BuildTS(time.Now().UnixNano()+1000, 0)
-	assert.False(t, mgr.IsProtected(futureTS, "shared/ckp/test.ckp"))
+	assert.False(t, mgr.IsProtected(futureTS))
 
 	// Test getting active protections
 	protections := mgr.GetActiveProtections()
@@ -67,7 +64,7 @@ func TestBackupProtectionExpiry(t *testing.T) {
 	backupID := "test-backup-expiry"
 	backupTS := types.BuildTS(time.Now().UnixNano(), 0)
 
-	mgr.AddProtection(backupID, backupTS, nil)
+	mgr.AddProtection(backupID, backupTS)
 
 	// Verify protection exists
 	assert.Len(t, mgr.GetActiveProtections(), 1)
@@ -78,26 +75,4 @@ func TestBackupProtectionExpiry(t *testing.T) {
 	// Protection should be expired and removed
 	protections := mgr.GetActiveProtections()
 	assert.Len(t, protections, 0)
-}
-
-func TestPathMatching(t *testing.T) {
-	tests := []struct {
-		path    string
-		pattern string
-		match   bool
-	}{
-		{"shared/ckp/test.ckp", "shared/ckp", true},
-		{"shared/gc/test.gc", "shared/gc", true},
-		{"data/test.dat", "", true},  // empty pattern matches all
-		{"data/test.dat", "*", true}, // wildcard matches all
-		{"other/test.dat", "shared", false},
-		{"shared/ckp/sub/test.ckp", "shared/ckp", true}, // prefix match
-	}
-
-	for _, test := range tests {
-		result := matchPath(test.path, test.pattern)
-		assert.Equal(t, test.match, result,
-			"matchPath(%s, %s) = %v, expected %v",
-			test.path, test.pattern, result, test.match)
-	}
 }

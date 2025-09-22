@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/backup"
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio/mergeutil"
@@ -135,6 +136,19 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	sourcer := w.MakeFilesReader(ctx, fs)
 
 	gcTS := gCkp.GetEnd()
+
+	// Check if GC timestamp is protected by any active backup
+	if backup.GlobalBackupProtectionManager != nil {
+		if backup.GlobalBackupProtectionManager.IsProtected(gcTS) {
+			logutil.Info(
+				"GC-Skipped-Due-To-Backup-Protection",
+				zap.String("gc_ts", gcTS.ToString()),
+			)
+			// Return empty result, no files to GC
+			return []string{}, "", nil
+		}
+	}
+
 	job := NewCheckpointBasedGCJob(
 		&gcTS,
 		gCkp.GetLocation(),

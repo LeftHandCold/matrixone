@@ -26,11 +26,10 @@ import (
 
 // BackupProtection represents a backup protection entry
 type BackupProtection struct {
-	ID             string    // unique identifier for the backup
-	BackupTS       types.TS  // backup timestamp to protect
-	StartTime      time.Time // when the protection started
-	LastUpdate     time.Time // last heartbeat update
-	ProtectedPaths []string  // specific paths that need protection
+	ID         string    // unique identifier for the backup
+	BackupTS   types.TS  // backup timestamp to protect
+	StartTime  time.Time // when the protection started
+	LastUpdate time.Time // last heartbeat update
 }
 
 // BackupProtectionManager manages backup protections
@@ -64,16 +63,15 @@ func NewBackupProtectionManager() *BackupProtectionManager {
 }
 
 // AddProtection adds a new backup protection
-func (mgr *BackupProtectionManager) AddProtection(id string, backupTS types.TS, protectedPaths []string) {
+func (mgr *BackupProtectionManager) AddProtection(id string, backupTS types.TS) {
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
 
 	protection := &BackupProtection{
-		ID:             id,
-		BackupTS:       backupTS,
-		StartTime:      time.Now(),
-		LastUpdate:     time.Now(),
-		ProtectedPaths: protectedPaths,
+		ID:         id,
+		BackupTS:   backupTS,
+		StartTime:  time.Now(),
+		LastUpdate: time.Now(),
 	}
 
 	mgr.protections[id] = protection
@@ -81,7 +79,6 @@ func (mgr *BackupProtectionManager) AddProtection(id string, backupTS types.TS, 
 	logutil.Info("backup-protection-added",
 		zap.String("id", id),
 		zap.String("backup_ts", backupTS.ToString()),
-		zap.Strings("protected_paths", protectedPaths),
 	)
 }
 
@@ -121,24 +118,15 @@ func (mgr *BackupProtectionManager) RemoveProtection(id string) {
 	}
 }
 
-// IsProtected checks if a timestamp and path is protected by any active backup
-func (mgr *BackupProtectionManager) IsProtected(ts types.TS, path string) bool {
+// IsProtected checks if a timestamp is protected by any active backup
+func (mgr *BackupProtectionManager) IsProtected(ts types.TS) bool {
 	mgr.mu.RLock()
 	defer mgr.mu.RUnlock()
 
 	for _, protection := range mgr.protections {
 		// Check if this backup protects the given timestamp
 		if ts.LE(&protection.BackupTS) {
-			// Check if the path is in the protected paths (empty list means protect all)
-			if len(protection.ProtectedPaths) == 0 {
-				return true
-			}
-
-			for _, protectedPath := range protection.ProtectedPaths {
-				if matchPath(path, protectedPath) {
-					return true
-				}
-			}
+			return true
 		}
 	}
 
@@ -208,21 +196,6 @@ func (mgr *BackupProtectionManager) cleanupExpiredProtections() {
 func (mgr *BackupProtectionManager) Stop() {
 	close(mgr.stopCh)
 	mgr.stopWg.Wait()
-}
-
-// matchPath checks if a path matches a protection pattern
-// For now, we use simple prefix matching, but this could be extended to support wildcards
-func matchPath(path, pattern string) bool {
-	if pattern == "" || pattern == "*" {
-		return true
-	}
-
-	// Simple prefix matching
-	if len(pattern) <= len(path) {
-		return path[:len(pattern)] == pattern
-	}
-
-	return false
 }
 
 // Global instance (should be initialized in the service startup)

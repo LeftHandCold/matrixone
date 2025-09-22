@@ -1079,7 +1079,7 @@ func (h *Handle) HandleBackupProtection(
 			response.Message = "backup_id and backup_ts are required for add action"
 		} else {
 			backupTS := types.StringToTS(req.BackupTS)
-			mgr.AddProtection(req.BackupID, backupTS, req.ProtectedPaths)
+			mgr.AddProtection(req.BackupID, backupTS)
 			response.Message = "Backup protection added successfully"
 		}
 

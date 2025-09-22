@@ -28,10 +28,9 @@ import (
 
 // BackupProtectionRequest represents a backup protection request
 type BackupProtectionRequest struct {
-	Action         string   `json:"action"`          // "add", "remove", "heartbeat", "list"
-	BackupID       string   `json:"backup_id"`       // unique backup identifier
-	BackupTS       string   `json:"backup_ts"`       // backup timestamp
-	ProtectedPaths []string `json:"protected_paths"` // paths to protect
+	Action   string `json:"action"`    // "add", "remove", "heartbeat", "list"
+	BackupID string `json:"backup_id"` // unique backup identifier
+	BackupTS string `json:"backup_ts"` // backup timestamp
 }
 
 // BackupProtectionResponse represents a backup protection response
@@ -56,10 +55,9 @@ func handleBackupProtection() handleFunc {
 			}
 
 			payload, err := types.Encode(&cmd_util.BackupProtectionCmd{
-				Action:         req.Action,
-				BackupID:       req.BackupID,
-				BackupTS:       req.BackupTS,
-				ProtectedPaths: req.ProtectedPaths,
+				Action:   req.Action,
+				BackupID: req.BackupID,
+				BackupTS: req.BackupTS,
 			})
 			return payload, err
 		},
