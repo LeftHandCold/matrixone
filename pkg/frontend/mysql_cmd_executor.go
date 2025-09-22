@@ -2436,11 +2436,13 @@ func processLoadLocal(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, 
 		select {
 		case <-ctx.Done():
 			//close reader
+			logutil.Infof("readerprocessLoadLocal")
 			_ = reader.Close()
 		case <-quitC:
 		}
 	}(execCtx.reqCtx, reader)
 	defer func() {
+		logutil.Infof("processLoadLocalprocessLoadLocalprocessLoadLocal")
 		close(quitC)
 	}()
 	mysqlRrWr := ses.GetResponser().MysqlRrWr()
