@@ -2384,6 +2384,16 @@ func readThenWrite(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, wri
 			mysqlRrWr.FreeLoadLocal()
 		}
 	}()
+	err = errorConvertToEnumFailed
+	if err != nil {
+		if errors.Is(err, errorInvalidLength0) {
+			return skipWrite, readTime, writeTime, err
+		}
+		if moerr.IsMoErrCode(err, moerr.ErrInvalidInput) {
+			err = moerr.NewInvalidInputf(execCtx.reqCtx, "cannot read '%s' from client,please check the file path, user privilege and if client start with --local-infile", param.Filepath)
+		}
+		return skipWrite, readTime, writeTime, err
+	}
 	payload, err = mysqlRrWr.ReadLoadLocalPacket()
 	if err != nil {
 		if errors.Is(err, errorInvalidLength0) {
@@ -2491,7 +2501,6 @@ func processLoadLocal(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, 
 
 	for {
 		skipWrite, readTime, writeTime, err = readThenWrite(ses, execCtx, param, writer, mysqlRrWr, skipWrite, epoch)
-		err = errorConvertToEnumFailed
 		if err != nil {
 			if errors.Is(err, errorInvalidLength0) {
 				err = nil
