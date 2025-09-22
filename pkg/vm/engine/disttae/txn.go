@@ -1785,8 +1785,14 @@ func (txn *Transaction) transferTombstonesByCommit(ctx context.Context) error {
 		if err := txn.advanceSnapshot(ctx, timestamp.Timestamp{}); err != nil {
 			return err
 		}
-
-		return txn.transferTombstones(ctx)
+		start := time.Now()
+		err := txn.transferTombstones(ctx)
+		t := time.Since(start)
+		if t > 30*time.Second {
+			logutil.Infof("transferTombstonesByCommit is %v", t)
+			time.Sleep(5 * time.Minute)
+		}
+		return err
 	}
 
 	return nil
