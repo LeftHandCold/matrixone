@@ -2385,7 +2385,6 @@ func readThenWrite(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, wri
 		}
 	}()
 	payload, err = mysqlRrWr.ReadLoadLocalPacket()
-	err = moerr.NewNoServiceNoCtx("")
 	if err != nil {
 		if errors.Is(err, errorInvalidLength0) {
 			return skipWrite, readTime, writeTime, err
@@ -2489,9 +2488,11 @@ func processLoadLocal(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, 
 
 	for {
 		skipWrite, readTime, writeTime, err = readThenWrite(ses, execCtx, param, writer, mysqlRrWr, skipWrite, epoch)
+		err = errorConvertToEnumFailed
 		if err != nil {
 			if errors.Is(err, errorInvalidLength0) {
 				err = nil
+				logutil.Infof("processLoadLocalBreak")
 				break
 			}
 		}
