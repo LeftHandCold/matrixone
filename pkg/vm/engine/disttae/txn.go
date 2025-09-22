@@ -1698,8 +1698,8 @@ func (txn *Transaction) Commit(ctx context.Context) ([]txn.TxnRequest, error) {
 		return nil, err
 	}
 	t4 := time.Since(start)
-	if time.Since(s) > time.Minute {
-		logutil.Infof("txn %v, %v , %v, %v, %v ", string(txn.op.Txn().ID), t1, t2, t3, t4)
+	if time.Since(s) > 30*time.Second {
+		logutil.Infof("txnCommit %v, %v , %v, %v, %v ", string(txn.op.Txn().ID), t1, t2, t3, t4)
 	}
 
 	txn.traceWorkspaceLocked(true)
