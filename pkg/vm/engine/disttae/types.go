@@ -567,12 +567,24 @@ func (txn *Transaction) IncrStatementID(ctx context.Context, commit bool) error 
 	txn.Lock()
 	defer txn.Unlock()
 	//merge writes for the last statement
+	start := time.Now()
 	if err := txn.mergeTxnWorkspaceLocked(ctx); err != nil {
 		return err
 	}
+	t := time.Since(start)
+	if t > 30*time.Second {
+		logutil.Infof("mergeTxnWorkspaceLocked is %v", t)
+		time.Sleep(5 * time.Minute)
+	}
+	start = time.Now()
 	// dump batch to s3, starting from 0 (begining of the workspace)
 	if err := txn.dumpBatchLocked(ctx, 0); err != nil {
 		return err
+	}
+	t = time.Since(start)
+	if t > 30*time.Second {
+		logutil.Infof("dumpBatchLocked is %v", t)
+		time.Sleep(5 * time.Minute)
 	}
 	txn.offsets = append(txn.offsets, len(txn.writes))
 

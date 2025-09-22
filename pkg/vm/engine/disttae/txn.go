@@ -1745,6 +1745,7 @@ func (txn *Transaction) transferTombstonesByStatement(
 	ctx context.Context,
 	snapshotUpdated bool,
 	isCommit bool) error {
+	start := time.Now()
 
 	// we would prefer delay this transfer util the commit if it is a commit
 	// statement. if it is not a commit statement, this transfer cannot be delay,
@@ -1758,8 +1759,14 @@ func (txn *Transaction) transferTombstonesByStatement(
 				return err
 			}
 		}
+		err := txn.transferTombstones(ctx)
+		t := time.Since(start)
+		if t > 30*time.Second {
+			logutil.Infof("transferTombstonesByStatement is %v", t)
+			time.Sleep(5 * time.Minute)
+		}
 
-		return txn.transferTombstones(ctx)
+		return err
 
 	} else {
 		// pending transfer until the next statement or commit
@@ -1777,7 +1784,7 @@ func (txn *Transaction) transferTombstonesByCommit(ctx context.Context) error {
 	if !txn.op.Txn().IsRCIsolation() {
 		return nil
 	}
-
+	start := time.Now()
 	if txn.transfer.pendingTransfer ||
 		forceTransfer(ctx) ||
 		!skipTransfer(ctx, txn) {
@@ -1785,7 +1792,6 @@ func (txn *Transaction) transferTombstonesByCommit(ctx context.Context) error {
 		if err := txn.advanceSnapshot(ctx, timestamp.Timestamp{}); err != nil {
 			return err
 		}
-		start := time.Now()
 		err := txn.transferTombstones(ctx)
 		t := time.Since(start)
 		if t > 30*time.Second {
