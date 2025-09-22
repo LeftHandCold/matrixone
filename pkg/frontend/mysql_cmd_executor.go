@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	gotrace "runtime/trace"
 	"slices"
 	"sort"
@@ -2440,7 +2439,7 @@ func processLoadLocal(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, 
 			logutil.Infof("readerprocessLoadLocal")
 			_ = reader.Close()
 		case <-quitC:
-			logutil.Infof("quitCprocessLoadLocal")
+			logutil.Infof("readerprocessLoadLocal")
 		}
 	}(execCtx.reqCtx, reader)
 	defer func() {
@@ -2493,9 +2492,6 @@ func processLoadLocal(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, 
 	for {
 		skipWrite, readTime, writeTime, err = readThenWrite(ses, execCtx, param, writer, mysqlRrWr, skipWrite, epoch)
 		err = errorConvertToEnumFailed
-		if rand.Intn(10) > 6 {
-			time.Sleep(50 * time.Millisecond)
-		}
 		if err != nil {
 			if errors.Is(err, errorInvalidLength0) {
 				err = nil
@@ -2519,9 +2515,10 @@ func processLoadLocal(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, 
 		}
 
 		if epoch%printEvery == 0 {
-			//if execCtx.isIssue3482 {
-			ses.Infof(execCtx.reqCtx, "load local '%s', epoch: %d, skipWrite: %v, minReadTime: %s, maxReadTime: %s, minWriteTime: %s, maxWriteTime: %s,\n", param.Filepath, epoch, skipWrite, minReadTime.String(), maxReadTime.String(), minWriteTime.String(), maxWriteTime.String())
-			//}
+			if execCtx.isIssue3482 {
+				time.Sleep(500 * time.Millisecond)
+				ses.Infof(execCtx.reqCtx, "load local '%s', epoch: %d, skipWrite: %v, minReadTime: %s, maxReadTime: %s, minWriteTime: %s, maxWriteTime: %s,\n", param.Filepath, epoch, skipWrite, minReadTime.String(), maxReadTime.String(), minWriteTime.String(), maxWriteTime.String())
+			}
 			minReadTime, maxReadTime, minWriteTime, maxWriteTime = 24*time.Hour, time.Nanosecond, 24*time.Hour, time.Nanosecond
 		}
 		epoch += 1
