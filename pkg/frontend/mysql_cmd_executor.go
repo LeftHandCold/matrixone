@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	gotrace "runtime/trace"
 	"slices"
 	"sort"
@@ -2384,15 +2385,17 @@ func readThenWrite(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, wri
 			mysqlRrWr.FreeLoadLocal()
 		}
 	}()
-	err = errorConvertToEnumFailed
-	if err != nil {
-		if errors.Is(err, errorInvalidLength0) {
+	if rand.Intn(10) > 8 {
+		err = errorConvertToEnumFailed
+		if err != nil {
+			if errors.Is(err, errorInvalidLength0) {
+				return skipWrite, readTime, writeTime, err
+			}
+			if moerr.IsMoErrCode(err, moerr.ErrInvalidInput) {
+				err = moerr.NewInvalidInputf(execCtx.reqCtx, "cannot read '%s' from client,please check the file path, user privilege and if client start with --local-infile", param.Filepath)
+			}
 			return skipWrite, readTime, writeTime, err
 		}
-		if moerr.IsMoErrCode(err, moerr.ErrInvalidInput) {
-			err = moerr.NewInvalidInputf(execCtx.reqCtx, "cannot read '%s' from client,please check the file path, user privilege and if client start with --local-infile", param.Filepath)
-		}
-		return skipWrite, readTime, writeTime, err
 	}
 	payload, err = mysqlRrWr.ReadLoadLocalPacket()
 	if err != nil {
@@ -2484,6 +2487,7 @@ func processLoadLocal(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, 
 		if errors.Is(err, errorInvalidLength0) {
 			return nil
 		}
+		return err
 	}
 	if readTime > maxReadTime {
 		maxReadTime = readTime
@@ -2525,7 +2529,6 @@ func processLoadLocal(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, 
 
 		if epoch%printEvery == 0 {
 			if execCtx.isIssue3482 {
-				time.Sleep(500 * time.Millisecond)
 				ses.Infof(execCtx.reqCtx, "load local '%s', epoch: %d, skipWrite: %v, minReadTime: %s, maxReadTime: %s, minWriteTime: %s, maxWriteTime: %s,\n", param.Filepath, epoch, skipWrite, minReadTime.String(), maxReadTime.String(), minWriteTime.String(), maxWriteTime.String())
 			}
 			minReadTime, maxReadTime, minWriteTime, maxWriteTime = 24*time.Hour, time.Nanosecond, 24*time.Hour, time.Nanosecond
