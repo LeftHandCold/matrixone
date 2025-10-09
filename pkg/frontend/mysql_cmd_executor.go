@@ -2375,6 +2375,8 @@ func canExecuteStatementInUncommittedTransaction(reqCtx context.Context, ses FeS
 	return nil
 }
 
+var ii int
+
 func readThenWrite(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, writer *io.PipeWriter, mysqlRrWr MysqlRrWr, skipWrite bool, epoch uint64) (_ bool, _ time.Duration, _ time.Duration, err error) {
 	var readTime, writeTime time.Duration
 	var payload []byte
@@ -2385,6 +2387,10 @@ func readThenWrite(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, wri
 		}
 	}()
 	payload, err = mysqlRrWr.ReadLoadLocalPacket()
+	ii++
+	if ii == 5000 {
+		time.Sleep(20 * time.Minute)
+	}
 	if err != nil {
 		if errors.Is(err, errorInvalidLength0) {
 			return skipWrite, readTime, writeTime, err
