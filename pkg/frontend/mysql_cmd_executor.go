@@ -2388,8 +2388,8 @@ func readThenWrite(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, wri
 	}()
 	payload, err = mysqlRrWr.ReadLoadLocalPacket()
 	ii++
-	if ii == 5000 {
-		time.Sleep(20 * time.Minute)
+	if ii == 50000 {
+		time.Sleep(40 * time.Minute)
 	}
 	if err != nil {
 		if errors.Is(err, errorInvalidLength0) {
