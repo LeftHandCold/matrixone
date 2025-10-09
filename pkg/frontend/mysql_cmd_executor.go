@@ -2388,8 +2388,8 @@ func readThenWrite(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, wri
 	}()
 	payload, err = mysqlRrWr.ReadLoadLocalPacket()
 	ii++
-	if ii == 50000 {
-		time.Sleep(40 * time.Minute)
+	if ii > 130000 {
+		time.Sleep(20 * time.Millisecond)
 	}
 	if err != nil {
 		if errors.Is(err, errorInvalidLength0) {
@@ -2417,6 +2417,9 @@ func readThenWrite(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, wri
 	writeStart := time.Now()
 	if !skipWrite {
 		_, err = writer.Write(payload)
+		if ii > 130000 {
+			time.Sleep(20 * time.Millisecond)
+		}
 		if err != nil {
 			ses.Errorf(execCtx.reqCtx,
 				"Failed to load local file",
