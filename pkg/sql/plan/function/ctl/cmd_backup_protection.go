@@ -15,11 +15,8 @@
 package ctl
 
 import (
-	"context"
 	"encoding/json"
-	"strings"
 
-	"github.com/matrixorigin/matrixone/pkg/backup"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/cmd_util"
@@ -35,9 +32,9 @@ type BackupProtectionRequest struct {
 
 // BackupProtectionResponse represents a backup protection response
 type BackupProtectionResponse struct {
-	Success     bool                       `json:"success"`
-	Message     string                     `json:"message"`
-	Protections []*backup.BackupProtection `json:"protections,omitempty"`
+	Success     bool   `json:"success"`
+	Message     string `json:"message"`
+	Protections string `json:"protections,omitempty"` // JSON string of protections
 }
 
 func handleBackupProtection() handleFunc {
@@ -68,58 +65,4 @@ func handleBackupProtection() handleFunc {
 			}
 			return resp, nil
 		})
-}
-
-// handleBackupProtectionTN handles backup protection commands on TN side
-func handleBackupProtectionTN(ctx context.Context, req *cmd_util.BackupProtectionCmd) ([]byte, error) {
-	if backup.GlobalBackupProtectionManager == nil {
-		backup.InitBackupProtectionManager()
-	}
-
-	mgr := backup.GlobalBackupProtectionManager
-	resp := BackupProtectionResponse{Success: true}
-
-	switch strings.ToLower(req.Action) {
-	case "add":
-		if req.BackupID == "" || req.BackupTS == "" {
-			resp.Success = false
-			resp.Message = "backup_id and backup_ts are required for add action"
-		} else {
-			backupTS := types.StringToTS(req.BackupTS)
-			mgr.AddProtection(req.BackupID, backupTS, req.ProtectedPaths)
-			resp.Message = "Backup protection added successfully"
-		}
-
-	case "remove":
-		if req.BackupID == "" {
-			resp.Success = false
-			resp.Message = "backup_id is required for remove action"
-		} else {
-			mgr.RemoveProtection(req.BackupID)
-			resp.Message = "Backup protection removed successfully"
-		}
-
-	case "heartbeat":
-		if req.BackupID == "" {
-			resp.Success = false
-			resp.Message = "backup_id is required for heartbeat action"
-		} else {
-			if mgr.UpdateHeartbeat(req.BackupID) {
-				resp.Message = "Heartbeat updated successfully"
-			} else {
-				resp.Success = false
-				resp.Message = "Backup protection not found"
-			}
-		}
-
-	case "list":
-		resp.Protections = mgr.GetActiveProtections()
-		resp.Message = "Active backup protections retrieved"
-
-	default:
-		resp.Success = false
-		resp.Message = "Unknown action: " + req.Action
-	}
-
-	return types.Encode(resp)
 }

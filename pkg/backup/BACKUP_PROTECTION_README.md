@@ -43,7 +43,7 @@ BACKUP DATABASE mydb TO S3 OPTION '{"endpoint":"...", "bucket":"mybucket"}';
 
 ```sql
 -- 添加保护
-SELECT mo_ctl('dn','BACKUP_PROTECTION','{"action":"add","backup_id":"backup-123","backup_ts":"2023-12-01 10:00:00.000000","protected_paths":["shared/ckp","shared/gc"]}');
+SELECT mo_ctl('dn','BACKUP_PROTECTION','{"action":"add","backup_id":"backup-123","backup_ts":"2023-12-01 10:00:00.000000"}');
 
 -- 更新心跳
 SELECT mo_ctl('dn','BACKUP_PROTECTION','{"action":"heartbeat","backup_id":"backup-123"}');
@@ -83,18 +83,20 @@ ticker := time.NewTicker(2 * time.Minute) // 每 2 分钟发送一次心跳
 ## 保护规则
 
 ### 时间戳保护
-- 如果 `文件时间戳 <= 备份时间戳`，文件受保护
-- 使用保守策略，GC 时使用 `types.MaxTs()` 进行检查
+- 如果 `GC 时间戳 <= 备份时间戳`，则跳过此次 GC 操作
+- 保护机制在 `ExecuteGlobalCheckpointBasedGC` 函数中实现
+- 使用保守策略，确保备份时间点及之前的所有数据不被 GC
 
-### 路径保护
-- 空路径数组 `[]` 表示保护所有文件
-- 指定路径使用前缀匹配，如 `"shared/ckp"` 保护所有以此开头的文件
-- 支持通配符 `"*"` 表示保护所有文件
-
-### 保护层级
-1. **数据文件**: 通过空路径保护所有数据文件
+### 保护范围
+备份保护涵盖所有 shared 目录下的文件：
+1. **数据文件**: 所有对象存储文件
 2. **检查点文件**: `shared/ckp` 路径下的检查点元数据
 3. **GC 元数据**: `shared/gc` 路径下的垃圾回收元数据
+
+### GC 逻辑修改
+- 在 `ExecuteGlobalCheckpointBasedGC` 开始时检查 GC 时间戳
+- 如果存在活跃的备份保护且 GC 时间戳受保护，则跳过整个 GC 过程
+- 避免了逐个文件检查的性能开销
 
 ## 故障处理
 

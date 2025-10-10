@@ -1067,9 +1067,9 @@ func (h *Handle) HandleBackupProtection(
 
 	mgr := backup.GlobalBackupProtectionManager
 	response := struct {
-		Success     bool                       `json:"success"`
-		Message     string                     `json:"message"`
-		Protections []*backup.BackupProtection `json:"protections,omitempty"`
+		Success     bool   `json:"success"`
+		Message     string `json:"message"`
+		Protections string `json:"protections,omitempty"`
 	}{Success: true}
 
 	switch strings.ToLower(req.Action) {
@@ -1106,8 +1106,15 @@ func (h *Handle) HandleBackupProtection(
 		}
 
 	case "list":
-		response.Protections = mgr.GetActiveProtections()
-		response.Message = "Active backup protections retrieved"
+		protections := mgr.GetActiveProtections()
+		protectionsJSON, err := json.Marshal(protections)
+		if err != nil {
+			response.Success = false
+			response.Message = "Failed to marshal protections: " + err.Error()
+		} else {
+			response.Protections = string(protectionsJSON)
+			response.Message = "Active backup protections retrieved"
+		}
 
 	default:
 		response.Success = false

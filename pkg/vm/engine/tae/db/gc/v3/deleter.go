@@ -20,9 +20,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/matrixorigin/matrixone/pkg/backup"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
-	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 )
@@ -94,8 +92,7 @@ func (g *Deleter) DeleteMany(
 
 	toDeletePaths := g.toDeletePaths
 
-	// No filtering here for paths, this will be handled at a higher level
-	// in the GC logic based on object timestamps
+	// File filtering is handled at a higher level in ExecuteGlobalCheckpointBasedGC
 
 	for i := 0; i < cnt; i += g.deleteBatchSize {
 		select {
