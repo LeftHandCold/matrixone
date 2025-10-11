@@ -132,6 +132,10 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	fs fileservice.FileService,
 ) ([]string, string, error) {
 
+	// Clean up expired backup protection before starting GC
+	protectionManager := GetGlobalBackupProtectionManager()
+	protectionManager.CleanupExpiredProtection()
+
 	sourcer := w.MakeFilesReader(ctx, fs)
 
 	gcTS := gCkp.GetEnd()

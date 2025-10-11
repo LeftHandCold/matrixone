@@ -49,6 +49,7 @@ const (
 	OpCode_OpSnapshotRead        OpCode = 2015
 	OpCode_OpGetChangedTableList OpCode = 2016
 	OpCode_OpFaultInject         OpCode = 2017
+	OpCode_OpBackupProtection    OpCode = 2018
 )
 
 var OpCode_name = map[int32]string{

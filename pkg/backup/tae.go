@@ -481,9 +481,27 @@ func copyFileAndGetMetaFiles(
 		meta := decoder(file.Name)
 		meta.SetIdx(i)
 
-		if !backup.IsEmpty() && meta.GetStart().GE(&backup) {
-			logutil.Infof("[Backup] skip file %v", file.Name)
-			continue
+		// For backup protection, we need to be more precise about which files to include
+		// Skip files that were created after the backup timestamp
+		if !backup.IsEmpty() {
+			// For checkpoint files, check if the file's start time is >= backup time
+			if meta.IsCKPFile() && meta.GetStart().GE(&backup) {
+				logutil.Infof("[Backup] skip checkpoint file %v (start: %v >= backup: %v)",
+					file.Name, meta.GetStart().ToString(), backup.ToString())
+				continue
+			}
+			// For GC files, check if the file's end time is > backup time
+			if meta.IsFullGCExt() && meta.GetEnd().GT(&backup) {
+				logutil.Infof("[Backup] skip GC file %v (end: %v > backup: %v)",
+					file.Name, meta.GetEnd().ToString(), backup.ToString())
+				continue
+			}
+			// For snapshot and account files, check if the file's start time is >= backup time
+			if (meta.IsSnapshotExt() || meta.IsAcctExt()) && meta.GetStart().GE(&backup) {
+				logutil.Infof("[Backup] skip snapshot/account file %v (start: %v >= backup: %v)",
+					file.Name, meta.GetStart().ToString(), backup.ToString())
+				continue
+			}
 		}
 		if doCopy || meta.IsAcctExt() || meta.IsSnapshotExt() {
 			checksum, err = CopyFileWithRetry(ctx, srcFs, dstFs, file.Name, dir)

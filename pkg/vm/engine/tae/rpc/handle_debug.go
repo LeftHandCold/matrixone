@@ -889,6 +889,23 @@ func (h *Handle) HandleInspectTN(
 	return nil, nil
 }
 
+func (h *Handle) HandleBackupProtection(
+	ctx context.Context,
+	meta txn.TxnMeta,
+	req *api.BackupProtectionRequest,
+	resp *api.TNStringResponse,
+) (cb func(), err error) {
+	defer func() {
+		if err != nil {
+			resp.ReturnStr = err.Error()
+		}
+	}()
+
+	protectionManager := gc.GetGlobalBackupProtectionManager()
+	resp.ReturnStr = protectionManager.HandleBackupProtectionRequest(req.RequestData)
+	return nil, nil
+}
+
 func (h *Handle) HandleCommitMerge(
 	ctx context.Context,
 	meta txn.TxnMeta,

@@ -42,6 +42,7 @@ var (
 	SyncCommitMethod         = "SYNCCOMMIT"
 	AddFaultPointMethod      = "ADDFAULTPOINT"
 	BackupMethod             = "BACKUP"
+	BackupProtectionMethod   = "BACKUPPROTECTION"
 	TraceSpanMethod          = "TRACESPAN"
 	CoreDumpMethod           = "COREDUMP"
 	InterceptCommitMethod    = "INTERCEPTCOMMIT"
@@ -85,6 +86,7 @@ var (
 		SyncCommitMethod:         handleSyncCommit,
 		AddFaultPointMethod:      handleAddFaultPoint(),
 		BackupMethod:             handleBackup(),
+		BackupProtectionMethod:   handleBackupProtection(),
 		TraceSpanMethod:          handleTraceSpan,
 		CoreDumpMethod:           handleCoreDump,
 		InterceptCommitMethod:    handleInterceptCommit(),

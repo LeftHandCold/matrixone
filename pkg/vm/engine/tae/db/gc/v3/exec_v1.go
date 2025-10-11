@@ -282,6 +282,18 @@ func MakeBloomfilterCoarseFilter(
 
 				createTS := createTSs[i]
 				dropTS := dropTSs[i]
+
+				// Check backup protection first
+				protectionManager := GetGlobalBackupProtectionManager()
+				if protectedTS, isProtected := protectionManager.GetProtectedTimestamp(); isProtected {
+					// If file is protected by backup, skip GC
+					// A file is protected if its create timestamp is <= protected timestamp
+					// and its drop timestamp (if not empty) is > protected timestamp
+					if createTS.LE(&protectedTS) && (dropTS.IsEmpty() || dropTS.GT(&protectedTS)) {
+						return
+					}
+				}
+
 				if !createTS.LT(ts) || !dropTS.LT(ts) {
 					return
 				}
