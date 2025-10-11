@@ -206,7 +206,7 @@ func (p *BackupGCProtection) sendProtectionRequest(ctx context.Context, action s
 	}
 
 	if !response.Success {
-		return moerr.NewInternalError(ctx, "GC protection request failed: %s", response.Message)
+		return moerr.NewInternalError(ctx, fmt.Sprintf("GC protection request failed: %s", response.Message))
 	}
 
 	return nil

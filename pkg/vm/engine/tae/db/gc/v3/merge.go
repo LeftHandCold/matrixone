@@ -97,7 +97,9 @@ func MergeCheckpoint(
 		shouldSkipCheckpoint := false
 		if isProtected {
 			// Skip deletion if checkpoint entry is protected
-			if ckpEntry.GetStart().LE(&protectedTS) || ckpEntry.GetEnd().GT(&protectedTS) {
+			ckpStart := ckpEntry.GetStart()
+			ckpEnd := ckpEntry.GetEnd()
+			if ckpStart.LE(&protectedTS) || ckpEnd.GT(&protectedTS) {
 				logutil.Infof("[GC] Skip deleting checkpoint entry %s due to backup protection (start: %s, end: %s, protected: %s)",
 					ckpEntry.String(), ckpEntry.GetStart().ToString(), ckpEntry.GetEnd().ToString(), protectedTS.ToString())
 				shouldSkipCheckpoint = true

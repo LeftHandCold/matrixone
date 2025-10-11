@@ -203,6 +203,14 @@ func (m *CheckpointResp) UnmarshalBinary(data []byte) error {
 	return m.Unmarshal(data)
 }
 
+func (m *BackupProtectionRequest) MarshalBinary() ([]byte, error) {
+	return m.Marshal()
+}
+
+func (m *BackupProtectionRequest) UnmarshalBinary(data []byte) error {
+	return m.Unmarshal(data)
+}
+
 // To reduce memory consumption
 
 type TransferMaps []TransferMap

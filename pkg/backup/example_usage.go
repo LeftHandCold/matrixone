@@ -58,22 +58,22 @@ func ExampleBackupWithGCProtection(ctx context.Context, sid string, backupTS typ
 	return nil
 }
 
-// ExampleGCProtectionUsage shows how the GC side uses the protection
-func ExampleGCProtectionUsage() {
-	// This would typically be called from the GC process
-
-	// Get the global protection manager
-	protectionManager := GetGlobalBackupProtectionManager()
-
-	// Example: Check if a timestamp is protected
-	testTS := types.BuildTS(time.Now().UnixNano(), 0)
-	if protectedTS, isProtected := protectionManager.GetProtectedTimestamp(); isProtected {
-		if testTS.LE(&protectedTS) {
-			logutil.Infof("[Example] Timestamp %s is protected by backup (protected: %s)",
-				testTS.ToString(), protectedTS.ToString())
-		}
-	}
-
-	// Example: Clean up expired protection
-	protectionManager.CleanupExpiredProtection()
-}
+//// ExampleGCProtectionUsage shows how the GC side uses the protection
+//func ExampleGCProtectionUsage() {
+//	// This would typically be called from the GC process
+//
+//	// Get the global protection manager
+//	protectionManager := GetGlobalBackupProtectionManager()
+//
+//	// Example: Check if a timestamp is protected
+//	testTS := types.BuildTS(time.Now().UnixNano(), 0)
+//	if protectedTS, isProtected := protectionManager.GetProtectedTimestamp(); isProtected {
+//		if testTS.LE(&protectedTS) {
+//			logutil.Infof("[Example] Timestamp %s is protected by backup (protected: %s)",
+//				testTS.ToString(), protectedTS.ToString())
+//		}
+//	}
+//
+//	// Example: Clean up expired protection
+//	protectionManager.CleanupExpiredProtection()
+//}
