@@ -51,6 +51,11 @@ func MergeCheckpoint(
 	ckpData = ckputil.NewObjectListBatch()
 	datas := make([]*logtail.CKPReader, 0)
 	deleteFiles = make([]string, 0)
+
+	// Check backup protection
+	protectionManager := GetGlobalBackupProtectionManager()
+	protectedTS, isProtected := protectionManager.GetProtectedTimestamp()
+
 	for _, ckpEntry := range ckpEntries {
 		select {
 		case <-ctx.Done():
@@ -88,29 +93,46 @@ func MergeCheckpoint(
 			)
 		}
 
-		// add checkpoint metafile(ckp/mete_ts-ts.ckp...) to deleteFiles
-		deleteFiles = append(deleteFiles, nameMeta)
-		// add checkpoint idx file to deleteFiles
-		deleteFiles = append(deleteFiles, ckpEntry.GetLocation().Name().String())
+		// Check backup protection before adding files to delete list
+		shouldSkipCheckpoint := false
+		if isProtected {
+			// Skip deletion if checkpoint entry is protected
+			if ckpEntry.GetStart().LE(&protectedTS) || ckpEntry.GetEnd().GT(&protectedTS) {
+				logutil.Infof("[GC] Skip deleting checkpoint entry %s due to backup protection (start: %s, end: %s, protected: %s)",
+					ckpEntry.String(), ckpEntry.GetStart().ToString(), ckpEntry.GetEnd().ToString(), protectedTS.ToString())
+				shouldSkipCheckpoint = true
+			}
+		}
+
+		if !shouldSkipCheckpoint {
+			// add checkpoint metafile(ckp/mete_ts-ts.ckp...) to deleteFiles
+			deleteFiles = append(deleteFiles, nameMeta)
+			// add checkpoint idx file to deleteFiles
+			deleteFiles = append(deleteFiles, ckpEntry.GetLocation().Name().String())
+		}
 		locations, err = logtail.LoadCheckpointLocations(
 			ctx, sid, data,
 		)
 		if err != nil {
 			if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
-				deleteFiles = append(deleteFiles, nameMeta)
+				if !shouldSkipCheckpoint {
+					deleteFiles = append(deleteFiles, nameMeta)
+				}
 				continue
 			}
 			return
 		}
 
-		for name := range locations {
-			deleteFiles = append(deleteFiles, name)
-		}
+		if !shouldSkipCheckpoint {
+			for name := range locations {
+				deleteFiles = append(deleteFiles, name)
+			}
 
-		tableIDLocations := ckpEntry.GetTableIDLocation()
-		for i := 0; i < tableIDLocations.Len(); i++ {
-			location := tableIDLocations.Get(i)
-			deleteFiles = append(deleteFiles, location.Name().String())
+			tableIDLocations := ckpEntry.GetTableIDLocation()
+			for i := 0; i < tableIDLocations.Len(); i++ {
+				location := tableIDLocations.Get(i)
+				deleteFiles = append(deleteFiles, location.Name().String())
+			}
 		}
 
 	}

@@ -552,6 +552,10 @@ func (c *checkpointCleaner) deleteStaleSnapshotFilesLocked() error {
 	metaFiles := c.CloneMetaFilesLocked()
 
 	prevNum := len(metaFiles)
+	
+	// Check backup protection
+	protectionManager := GetGlobalBackupProtectionManager()
+	protectedTS, isProtected := protectionManager.GetProtectedTimestamp()
 
 	doDeleteFileFn := func(
 		thisFile string, thisTS *types.TS,
@@ -575,46 +579,73 @@ func (c *checkpointCleaner) deleteStaleSnapshotFilesLocked() error {
 		if maxTS.LT(thisTS) {
 			newMaxFile = thisFile
 			newMaxTS = *thisTS
-			if err = c.fs.Delete(c.ctx, ioutil.MakeGCFullName(maxFile)); err != nil {
-				logutil.Error(
-					"GC-DELETE-SNAPSHOT-FILE-ERROR",
-					zap.String("task", c.TaskNameLocked()),
-					zap.String("file", maxFile),
-					zap.Error(err),
-					zap.String("new-max-file", newMaxFile),
-					zap.String("new-max-ts", newMaxTS.ToString()),
-				)
-				return
+			
+			// Check backup protection before deleting the old max file
+			shouldSkipDelete := false
+			if isProtected {
+				// For snapshot files, check if the file's timestamp is protected
+				if maxTS.LE(&protectedTS) {
+					logutil.Infof("[GC] Skip deleting snapshot file %s due to backup protection (ts: %s, protected: %s)", 
+						maxFile, maxTS.ToString(), protectedTS.ToString())
+					shouldSkipDelete = true
+				}
 			}
-			logutil.Info(
-				"GC-TRACE-DELETE-SNAPSHOT-FILE",
-				zap.String("task", c.TaskNameLocked()),
-				zap.String("max-file", newMaxFile),
-				zap.String("max-ts", newMaxTS.ToString()),
-			)
-			// TODO: seem to be a bug
-			delete(metaFiles, maxFile)
+			
+			if !shouldSkipDelete {
+				if err = c.fs.Delete(c.ctx, ioutil.MakeGCFullName(maxFile)); err != nil {
+					logutil.Error(
+						"GC-DELETE-SNAPSHOT-FILE-ERROR",
+						zap.String("task", c.TaskNameLocked()),
+						zap.String("file", maxFile),
+						zap.Error(err),
+						zap.String("new-max-file", newMaxFile),
+						zap.String("new-max-ts", newMaxTS.ToString()),
+					)
+					return
+				}
+				logutil.Info(
+					"GC-TRACE-DELETE-SNAPSHOT-FILE",
+					zap.String("task", c.TaskNameLocked()),
+					zap.String("max-file", newMaxFile),
+					zap.String("max-ts", newMaxTS.ToString()),
+				)
+				// TODO: seem to be a bug
+				delete(metaFiles, maxFile)
+			}
 			return
 		}
 
 		// thisTS <= maxTS: this file is expired and should be deleted
-		if err = c.fs.Delete(c.ctx, ioutil.MakeGCFullName(thisFile)); err != nil {
-			logutil.Error(
-				"GC-DELETE-SNAPSHOT-FILE-ERROR",
-				zap.String("task", c.TaskNameLocked()),
-				zap.String("file", ioutil.MakeGCFullName(thisFile)),
-				zap.Error(err),
-				zap.String("max-file", maxFile),
-				zap.String("max-ts", maxTS.ToString()),
-			)
+		// Check backup protection before deleting expired file
+		shouldSkipExpiredDelete := false
+		if isProtected {
+			// For snapshot files, check if the file's timestamp is protected
+			if thisTS.LE(&protectedTS) {
+				logutil.Infof("[GC] Skip deleting expired snapshot file %s due to backup protection (ts: %s, protected: %s)", 
+					thisFile, thisTS.ToString(), protectedTS.ToString())
+				shouldSkipExpiredDelete = true
+			}
 		}
-		logutil.Info(
-			"GC-TRACE-DELETE-SNAPSHOT-FILE",
-			zap.String("task", c.TaskNameLocked()),
-			zap.String("max-file", thisFile),
-			zap.String("max-ts", thisTS.ToString()),
-		)
-		delete(metaFiles, thisFile)
+		
+		if !shouldSkipExpiredDelete {
+			if err = c.fs.Delete(c.ctx, ioutil.MakeGCFullName(thisFile)); err != nil {
+				logutil.Error(
+					"GC-DELETE-SNAPSHOT-FILE-ERROR",
+					zap.String("task", c.TaskNameLocked()),
+					zap.String("file", ioutil.MakeGCFullName(thisFile)),
+					zap.Error(err),
+					zap.String("max-file", maxFile),
+					zap.String("max-ts", maxTS.ToString()),
+				)
+			}
+			logutil.Info(
+				"GC-TRACE-DELETE-SNAPSHOT-FILE",
+				zap.String("task", c.TaskNameLocked()),
+				zap.String("max-file", thisFile),
+				zap.String("max-ts", thisTS.ToString()),
+			)
+			delete(metaFiles, thisFile)
+		}
 
 		return
 	}
@@ -668,6 +699,11 @@ func (c *checkpointCleaner) deleteStaleCKPMetaFileLocked() (err error) {
 	window := c.GetScannedWindowLocked()
 	metaFiles := c.CloneMetaFilesLocked()
 	filesToDelete := make([]string, 0)
+	
+	// Check backup protection
+	protectionManager := GetGlobalBackupProtectionManager()
+	protectedTS, isProtected := protectionManager.GetProtectedTimestamp()
+	
 	for _, metaFile := range metaFiles {
 		if !metaFile.IsCKPFile() ||
 			(metaFile.RangeEqual(&window.tsRange.start, &window.tsRange.end)) {
@@ -677,6 +713,17 @@ func (c *checkpointCleaner) deleteStaleCKPMetaFileLocked() (err error) {
 				zap.String("skip-file", metaFile.GetName()),
 			)
 			continue
+		}
+		
+		// Check if this checkpoint file is protected by backup
+		if isProtected {
+			// Skip deletion if the file's end time is greater than protected timestamp
+			// or if the file's start time is less than or equal to protected timestamp
+			if metaFile.GetEnd().GT(&protectedTS) || metaFile.GetStart().LE(&protectedTS) {
+				logutil.Infof("[GC] Skip deleting checkpoint file %s due to backup protection (start: %s, end: %s, protected: %s)", 
+					metaFile.GetName(), metaFile.GetStart().ToString(), metaFile.GetEnd().ToString(), protectedTS.ToString())
+				continue
+			}
 		}
 		gcWindow := NewGCWindow(c.mp, c.fs)
 		defer gcWindow.Close()
@@ -789,6 +836,17 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 	// min(min(startTS of all incremental checkpoints),min(endTS of global checkpoints))
 	if checkpointLowWaterMark.IsEmpty() {
 		return
+	}
+
+	// Check backup protection before merging checkpoint files
+	protectionManager := GetGlobalBackupProtectionManager()
+	if protectedTS, isProtected := protectionManager.GetProtectedTimestamp(); isProtected {
+		// If the checkpoint low water mark is protected, skip merging
+		if checkpointLowWaterMark.LE(&protectedTS) {
+			logutil.Infof("[GC] Skip merging checkpoint files due to backup protection (watermark: %s, protected: %s)", 
+				checkpointLowWaterMark.ToString(), protectedTS.ToString())
+			return
+		}
 	}
 
 	now := time.Now()
