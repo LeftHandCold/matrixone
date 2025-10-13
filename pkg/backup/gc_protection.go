@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -200,13 +201,16 @@ func (p *BackupGCProtection) sendProtectionRequest(ctx context.Context, action s
 		return moerr.NewInternalError(ctx, "invalid response format from GC node")
 	}
 
-	var response BackupProtectionResponse
-	if err := json.Unmarshal([]byte(responseStr), &response); err != nil {
-		return err
-	}
-
-	if !response.Success {
-		return moerr.NewInternalError(ctx, fmt.Sprintf("GC protection request failed: %s", response.Message))
+	// Check for simple string response format
+	if responseStr == "OK" {
+		// Success case
+		return nil
+	} else if strings.HasPrefix(responseStr, "ERROR:") {
+		// Error case
+		return moerr.NewInternalError(ctx, fmt.Sprintf("GC protection request failed: %s", responseStr))
+	} else {
+		// Unknown response format
+		return moerr.NewInternalError(ctx, fmt.Sprintf("unexpected response from GC node: %s", responseStr))
 	}
 
 	return nil

@@ -59,32 +59,31 @@ func GetGlobalBackupProtectionManager() *BackupProtectionManager {
 func (m *BackupProtectionManager) HandleBackupProtectionRequest(requestData string) string {
 	var req BackupProtectionRequest
 	if err := json.Unmarshal([]byte(requestData), &req); err != nil {
-		response := BackupProtectionResponse{
-			Success: false,
-			Message: "invalid request format: " + err.Error(),
-		}
-		responseBytes, _ := json.Marshal(response)
-		return string(responseBytes)
+		return "ERROR: invalid request format: " + err.Error()
 	}
-
-	var response BackupProtectionResponse
 
 	switch req.Action {
 	case "start":
-		response = m.startProtection(req.Timestamp)
-	case "heartbeat":
-		response = m.updateHeartbeat(req.Timestamp)
-	case "stop":
-		response = m.stopProtection(req.Timestamp)
-	default:
-		response = BackupProtectionResponse{
-			Success: false,
-			Message: "unknown action: " + req.Action,
+		response := m.startProtection(req.Timestamp)
+		if response.Success {
+			return "OK"
 		}
+		return "ERROR: " + response.Message
+	case "heartbeat":
+		response := m.updateHeartbeat(req.Timestamp)
+		if response.Success {
+			return "OK"
+		}
+		return "ERROR: " + response.Message
+	case "stop":
+		response := m.stopProtection(req.Timestamp)
+		if response.Success {
+			return "OK"
+		}
+		return "ERROR: " + response.Message
+	default:
+		return "ERROR: unknown action: " + req.Action
 	}
-
-	responseBytes, _ := json.Marshal(response)
-	return string(responseBytes)
 }
 
 // startProtection starts protecting the given timestamp
