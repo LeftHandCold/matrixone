@@ -48,16 +48,6 @@ func Backup(
 	if bs == nil {
 		return moerr.NewInternalError(ctx, "invalid backup start")
 	}
-
-	// Initialize GC protection
-	gcProtection := NewBackupGCProtection(ctx, sid)
-	defer func() {
-		if gcProtection.IsActive() {
-			if stopErr := gcProtection.StopProtection(context.Background()); stopErr != nil {
-				logutil.Errorf("[Backup] Failed to stop GC protection: %v", stopErr)
-			}
-		}
-	}()
 	// step 1 : setup fileservice
 	//1.1 setup ETL fileservice for general usage
 	if !bs.IsS3 {
@@ -98,15 +88,6 @@ func Backup(
 		cfg.BackupTs = types.StringToTS(bs.BackupTs)
 	}
 	cfg.BackupType = bs.BackupType
-
-	// Start GC protection for the backup timestamp
-	if !cfg.BackupTs.IsEmpty() {
-		if err = gcProtection.StartProtection(ctx, cfg.BackupTs); err != nil {
-			logutil.Errorf("[Backup] Failed to start GC protection: %v", err)
-			return err
-		}
-		logutil.Infof("[Backup] Started GC protection for timestamp %s", cfg.BackupTs.ToString())
-	}
 
 	// step 2 : backup mo
 	if err = backupBuildInfo(ctx, cfg); err != nil {

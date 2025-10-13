@@ -285,7 +285,14 @@ func execBackup(
 		common.AnyField("backup time", backupTime),
 		common.AnyField("checkpoint num", len(names)),
 		common.AnyField("parallel num", parallelNum))
+	// Initialize GC protection
+	gcProtection := NewBackupGCProtection(ctx, sid)
 	defer func() {
+		if gcProtection.IsActive() {
+			if stopErr := gcProtection.StopProtection(context.Background()); stopErr != nil {
+				logutil.Errorf("[Backup] Failed to stop GC protection: %v", stopErr)
+			}
+		}
 		logutil.Info("backup", common.OperationField("end backup"),
 			common.AnyField("load checkpoint cost", loadDuration),
 			common.AnyField("copy file cost", copyDuration),
@@ -377,6 +384,15 @@ func execBackup(
 		if err != nil {
 			return err
 		}
+	}
+
+	// Start GC protection for the backup timestamp
+	if !start.IsEmpty() {
+		if err = gcProtection.StartProtection(ctx, start); err != nil {
+			logutil.Errorf("[Backup] Failed to start GC protection: %v", err)
+			return err
+		}
+		logutil.Infof("[Backup] Started GC protection for timestamp %s", start.ToString())
 	}
 
 	// copy data
