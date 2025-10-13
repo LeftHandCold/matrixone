@@ -174,4 +174,11 @@ type Handler interface {
 		req *cmd_util.FaultInjectReq,
 		resp *apipb.TNStringResponse,
 	) (cb func(), err error)
+
+	HandleBackupProtection(
+		ctx context.Context,
+		meta txn.TxnMeta,
+		req *apipb.BackupProtectionRequest,
+		resp *apipb.TNStringResponse,
+	) (cb func(), err error)
 }
