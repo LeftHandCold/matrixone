@@ -196,21 +196,26 @@ func (p *BackupGCProtection) sendProtectionRequest(ctx context.Context, action s
 		return err
 	}
 
-	responseStr, ok := ctlResult.Data.(string)
+	responseStr, ok := ctlResult.Data.([]interface{})
 	if !ok {
 		return moerr.NewInternalError(ctx, "invalid response format from GC node")
 	}
-
-	// Check for simple string response format
-	if responseStr == "OK" {
-		// Success case
-		return nil
-	} else if strings.HasPrefix(responseStr, "ERROR:") {
-		// Error case
-		return moerr.NewInternalError(ctx, fmt.Sprintf("GC protection request failed: %s", responseStr))
-	} else {
-		// Unknown response format
-		return moerr.NewInternalError(ctx, fmt.Sprintf("unexpected response from GC node: %s", responseStr))
+	for _, rs := range responseStr {
+		str, ok := rs.(string)
+		if !ok {
+			return moerr.NewInternalError(ctx, "invalid ctl string")
+		}
+		// Check for simple string response format
+		if str == "OK" {
+			// Success case
+			return nil
+		} else if strings.HasPrefix(str, "ERROR:") {
+			// Error case
+			return moerr.NewInternalError(ctx, fmt.Sprintf("GC protection request failed: %s", str))
+		} else {
+			// Unknown response format
+			return moerr.NewInternalError(ctx, fmt.Sprintf("unexpected response from GC node: %s", str))
+		}
 	}
 
 	return nil
