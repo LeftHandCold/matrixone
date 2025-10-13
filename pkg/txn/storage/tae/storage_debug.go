@@ -16,7 +16,6 @@ package taestorage
 
 import (
 	"context"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/cmd_util"
 
 	"github.com/fagongzi/util/protoc"
@@ -151,7 +150,6 @@ func (s *taeStorage) Debug(ctx context.Context,
 		}
 		return resp.Read()
 	case uint32(api.OpCode_OpBackupProtection):
-		logutil.Infof("OpCode_OpBackupProtection start")
 		resp, err := handleRead(ctx, txnMeta, data, s.taeHandler.HandleBackupProtection)
 		if err != nil {
 			return nil, err
