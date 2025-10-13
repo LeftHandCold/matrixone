@@ -900,7 +900,7 @@ func (h *Handle) HandleBackupProtection(
 			resp.ReturnStr = err.Error()
 		}
 	}()
-
+	logutil.Infof("HandleBackupProtectionHandleBackupProtection ")
 	protectionManager := gc.GetGlobalBackupProtectionManager()
 	resp.ReturnStr = protectionManager.HandleBackupProtectionRequest(req.RequestData)
 	return nil, nil
