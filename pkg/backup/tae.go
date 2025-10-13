@@ -288,15 +288,15 @@ func execBackup(
 	// Initialize GC protection
 	gcProtection := NewBackupGCProtection(ctx, sid)
 	defer func() {
+		logutil.Info("backup", common.OperationField("end backup"),
+			common.AnyField("load checkpoint cost", loadDuration),
+			common.AnyField("copy file cost", copyDuration),
+			common.AnyField("rewrite checkpoint cost", reWriteDuration))
 		if gcProtection.IsActive() {
 			if stopErr := gcProtection.StopProtection(context.Background()); stopErr != nil {
 				logutil.Errorf("[Backup] Failed to stop GC protection: %v", stopErr)
 			}
 		}
-		logutil.Info("backup", common.OperationField("end backup"),
-			common.AnyField("load checkpoint cost", loadDuration),
-			common.AnyField("copy file cost", copyDuration),
-			common.AnyField("rewrite checkpoint cost", reWriteDuration))
 	}()
 	now := time.Now()
 	baseTS := ts

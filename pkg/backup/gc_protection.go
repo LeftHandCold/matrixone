@@ -175,7 +175,7 @@ func (p *BackupGCProtection) sendProtectionRequest(ctx context.Context, action s
 
 	sql := fmt.Sprintf("select mo_ctl('dn','BackupProtection','%s')", string(reqBytes))
 	opts := executor.Options{}
-	res, err := exec.Exec(ctx, sql, opts)
+	res, err := exec.Exec(context.Background(), sql, opts)
 	if err != nil {
 		return err
 	}
