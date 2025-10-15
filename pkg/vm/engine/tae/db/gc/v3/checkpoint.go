@@ -774,7 +774,7 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 	ctx context.Context,
 	checkpointLowWaterMark *types.TS,
 	memoryBuffer *containers.OneSchemaBatchBuffer,
-	accountSnapshots *logtail.SnapshotInfo,
+	snapshots *logtail.SnapshotInfo,
 	pitrs *logtail.PitrInfo,
 	gcFileCount int,
 ) (err error) {
@@ -885,7 +885,7 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 		c.checkpointCli.GetCatalog().GetUsageMemo().(*logtail.TNUsageMemo),
 		newCkpData,
 		c.mutation.snapshotMeta,
-		accountSnapshots,
+		snapshots,
 		pitrs,
 		gcFileCount)
 	if newCkp == nil {
