@@ -148,7 +148,7 @@ type Cleaner interface {
 	DisableGC()
 	GCEnabled() bool
 	GetMPool() *mpool.MPool
-	GetSnapshots() (map[uint32]containers.Vector, error)
+	GetSnapshots() (*logtail.SnapshotInfo, error)
 	GetDetails(ctx context.Context) (map[uint32]*TableStats, error)
 	Verify(ctx context.Context) string
 	ISCPTables() (map[uint64]types.TS, error)

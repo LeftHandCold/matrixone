@@ -139,7 +139,7 @@ func (c *MockCleaner) GetMPool() *mpool.MPool {
 	return nil
 }
 
-func (c *MockCleaner) GetSnapshots() (map[uint32]containers.Vector, error) {
+func (c *MockCleaner) GetSnapshots() (*logtail.SnapshotInfo, error) {
 	return nil, nil
 }
 

@@ -16,6 +16,7 @@ package gc
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -72,6 +73,8 @@ func MakeLoadFunc(
 	}, releaseFn
 }
 
+// TransformToTSList is no longer needed as SnapshotInfo directly contains []types.TS
+// Keeping for backward compatibility but it's deprecated
 func TransformToTSList(
 	fromKV map[uint32]containers.Vector,
 ) map[uint32][]types.TS {

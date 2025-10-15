@@ -63,14 +63,14 @@ type CheckpointBasedGCJob struct {
 		coarseProbility    float64
 		canGCCacheSize     int
 	}
-	sourcer          engine.BaseReader
-	snapshotMeta     *logtail.SnapshotMeta
-	accountSnapshots map[uint32][]types.TS
-	iscpTables       map[uint64]types.TS
-	pitr             *logtail.PitrInfo
-	ts               *types.TS
-	globalCkpLoc     objectio.Location
-	globalCkpVer     uint32
+	sourcer      engine.BaseReader
+	snapshotMeta *logtail.SnapshotMeta
+	snapshots    *logtail.SnapshotInfo
+	iscpTables   map[uint64]types.TS
+	pitr         *logtail.PitrInfo
+	ts           *types.TS
+	globalCkpLoc objectio.Location
+	globalCkpVer uint32
 
 	result struct {
 		vecToGC    *vector.Vector
@@ -84,7 +84,7 @@ func NewCheckpointBasedGCJob(
 	gckpVersion uint32,
 	sourcer engine.BaseReader,
 	pitr *logtail.PitrInfo,
-	accountSnapshots map[uint32][]types.TS,
+	snapshots *logtail.SnapshotInfo,
 	iscpTables map[uint64]types.TS,
 	snapshotMeta *logtail.SnapshotMeta,
 	buffer *containers.OneSchemaBatchBuffer,
@@ -95,14 +95,14 @@ func NewCheckpointBasedGCJob(
 	opts ...GCJobExecutorOption,
 ) *CheckpointBasedGCJob {
 	e := &CheckpointBasedGCJob{
-		sourcer:          sourcer,
-		snapshotMeta:     snapshotMeta,
-		accountSnapshots: accountSnapshots,
-		pitr:             pitr,
-		ts:               ts,
-		globalCkpLoc:     globalCkpLoc,
-		globalCkpVer:     gckpVersion,
-		iscpTables:       iscpTables,
+		sourcer:      sourcer,
+		snapshotMeta: snapshotMeta,
+		snapshots:    snapshots,
+		pitr:         pitr,
+		ts:           ts,
+		globalCkpLoc: globalCkpLoc,
+		globalCkpVer: gckpVersion,
+		iscpTables:   iscpTables,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -118,7 +118,7 @@ func (e *CheckpointBasedGCJob) Close() error {
 		e.sourcer = nil
 	}
 	e.snapshotMeta = nil
-	e.accountSnapshots = nil
+	e.snapshots = nil
 	e.pitr = nil
 	e.ts = nil
 	e.globalCkpLoc = nil
@@ -168,7 +168,7 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 
 	fineFilter, err := MakeSnapshotAndPitrFineFilter(
 		e.ts,
-		e.accountSnapshots,
+		e.snapshots,
 		e.pitr,
 		e.snapshotMeta,
 		transObjects,
@@ -318,7 +318,7 @@ func MakeBloomfilterCoarseFilter(
 
 func MakeSnapshotAndPitrFineFilter(
 	ts *types.TS,
-	accountSnapshots map[uint32][]types.TS,
+	snapshots *logtail.SnapshotInfo,
 	pitrs *logtail.PitrInfo,
 	snapshotMeta *logtail.SnapshotMeta,
 	transObjects map[string]map[uint64]*ObjectEntry,
@@ -328,7 +328,7 @@ func MakeSnapshotAndPitrFineFilter(
 	err error,
 ) {
 	tableSnapshots, tablePitrs := snapshotMeta.AccountToTableSnapshots(
-		accountSnapshots,
+		snapshots,
 		pitrs,
 	)
 	return func(
