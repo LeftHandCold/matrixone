@@ -2385,6 +2385,7 @@ func readThenWrite(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, wri
 		}
 	}()
 	payload, err = mysqlRrWr.ReadLoadLocalPacket()
+	err = errorConvertToEnumFailed
 	if err != nil {
 		if errors.Is(err, errorInvalidLength0) {
 			return skipWrite, readTime, writeTime, err
