@@ -1698,6 +1698,9 @@ func (sm *SnapshotMeta) AccountToTableSnapshots(
 	ii := 0
 	for tableID, tableTSList := range snapshots.tables {
 		ii++
+		if tableID == 307133 {
+			logutil.Infof("tableIDtableID is %d", len(tableTSList))
+		}
 		if len(tableTSList) > 0 {
 			if info := sm.tableIDIndex[tableID]; info != nil {
 				dbID := info.dbID
@@ -1725,6 +1728,9 @@ func (sm *SnapshotMeta) AccountToTableSnapshots(
 	}
 
 	for tid, info := range sm.tableIDIndex {
+		if tid == 307133 {
+			logutil.Infof("tableIDtableID is %d", info.dbID)
+		}
 		if catalog2.IsSystemTable(tid) {
 			continue
 		}
