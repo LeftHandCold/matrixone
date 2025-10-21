@@ -1775,6 +1775,12 @@ func (sm *SnapshotMeta) AccountToTableSnapshots(
 		// get the pitr for the table
 		ts := pitr.GetTS(info.accountID, info.dbID, tid)
 		tablePitrs[tid] = &ts
+		if tid == 307133 {
+			logutil.Infof("tableSnapshots[tid] is %d", len(tableSnapshots[tid]))
+			for _, tslist := range tableSnapshots[tid] {
+				logutil.Infof("tslisttslist is %v", tslist.ToString())
+			}
+		}
 	}
 	return
 }
