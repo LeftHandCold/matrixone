@@ -1694,7 +1694,10 @@ func (sm *SnapshotMeta) AccountToTableSnapshots(
 
 	// First, collect all table snapshots that should be applied to all tables in the same database
 	dbTableSnapshots := make(map[uint64][]types.TS) // dbID -> []types.TS
+	countt := len(snapshots.tables)
+	ii := 0
 	for tableID, tableTSList := range snapshots.tables {
+		ii++
 		if len(tableTSList) > 0 {
 			if info := sm.tableIDIndex[tableID]; info != nil {
 				dbID := info.dbID
@@ -1706,6 +1709,7 @@ func (sm *SnapshotMeta) AccountToTableSnapshots(
 			}
 		}
 	}
+	logutil.Infof("counttcountt is %d, ii is %d", countt, ii)
 
 	// Sort and deduplicate database-level table snapshots
 	for dbID, tsList := range dbTableSnapshots {
