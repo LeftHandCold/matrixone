@@ -51,7 +51,7 @@ func GetGCDir() string {
 }
 
 func IsCKPExt(ext string) bool {
-	return ext == CheckpointExt
+	return ext == CheckpointExt || ext == CompactExt
 }
 
 func IsGCMetaExt(ext string) bool {
@@ -59,5 +59,5 @@ func IsGCMetaExt(ext string) bool {
 }
 
 func IsMetadataName(name string) bool {
-	return strings.HasPrefix(name, PrefixMetadata) && strings.HasSuffix(name, SuffixMetadata)
+	return strings.HasPrefix(name, PrefixMetadata) && (strings.HasSuffix(name, SuffixMetadata) || strings.HasSuffix(name, ".cpt"))
 }
