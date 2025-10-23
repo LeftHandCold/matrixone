@@ -67,7 +67,11 @@ func ReadEntriesFromMeta(
 		}
 		logutil.Infof("fsdfsdfs")
 		for _, en := range batchEntries {
-			logutil.Infof("batchEntries is %v", en.String())
+			if en.String() == "CKP[G][2][true:true][99256148-99251148](0-0->1761200832340995965-1)" {
+				entries = make([]*CheckpointEntry, 1)
+				entries[0] = en
+				return
+			}
 		}
 		if len(entries) == 0 {
 			entries = batchEntries
