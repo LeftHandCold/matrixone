@@ -177,9 +177,11 @@ func ExportToTableRangesByFilter(
 	startRows := vector.MustFixedColNoTypeCheck[types.Rowid](data.Vecs[2])
 	endRows := vector.MustFixedColNoTypeCheck[types.Rowid](data.Vecs[3])
 	for i, rows := start, data.RowCount(); i < rows; i++ {
-		if tableIds[i] != tableId || objectTypes[i] != objectType {
-			continue
-		}
+		test := objectio.ObjectStats(data.Vecs[4].GetBytesAt(i))
+		//logutil.Infof("tableIds[i] is %d, tableId is %d, objectTypes[i] is %v, oo %v, startRows[i] is %v, endRows[i is %v ", tableIds[i], tableId, objectTypes[i], objectType, startRows[i].String(), endRows[i].String())
+		//if tableIds[i] != tableId || objectTypes[i] != objectType {
+		//	continue
+		//}
 		ranges = append(ranges, TableRange{
 			TableID:     tableId,
 			ObjectType:  objectTypes[i],
