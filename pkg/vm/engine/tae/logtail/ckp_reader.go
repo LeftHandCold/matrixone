@@ -758,6 +758,9 @@ func consumeCheckpointWithTableID(
 		for _, tt := range dataRanges {
 			logutil.Infof("tt is %v", tt.String())
 		}
+		for _, tt := range tombstoneRanges {
+			logutil.Infof("tt11 is %v", tt.String())
+		}
 		iter := ckputil.NewObjectIter(ctx, dataRanges, mp, fs)
 		defer iter.Close()
 		for ok, err := iter.Next(); ok && err == nil; ok, err = iter.Next() {
