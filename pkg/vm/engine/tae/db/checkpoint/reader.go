@@ -137,6 +137,9 @@ func (r *CKPMetaReader) Next(
 	bats, release, err = reader.LoadAllColumns(
 		ctx, nil, mp,
 	)
+	if err != nil {
+		panic(err)
+	}
 	return
 }
 
