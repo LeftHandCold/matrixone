@@ -19,6 +19,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/logtailreplay"
+	"go.uber.org/zap"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1114,8 +1116,67 @@ func (c *storageCkpBaseArg) getEntriesFromMeta(
 		common.CheckpointAllocator,
 		c.fs,
 	)
+	partition := logtailreplay.NewPartitionState("", true, 42)
 	for _, en := range entries {
 		logutil.Infof("getEntriesFromMeta is en %v", en.GetLocation().String())
+		locs := make([]string, 0)
+		locs = append(locs, en.GetLocation().String())
+		locs = append(locs, strconv.Itoa(int(en.GetVersion())))
+		locations := strings.Join(locs, ";")
+		locationsAndVersions := strings.Split(locations, ";")
+		if len(locationsAndVersions)%2 == 1 {
+			locationsAndVersions = locationsAndVersions[1:]
+		}
+
+		readers := make([]*logtail.CKPReader, 0)
+		for i := 0; i < len(locationsAndVersions); i += 2 {
+			key := locationsAndVersions[i]
+			var version uint64
+			if version, err = strconv.ParseUint(
+				locationsAndVersions[i+1], 10, 32,
+			); err != nil {
+				logutil.Error(
+					"Parse-CKP-Name-Error",
+					zap.String("loc", locations),
+					zap.Int("i", i),
+					zap.Error(err),
+				)
+				panic(err)
+			}
+			var location objectio.Location
+			if location, err = objectio.StringToLocation(
+				key,
+			); err != nil {
+				logutil.Error(
+					"Parse-CKP-Name-Error",
+					zap.String("loc", locations),
+					zap.Int("i", i),
+					zap.Error(err),
+				)
+				panic(err)
+			}
+			reader := logtail.NewCKPReaderWithTableID_V2(uint32(version), location, 1, nil, c.fs)
+			readers = append(readers, reader)
+		}
+
+		for _, reader := range readers {
+			ioutil.Prefetch("", c.fs, reader.GetL())
+		}
+
+		for _, reader := range readers {
+			if err := reader.ReadMeta(ctx); err != nil {
+				panic(err)
+			}
+			reader.PrefetchData("")
+		}
+
+		for _, reader := range readers {
+			if err := reader.ConsumeCheckpointWithTableID(
+				ctx, partition.HandleObjectEntry,
+			); err != nil {
+				panic(err)
+			}
+		}
 	}
 	return
 }

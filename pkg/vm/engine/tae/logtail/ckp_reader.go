@@ -251,6 +251,10 @@ func NewCKPReaderWithTableID_V2(
 	}
 }
 
+func (reader *CKPReader) GetL() objectio.Location {
+	return reader.location
+}
+
 // must called after ReadMeta
 // if withTableID, return from dataRanges and tombstoneRanges
 // else load from reader
