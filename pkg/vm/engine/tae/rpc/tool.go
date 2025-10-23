@@ -1171,6 +1171,7 @@ func (c *storageCkpBaseArg) getEntriesFromMeta(
 		}
 
 		for _, reader := range readers {
+			logutil.Infof("reader reader is %v", reader.GetL().String())
 			if err := reader.ConsumeCheckpointWithTableID(
 				ctx, partition.HandleObjectEntry,
 			); err != nil {
