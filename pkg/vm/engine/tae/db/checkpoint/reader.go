@@ -135,7 +135,7 @@ func (r *CKPMetaReader) Next(
 	}
 
 	bats, release, err = reader.LoadAllColumns(
-		ctx, nil, mp,
+		ctx, nil, mp)
 	return
 }
 
