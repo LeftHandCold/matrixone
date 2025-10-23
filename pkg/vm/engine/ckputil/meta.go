@@ -24,6 +24,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/mergeutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/readutil"
@@ -177,13 +178,11 @@ func ExportToTableRangesByFilter(
 	startRows := vector.MustFixedColNoTypeCheck[types.Rowid](data.Vecs[2])
 	endRows := vector.MustFixedColNoTypeCheck[types.Rowid](data.Vecs[3])
 	for i, rows := start, data.RowCount(); i < rows; i++ {
-		//test := objectio.ObjectStats(data.Vecs[4].GetBytesAt(i))
-		//if test.ObjectName().String() == "019a0fde-8f79-7c38-aa21-e280d9d377fd_00000" {
-		//	logutil.Infof("tableIds[i] is %d, tableId is %d, objectTypes[i] is %v, oo %v, startRows[i] is %v, endRows[i is %v ", tableIds[i], tableId, objectTypes[i], objectType, startRows[i].String(), endRows[i].String())
-		//}
-		//if tableIds[i] != tableId || objectTypes[i] != objectType {
-		//	continue
-		//}
+		test := objectio.ObjectStats(data.Vecs[4].GetBytesAt(i))
+		logutil.Infof("testtest is %v tableIds[i] is %d, tableId is %d, objectTypes[i] is %v, oo %v, startRows[i] is %v, endRows[i is %v ", test.ObjectName().String(), tableIds[i], tableId, objectTypes[i], objectType, startRows[i].String(), endRows[i].String())
+		if tableIds[i] != tableId || objectTypes[i] != objectType {
+			continue
+		}
 		ranges = append(ranges, TableRange{
 			TableID:     tableId,
 			ObjectType:  objectTypes[i],
