@@ -755,6 +755,9 @@ func consumeCheckpointWithTableID(
 	fs fileservice.FileService,
 ) (err error) {
 	if len(dataRanges) != 0 {
+		for _, tt := range dataRanges {
+			logutil.Infof("tt is %v", tt.String())
+		}
 		iter := ckputil.NewObjectIter(ctx, dataRanges, mp, fs)
 		defer iter.Close()
 		for ok, err := iter.Next(); ok && err == nil; ok, err = iter.Next() {
