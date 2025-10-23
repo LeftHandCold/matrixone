@@ -191,6 +191,7 @@ func (l *LocalFS) initCaches(ctx context.Context, config CacheConfig) error {
 }
 
 func (l *LocalFS) Name() string {
+	logutil.Infof("l.rootPath is %v", l.rootPath)
 	return l.name
 }
 

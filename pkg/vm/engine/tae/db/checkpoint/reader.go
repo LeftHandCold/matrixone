@@ -123,10 +123,10 @@ func (r *CKPMetaReader) Next(
 	default:
 	}
 
-	fname := ioutil.MakeFullName("/mo-data/shared/"+r.dir, name)
+	fname := ioutil.MakeFullName(r.dir, name)
 
 	var reader *ioutil.BlockReader
-	logutil.Infof("r.fsr.fs is %v, dir %v, fname %v", r.fs.Name(), r.dir, fname)
+	logutil.Infof("r.fsr.fs is %v, dir %v, fname %v", r.fs.Name(), r.fs.Name(), fname)
 	if reader, err = ioutil.NewFileReader(
 		r.fs,
 		fname,
@@ -136,10 +136,6 @@ func (r *CKPMetaReader) Next(
 
 	bats, release, err = reader.LoadAllColumns(
 		ctx, nil, mp,
-	)
-	if err != nil {
-		panic(err)
-	}
 	return
 }
 
