@@ -123,7 +123,7 @@ func (r *CKPMetaReader) Next(
 	default:
 	}
 
-	fname := ioutil.MakeFullName("/home/mo/matrixone/mo-data/shared/"+r.dir, name)
+	fname := ioutil.MakeFullName("/mo-data/shared/"+r.dir, name)
 
 	var reader *ioutil.BlockReader
 	logutil.Infof("r.fsr.fs is %v, dir %v, fname %v", r.fs.Name(), r.dir, fname)
