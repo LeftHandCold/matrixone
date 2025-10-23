@@ -1371,10 +1371,11 @@ func (c *storageCkpListArg) Usage() (res string) {
 
 	return
 }
+func init() {
+	ioutil.Start("")
+}
 
 func (c *storageCkpListArg) Run() (err error) {
-	ioutil.Start("")
-	defer ioutil.Stop("")
 	if c.ctx == nil {
 		return c.runOffline()
 	}
