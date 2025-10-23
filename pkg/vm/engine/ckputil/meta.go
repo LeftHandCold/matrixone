@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -178,6 +179,12 @@ func ExportToTableRangesByFilter(
 	startRows := vector.MustFixedColNoTypeCheck[types.Rowid](data.Vecs[2])
 	endRows := vector.MustFixedColNoTypeCheck[types.Rowid](data.Vecs[3])
 	for i, rows := start, data.RowCount(); i < rows; i++ {
+		if startRows[i].String() == "0-0" && endRows[i].String() == "0-56" {
+			logutil.Infof("tableIds[i] is %d, tableId is %d, objectTypes[i] is %v, oo %v", tableIds[i], tableId, objectTypes[i], objectType)
+		}
+		if tableIds[i] != tableId || objectTypes[i] != objectType {
+			break
+		}
 		ranges = append(ranges, TableRange{
 			TableID:     tableId,
 			ObjectType:  objectTypes[i],
