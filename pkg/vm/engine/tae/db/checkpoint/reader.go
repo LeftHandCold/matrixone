@@ -126,7 +126,7 @@ func (r *CKPMetaReader) Next(
 	fname := ioutil.MakeFullName(r.dir, name)
 
 	var reader *ioutil.BlockReader
-	logutil.Infof("r.fsr.fs is %v", r.fs.Name())
+	logutil.Infof("r.fsr.fs is %v, dir %v", r.fs.Name(), r.dir)
 	if reader, err = ioutil.NewFileReader(
 		r.fs,
 		fname,
