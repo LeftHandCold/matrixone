@@ -19,8 +19,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
-
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -179,10 +177,6 @@ func ExportToTableRangesByFilter(
 	startRows := vector.MustFixedColNoTypeCheck[types.Rowid](data.Vecs[2])
 	endRows := vector.MustFixedColNoTypeCheck[types.Rowid](data.Vecs[3])
 	for i, rows := start, data.RowCount(); i < rows; i++ {
-		test := objectio.ObjectStats(data.Vecs[4].GetBytesAt(i))
-		if test.ObjectName().String() == "019a0fde-8f79-7c38-aa21-e280d9d377fd_00000" {
-			logutil.Infof("tableIds[i] is %d, tableId is %d, objectTypes[i] is %v, oo %v, startRows[i] is %v, endRows[i is %v ", tableIds[i], tableId, objectTypes[i], objectType, startRows[i].String(), endRows[i].String())
-		}
 		if tableIds[i] != tableId || objectTypes[i] != objectType {
 			continue
 		}
