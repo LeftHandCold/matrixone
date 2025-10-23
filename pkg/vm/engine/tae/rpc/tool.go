@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1113,6 +1114,9 @@ func (c *storageCkpBaseArg) getEntriesFromMeta(
 		common.CheckpointAllocator,
 		c.fs,
 	)
+	for _, en := range entries {
+		logutil.Infof("getEntriesFromMeta is en %v", en.GetLocation().String())
+	}
 	return
 }
 

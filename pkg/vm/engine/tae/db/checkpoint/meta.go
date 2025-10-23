@@ -16,8 +16,6 @@ package checkpoint
 
 import (
 	"context"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
-
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -64,14 +62,6 @@ func ReadEntriesFromMeta(
 				err = nil
 			}
 			return
-		}
-		logutil.Infof("fsdfsdfs")
-		for _, en := range batchEntries {
-			if en.String() == "CKP[G][2][true:true][99256148-99251148](0-0->1761200832340995965-1)" {
-				entries = make([]*CheckpointEntry, 1)
-				entries[0] = en
-				return
-			}
 		}
 		if len(entries) == 0 {
 			entries = batchEntries
