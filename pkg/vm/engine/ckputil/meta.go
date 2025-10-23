@@ -184,7 +184,7 @@ func ExportToTableRangesByFilter(
 			logutil.Infof("tableIds[i] is %d, tableId is %d, objectTypes[i] is %v, oo %v, startRows[i] is %v, endRows[i is %v ", tableIds[i], tableId, objectTypes[i], objectType, startRows[i].String(), endRows[i].String())
 		}
 		if tableIds[i] != tableId || objectTypes[i] != objectType {
-			break
+			continue
 		}
 		ranges = append(ranges, TableRange{
 			TableID:     tableId,
