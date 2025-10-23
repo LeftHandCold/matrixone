@@ -129,6 +129,7 @@ func (p *PartitionState) String() string {
 }
 
 func (p *PartitionState) HandleObjectEntry(ctx context.Context, objectEntry objectio.ObjectEntry, isTombstone bool) (err error) {
+	logutil.Infof("objectEntry is %v", objectEntry.String())
 	if isTombstone {
 		return p.handleTombstoneObjectEntry(ctx, objectEntry)
 	} else {
