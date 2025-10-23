@@ -16,6 +16,7 @@ package checkpoint
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -64,6 +65,7 @@ func ReadEntriesFromMeta(
 			}
 			return
 		}
+		logutil.Infof("batchEntries is %v", batchEntries[0].String())
 		if len(entries) == 0 {
 			entries = batchEntries
 		} else {
