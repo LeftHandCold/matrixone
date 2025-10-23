@@ -65,7 +65,10 @@ func ReadEntriesFromMeta(
 			}
 			return
 		}
-		logutil.Infof("batchEntries is %v", batchEntries[0].String())
+		logutil.Infof("fsdfsdfs")
+		for _, en := range batchEntries {
+			logutil.Infof("batchEntries is %v", en.String())
+		}
 		if len(entries) == 0 {
 			entries = batchEntries
 		} else {
