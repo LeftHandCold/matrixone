@@ -80,6 +80,7 @@ func MergeCheckpoint(
 			logutil.Warn("GC-TRACE-MERGE-CKP-SKIP-P1",
 				zap.String("task", taskName),
 				zap.String("ckp", ckpEntry.String()))
+			err = nil
 			continue
 		}
 		datas = append(datas, data)
@@ -104,6 +105,7 @@ func MergeCheckpoint(
 		if err != nil {
 			if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
 				deleteFiles = append(deleteFiles, nameMeta)
+				err = nil
 				continue
 			}
 			return
