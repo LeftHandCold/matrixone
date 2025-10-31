@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # LogService - 日志服务
   logservice:
-    image: registry.cn-hangzhou.aliyuncs.com/mocloud/matrixone:v2.2.2-fbfa9e4282-2025-10-24
+    image: registry.cn-hangzhou.aliyuncs.com/mocloud/matrixone:v2.2.0-3255cd2542-2025-10-31
     container_name: mo-logservice
     entrypoint: ["/bin/bash", "-c", "set -euo pipefail; /mo-service -cfg /config/log.toml"]
     volumes:
@@ -21,7 +21,7 @@ services:
 
   # TN Service - 数据存储节点
   tn:
-    image: registry.cn-hangzhou.aliyuncs.com/mocloud/matrixone:v2.2.2-fbfa9e4282-2025-10-24
+    image: registry.cn-hangzhou.aliyuncs.com/mocloud/matrixone:v2.2.0-3255cd2542-2025-10-31
     container_name: mo-tn
     entrypoint: ["/bin/bash", "-c", "set -euo pipefail; /mo-service -cfg /config/tn.toml"]
     volumes:
@@ -42,7 +42,7 @@ services:
 
   # CN-0 - 计算节点1
   cn-0:
-    image: registry.cn-hangzhou.aliyuncs.com/mocloud/matrixone:v2.2.2-fbfa9e4282-2025-10-24
+    image: registry.cn-hangzhou.aliyuncs.com/mocloud/matrixone:v2.2.0-3255cd2542-2025-10-31
     container_name: mo-cn-0
     entrypoint: ["/bin/bash", "-c", "set -euo pipefail; /mo-service -cfg /config/cn-0.toml"]
     volumes:
@@ -65,7 +65,7 @@ services:
 
   # CN-1 - 计算节点2
   cn-1:
-    image: registry.cn-hangzhou.aliyuncs.com/mocloud/matrixone:v2.2.2-fbfa9e4282-2025-10-24
+    image: registry.cn-hangzhou.aliyuncs.com/mocloud/matrixone:v2.2.0-3255cd2542-2025-10-31
     container_name: mo-cn-1
     entrypoint: ["/bin/bash", "-c", "set -euo pipefail; /mo-service -cfg /config/cn-1.toml"]
     volumes:
