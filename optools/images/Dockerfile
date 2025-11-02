@@ -1,8 +1,11 @@
 FROM matrixorigin/golang:1.24-ubuntu22.04 AS builder
 
-# goproxy
-ARG GOPROXY="https://proxy.golang.com.cn,direct"
-RUN go env -w GOPROXY=${GOPROXY}
+# goproxy - use multiple Chinese mirrors for better reliability
+ARG GOPROXY="https://goproxy.cn,https://proxy.golang.com.cn,https://mirrors.aliyun.com/goproxy/,direct"
+RUN go env -w GOPROXY=${GOPROXY} && \
+    go env -w GOSUMDB=sum.golang.google.cn && \
+    go env -w GOPRIVATE="" && \
+    go env
 
 RUN mkdir -p /go/src/github.com/matrixorigin/matrixone
 
@@ -13,7 +16,11 @@ COPY go.sum go.sum
 
 # cache deps before building and copying source so that we don't need to re-download as much
 # and so that source changes don't invalidate our downloaded layer
-RUN go mod download
+# Add retry mechanism for network issues
+RUN for i in 1 2 3 4 5; do \
+        go mod download && break || \
+        (echo "Retry $i failed, waiting..." && sleep $((i*2))); \
+    done || exit 1
 
 COPY . .
 
