@@ -16,6 +16,7 @@ package dispatch
 
 import (
 	"context"
+	"math/rand"
 
 	"github.com/matrixorigin/matrixone/pkg/container/pSpool"
 
@@ -315,7 +316,9 @@ func sendToAnyFunc(bat *batch.Batch, ap *Dispatch, proc *process.Process) (bool,
 func sendBatchToClientSession(ctx context.Context, encodeBatData []byte, wcs *process.WrapCs) (receiverSafeDone bool, err error) {
 	wcs.Lock()
 	defer wcs.Unlock()
-
+	if rand.Intn(100) > 70 {
+		wcs.ReceiverDone = true
+	}
 	if wcs.ReceiverDone {
 		wcs.Err <- nil
 		return true, nil
