@@ -16,6 +16,7 @@ package dispatch
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"math/rand"
 
 	"github.com/matrixorigin/matrixone/pkg/container/pSpool"
@@ -317,6 +318,7 @@ func sendBatchToClientSession(ctx context.Context, encodeBatData []byte, wcs *pr
 	wcs.Lock()
 	defer wcs.Unlock()
 	if rand.Intn(100) > 70 {
+		logutil.Infof("sendBatchToClientSession wcs.ReceiverDone = true")
 		wcs.ReceiverDone = true
 	}
 	if wcs.ReceiverDone {
