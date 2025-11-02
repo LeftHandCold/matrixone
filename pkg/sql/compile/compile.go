@@ -865,14 +865,21 @@ func (c *Compile) compileQuery(qry *plan.Query) ([]*Scope, error) {
 	n := getEngineNode(c)
 	if c.execType == plan2.ExecTypeTP || c.execType == plan2.ExecTypeAP_ONECN {
 		c.cnList = engine.Nodes{n}
+		logutil.Infof("[MULTI-CN] Using single CN execution, execType=%v, CN=%s", c.execType, n.Addr)
 	} else {
 		c.cnList, err = c.getCNList()
 		if err != nil {
+			logutil.Errorf("[MULTI-CN] Failed to get CN list: %v", err)
 			return nil, err
 		}
+		logutil.Infof("[MULTI-CN] Got CN list, count=%d, before remove unavailable", len(c.cnList))
 		c.removeUnavailableCN()
 		// sort by addr to get fixed order of CN list
 		sort.Slice(c.cnList, func(i, j int) bool { return c.cnList[i].Addr < c.cnList[j].Addr })
+		logutil.Infof("[MULTI-CN] Using multi-CN execution, execType=%v, CN count=%d", c.execType, len(c.cnList))
+		for i, cn := range c.cnList {
+			logutil.Infof("[MULTI-CN] CN[%d]: ID=%s, Addr=%s", i, cn.Id, cn.Addr)
+		}
 	}
 
 	if c.isPrepare && !c.IsTpQuery() {
@@ -880,6 +887,7 @@ func (c *Compile) compileQuery(qry *plan.Query) ([]*Scope, error) {
 	}
 
 	plan2.CalcQueryDOP(c.pn, int32(c.ncpu), len(c.cnList), c.execType)
+	logutil.Infof("[MULTI-CN] Calculated DOP: ncpu=%d, cnCount=%d, execType=%v", c.ncpu, len(c.cnList), c.execType)
 
 	c.initAnalyzeModule(qry)
 	// deal with sink scan first.
