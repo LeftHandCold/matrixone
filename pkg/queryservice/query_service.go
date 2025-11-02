@@ -16,7 +16,10 @@ package queryservice
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/lni/dragonboat/v4/logger"
 	"github.com/pkg/errors"
@@ -25,6 +28,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/morpc"
 	pb "github.com/matrixorigin/matrixone/pkg/pb/query"
 	"github.com/matrixorigin/matrixone/pkg/queryservice/client"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 )
 
 // QueryService is used to send query request to another CN service.
@@ -163,7 +167,28 @@ func RequestMultipleCn(ctx context.Context,
 			if genRequest != nil {
 				req := genRequest()
 				logger.GetLogger("RequestMultipleCn").Infof("[send request]%s send request %s to %s", qc.ServiceID(), req.CmdMethod.String(), node)
-				resp, err := qc.SendMessage(ctx, addr, req)
+
+				// Error injection for testing multi-CN query bug reproduction
+				// Inject network error with probability to simulate real network failures
+				injectErr := false
+				if _, _, exist := fault.TriggerFault("inject_multicn_network_error"); exist {
+					// Use fault injection if configured
+					injectErr = true
+				} else {
+					// Random injection with 30% probability (adjustable)
+					rand.Seed(time.Now().UnixNano() + int64(len(addr)))
+					injectErr = rand.Float32() < 0.3 && len(nodes) > 1 // Only inject when multiple CNs
+				}
+
+				var resp *pb.Response
+				var err error
+				if injectErr {
+					// Inject network error but continue execution (simulating the bug)
+					err = moerr.NewInternalError(ctx, fmt.Sprintf("injected network error: connection timeout to %s", addr))
+					logger.GetLogger("RequestMultipleCn").Warningf("[error injection] injected network error for %s", addr)
+				} else {
+					resp, err = qc.SendMessage(ctx, addr, req)
+				}
 				responseChan <- nodeResponse{nodeAddr: addr, response: resp, err: err}
 			}
 		}(node)

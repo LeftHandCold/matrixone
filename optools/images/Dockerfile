@@ -1,7 +1,7 @@
 FROM matrixorigin/golang:1.24-ubuntu22.04 AS builder
 
 # goproxy
-ARG GOPROXY="https://proxy.golang.org,direct"
+ARG GOPROXY="https://proxy.golang.com.cn,direct"
 RUN go env -w GOPROXY=${GOPROXY}
 
 RUN mkdir -p /go/src/github.com/matrixorigin/matrixone
