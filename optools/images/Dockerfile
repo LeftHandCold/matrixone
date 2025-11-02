@@ -1,11 +1,17 @@
 FROM matrixorigin/golang:1.24-ubuntu22.04 AS builder
 
 # goproxy - use multiple Chinese mirrors for better reliability
+# Set GOPROXY with multiple fallback options
 ARG GOPROXY="https://goproxy.cn,https://proxy.golang.com.cn,https://mirrors.aliyun.com/goproxy/,direct"
-RUN go env -w GOPROXY=${GOPROXY} && \
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=sum.golang.google.cn
+RUN echo "Setting GOPROXY to: ${GOPROXY}" && \
+    go env -w GOPROXY="${GOPROXY}" && \
     go env -w GOSUMDB=sum.golang.google.cn && \
     go env -w GOPRIVATE="" && \
-    go env
+    echo "Verifying Go proxy settings:" && \
+    go env | grep -E "(GOPROXY|GOSUMDB)" && \
+    echo "Confirmed: GOPROXY is set to use Chinese mirrors"
 
 RUN mkdir -p /go/src/github.com/matrixorigin/matrixone
 
