@@ -1797,6 +1797,12 @@ func GetExecType(qry *plan.Query, txnHaveDDL bool, isPrepare bool) ExecType {
 			ret = ExecTypeAP_ONECN
 		}
 	}
+	// Force all AP queries to use multi-CN execution
+	// If the query is not TP type, force it to use multi-CN
+	if ret != ExecTypeTP {
+		logutil.Infof("Force all AP queries to use multi-CN execution")
+		return ExecTypeAP_MULTICN
+	}
 	return ret
 }
 
