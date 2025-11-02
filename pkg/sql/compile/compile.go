@@ -855,6 +855,17 @@ func (c *Compile) compileQuery(qry *plan.Query) ([]*Scope, error) {
 
 	c.execType = plan2.GetExecType(c.pn.GetQuery(), c.getHaveDDL(), c.isPrepare)
 
+	// Check force_scan_on_multi_cn system variable to force multi-CN execution
+	if c.proc != nil && c.proc.GetResolveVariableFunc() != nil {
+		if forceMultiCN, err := c.proc.GetResolveVariableFunc()("force_scan_on_multi_cn", true, false); err == nil {
+			if forceVal, ok := forceMultiCN.(int64); ok && forceVal != 0 {
+				// Force multi-CN execution if variable is set to true
+				logutil.Infof("force_scan_on_multi_cn is start")
+				c.execType = plan2.ExecTypeAP_MULTICN
+			}
+		}
+	}
+
 	n := getEngineNode(c)
 	if c.execType == plan2.ExecTypeTP || c.execType == plan2.ExecTypeAP_ONECN {
 		c.cnList = engine.Nodes{n}

@@ -3818,6 +3818,14 @@ var gSysVarsDefs = map[string]SystemVariable{
 		Type:              InitSystemVariableIntType("agg_spill_mem", 0, common.TiB, false),
 		Default:           int64(common.GiB),
 	},
+	"force_scan_on_multi_cn": {
+		Name:              "force_scan_on_multi_cn",
+		Scope:             ScopeSession,
+		Dynamic:           true,
+		SetVarHintApplies: false,
+		Type:              InitSystemVariableBoolType("force_scan_on_multi_cn"),
+		Default:           int64(0),
+	},
 }
 
 func updateTimeZone(ctx context.Context, sess *Session, sv *SystemVariables, name string, val interface{}) error {
