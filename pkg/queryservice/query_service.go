@@ -17,6 +17,7 @@ package queryservice
 import (
 	"context"
 	"fmt"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"math/rand"
 	"sync"
 	"time"
@@ -155,16 +156,12 @@ func RequestMultipleCn(ctx context.Context,
 
 	var retErr error
 
-	logger.GetLogger("RequestMultipleCn").Infof("[MULTI-CN] RequestMultipleCn called with %d nodes", len(nodes))
-	for i, node := range nodes {
-		logger.GetLogger("RequestMultipleCn").Infof("[MULTI-CN] Node[%d]: %s", i, node)
-	}
+	logutil.Infof("[MULTI-CN] RequestMultipleCn called with %d nodes", len(nodes))
 
 	for _, node := range nodes {
 		// Invalid node address, ignore it.
 		if len(node) == 0 {
 			nodesLeft--
-			logger.GetLogger("RequestMultipleCn").Warningf("[MULTI-CN] Ignoring empty node address")
 			continue
 		}
 
@@ -172,14 +169,13 @@ func RequestMultipleCn(ctx context.Context,
 			// gen request and send it
 			if genRequest != nil {
 				req := genRequest()
-				logger.GetLogger("RequestMultipleCn").Infof("[MULTI-CN] [send request] %s send request %s to %s", qc.ServiceID(), req.CmdMethod.String(), addr)
-
 				// Error injection for testing multi-CN query bug reproduction
 				// Inject network error with probability to simulate real network failures
 				injectErr := false
 				if _, _, exist := fault.TriggerFault("inject_multicn_network_error"); exist {
 					// Use fault injection if configured
 					injectErr = true
+					logutil.Infof("TriggerFault inject_multicn_network_error is start")
 				} else {
 					// Random injection with 30% probability (adjustable)
 					rand.Seed(time.Now().UnixNano() + int64(len(addr)))
@@ -189,16 +185,16 @@ func RequestMultipleCn(ctx context.Context,
 				var resp *pb.Response
 				var err error
 				if injectErr {
+					logutil.Infof(" inject_multicn_network_error is start")
 					// Inject network error but continue execution (simulating the bug)
 					err = moerr.NewInternalError(ctx, fmt.Sprintf("injected network error: connection timeout to %s", addr))
-					logger.GetLogger("RequestMultipleCn").Warningf("[error injection] injected network error for %s", addr)
 				} else {
 					resp, err = qc.SendMessage(ctx, addr, req)
 				}
 				if err != nil {
-					logger.GetLogger("RequestMultipleCn").Warningf("[MULTI-CN] Error sending request to %s: %v", addr, err)
+					logutil.Warnf("[MULTI-CN] Error sending request to %s: %v", addr, err)
 				} else {
-					logger.GetLogger("RequestMultipleCn").Infof("[MULTI-CN] Successfully sent request to %s, got response", addr)
+					logutil.Infof("[MULTI-CN] Successfully sent request to %s, got response", addr)
 				}
 				responseChan <- nodeResponse{nodeAddr: addr, response: resp, err: err}
 			}
@@ -212,31 +208,23 @@ func RequestMultipleCn(ctx context.Context,
 		select {
 		case res := <-responseChan:
 			responsesReceived++
-			if res.err != nil {
-				logger.GetLogger("RequestMultipleCn").Warningf("[MULTI-CN] Received error response from %s: %v", res.nodeAddr, res.err)
-				if retErr != nil {
-					retErr = errors.Wrapf(res.err, "failed to get result from %s", res.nodeAddr)
-				} else {
-					retErr = res.err
-				}
+			if res.err != nil && retErr != nil {
+				retErr = errors.Wrapf(res.err, "failed to get result from %s", res.nodeAddr)
 			} else {
 				queryResp, ok := res.response.(*pb.Response)
 				if ok {
-					logger.GetLogger("RequestMultipleCn").Infof("[MULTI-CN] Received valid response from %s, response saved", res.nodeAddr)
 					//save response
 					handleValidResponse(res.nodeAddr, queryResp)
 					if queryResp != nil {
 						qc.Release(queryResp)
 					}
 				} else {
-					logger.GetLogger("RequestMultipleCn").Warningf("[MULTI-CN] Received invalid response type from %s", res.nodeAddr)
 					if handleInvalidResponse != nil {
 						handleInvalidResponse(res.nodeAddr)
 					}
 				}
 			}
 		case <-ctx.Done():
-			logger.GetLogger("RequestMultipleCn").Errorf("[MULTI-CN] Context deadline exceeded, nodesLeft=%d", nodesLeft)
 			retErr = moerr.NewInternalError(ctx, "RequestMultipleCn : context deadline exceeded")
 		}
 		nodesLeft--
