@@ -164,7 +164,7 @@ func RequestMultipleCn(ctx context.Context,
 		// Invalid node address, ignore it.
 		if len(node) == 0 {
 			nodesLeft--
-			logger.GetLogger("RequestMultipleCn").Warnf("[MULTI-CN] Ignoring empty node address")
+			logger.GetLogger("RequestMultipleCn").Warningf("[MULTI-CN] Ignoring empty node address")
 			continue
 		}
 
@@ -196,7 +196,7 @@ func RequestMultipleCn(ctx context.Context,
 					resp, err = qc.SendMessage(ctx, addr, req)
 				}
 				if err != nil {
-					logger.GetLogger("RequestMultipleCn").Warnf("[MULTI-CN] Error sending request to %s: %v", addr, err)
+					logger.GetLogger("RequestMultipleCn").Warningf("[MULTI-CN] Error sending request to %s: %v", addr, err)
 				} else {
 					logger.GetLogger("RequestMultipleCn").Infof("[MULTI-CN] Successfully sent request to %s, got response", addr)
 				}
@@ -213,7 +213,7 @@ func RequestMultipleCn(ctx context.Context,
 		case res := <-responseChan:
 			responsesReceived++
 			if res.err != nil {
-				logger.GetLogger("RequestMultipleCn").Warnf("[MULTI-CN] Received error response from %s: %v", res.nodeAddr, res.err)
+				logger.GetLogger("RequestMultipleCn").Warningf("[MULTI-CN] Received error response from %s: %v", res.nodeAddr, res.err)
 				if retErr != nil {
 					retErr = errors.Wrapf(res.err, "failed to get result from %s", res.nodeAddr)
 				} else {
@@ -229,7 +229,7 @@ func RequestMultipleCn(ctx context.Context,
 						qc.Release(queryResp)
 					}
 				} else {
-					logger.GetLogger("RequestMultipleCn").Warnf("[MULTI-CN] Received invalid response type from %s", res.nodeAddr)
+					logger.GetLogger("RequestMultipleCn").Warningf("[MULTI-CN] Received invalid response type from %s", res.nodeAddr)
 					if handleInvalidResponse != nil {
 						handleInvalidResponse(res.nodeAddr)
 					}
