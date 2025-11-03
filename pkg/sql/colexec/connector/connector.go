@@ -16,9 +16,11 @@ package connector
 
 import (
 	"bytes"
-	"github.com/matrixorigin/matrixone/pkg/container/pSpool"
+	"math/rand"
 
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/container/pSpool"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
@@ -49,6 +51,20 @@ func (connector *Connector) Call(proc *process.Process) (vm.CallResult, error) {
 		return result, err
 	}
 
+	// [TEST CODE] Simulate CN cancel: randomly return CancelResult to simulate context cancellation
+	// This simulates the scenario where a remote CN gets canceled during execution
+	// ChildrenCall gets data from child operators (like TableScan, Aggregate, etc.)
+	// If we return CancelResult here, it simulates the CN being canceled after processing some data
+	// Only simulate for remote CNs (those that have Reg.Ch2 for sending data)
+	if connector.Reg != nil && connector.Reg.Ch2 != nil {
+		// 30% probability to simulate cancel
+		if rand.Float32() < 0.30 && result.Batch != nil && !result.Batch.IsEmpty() {
+			logutil.Warnf("[TEST CODE] Simulating CN cancel on remote CN: returning CancelResult (simulating context.Done())")
+			// Return CancelResult to simulate context cancellation, stopping data transmission
+			return vm.CancelResult, nil
+		}
+	}
+
 	// pipeline ends normally.
 	if result.Batch == nil {
 		result.Status = vm.ExecStop
@@ -65,6 +81,7 @@ func (connector *Connector) Call(proc *process.Process) (vm.CallResult, error) {
 	if queryDone || err != nil {
 		return result, err
 	}
+
 	connector.Reg.Ch2 <- process.NewPipelineSignalToGetFromSpool(connector.ctr.sp, 0)
 	return result, nil
 }

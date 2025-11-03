@@ -16,13 +16,9 @@ package process
 
 import (
 	"context"
-	"math/rand"
-	"sync"
-
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/pSpool"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"reflect"
 	"time"
 )
@@ -132,36 +128,6 @@ func InitPipelineSignalReceiver(runningCtx context.Context, regs []*WaitRegister
 	}
 }
 
-// [TEST CODE] Track batch count per receiver to simulate CN cancel
-var receiverBatchCounts = make(map[*PipelineSignalReceiver]map[int]int)
-var receiverBatchCountsLock sync.Mutex
-
-func initReceiverBatchCounts(receiver *PipelineSignalReceiver) {
-	receiverBatchCountsLock.Lock()
-	defer receiverBatchCountsLock.Unlock()
-	if _, ok := receiverBatchCounts[receiver]; !ok {
-		receiverBatchCounts[receiver] = make(map[int]int)
-	}
-}
-
-func getReceiverBatchCount(receiver *PipelineSignalReceiver, idx int) int {
-	receiverBatchCountsLock.Lock()
-	defer receiverBatchCountsLock.Unlock()
-	if counts, ok := receiverBatchCounts[receiver]; ok {
-		return counts[idx]
-	}
-	return 0
-}
-
-func incReceiverBatchCount(receiver *PipelineSignalReceiver, idx int) {
-	receiverBatchCountsLock.Lock()
-	defer receiverBatchCountsLock.Unlock()
-	if _, ok := receiverBatchCounts[receiver]; !ok {
-		receiverBatchCounts[receiver] = make(map[int]int)
-	}
-	receiverBatchCounts[receiver][idx]++
-}
-
 func (receiver *PipelineSignalReceiver) setCurrent(current *PipelineSignal) {
 	receiver.currentSignal = current
 }
@@ -185,9 +151,6 @@ func (receiver *PipelineSignalReceiver) GetNextBatch(
 	analyzer Analyzer) (content *batch.Batch, info error) {
 	var chosen int
 	var msg PipelineSignal
-
-	// [TEST CODE] Initialize batch count tracking for this receiver
-	initReceiverBatchCounts(receiver)
 
 	for {
 		receiver.releaseCurrent()
@@ -219,27 +182,6 @@ func (receiver *PipelineSignalReceiver) GetNextBatch(
 				return nil, info
 			}
 			continue
-		}
-
-		// [TEST CODE] Simulate CN cancel or network error by randomly early termination
-		// This simulates the scenario where a remote CN fails or cancels after sending some data
-		// Only simulate when there are multiple CNs (receiver.alive > 1)
-		if receiver.alive > 1 && content != nil && !content.IsEmpty() {
-			receiverIdx := chosen - 1
-			incReceiverBatchCount(receiver, receiverIdx)
-			batchCount := getReceiverBatchCount(receiver, receiverIdx)
-			// 15% probability after receiving at least 2 batches from this receiver
-			if rand.Float32() < 0.30 && batchCount >= 2 {
-				// Simulate this CN being canceled or network error - mark it as done after this batch
-				logutil.Warnf("[TEST CODE] Simulating CN cancel/network error: CN[%d] stopping early after %d batches (data may be incomplete)", receiverIdx, batchCount)
-				receiver.removeIdxReceiver(chosen)
-				// Return this batch but mark the CN as done, so no more data will come from it
-				receiver.setCurrent(&msg)
-				if analyzer != nil {
-					analyzer.Input(content)
-				}
-				return content, info
-			}
 		}
 
 		receiver.setCurrent(&msg)
