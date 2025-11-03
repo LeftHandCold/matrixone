@@ -17,6 +17,7 @@ package compile
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"slices"
 	"strings"
 	"sync"
@@ -619,6 +620,19 @@ func (s *Scope) getRelData(c *Compile, blockExprList []*plan.Expr) error {
 		return err
 	}
 
+	// [TEST CODE] Simulate block alignment delay between CNs
+	// Randomly delay block collection for remote CNs to simulate synchronization issues
+	// This can cause different CNs to see different block lists (e.g., new blocks not yet synced)
+	if s.IsRemote && rand.Float32() < 0.25 { // 25% probability for remote CNs only
+		// Random delay between 20-80ms to simulate network/sync delay
+		delay := time.Duration(20+rand.Intn(60)) * time.Millisecond
+		logutil.Warnf("[TEST CODE] Simulating block sync delay: %vms for CN[%d] table %s (got %d blocks)",
+			delay.Milliseconds(), s.NodeInfo.CNIDX, s.DataSource.TableDef.Name, commited.DataCnt())
+		time.Sleep(delay)
+		// Note: In real scenarios, this delay might cause the CN to miss newly committed blocks
+		// that other CNs have already seen, leading to inconsistent block lists
+	}
+
 	average := float64(s.DataSource.node.Stats.BlockNum / s.NodeInfo.CNCNT)
 	if commited.DataCnt() < int(average*0.8) ||
 		commited.DataCnt() > int(average*1.2) {
@@ -652,7 +666,6 @@ func (s *Scope) getRelData(c *Compile, blockExprList []*plan.Expr) error {
 		tombstones := s.NodeInfo.Data.GetTombstones()
 		commited.AttachTombstones(tombstones)
 		s.NodeInfo.Data = commited
-
 	}
 	return nil
 }

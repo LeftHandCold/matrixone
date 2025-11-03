@@ -17,7 +17,6 @@ package dispatch
 import (
 	"context"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
-	"math/rand"
 
 	"github.com/matrixorigin/matrixone/pkg/container/pSpool"
 
@@ -321,11 +320,6 @@ func sendBatchToClientSession(ctx context.Context, encodeBatData []byte, wcs *pr
 	logutil.Infof("[DISPATCH] sendBatchToClientSession called: dataSize=%d bytes, receiverDone=%v, uid=%s, msgId=%d",
 		len(encodeBatData), wcs.ReceiverDone, wcs.Uid, wcs.MsgId)
 
-	// TODO: Remove this test code - it randomly marks receiver as done
-	if rand.Intn(100) > 50 {
-		logutil.Warnf("[DISPATCH] [TEST CODE] Randomly setting ReceiverDone=true (this may cause data loss!) uid=%s", wcs.Uid)
-		wcs.ReceiverDone = true
-	}
 	if wcs.ReceiverDone {
 		logutil.Warnf("[DISPATCH] Receiver already done, skipping send (uid=%s, msgId=%d)", wcs.Uid, wcs.MsgId)
 		wcs.Err <- nil

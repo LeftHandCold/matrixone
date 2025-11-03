@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net"
 	"sort"
 	"strings"
@@ -4179,6 +4180,16 @@ func collectTombstones(
 	tombstone, err = rel.CollectTombstones(ctx, c.TxnOffset, policy)
 	if err != nil {
 		return nil, err
+	}
+
+	// [TEST CODE] Simulate tombstone synchronization delay between CNs
+	// Randomly delay tombstone collection for remote CNs to simulate synchronization issues
+	// This can cause different CNs to see different tombstone states
+	if rand.Float32() < 0.3 { // 30% probability
+		// Random delay between 10-50ms to simulate network/sync delay
+		delay := time.Duration(10+rand.Intn(40)) * time.Millisecond
+		logutil.Warnf("[TEST CODE] Simulating tombstone sync delay: %vms for table %s", delay.Milliseconds(), node.ObjRef.ObjName)
+		time.Sleep(delay)
 	}
 
 	return tombstone, nil
