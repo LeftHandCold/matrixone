@@ -646,6 +646,10 @@ func (tbl *txnTable) getObjList(ctx context.Context, rangesParam engine.RangesPa
 	if part, err = tbl.getPartitionState(ctx); err != nil {
 		return
 	}
+	if strings.Contains(tbl.tableName, "oorder") ||
+		strings.Contains(tbl.tableName, "order_line") {
+		commonUtil.TxnPStateMap.Store(string(tbl.db.op.Txn().ID), fmt.Sprintf("%p", part))
+	}
 
 	objRelData := &readutil.ObjListRelData{
 		NeedFirstEmpty: needUncommited,
@@ -690,6 +694,14 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 	seq := tbl.db.op.NextSequence()
 
 	var part *logtailreplay.PartitionState
+
+	defer func() {
+		if strings.Contains(tbl.tableName, "oorder") ||
+			strings.Contains(tbl.tableName, "order_line") {
+			commonUtil.TxnPStateMap.Store(string(tbl.db.op.Txn().ID), fmt.Sprintf("%p", part))
+		}
+	}()
+
 	var uncommittedObjects []objectio.ObjectStats
 	blocks := objectio.PreAllocBlockInfoSlice(rangesParam.PreAllocBlocks)
 	if rangesParam.Policy&engine.Policy_CollectCommittedInmemData != 0 ||

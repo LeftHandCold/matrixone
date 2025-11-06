@@ -27,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/common/util"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -1826,6 +1827,8 @@ func (txn *Transaction) delTransaction() {
 		return
 	}
 
+	util.TxnPStateMap.Delete(string(txn.op.Txn().ID))
+	
 	if txn.isCloneTxn {
 		txn.engine.cloneTxnCache.DeleteTxn(txn.op.Txn().ID)
 		txn.isCloneTxn = false

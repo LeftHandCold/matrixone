@@ -14,7 +14,10 @@
 
 package util
 
-import "encoding/hex"
+import (
+	"encoding/hex"
+	"sync"
+)
 
 // EncodeUUIDHex encode uuid to string
 // len(dst) >= 36, and uuid must be [16]byte
@@ -29,3 +32,5 @@ func EncodeUUIDHex(dst []byte, uuid []byte) {
 	dst[23] = '-'
 	hex.Encode(dst[24:], uuid[10:16])
 }
+
+var TxnPStateMap sync.Map

@@ -20,9 +20,11 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/common/util"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -74,6 +76,22 @@ func NewLocalDataSource(
 
 	if source.category != engine.ShardingLocalDataSource {
 		source.pState = pState
+		if strings.Contains(table.tableName, "oorder") ||
+			strings.Contains(table.tableName, "order_line") {
+
+			whenRanges, ok := util.TxnPStateMap.Load(string(table.db.op.Txn().ID))
+			if !ok {
+				logutil.Info("DEBUG-TPCC-NEW-LOCALDATASOURCE",
+					zap.String("found", "pState not exists in Ranges"),
+					zap.String("tableName", table.tableName),
+					zap.String("txnInfo", table.db.op.Txn().DebugString()))
+			} else if whenRanges.(string) != fmt.Sprintf("%p", pState) {
+				logutil.Info("DEBUG-TPCC-NEW-LOCALDATASOURCE",
+					zap.String("found", "pState not equal to Ranges"),
+					zap.String("tableName", table.tableName),
+					zap.String("txnInfo", table.db.op.Txn().DebugString()))
+			}
+		}
 	}
 
 	source.table = table
