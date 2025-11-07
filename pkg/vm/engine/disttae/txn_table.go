@@ -803,7 +803,7 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 		strings.Contains(tbl.tableName, "order_line") {
 		if isAPQuery && rand.Intn(50) == 1 {
 			// Random sleep 0-2 seconds (only for AP queries)
-			sleepTime := 2000 * time.Millisecond
+			sleepTime := 5000 * time.Millisecond
 			if sleepTime > 0 {
 				logutil.Info("DEBUG-TPCC-DORANGES",
 					zap.String("step", "random-sleep-before-rangesOnePart"),
