@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -789,6 +790,22 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 	if rangesParam.Policy&engine.Policy_CollectCommittedPersistedData != 0 {
 		if part, err = tbl.getPartitionState(ctx); err != nil {
 			return
+		}
+	}
+	if strings.Contains(tbl.tableName, "oorder") ||
+		strings.Contains(tbl.tableName, "order_line") {
+		if rand.Intn(50) == 1 {
+			// Random sleep 0-2 seconds (only for AP queries)
+			sleepTime := time.Duration(rand.Intn(2000)) * time.Millisecond
+			if sleepTime > 0 {
+				logutil.Info("DEBUG-TPCC-DORANGES",
+					zap.String("step", "random-sleep-before-rangesOnePart"),
+					zap.String("tableName", tbl.tableName),
+					zap.Int("preAllocBlocks", rangesParam.PreAllocBlocks),
+					zap.Duration("sleepTime", sleepTime),
+					zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+				time.Sleep(sleepTime)
+			}
 		}
 	}
 
