@@ -792,15 +792,24 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 			return
 		}
 	}
+
+	// Random sleep to increase reproduction probability (only for AP queries)
+	// AP queries have Policy_CollectCommittedPersistedData or Policy_CollectAllData
+	// TP queries typically don't have these policies
+	isAPQuery := rangesParam.Policy&engine.Policy_CollectCommittedPersistedData != 0 ||
+		rangesParam.Policy&engine.Policy_CollectAllData != 0
+
 	if strings.Contains(tbl.tableName, "oorder") ||
 		strings.Contains(tbl.tableName, "order_line") {
-		if rand.Intn(50) == 1 {
+		if isAPQuery && rand.Intn(50) == 1 {
 			// Random sleep 0-2 seconds (only for AP queries)
-			sleepTime := time.Duration(rand.Intn(2000)) * time.Millisecond
+			sleepTime := 2000 * time.Millisecond
 			if sleepTime > 0 {
 				logutil.Info("DEBUG-TPCC-DORANGES",
 					zap.String("step", "random-sleep-before-rangesOnePart"),
 					zap.String("tableName", tbl.tableName),
+					zap.Uint64("policy", uint64(rangesParam.Policy)),
+					zap.Bool("isAPQuery", isAPQuery),
 					zap.Int("preAllocBlocks", rangesParam.PreAllocBlocks),
 					zap.Duration("sleepTime", sleepTime),
 					zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
