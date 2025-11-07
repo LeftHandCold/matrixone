@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -656,6 +657,23 @@ func (tbl *txnTable) getObjList(ctx context.Context, rangesParam engine.RangesPa
 			zap.String("key", key),
 			zap.String("pState", fmt.Sprintf("%p", part)),
 			zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+
+		//// Random sleep to increase reproduction probability (only for AP queries)
+		//// getObjList is only called when PreAllocBlocks > 128, which means it's always AP query
+		//// But we still check PreAllocBlocks to be safe
+		//if rangesParam.PreAllocBlocks > 2 {
+		//	// Random sleep 0-2 seconds (only for AP queries)
+		//	sleepTime := time.Duration(rand.Intn(2000)) * time.Millisecond
+		//	if sleepTime > 0 {
+		//		logutil.Info("DEBUG-TPCC-GETOBJLIST",
+		//			zap.String("step", "random-sleep-after-store-pState"),
+		//			zap.String("tableName", tbl.tableName),
+		//			zap.Int("preAllocBlocks", rangesParam.PreAllocBlocks),
+		//			zap.Duration("sleepTime", sleepTime),
+		//			zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+		//		time.Sleep(sleepTime)
+		//	}
+		//}
 	}
 
 	objRelData := &readutil.ObjListRelData{
@@ -824,6 +842,25 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 				zap.String("tableName", tbl.tableName),
 				zap.String("pState", fmt.Sprintf("%p", part)),
 				zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+		}
+	}
+
+	// Random sleep to increase reproduction probability (only for AP queries)
+	// AP queries have PreAllocBlocks > 2, TP queries have PreAllocBlocks = 2
+	if strings.Contains(tbl.tableName, "oorder") ||
+		strings.Contains(tbl.tableName, "order_line") {
+		if rangesParam.PreAllocBlocks > 2 {
+			// Random sleep 0-2 seconds (only for AP queries)
+			sleepTime := time.Duration(rand.Intn(2000)) * time.Millisecond
+			if sleepTime > 0 {
+				logutil.Info("DEBUG-TPCC-DORANGES",
+					zap.String("step", "random-sleep-before-rangesOnePart"),
+					zap.String("tableName", tbl.tableName),
+					zap.Int("preAllocBlocks", rangesParam.PreAllocBlocks),
+					zap.Duration("sleepTime", sleepTime),
+					zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+				time.Sleep(sleepTime)
+			}
 		}
 	}
 
