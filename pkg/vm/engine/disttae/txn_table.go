@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -758,6 +759,34 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 		}
 	}
 
+	// Random sleep to increase reproduction probability
+	// Check if SQL contains "EXCEPT" keyword or if context has EnableDebugSleep flag
+	shouldSleep := false
+	sql := ""
+	if p := tbl.proc.Load().GetStmtProfile(); p != nil {
+		sql = p.GetSqlOfStmt()
+		// Check if SQL contains "EXCEPT" (case-insensitive)
+		if strings.Contains(strings.ToUpper(sql), "EXCEPT") {
+			shouldSleep = true
+		}
+	}
+	if strings.Contains(tbl.tableName, "oorder") ||
+		strings.Contains(tbl.tableName, "order_line") {
+		if shouldSleep && rand.Intn(5) == 1 {
+			// Random sleep 0-2 seconds
+			sleepTime := 5000 * time.Millisecond
+			if sleepTime > 0 {
+				logutil.Info("DEBUG-TPCC-DORANGES",
+					zap.String("step", "random-sleep-before-rangesOnePart"),
+					zap.String("tableName", tbl.tableName),
+					zap.String("sql", sql),
+					zap.Bool("shouldSleep", shouldSleep),
+					zap.Duration("sleepTime", sleepTime),
+					zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+				time.Sleep(sleepTime)
+			}
+		}
+	}
 	if err = tbl.rangesOnePart(
 		ctx,
 		part,
