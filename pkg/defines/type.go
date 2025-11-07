@@ -232,6 +232,9 @@ type IgnoreForeignKey struct{}
 
 type AlterCopyOpt struct{}
 
+// EnableDebugSleep is used to enable debug sleep in query execution for testing purposes.
+type EnableDebugSleep struct{}
+
 // Determine if now is a bg sql.
 type BgKey struct{}
 

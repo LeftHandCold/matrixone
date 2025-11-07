@@ -793,24 +793,33 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 		}
 	}
 
-	// Random sleep to increase reproduction probability (only for AP queries)
-	// AP queries have Policy_CollectCommittedPersistedData or Policy_CollectAllData
-	// TP queries typically don't have these policies
-	isAPQuery := rangesParam.Policy&engine.Policy_CollectCommittedPersistedData != 0 ||
-		rangesParam.Policy&engine.Policy_CollectAllData != 0
+	// Random sleep to increase reproduction probability
+	// Check if SQL contains "EXCEPT" keyword or if context has EnableDebugSleep flag
+	shouldSleep := false
+	sql := ""
+	if p := tbl.proc.Load().GetStmtProfile(); p != nil {
+		sql = p.GetSqlOfStmt()
+		// Check if SQL contains "EXCEPT" (case-insensitive)
+		if strings.Contains(strings.ToUpper(sql), "EXCEPT") {
+			shouldSleep = true
+		}
+	}
+	// Also check context value for manual control
+	if ctx.Value(defines.EnableDebugSleep{}) != nil {
+		shouldSleep = true
+	}
 
 	if strings.Contains(tbl.tableName, "oorder") ||
 		strings.Contains(tbl.tableName, "order_line") {
-		if isAPQuery && rand.Intn(10) == 1 {
-			// Random sleep 0-2 seconds (only for AP queries)
+		if shouldSleep && rand.Intn(10) == 1 {
+			// Random sleep 0-2 seconds
 			sleepTime := 5000 * time.Millisecond
 			if sleepTime > 0 {
 				logutil.Info("DEBUG-TPCC-DORANGES",
 					zap.String("step", "random-sleep-before-rangesOnePart"),
 					zap.String("tableName", tbl.tableName),
-					zap.Uint64("policy", uint64(rangesParam.Policy)),
-					zap.Bool("isAPQuery", isAPQuery),
-					zap.Int("preAllocBlocks", rangesParam.PreAllocBlocks),
+					zap.String("sql", sql),
+					zap.Bool("shouldSleep", shouldSleep),
 					zap.Duration("sleepTime", sleepTime),
 					zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
 				time.Sleep(sleepTime)
