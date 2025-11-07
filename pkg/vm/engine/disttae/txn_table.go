@@ -648,7 +648,14 @@ func (tbl *txnTable) getObjList(ctx context.Context, rangesParam engine.RangesPa
 	}
 	if strings.Contains(tbl.tableName, "oorder") ||
 		strings.Contains(tbl.tableName, "order_line") {
-		commonUtil.TxnPStateMap.Store(string(tbl.db.op.Txn().ID), fmt.Sprintf("%p", part))
+		key := fmt.Sprintf("%s:%s", string(tbl.db.op.Txn().ID), tbl.tableName)
+		commonUtil.TxnPStateMap.Store(key, fmt.Sprintf("%p", part))
+		logutil.Info("DEBUG-TPCC-GETOBJLIST",
+			zap.String("step", "store-to-TxnPStateMap-651"),
+			zap.String("tableName", tbl.tableName),
+			zap.String("key", key),
+			zap.String("pState", fmt.Sprintf("%p", part)),
+			zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
 	}
 
 	objRelData := &readutil.ObjListRelData{
@@ -698,7 +705,15 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 	defer func() {
 		if strings.Contains(tbl.tableName, "oorder") ||
 			strings.Contains(tbl.tableName, "order_line") {
-			commonUtil.TxnPStateMap.Store(string(tbl.db.op.Txn().ID), fmt.Sprintf("%p", part))
+			pStatePtr := fmt.Sprintf("%p", part)
+			key := fmt.Sprintf("%s:%s", string(tbl.db.op.Txn().ID), tbl.tableName)
+			commonUtil.TxnPStateMap.Store(key, pStatePtr)
+			logutil.Info("DEBUG-TPCC-DORANGES",
+				zap.String("step", "defer-store-to-TxnPStateMap-701"),
+				zap.String("tableName", tbl.tableName),
+				zap.String("key", key),
+				zap.String("pState", pStatePtr),
+				zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
 		}
 	}()
 
@@ -802,6 +817,14 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 		if part, err = tbl.getPartitionState(ctx); err != nil {
 			return
 		}
+		if strings.Contains(tbl.tableName, "oorder") ||
+			strings.Contains(tbl.tableName, "order_line") {
+			logutil.Info("DEBUG-TPCC-DORANGES",
+				zap.String("step", "getPartitionState-802"),
+				zap.String("tableName", tbl.tableName),
+				zap.String("pState", fmt.Sprintf("%p", part)),
+				zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+		}
 	}
 
 	if err = tbl.rangesOnePart(
@@ -820,6 +843,14 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 		if part, err = tbl.getPartitionState(ctx); err != nil {
 			return
 		}
+		if strings.Contains(tbl.tableName, "oorder") ||
+			strings.Contains(tbl.tableName, "order_line") {
+			logutil.Info("DEBUG-TPCC-DORANGES",
+				zap.String("step", "getPartitionState-820"),
+				zap.String("tableName", tbl.tableName),
+				zap.String("pState", fmt.Sprintf("%p", part)),
+				zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+		}
 	}
 
 	blklist := readutil.NewBlockListRelationData(
@@ -827,6 +858,15 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 		readutil.WithPartitionState(part))
 	blklist.SetBlockList(blocks)
 	data = blklist
+	
+	if strings.Contains(tbl.tableName, "oorder") ||
+		strings.Contains(tbl.tableName, "order_line") {
+		logutil.Info("DEBUG-TPCC-DORANGES",
+			zap.String("step", "createRelData-827"),
+			zap.String("tableName", tbl.tableName),
+			zap.String("pStateInRelData", fmt.Sprintf("%p", part)),
+			zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+	}
 
 	return
 }
@@ -1851,8 +1891,24 @@ func extractPStateFromRelData(
 
 	if x1, o1 := relData.(*readutil.ObjListRelData); o1 {
 		part = x1.PState
+		if strings.Contains(tbl.tableName, "oorder") ||
+			strings.Contains(tbl.tableName, "order_line") {
+			logutil.Info("DEBUG-TPCC-EXTRACTPSTATE",
+				zap.String("step", "extract-from-ObjListRelData"),
+				zap.String("tableName", tbl.tableName),
+				zap.String("pState", fmt.Sprintf("%p", part)),
+				zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+		}
 	} else if x2, o2 := relData.(*readutil.BlockListRelData); o2 {
 		part = x2.GetPState()
+		if strings.Contains(tbl.tableName, "oorder") ||
+			strings.Contains(tbl.tableName, "order_line") {
+			logutil.Info("DEBUG-TPCC-EXTRACTPSTATE",
+				zap.String("step", "extract-from-BlockListRelData"),
+				zap.String("tableName", tbl.tableName),
+				zap.String("pState", fmt.Sprintf("%p", part)),
+				zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+		}
 	}
 
 	if part == nil {

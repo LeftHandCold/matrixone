@@ -21,6 +21,7 @@ import (
 	"math"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -1827,7 +1828,16 @@ func (txn *Transaction) delTransaction() {
 		return
 	}
 
-	util.TxnPStateMap.Delete(string(txn.op.Txn().ID))
+	// Delete all keys for this transaction (key format: "txnID:tableName")
+	txnIDStr := string(txn.op.Txn().ID)
+	util.TxnPStateMap.Range(func(key, value interface{}) bool {
+		if keyStr, ok := key.(string); ok {
+			if strings.HasPrefix(keyStr, txnIDStr+":") {
+				util.TxnPStateMap.Delete(keyStr)
+			}
+		}
+		return true
+	})
 	
 	if txn.isCloneTxn {
 		txn.engine.cloneTxnCache.DeleteTxn(txn.op.Txn().ID)

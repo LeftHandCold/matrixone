@@ -79,17 +79,34 @@ func NewLocalDataSource(
 		if strings.Contains(table.tableName, "oorder") ||
 			strings.Contains(table.tableName, "order_line") {
 
-			whenRanges, ok := util.TxnPStateMap.Load(string(table.db.op.Txn().ID))
+			pStatePtr := fmt.Sprintf("%p", pState)
+			key := fmt.Sprintf("%s:%s", string(table.db.op.Txn().ID), table.tableName)
+			whenRanges, ok := util.TxnPStateMap.Load(key)
 			if !ok {
 				logutil.Info("DEBUG-TPCC-NEW-LOCALDATASOURCE",
 					zap.String("found", "pState not exists in Ranges"),
 					zap.String("tableName", table.tableName),
+					zap.String("key", key),
+					zap.String("pStateFromRelData", pStatePtr),
 					zap.String("txnInfo", table.db.op.Txn().DebugString()))
-			} else if whenRanges.(string) != fmt.Sprintf("%p", pState) {
-				logutil.Info("DEBUG-TPCC-NEW-LOCALDATASOURCE",
-					zap.String("found", "pState not equal to Ranges"),
-					zap.String("tableName", table.tableName),
-					zap.String("txnInfo", table.db.op.Txn().DebugString()))
+			} else {
+				whenRangesPtr := whenRanges.(string)
+				if whenRangesPtr != pStatePtr {
+					logutil.Info("DEBUG-TPCC-NEW-LOCALDATASOURCE",
+						zap.String("found", "pState not equal to Ranges"),
+						zap.String("tableName", table.tableName),
+						zap.String("key", key),
+						zap.String("pStateFromRelData", pStatePtr),
+						zap.String("pStateFromTxnPStateMap", whenRangesPtr),
+						zap.String("txnInfo", table.db.op.Txn().DebugString()))
+				} else {
+					logutil.Info("DEBUG-TPCC-NEW-LOCALDATASOURCE",
+						zap.String("found", "pState equal to Ranges"),
+						zap.String("tableName", table.tableName),
+						zap.String("key", key),
+						zap.String("pState", pStatePtr),
+						zap.String("txnInfo", table.db.op.Txn().DebugString()))
+				}
 			}
 		}
 	}
