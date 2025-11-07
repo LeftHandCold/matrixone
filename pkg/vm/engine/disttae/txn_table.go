@@ -650,7 +650,7 @@ func (tbl *txnTable) getObjList(ctx context.Context, rangesParam engine.RangesPa
 		strings.Contains(tbl.tableName, "order_line") {
 		key := fmt.Sprintf("%s:%s", string(tbl.db.op.Txn().ID), tbl.tableName)
 		commonUtil.TxnPStateMap.Store(key, fmt.Sprintf("%p", part))
-		logutil.Info("DEBUG-TPCC-GETOBJLIST",
+		logutil.Debug("DEBUG-TPCC-GETOBJLIST",
 			zap.String("step", "store-to-TxnPStateMap-651"),
 			zap.String("tableName", tbl.tableName),
 			zap.String("key", key),
@@ -708,7 +708,7 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 			pStatePtr := fmt.Sprintf("%p", part)
 			key := fmt.Sprintf("%s:%s", string(tbl.db.op.Txn().ID), tbl.tableName)
 			commonUtil.TxnPStateMap.Store(key, pStatePtr)
-			logutil.Info("DEBUG-TPCC-DORANGES",
+			logutil.Debug("DEBUG-TPCC-DORANGES",
 				zap.String("step", "defer-store-to-TxnPStateMap-701"),
 				zap.String("tableName", tbl.tableName),
 				zap.String("key", key),
@@ -819,7 +819,7 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 		}
 		if strings.Contains(tbl.tableName, "oorder") ||
 			strings.Contains(tbl.tableName, "order_line") {
-			logutil.Info("DEBUG-TPCC-DORANGES",
+			logutil.Debug("DEBUG-TPCC-DORANGES",
 				zap.String("step", "getPartitionState-802"),
 				zap.String("tableName", tbl.tableName),
 				zap.String("pState", fmt.Sprintf("%p", part)),
@@ -845,7 +845,7 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 		}
 		if strings.Contains(tbl.tableName, "oorder") ||
 			strings.Contains(tbl.tableName, "order_line") {
-			logutil.Info("DEBUG-TPCC-DORANGES",
+			logutil.Debug("DEBUG-TPCC-DORANGES",
 				zap.String("step", "getPartitionState-820"),
 				zap.String("tableName", tbl.tableName),
 				zap.String("pState", fmt.Sprintf("%p", part)),
@@ -858,10 +858,10 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 		readutil.WithPartitionState(part))
 	blklist.SetBlockList(blocks)
 	data = blklist
-	
+
 	if strings.Contains(tbl.tableName, "oorder") ||
 		strings.Contains(tbl.tableName, "order_line") {
-		logutil.Info("DEBUG-TPCC-DORANGES",
+		logutil.Debug("DEBUG-TPCC-DORANGES",
 			zap.String("step", "createRelData-827"),
 			zap.String("tableName", tbl.tableName),
 			zap.String("pStateInRelData", fmt.Sprintf("%p", part)),
@@ -1893,7 +1893,7 @@ func extractPStateFromRelData(
 		part = x1.PState
 		if strings.Contains(tbl.tableName, "oorder") ||
 			strings.Contains(tbl.tableName, "order_line") {
-			logutil.Info("DEBUG-TPCC-EXTRACTPSTATE",
+			logutil.Debug("DEBUG-TPCC-EXTRACTPSTATE",
 				zap.String("step", "extract-from-ObjListRelData"),
 				zap.String("tableName", tbl.tableName),
 				zap.String("pState", fmt.Sprintf("%p", part)),
@@ -1903,7 +1903,7 @@ func extractPStateFromRelData(
 		part = x2.GetPState()
 		if strings.Contains(tbl.tableName, "oorder") ||
 			strings.Contains(tbl.tableName, "order_line") {
-			logutil.Info("DEBUG-TPCC-EXTRACTPSTATE",
+			logutil.Debug("DEBUG-TPCC-EXTRACTPSTATE",
 				zap.String("step", "extract-from-BlockListRelData"),
 				zap.String("tableName", tbl.tableName),
 				zap.String("pState", fmt.Sprintf("%p", part)),

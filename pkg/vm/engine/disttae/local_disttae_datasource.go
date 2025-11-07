@@ -83,7 +83,7 @@ func NewLocalDataSource(
 			key := fmt.Sprintf("%s:%s", string(table.db.op.Txn().ID), table.tableName)
 			whenRanges, ok := util.TxnPStateMap.Load(key)
 			if !ok {
-				logutil.Info("DEBUG-TPCC-NEW-LOCALDATASOURCE",
+				logutil.Debug("DEBUG-TPCC-NEW-LOCALDATASOURCE",
 					zap.String("found", "pState not exists in Ranges"),
 					zap.String("tableName", table.tableName),
 					zap.String("key", key),
@@ -92,7 +92,7 @@ func NewLocalDataSource(
 			} else {
 				whenRangesPtr := whenRanges.(string)
 				if whenRangesPtr != pStatePtr {
-					logutil.Info("DEBUG-TPCC-NEW-LOCALDATASOURCE",
+					logutil.Debug("DEBUG-TPCC-NEW-LOCALDATASOURCE",
 						zap.String("found", "pState not equal to Ranges"),
 						zap.String("tableName", table.tableName),
 						zap.String("key", key),
@@ -100,7 +100,7 @@ func NewLocalDataSource(
 						zap.String("pStateFromTxnPStateMap", whenRangesPtr),
 						zap.String("txnInfo", table.db.op.Txn().DebugString()))
 				} else {
-					logutil.Info("DEBUG-TPCC-NEW-LOCALDATASOURCE",
+					logutil.Debug("DEBUG-TPCC-NEW-LOCALDATASOURCE",
 						zap.String("found", "pState equal to Ranges"),
 						zap.String("tableName", table.tableName),
 						zap.String("key", key),
