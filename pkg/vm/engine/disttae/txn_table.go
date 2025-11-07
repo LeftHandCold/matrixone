@@ -801,7 +801,7 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 
 	if strings.Contains(tbl.tableName, "oorder") ||
 		strings.Contains(tbl.tableName, "order_line") {
-		if isAPQuery && rand.Intn(50) == 1 {
+		if isAPQuery && rand.Intn(10) == 1 {
 			// Random sleep 0-2 seconds (only for AP queries)
 			sleepTime := 5000 * time.Millisecond
 			if sleepTime > 0 {
