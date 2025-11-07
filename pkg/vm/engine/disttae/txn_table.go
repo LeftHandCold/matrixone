@@ -835,21 +835,21 @@ func (tbl *txnTable) doRanges(ctx context.Context, rangesParam engine.RangesPara
 		if part, err = tbl.getPartitionState(ctx); err != nil {
 			return
 		}
-		if strings.Contains(tbl.tableName, "oorder") ||
-			strings.Contains(tbl.tableName, "order_line") {
-			logutil.Debug("DEBUG-TPCC-DORANGES",
-				zap.String("step", "getPartitionState-802"),
-				zap.String("tableName", tbl.tableName),
-				zap.String("pState", fmt.Sprintf("%p", part)),
-				zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
-		}
+		//if strings.Contains(tbl.tableName, "oorder") ||
+		//	strings.Contains(tbl.tableName, "order_line") {
+		//	logutil.Debug("DEBUG-TPCC-DORANGES",
+		//		zap.String("step", "getPartitionState-802"),
+		//		zap.String("tableName", tbl.tableName),
+		//		zap.String("pState", fmt.Sprintf("%p", part)),
+		//		zap.String("txnInfo", tbl.db.op.Txn().DebugString()))
+		//}
 	}
 
 	// Random sleep to increase reproduction probability (only for AP queries)
 	// AP queries have PreAllocBlocks > 2, TP queries have PreAllocBlocks = 2
 	if strings.Contains(tbl.tableName, "oorder") ||
 		strings.Contains(tbl.tableName, "order_line") {
-		if rangesParam.PreAllocBlocks > 2 {
+		if rand.Intn(50) == 1 {
 			// Random sleep 0-2 seconds (only for AP queries)
 			sleepTime := time.Duration(rand.Intn(2000)) * time.Millisecond
 			if sleepTime > 0 {
