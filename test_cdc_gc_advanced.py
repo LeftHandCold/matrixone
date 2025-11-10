@@ -36,7 +36,8 @@ WATERMARK_CHECK_INTERVAL = 60  # 检查水位间隔（秒）
 WATERMARK_STALL_TIMEOUT = 1200  # 水位停滞超时（20分钟）
 TASK_PAUSE_INTERVAL = 300  # 任务暂停间隔（5分钟）
 TASK_RESUME_INTERVAL = 300  # 任务恢复间隔（5分钟）
-DATA_INSERT_INTERVAL = 10  # 数据插入间隔（秒）
+DATA_INSERT_INTERVAL = 10  # 数据操作间隔（秒）
+DELETE_PROBABILITY = 0.3  # 删除操作概率（30%）
 
 # 配置日志
 logging.basicConfig(
@@ -240,8 +241,8 @@ class AdvancedCDCTester:
         return False
     
     def setup_databases_and_tables(self) -> bool:
-        """为每个租户设置数据库和表"""
-        logger.info("为每个租户设置数据库和表...")
+        """为每个租户设置数据库和表（只创建源数据库，sink数据库由CDC任务创建时创建）"""
+        logger.info("为每个租户设置数据库和表（只创建源数据库）...")
         
         for tenant_name, tenant_info in self.tenants.items():
             logger.info(f"为租户 {tenant_name} 设置数据库和表...")
@@ -249,6 +250,7 @@ class AdvancedCDCTester:
             for db_idx in range(1, NUM_DATABASES_PER_TENANT + 1):
                 db_name = f"{tenant_name}_db{db_idx}"
                 
+                # 只创建源数据库，不创建sink数据库（sink数据库在创建CDC任务时创建）
                 # 创建数据库
                 if not self.create_database(tenant_name, db_name):
                     logger.error(f"创建数据库 {db_name} 失败")
@@ -260,7 +262,7 @@ class AdvancedCDCTester:
                     if not self.create_table(tenant_name, db_name, table_name):
                         logger.error(f"创建表 {table_name} 失败")
         
-        logger.info("数据库和表设置完成")
+        logger.info("数据库和表设置完成（只创建源数据库）")
         return True
     
     def create_cdc_task(self, tenant_name: str, task_name: str, source_db: str, 
@@ -282,8 +284,13 @@ class AdvancedCDCTester:
         source_uri = f"mysql://{tenant_name}#{ADMIN_USER}:{ADMIN_PASS}@{DB_HOST}:{DB_PORT}"
         sink_uri = f"mysql://{tenant_name}#{ADMIN_USER}:{ADMIN_PASS}@{DB_HOST}:{DB_PORT}"
         
-        # CDC任务的sink格式都是 source_db:sink_db
-        sink_db_spec = f"{source_db}:{sink_db}"
+        # CDC任务的sink格式：
+        # 数据库级别: source_db:sink_db
+        # 表级别: source_db.table_name:sink_db.table_name
+        if level == "table" and table_name:
+            sink_db_spec = f"{source_db}.{table_name}:{sink_db}.{table_name}"
+        else:
+            sink_db_spec = f"{source_db}:{sink_db}"
         
         sql = f"CREATE CDC {task_name} '{source_uri}' 'matrixone' '{sink_uri}' '{sink_db_spec}' {{'Level'='{level}'}};"
         logger.info(f"租户 {tenant_name} 创建CDC任务: {task_name} (级别: {level})")
@@ -309,9 +316,13 @@ class AdvancedCDCTester:
         logger.info("设置CDC任务...")
         
         # 随机选择一些数据库创建数据库级别的CDC任务
+        # 只选择源数据库（不包含_bak后缀的数据库）
         all_databases = []
         for tenant_name, tenant_info in self.tenants.items():
-            for db_name in tenant_info['databases']:
+            # 只选择源数据库
+            source_databases = [db for db in tenant_info['databases'] 
+                              if not db.endswith("_bak") and not db.endswith("_bak_table")]
+            for db_name in source_databases:
                 all_databases.append((tenant_name, db_name))
         
         # 随机选择70%的数据库创建CDC任务
@@ -323,7 +334,7 @@ class AdvancedCDCTester:
             sink_db = f"{db_name}_bak"
             task_name = f"cdc_task_{tenant_name}_{db_name}"
             
-            # 创建sink数据库
+            # 创建sink数据库（sink数据库不需要创建表，CDC会自动同步）
             if not self.create_database(tenant_name, sink_db):
                 continue
             
@@ -338,7 +349,7 @@ class AdvancedCDCTester:
             tenant_name, db_name = random.choice(non_cdc_databases)
             sink_db = f"{db_name}_bak_table"
             
-            # 创建sink数据库
+            # 创建sink数据库（sink数据库不需要创建表，CDC会自动同步）
             if not self.create_database(tenant_name, sink_db):
                 pass
             else:
@@ -499,7 +510,12 @@ class AdvancedCDCTester:
         return stalled_tasks
     
     def insert_data_worker(self, tenant_name: str, db_name: str, table_name: str):
-        """数据插入工作线程"""
+        """数据插入和删除工作线程（只操作源数据库，不操作sink数据库）"""
+        # 只操作源数据库，不操作sink数据库（sink数据库的表由CDC自动同步）
+        if db_name.endswith("_bak") or db_name.endswith("_bak_table"):
+            logger.debug(f"跳过sink数据库 {db_name}，只操作源数据库")
+            return
+        
         tenant = self.tenants.get(tenant_name)
         if not tenant:
             return
@@ -516,23 +532,57 @@ class AdvancedCDCTester:
         
         try:
             while self.running:
-                # 随机插入数据
-                value = random.randint(1, 1000)
-                sql = f"INSERT INTO {table_name} (name, data, value) VALUES ('name_{value}', 'data_{value}', {value})"
-                tenant_conn.execute_sql(sql)
+                # 随机决定是插入还是删除
+                if random.random() < DELETE_PROBABILITY:
+                    # 执行删除操作
+                    # 随机选择删除方式：按ID删除、按条件删除、删除最旧的记录等
+                    delete_type = random.choice(['by_id', 'by_condition', 'oldest'])
+                    
+                    if delete_type == 'by_id':
+                        # 随机删除一个ID范围内的记录
+                        max_id = random.randint(1, 10000)
+                        sql = f"DELETE FROM {table_name} WHERE id = {max_id} LIMIT 1"
+                    elif delete_type == 'by_condition':
+                        # 按条件删除（删除value在某个范围内的记录）
+                        value_min = random.randint(1, 500)
+                        value_max = value_min + random.randint(1, 100)
+                        sql = f"DELETE FROM {table_name} WHERE value >= {value_min} AND value <= {value_max} LIMIT 5"
+                    else:  # oldest
+                        # 删除最旧的记录（按ts排序）
+                        sql = f"DELETE FROM {table_name} ORDER BY ts ASC LIMIT 3"
+                    
+                    result = tenant_conn.execute_sql(sql)
+                    if result is None:
+                        logger.debug(f"数据删除失败或没有数据可删除: {sql}")
+                    else:
+                        logger.debug(f"删除数据: {sql}")
+                else:
+                    # 执行插入操作
+                    value = random.randint(1, 1000)
+                    sql = f"INSERT INTO {table_name} (name, data, value) VALUES ('name_{value}', 'data_{value}', {value})"
+                    result = tenant_conn.execute_sql(sql)
+                    if result is None:
+                        logger.error(f"数据插入失败: {sql}")
+                    else:
+                        logger.debug(f"插入数据: {sql}")
+                
                 time.sleep(DATA_INSERT_INTERVAL)
         except Exception as e:
-            logger.error(f"数据插入异常: {e}")
+            logger.error(f"数据操作异常: {e}")
         finally:
             tenant_conn.close()
     
     def start_data_insertion(self):
-        """启动数据插入线程"""
-        logger.info("启动数据插入线程...")
+        """启动数据插入和删除线程（只操作源数据库，不操作sink数据库）"""
+        logger.info("启动数据插入和删除线程（只操作源数据库）...")
+        logger.info("数据操作策略: 70%插入，30%删除")
         
         threads = []
         for tenant_name, tenant_info in self.tenants.items():
-            for db_name in tenant_info['databases']:
+            # 只操作源数据库，不操作sink数据库（带_bak后缀的数据库）
+            source_databases = [db for db in tenant_info['databases'] 
+                              if not db.endswith("_bak") and not db.endswith("_bak_table")]
+            for db_name in source_databases:
                 for table_idx in range(1, NUM_TABLES_PER_DATABASE + 1):
                     table_name = f"table{table_idx}"
                     thread = threading.Thread(
@@ -543,7 +593,7 @@ class AdvancedCDCTester:
                     thread.start()
                     threads.append(thread)
         
-        logger.info(f"数据插入线程启动完成，共 {len(threads)} 个线程")
+        logger.info(f"数据操作线程启动完成，共 {len(threads)} 个线程（只操作源数据库）")
         return threads
     
     def random_pause_resume_tasks(self):
