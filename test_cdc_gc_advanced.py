@@ -36,10 +36,12 @@ WATERMARK_CHECK_INTERVAL = 60  # 检查水位间隔（秒）
 WATERMARK_STALL_TIMEOUT = 1200  # 水位停滞超时（20分钟）
 TASK_PAUSE_INTERVAL = 300  # 任务暂停间隔（5分钟）
 TASK_RESUME_INTERVAL = 300  # 任务恢复间隔（5分钟）
-DATA_INSERT_INTERVAL = 10  # 数据操作间隔（秒）
+DATA_INSERT_INTERVAL = 1  # 数据操作间隔（秒）
 DELETE_PROBABILITY = 0.3  # 删除操作概率（30%）
 INIT_DATA_COUNT = 100000  # 初始化时每个表插入的数据量（10万条）
 INIT_BATCH_SIZE = 100000  # 初始化批量插入的批次大小（10万条一次）
+BATCH_INSERT_SIZE = 3000  # 批量插入的批次大小（1万条一次）
+BATCH_DELETE_SIZE = 3000  # 批量删除的批次大小（3000条一次）
 
 # 配置日志
 logging.basicConfig(
@@ -664,6 +666,7 @@ class AdvancedCDCTester:
     def insert_data_worker(self, tenant_name: str, db_name: str, table_name: str):
         """数据插入和删除工作线程（只操作源数据库，不操作sink数据库）
         持续运行，不会因为其他操作而停止
+        批量插入1万行，批量删除3000行
         """
         # 只操作源数据库，不操作sink数据库（sink数据库的表由CDC自动同步）
         if db_name.endswith("_bak") or db_name.endswith("_bak_table"):
@@ -686,8 +689,8 @@ class AdvancedCDCTester:
             return
         
         # 记录操作计数
-        insert_count = 0
-        delete_count = 0
+        insert_rows = 0
+        delete_rows = 0
         error_count = 0
         
         try:
@@ -695,50 +698,49 @@ class AdvancedCDCTester:
                 try:
                     # 随机决定是插入还是删除
                     if random.random() < DELETE_PROBABILITY:
-                        # 执行删除操作
-                        # 随机选择删除方式：按ID删除、按条件删除、删除最旧的记录等
-                        delete_type = random.choice(['by_id', 'by_condition', 'oldest'])
+                        # 执行批量删除操作（一次删除3000行）
+                        delete_type = random.choice(['by_condition', 'oldest'])
                         
-                        if delete_type == 'by_id':
-                            # 随机删除一个ID范围内的记录
-                            max_id = random.randint(1, 100000)
-                            sql = f"DELETE FROM {table_name} WHERE id = {max_id} LIMIT 1"
-                        elif delete_type == 'by_condition':
-                            # 按条件删除（删除value在某个范围内的记录）
+                        if delete_type == 'by_condition':
+                            # 按条件批量删除（删除value在某个范围内的记录）
                             value_min = random.randint(1, 500)
                             value_max = value_min + random.randint(1, 100)
-                            sql = f"DELETE FROM {table_name} WHERE value >= {value_min} AND value <= {value_max} LIMIT 5"
+                            sql = f"DELETE FROM {table_name} WHERE value >= {value_min} AND value <= {value_max} LIMIT {BATCH_DELETE_SIZE}"
                         else:  # oldest
                             # 删除最旧的记录（按ts排序）
-                            sql = f"DELETE FROM {table_name} ORDER BY ts ASC LIMIT 3"
+                            sql = f"DELETE FROM {table_name} ORDER BY ts ASC LIMIT {BATCH_DELETE_SIZE}"
                         
                         result = tenant_conn.execute_sql(sql)
                         if result is None:
                             error_count += 1
-                            if error_count % 100 == 0:  # 每100次错误才记录一次
+                            if error_count % 10 == 0:  # 每10次错误才记录一次
                                 logger.debug(f"数据删除失败或没有数据可删除: {table_name}")
                         else:
-                            delete_count += 1
-                            if delete_count % 1000 == 0:  # 每1000次删除记录一次
-                                logger.debug(f"表 {table_name} 已删除 {delete_count} 条数据")
+                            delete_rows += BATCH_DELETE_SIZE
+                            if delete_rows % 30000 == 0:  # 每删除3万行记录一次
+                                logger.debug(f"表 {table_name} 已删除 {delete_rows} 行数据")
                     else:
-                        # 执行插入操作
-                        value = random.randint(1, 1000)
-                        sql = f"INSERT INTO {table_name} (name, data, value) VALUES ('name_{value}', 'data_{value}', {value})"
+                        # 执行批量插入操作（一次插入1万行）
+                        values = []
+                        for i in range(BATCH_INSERT_SIZE):
+                            value = random.randint(1, 1000)
+                            values.append(f"('name_{value}', 'data_{value}', {value})")
+                        
+                        sql = f"INSERT INTO {table_name} (name, data, value) VALUES {','.join(values)}"
                         result = tenant_conn.execute_sql(sql)
                         if result is None:
                             error_count += 1
-                            if error_count % 100 == 0:  # 每100次错误才记录一次
+                            if error_count % 10 == 0:  # 每10次错误才记录一次
                                 logger.error(f"数据插入失败: {table_name}")
                         else:
-                            insert_count += 1
-                            if insert_count % 1000 == 0:  # 每1000次插入记录一次
-                                logger.debug(f"表 {table_name} 已插入 {insert_count} 条数据")
+                            insert_rows += BATCH_INSERT_SIZE
+                            if insert_rows % 100000 == 0:  # 每插入10万行记录一次
+                                logger.debug(f"表 {table_name} 已插入 {insert_rows} 行数据")
                     
                     time.sleep(DATA_INSERT_INTERVAL)
                 except Exception as e:
                     error_count += 1
-                    if error_count % 100 == 0:
+                    if error_count % 10 == 0:
                         logger.error(f"数据操作异常: {table_name}, {e}")
                     # 连接可能断开，尝试重连
                     if not tenant_conn._connection or not tenant_conn._connection.open:
@@ -751,12 +753,13 @@ class AdvancedCDCTester:
             logger.error(f"数据插入线程异常退出: {tenant_name}.{db_name}.{table_name}, {e}")
         finally:
             tenant_conn.close()
-            logger.info(f"数据插入线程结束: {tenant_name}.{db_name}.{table_name} (插入: {insert_count}, 删除: {delete_count}, 错误: {error_count})")
+            logger.info(f"数据插入线程结束: {tenant_name}.{db_name}.{table_name} (插入: {insert_rows}行, 删除: {delete_rows}行, 错误: {error_count})")
     
     def start_data_insertion(self):
         """启动数据插入和删除线程（只操作源数据库，不操作sink数据库）"""
         logger.info("启动数据插入和删除线程（只操作源数据库）...")
-        logger.info("数据操作策略: 70%插入，30%删除")
+        logger.info(f"数据操作策略: 70%插入（一次{BATCH_INSERT_SIZE}行），30%删除（一次{BATCH_DELETE_SIZE}行）")
+        logger.info(f"操作间隔: {DATA_INSERT_INTERVAL}秒")
         
         threads = []
         for tenant_name, tenant_info in self.tenants.items():
