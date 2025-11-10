@@ -52,10 +52,31 @@ log_error() {
 execute_sql() {
     local sql="$1"
     local result=""
+    local error_output=""
+    local exit_code=0
+    
     if [ "$MYSQL_CMD" = "mo" ]; then
-        result=$(echo "$sql" | mo -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" -p "${DB_PASS}" 2>/dev/null || echo "")
+        error_output=$(echo "$sql" | mo -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" -p "${DB_PASS}" 2>&1)
+        exit_code=$?
+        if [ $exit_code -ne 0 ]; then
+            log_error "SQL执行失败: $sql"
+            log_error "错误信息: $error_output"
+            echo ""
+            return 1
+        fi
+        # 提取结果（去除错误信息）
+        result=$(echo "$error_output" | grep -v "^ERROR" | grep -v "^Warning" || echo "")
     else
-        result=$(mysql -h"${DB_HOST}" -P"${DB_PORT}" -u"${DB_USER}" -p"${DB_PASS}" -sN -e "$sql" 2>/dev/null || echo "")
+        error_output=$(mysql -h"${DB_HOST}" -P"${DB_PORT}" -u"${DB_USER}" -p"${DB_PASS}" -sN -e "$sql" 2>&1)
+        exit_code=$?
+        if [ $exit_code -ne 0 ]; then
+            log_error "SQL执行失败: $sql"
+            log_error "错误信息: $error_output"
+            echo ""
+            return 1
+        fi
+        # 提取结果（去除错误信息）
+        result=$(echo "$error_output" | grep -v "^ERROR" | grep -v "^Warning" || echo "")
     fi
     echo "$result"
 }
@@ -64,17 +85,28 @@ execute_sql() {
 execute_sql_verbose() {
     local sql="$1"
     log_info "执行SQL: $sql"
+    local output=""
+    local exit_code=0
+    
     if [ "$MYSQL_CMD" = "mo" ]; then
-        echo "$sql" | mo -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" -p "${DB_PASS}" 2>/dev/null || {
-            log_error "SQL执行失败: $sql"
-            return 1
-        }
+        output=$(echo "$sql" | mo -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" -p "${DB_PASS}" 2>&1)
+        exit_code=$?
     else
-        mysql -h"${DB_HOST}" -P"${DB_PORT}" -u"${DB_USER}" -p"${DB_PASS}" -e "$sql" 2>/dev/null || {
-            log_error "SQL执行失败: $sql"
-            return 1
-        }
+        output=$(mysql -h"${DB_HOST}" -P"${DB_PORT}" -u"${DB_USER}" -p"${DB_PASS}" -e "$sql" 2>&1)
+        exit_code=$?
     fi
+    
+    if [ $exit_code -ne 0 ]; then
+        log_error "SQL执行失败: $sql"
+        log_error "错误信息: $output"
+        return 1
+    fi
+    
+    # 显示输出（如果有）
+    if [ -n "$output" ]; then
+        echo "$output"
+    fi
+    return 0
 }
 
 # 查询CDC watermark
