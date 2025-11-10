@@ -38,6 +38,8 @@ TASK_PAUSE_INTERVAL = 300  # 任务暂停间隔（5分钟）
 TASK_RESUME_INTERVAL = 300  # 任务恢复间隔（5分钟）
 DATA_INSERT_INTERVAL = 10  # 数据操作间隔（秒）
 DELETE_PROBABILITY = 0.3  # 删除操作概率（30%）
+INIT_DATA_COUNT = 100000  # 初始化时每个表插入的数据量（10万条）
+INIT_BATCH_SIZE = 100000  # 初始化批量插入的批次大小（10万条一次）
 
 # 配置日志
 logging.basicConfig(
@@ -233,12 +235,47 @@ class AdvancedCDCTester:
             INDEX idx_ts (ts)
         )"""
         result = tenant_conn.execute_sql(sql)
-        tenant_conn.close()
         
         if result is not None:
             logger.info(f"租户 {tenant_name} 数据库 {db_name} 下创建表 {table_name} 成功")
+            # 创建表后立即批量插入初始化数据
+            self.batch_insert_initial_data(tenant_conn, table_name, INIT_DATA_COUNT, INIT_BATCH_SIZE)
+            tenant_conn.close()
             return True
+        
+        tenant_conn.close()
         return False
+    
+    def batch_insert_initial_data(self, conn: CDCConnection, table_name: str, total_count: int, batch_size: int):
+        """批量插入初始化数据（一次插入10万条）"""
+        logger.info(f"开始为表 {table_name} 批量插入 {total_count} 条初始化数据（批次大小: {batch_size}）...")
+        
+        try:
+            # 计算需要插入的批次数
+            num_batches = (total_count + batch_size - 1) // batch_size
+            
+            for batch_idx in range(num_batches):
+                # 计算当前批次要插入的数量
+                current_batch_size = min(batch_size, total_count - batch_idx * batch_size)
+                
+                # 构建批量插入SQL（一次插入10万条）
+                values = []
+                for i in range(current_batch_size):
+                    value = random.randint(1, 1000)
+                    values.append(f"('name_{value}', 'data_{value}', {value})")
+                
+                sql = f"INSERT INTO {table_name} (name, data, value) VALUES {','.join(values)}"
+                
+                result = conn.execute_sql(sql)
+                if result is None:
+                    logger.error(f"批量插入失败: 表 {table_name}, 批次 {batch_idx + 1}/{num_batches}")
+                else:
+                    inserted_count = min((batch_idx + 1) * batch_size, total_count)
+                    logger.info(f"表 {table_name} 已插入 {inserted_count} 条数据（批次 {batch_idx + 1}/{num_batches}）")
+            
+            logger.info(f"表 {table_name} 初始化数据插入完成，共 {total_count} 条")
+        except Exception as e:
+            logger.error(f"批量插入初始化数据异常: {e}")
     
     def setup_databases_and_tables(self) -> bool:
         """为每个租户设置数据库和表（只创建源数据库，sink数据库由CDC任务创建时创建）"""
@@ -512,7 +549,9 @@ class AdvancedCDCTester:
         return stalled_tasks
     
     def insert_data_worker(self, tenant_name: str, db_name: str, table_name: str):
-        """数据插入和删除工作线程（只操作源数据库，不操作sink数据库）"""
+        """数据插入和删除工作线程（只操作源数据库，不操作sink数据库）
+        持续运行，不会因为其他操作而停止
+        """
         # 只操作源数据库，不操作sink数据库（sink数据库的表由CDC自动同步）
         if db_name.endswith("_bak") or db_name.endswith("_bak_table"):
             logger.debug(f"跳过sink数据库 {db_name}，只操作源数据库")
@@ -530,49 +569,76 @@ class AdvancedCDCTester:
         )
         
         if not tenant_conn.connect():
+            logger.error(f"无法连接到租户 {tenant_name} 数据库 {db_name}")
             return
+        
+        # 记录操作计数
+        insert_count = 0
+        delete_count = 0
+        error_count = 0
         
         try:
             while self.running:
-                # 随机决定是插入还是删除
-                if random.random() < DELETE_PROBABILITY:
-                    # 执行删除操作
-                    # 随机选择删除方式：按ID删除、按条件删除、删除最旧的记录等
-                    delete_type = random.choice(['by_id', 'by_condition', 'oldest'])
-                    
-                    if delete_type == 'by_id':
-                        # 随机删除一个ID范围内的记录
-                        max_id = random.randint(1, 10000)
-                        sql = f"DELETE FROM {table_name} WHERE id = {max_id} LIMIT 1"
-                    elif delete_type == 'by_condition':
-                        # 按条件删除（删除value在某个范围内的记录）
-                        value_min = random.randint(1, 500)
-                        value_max = value_min + random.randint(1, 100)
-                        sql = f"DELETE FROM {table_name} WHERE value >= {value_min} AND value <= {value_max} LIMIT 5"
-                    else:  # oldest
-                        # 删除最旧的记录（按ts排序）
-                        sql = f"DELETE FROM {table_name} ORDER BY ts ASC LIMIT 3"
-                    
-                    result = tenant_conn.execute_sql(sql)
-                    if result is None:
-                        logger.debug(f"数据删除失败或没有数据可删除: {sql}")
+                try:
+                    # 随机决定是插入还是删除
+                    if random.random() < DELETE_PROBABILITY:
+                        # 执行删除操作
+                        # 随机选择删除方式：按ID删除、按条件删除、删除最旧的记录等
+                        delete_type = random.choice(['by_id', 'by_condition', 'oldest'])
+                        
+                        if delete_type == 'by_id':
+                            # 随机删除一个ID范围内的记录
+                            max_id = random.randint(1, 100000)
+                            sql = f"DELETE FROM {table_name} WHERE id = {max_id} LIMIT 1"
+                        elif delete_type == 'by_condition':
+                            # 按条件删除（删除value在某个范围内的记录）
+                            value_min = random.randint(1, 500)
+                            value_max = value_min + random.randint(1, 100)
+                            sql = f"DELETE FROM {table_name} WHERE value >= {value_min} AND value <= {value_max} LIMIT 5"
+                        else:  # oldest
+                            # 删除最旧的记录（按ts排序）
+                            sql = f"DELETE FROM {table_name} ORDER BY ts ASC LIMIT 3"
+                        
+                        result = tenant_conn.execute_sql(sql)
+                        if result is None:
+                            error_count += 1
+                            if error_count % 100 == 0:  # 每100次错误才记录一次
+                                logger.debug(f"数据删除失败或没有数据可删除: {table_name}")
+                        else:
+                            delete_count += 1
+                            if delete_count % 1000 == 0:  # 每1000次删除记录一次
+                                logger.debug(f"表 {table_name} 已删除 {delete_count} 条数据")
                     else:
-                        logger.debug(f"删除数据: {sql}")
-                else:
-                    # 执行插入操作
-                    value = random.randint(1, 1000)
-                    sql = f"INSERT INTO {table_name} (name, data, value) VALUES ('name_{value}', 'data_{value}', {value})"
-                    result = tenant_conn.execute_sql(sql)
-                    if result is None:
-                        logger.error(f"数据插入失败: {sql}")
-                    else:
-                        logger.debug(f"插入数据: {sql}")
-                
-                time.sleep(DATA_INSERT_INTERVAL)
+                        # 执行插入操作
+                        value = random.randint(1, 1000)
+                        sql = f"INSERT INTO {table_name} (name, data, value) VALUES ('name_{value}', 'data_{value}', {value})"
+                        result = tenant_conn.execute_sql(sql)
+                        if result is None:
+                            error_count += 1
+                            if error_count % 100 == 0:  # 每100次错误才记录一次
+                                logger.error(f"数据插入失败: {table_name}")
+                        else:
+                            insert_count += 1
+                            if insert_count % 1000 == 0:  # 每1000次插入记录一次
+                                logger.debug(f"表 {table_name} 已插入 {insert_count} 条数据")
+                    
+                    time.sleep(DATA_INSERT_INTERVAL)
+                except Exception as e:
+                    error_count += 1
+                    if error_count % 100 == 0:
+                        logger.error(f"数据操作异常: {table_name}, {e}")
+                    # 连接可能断开，尝试重连
+                    if not tenant_conn._connection or not tenant_conn._connection.open:
+                        logger.warning(f"连接断开，尝试重连: {tenant_name}.{db_name}")
+                        if not tenant_conn.connect():
+                            logger.error(f"重连失败，等待后重试: {tenant_name}.{db_name}")
+                            time.sleep(5)
+                            continue
         except Exception as e:
-            logger.error(f"数据操作异常: {e}")
+            logger.error(f"数据插入线程异常退出: {tenant_name}.{db_name}.{table_name}, {e}")
         finally:
             tenant_conn.close()
+            logger.info(f"数据插入线程结束: {tenant_name}.{db_name}.{table_name} (插入: {insert_count}, 删除: {delete_count}, 错误: {error_count})")
     
     def start_data_insertion(self):
         """启动数据插入和删除线程（只操作源数据库，不操作sink数据库）"""
@@ -633,8 +699,8 @@ class AdvancedCDCTester:
         logger.info("开始CDC GC高级测试循环")
         logger.info("=" * 80)
         
-        # 启动数据插入线程
-        self.start_data_insertion()
+        # 启动数据插入线程（在独立线程中运行，不会阻塞）
+        data_threads = self.start_data_insertion()
         
         # 等待任务启动
         logger.info("等待CDC任务启动...")
@@ -647,7 +713,15 @@ class AdvancedCDCTester:
             logger.info(f"测试循环 #{cycle}")
             logger.info("=" * 80)
             
-            # 检查水位
+            # 检查数据插入线程是否还在运行
+            alive_threads = sum(1 for t in data_threads if t.is_alive())
+            if alive_threads < len(data_threads):
+                logger.warning(f"数据插入线程异常: {alive_threads}/{len(data_threads)} 个线程还在运行")
+                # 重新启动数据插入线程
+                logger.info("重新启动数据插入线程...")
+                data_threads = self.start_data_insertion()
+            
+            # 检查水位（在独立线程中运行，不阻塞数据插入）
             logger.info("检查水位...")
             stalled_tasks = self.check_watermark_stall()
             if stalled_tasks:
@@ -655,13 +729,18 @@ class AdvancedCDCTester:
                 for task in stalled_tasks:
                     logger.warning(f"  - {task}")
             
-            # 随机暂停和恢复任务
+            # 随机暂停和恢复任务（在独立线程中运行，不阻塞数据插入）
             if cycle % 2 == 0:  # 每2个循环执行一次
                 logger.info("随机暂停和恢复任务...")
-                self.random_pause_resume_tasks()
+                # 在独立线程中执行，不阻塞主循环
+                pause_thread = threading.Thread(
+                    target=self.random_pause_resume_tasks,
+                    daemon=True
+                )
+                pause_thread.start()
             
-            # 等待下一次检查
-            logger.info(f"等待 {WATERMARK_CHECK_INTERVAL} 秒后进行下一次检查...")
+            # 等待下一次检查（数据插入线程继续运行）
+            logger.info(f"等待 {WATERMARK_CHECK_INTERVAL} 秒后进行下一次检查（数据插入持续进行）...")
             time.sleep(WATERMARK_CHECK_INTERVAL)
     
     def stop(self):
