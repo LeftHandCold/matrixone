@@ -37,7 +37,7 @@ WATERMARK_STALL_TIMEOUT = 1200  # 水位停滞超时（20分钟）
 TASK_PAUSE_INTERVAL = 300  # 任务暂停间隔（5分钟）
 TASK_RESUME_INTERVAL = 300  # 任务恢复间隔（5分钟）
 DATA_INSERT_INTERVAL = 1  # 数据操作间隔（秒）
-DELETE_PROBABILITY = 0.3  # 删除操作概率（30%）
+DELETE_PROBABILITY = 0.7  # 删除操作概率（30%）
 INIT_DATA_COUNT = 100000  # 初始化时每个表插入的数据量（10万条）
 INIT_BATCH_SIZE = 100000  # 初始化批量插入的批次大小（10万条一次）
 BATCH_INSERT_SIZE = 3000  # 批量插入的批次大小（1万条一次）
@@ -280,7 +280,9 @@ class AdvancedCDCTester:
             logger.error(f"批量插入初始化数据异常: {e}")
     
     def setup_databases_and_tables(self) -> bool:
-        """为每个租户设置数据库和表（只创建源数据库，sink数据库由CDC任务创建时创建）"""
+        """为每个租户设置数据库和表（只创建源数据库，sink数据库由CDC任务创建时创建）
+        如果表已存在且有数据，跳过初始化
+        """
         logger.info("为每个租户设置数据库和表（只创建源数据库）...")
         
         for tenant_name, tenant_info in self.tenants.items():
@@ -298,6 +300,13 @@ class AdvancedCDCTester:
                 # 创建表
                 for tbl_idx in range(1, NUM_TABLES_PER_DATABASE + 1):
                     table_name = f"table{tbl_idx}"
+                    
+                    # 检查表是否已存在且有数据
+                    if self.check_table_has_data(tenant_name, db_name, table_name):
+                        logger.info(f"表 {tenant_name}.{db_name}.{table_name} 已存在且有数据，跳过初始化")
+                        continue
+                    
+                    # 创建表（如果不存在）并初始化数据
                     if not self.create_table(tenant_name, db_name, table_name):
                         logger.error(f"创建表 {table_name} 失败")
         
@@ -350,9 +359,203 @@ class AdvancedCDCTester:
             return True
         return False
     
+    def check_existing_tasks(self) -> Dict[str, Dict]:
+        """检查现有的CDC任务状态"""
+        logger.info("检查现有CDC任务状态...")
+        existing_tasks = {}
+        
+        # 使用系统租户连接查询所有任务
+        sys_conn = CDCConnection(
+            DB_HOST, DB_PORT,
+            DB_USER,  # dump用户
+            DB_PASS
+        )
+        
+        if not sys_conn.connect():
+            logger.warning("无法连接到系统租户，跳过任务检查")
+            return existing_tasks
+        
+        try:
+            # 查询所有CDC任务
+            sql = "SELECT account_id, task_id, task_name, status FROM mo_catalog.mo_cdc_task"
+            result = sys_conn.execute_sql(sql, fetch=True)
+            
+            if result:
+                for row in result:
+                    account_id = row['account_id']
+                    task_id = row['task_id']
+                    task_name = row['task_name']
+                    status = row.get('status', '')
+                    
+                    # 找到对应的租户
+                    tenant_name = None
+                    for tname, tinfo in self.tenants.items():
+                        if tinfo.get('account_id') == account_id:
+                            tenant_name = tname
+                            break
+                    
+                    if tenant_name:
+                        existing_tasks[task_name] = {
+                            'tenant_name': tenant_name,
+                            'task_id': task_id,
+                            'status': status,
+                            'account_id': account_id
+                        }
+                        logger.info(f"发现现有任务: {task_name} (租户: {tenant_name}, 状态: {status})")
+        except Exception as e:
+            logger.error(f"检查现有任务失败: {e}")
+        finally:
+            sys_conn.close()
+        
+        return existing_tasks
+    
+    def resume_all_paused_tasks(self) -> int:
+        """恢复所有暂停的任务"""
+        logger.info("检查并恢复所有暂停的任务...")
+        resumed_count = 0
+        
+        existing_tasks = self.check_existing_tasks()
+        
+        for task_name, task_info in existing_tasks.items():
+            tenant_name = task_info['tenant_name']
+            status = task_info.get('status', '').upper()
+            
+            # 检查任务是否暂停
+            if 'PAUSE' in status or 'PAUSED' in status:
+                logger.info(f"恢复暂停的任务: {task_name} (租户: {tenant_name})")
+                if self.resume_cdc_task(tenant_name, task_name):
+                    resumed_count += 1
+                    # 更新本地任务状态
+                    tenant = self.tenants.get(tenant_name)
+                    if tenant:
+                        for task in tenant.get('cdc_tasks', []):
+                            if task['task_name'] == task_name:
+                                task['paused'] = False
+                                break
+        
+        if resumed_count > 0:
+            logger.info(f"已恢复 {resumed_count} 个暂停的任务")
+        else:
+            logger.info("没有发现暂停的任务")
+        
+        return resumed_count
+    
+    def check_table_has_data(self, tenant_name: str, db_name: str, table_name: str) -> bool:
+        """检查表是否有数据"""
+        tenant_conn = CDCConnection(
+            DB_HOST, DB_PORT,
+            f"{tenant_name}#{ADMIN_USER}",
+            ADMIN_PASS,
+            db_name
+        )
+        
+        if not tenant_conn.connect():
+            return False
+        
+        try:
+            # 检查表是否存在且有数据
+            sql = f"SELECT COUNT(*) as cnt FROM {table_name} LIMIT 1"
+            result = tenant_conn.execute_sql(sql, fetch=True)
+            
+            if result and len(result) > 0:
+                count = result[0].get('cnt', 0)
+                return count > 0
+            return False
+        except Exception as e:
+            logger.debug(f"检查表数据失败: {tenant_name}.{db_name}.{table_name}, {e}")
+            return False
+        finally:
+            tenant_conn.close()
+    
+    def check_all_tables_have_data(self) -> bool:
+        """检查所有表是否都有数据"""
+        logger.info("检查所有表是否已有数据...")
+        tables_with_data = 0
+        total_tables = 0
+        
+        for tenant_name, tenant_info in self.tenants.items():
+            # 只检查源数据库
+            source_databases = [db for db in tenant_info['databases'] 
+                              if not db.endswith("_bak") and not db.endswith("_bak_table")]
+            
+            for db_name in source_databases:
+                for tbl_idx in range(1, NUM_TABLES_PER_DATABASE + 1):
+                    table_name = f"table{tbl_idx}"
+                    total_tables += 1
+                    
+                    if self.check_table_has_data(tenant_name, db_name, table_name):
+                        tables_with_data += 1
+                        logger.debug(f"表 {tenant_name}.{db_name}.{table_name} 已有数据")
+        
+        logger.info(f"数据检查完成: {tables_with_data}/{total_tables} 个表有数据")
+        
+        # 如果所有表都有数据，返回True
+        return tables_with_data == total_tables and total_tables > 0
+    
+    def load_existing_tasks(self) -> bool:
+        """加载现有的CDC任务到本地状态"""
+        logger.info("加载现有CDC任务...")
+        existing_tasks = self.check_existing_tasks()
+        
+        loaded_count = 0
+        for task_name, task_info in existing_tasks.items():
+            tenant_name = task_info['tenant_name']
+            tenant = self.tenants.get(tenant_name)
+            
+            if not tenant:
+                continue
+            
+            # 检查任务是否已经在本地状态中
+            task_exists = False
+            for task in tenant.get('cdc_tasks', []):
+                if task['task_name'] == task_name:
+                    task_exists = True
+                    # 更新状态
+                    task['paused'] = 'PAUSE' not in task_info.get('status', '').upper()
+                    break
+            
+            if not task_exists:
+                # 从任务名推断任务信息
+                # 任务名格式: cdc_task_{tenant_name}_{db_name} 或 cdc_task_{tenant_name}_{db_name}_{table_name}
+                parts = task_name.split('_')
+                if len(parts) >= 4:
+                    # 尝试解析任务信息
+                    db_name = None
+                    sink_db = None
+                    level = "database"
+                    table_name = None
+                    
+                    # 简化处理：从任务名中提取信息
+                    # 这里需要根据实际任务名格式来解析
+                    # 暂时使用一个通用的方式
+                    tenant['cdc_tasks'].append({
+                        'task_name': task_name,
+                        'tenant_name': tenant_name,
+                        'source_db': 'unknown',  # 需要从任务配置中获取
+                        'sink_db': 'unknown',
+                        'level': level,
+                        'table_name': table_name,
+                        'paused': 'PAUSE' not in task_info.get('status', '').upper()
+                    })
+                    loaded_count += 1
+        
+        if loaded_count > 0:
+            logger.info(f"已加载 {loaded_count} 个现有任务到本地状态")
+        
+        return True
+    
+    def task_exists(self, tenant_name: str, task_name: str) -> bool:
+        """检查任务是否已存在"""
+        existing_tasks = self.check_existing_tasks()
+        return task_name in existing_tasks
+    
     def setup_cdc_tasks(self) -> bool:
-        """设置CDC任务"""
+        """设置CDC任务（如果任务已存在则跳过）"""
         logger.info("设置CDC任务...")
+        
+        # 获取现有任务列表
+        existing_tasks = self.check_existing_tasks()
+        existing_task_names = set(existing_tasks.keys())
         
         # 随机选择一些数据库创建数据库级别的CDC任务
         # 只选择源数据库（不包含_bak后缀的数据库）
@@ -368,17 +571,43 @@ class AdvancedCDCTester:
         num_cdc_databases = max(1, int(len(all_databases) * 0.7))
         selected_databases = random.sample(all_databases, min(num_cdc_databases, len(all_databases)))
         
-        task_id = 1
+        created_count = 0
+        skipped_count = 0
+        
         for tenant_name, db_name in selected_databases:
             sink_db = f"{db_name}_bak"
             task_name = f"cdc_task_{tenant_name}_{db_name}"
+            
+            # 检查任务是否已存在
+            if task_name in existing_task_names:
+                logger.info(f"任务 {task_name} 已存在，跳过创建")
+                skipped_count += 1
+                # 加载到本地状态
+                tenant = self.tenants.get(tenant_name)
+                if tenant:
+                    task_exists = False
+                    for task in tenant.get('cdc_tasks', []):
+                        if task['task_name'] == task_name:
+                            task_exists = True
+                            break
+                    if not task_exists:
+                        tenant['cdc_tasks'].append({
+                            'task_name': task_name,
+                            'tenant_name': tenant_name,
+                            'source_db': db_name,
+                            'sink_db': sink_db,
+                            'level': 'database',
+                            'table_name': None,
+                            'paused': False
+                        })
+                continue
             
             # 创建sink数据库（sink数据库不需要创建表，CDC会自动同步）
             if not self.create_database(tenant_name, sink_db):
                 continue
             
             if self.create_cdc_task(tenant_name, task_name, db_name, sink_db, "database"):
-                task_id += 1
+                created_count += 1
         
         # 选择一个没有CDC任务的数据库，创建表级别的CDC任务
         cdc_databases = {(t, d) for t, d in selected_databases}
@@ -387,19 +616,21 @@ class AdvancedCDCTester:
         if non_cdc_databases:
             tenant_name, db_name = random.choice(non_cdc_databases)
             sink_db = f"{db_name}_bak_table"
+            table_name = "table1"  # 使用第一个表
+            task_name = f"cdc_task_{tenant_name}_{db_name}_{table_name}"
             
-            # 创建sink数据库（sink数据库不需要创建表，CDC会自动同步）
-            if not self.create_database(tenant_name, sink_db):
-                pass
+            # 检查任务是否已存在
+            if task_name in existing_task_names:
+                logger.info(f"任务 {task_name} 已存在，跳过创建")
+                skipped_count += 1
             else:
-                # 获取该数据库的第一个表
-                tenant = self.tenants.get(tenant_name)
-                if tenant and db_name in tenant['databases']:
-                    table_name = "table1"  # 使用第一个表
-                    task_name = f"cdc_task_{tenant_name}_{db_name}_{table_name}"
-                    self.create_cdc_task(tenant_name, task_name, db_name, sink_db, "table", table_name)
+                # 创建sink数据库（sink数据库不需要创建表，CDC会自动同步）
+                if self.create_database(tenant_name, sink_db):
+                    if self.create_cdc_task(tenant_name, task_name, db_name, sink_db, "table", table_name):
+                        created_count += 1
         
-        logger.info(f"CDC任务设置完成，共创建 {sum(len(t['cdc_tasks']) for t in self.tenants.values())} 个任务")
+        logger.info(f"CDC任务设置完成: 创建 {created_count} 个新任务, 跳过 {skipped_count} 个已存在任务")
+        logger.info(f"当前共有 {sum(len(t['cdc_tasks']) for t in self.tenants.values())} 个任务")
         return True
     
     def pause_cdc_task(self, tenant_name: str, task_name: str) -> bool:
@@ -898,17 +1129,46 @@ def main():
             logger.error("设置租户失败")
             sys.exit(1)
         
-        # 2. 设置数据库和表
-        if not tester.setup_databases_and_tables():
-            logger.error("设置数据库和表失败")
-            sys.exit(1)
+        # 2. 检查集群状态
+        logger.info("=" * 80)
+        logger.info("检查集群状态...")
+        logger.info("=" * 80)
         
-        # 3. 设置CDC任务
-        if not tester.setup_cdc_tasks():
-            logger.error("设置CDC任务失败")
-            sys.exit(1)
+        # 恢复所有暂停的任务
+        tester.resume_all_paused_tasks()
         
-        # 4. 运行测试循环
+        # 加载现有任务到本地状态
+        tester.load_existing_tasks()
+        
+        # 检查表是否已有数据
+        tables_have_data = tester.check_all_tables_have_data()
+        
+        if tables_have_data:
+            logger.info("所有表已有数据，跳过初始化，直接开始测试")
+            # 如果表已有数据，只检查CDC任务
+            existing_tasks = tester.check_existing_tasks()
+            if not existing_tasks:
+                logger.warning("没有发现CDC任务，需要创建新任务")
+                if not tester.setup_cdc_tasks():
+                    logger.error("CDC任务设置失败")
+                    sys.exit(1)
+        else:
+            logger.info("表数据不完整，执行完整初始化...")
+            # 设置数据库和表（会检查表是否存在，只创建不存在的表）
+            if not tester.setup_databases_and_tables():
+                logger.error("设置数据库和表失败")
+                sys.exit(1)
+            
+            # 设置CDC任务（会检查任务是否存在，只创建不存在的任务）
+            if not tester.setup_cdc_tasks():
+                logger.error("设置CDC任务失败")
+                sys.exit(1)
+        
+        logger.info("=" * 80)
+        logger.info("初始化完成，开始测试循环")
+        logger.info("=" * 80)
+        
+        # 3. 运行测试循环
         try:
             tester.run_test_loop()
         except KeyboardInterrupt:
