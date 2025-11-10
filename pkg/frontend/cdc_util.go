@@ -181,6 +181,9 @@ func (pc *PitrConfig) IsValid(minLength int64) bool {
 // It verifies the PITR configuration in descending order of priority (cluster > account > database > table)
 // to ensure that at least one level satisfies the minimum time requirement (2 hours).
 //
+// NOTE: PITR check is now disabled for CDC tasks. The GC (Garbage Collection) system will handle
+// CDC data protection automatically, so PITR configuration is no longer required.
+//
 // Parameters:
 // - ctx: Context for managing the lifecycle of the function.
 // - bh: Background handler for executing database queries.
@@ -189,7 +192,7 @@ func (pc *PitrConfig) IsValid(minLength int64) bool {
 // - minLength: the minimum time requirement of pitr
 //
 // Returns:
-// - error: Returns an error if no PITR configuration meets the minimum requirement, otherwise nil.
+// - error: Always returns nil (PITR check is disabled)
 var CDCCheckPitrGranularity = func(
 	ctx context.Context,
 	bh BackgroundExec,
@@ -197,76 +200,8 @@ var CDCCheckPitrGranularity = func(
 	pts *cdc.PatternTuples,
 	minLength ...int64,
 ) error {
-	var minPitrLen int64 = 2
-	if len(minLength) > 1 {
-		return moerr.NewInternalErrorf(ctx, "only one length parameter allowed")
-	}
-	if len(minLength) > 0 {
-		minPitrLen = max(minLength[0]+1, minPitrLen)
-	}
-
-	// Helper function to get PITR config for a specific level
-	getPitrConfig := func(level, dbName, tblName string) (*PitrConfig, error) {
-		config := NewPitrConfig(level)
-		length, unit, ok, err := getPitrLengthAndUnit(ctx, bh, level, accName, dbName, tblName)
-		if err != nil {
-			return nil, err
-		}
-		config.Length = length
-		config.Unit = unit
-		config.Exists = ok
-		return config, nil
-	}
-
-	// Check cluster level first
-	if config, err := getPitrConfig(cdc.CDCPitrGranularity_Cluster, "", ""); err != nil {
-		return err
-	} else if config.IsValid(minPitrLen) {
-		return nil
-	}
-
-	// Check other levels for each pattern tuple
-	for _, pt := range pts.Pts {
-		dbName := pt.Source.Database
-		tblName := pt.Source.Table
-
-		// Determine the level based on pattern
-		level := cdc.CDCPitrGranularity_Table
-		if dbName == cdc.CDCPitrGranularity_All && tblName == cdc.CDCPitrGranularity_All {
-			level = cdc.CDCPitrGranularity_Account
-		} else if tblName == cdc.CDCPitrGranularity_All {
-			level = cdc.CDCPitrGranularity_DB
-		}
-
-		// Check account level
-		if config, err := getPitrConfig(cdc.CDCPitrGranularity_Account, dbName, tblName); err != nil {
-			return err
-		} else if config.IsValid(minPitrLen) {
-			continue
-		}
-
-		// Check DB level if needed
-		if level == cdc.CDCPitrGranularity_DB || level == cdc.CDCPitrGranularity_Table {
-			if config, err := getPitrConfig(cdc.CDCPitrGranularity_DB, dbName, tblName); err != nil {
-				return err
-			} else if config.IsValid(minPitrLen) {
-				continue
-			}
-		}
-
-		// Check table level if needed
-		if level == cdc.CDCPitrGranularity_Table {
-			if config, err := getPitrConfig(cdc.CDCPitrGranularity_Table, dbName, tblName); err != nil {
-				return err
-			} else if config.IsValid(minPitrLen) {
-				continue
-			}
-		}
-
-		return moerr.NewInternalErrorf(ctx,
-			"no valid PITR configuration found for pattern: %s, minimum required length: %d hours",
-			pt.OriginString, minPitrLen)
-	}
+	// PITR check is disabled for CDC tasks.
+	// The GC system will handle CDC data protection automatically.
 	return nil
 }
 
