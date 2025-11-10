@@ -38,6 +38,8 @@ TASK_PAUSE_INTERVAL = 300  # 任务暂停间隔（5分钟）
 TASK_RESUME_INTERVAL = 300  # 任务恢复间隔（5分钟）
 DATA_INSERT_INTERVAL = 1  # 数据操作间隔（秒）
 DELETE_PROBABILITY = 0.7  # 删除操作概率（30%）
+ROW_COUNT_CHECK_PROBABILITY = 0.3  # 行数校验概率（30%）
+ROW_COUNT_DIFF_THRESHOLD = 0.1  # 行数差异阈值（10%）
 INIT_DATA_COUNT = 100000  # 初始化时每个表插入的数据量（10万条）
 INIT_BATCH_SIZE = 100000  # 初始化批量插入的批次大小（10万条一次）
 BATCH_INSERT_SIZE = 3000  # 批量插入的批次大小（1万条一次）
@@ -491,6 +493,127 @@ class AdvancedCDCTester:
         
         # 如果所有表都有数据，返回True
         return tables_with_data == total_tables and total_tables > 0
+    
+    def get_table_row_count(self, tenant_name: str, db_name: str, table_name: str) -> int:
+        """获取表的行数"""
+        tenant_conn = CDCConnection(
+            DB_HOST, DB_PORT,
+            f"{tenant_name}#{ADMIN_USER}",
+            ADMIN_PASS,
+            db_name
+        )
+        
+        if not tenant_conn.connect():
+            return -1
+        
+        try:
+            sql = f"SELECT COUNT(*) as cnt FROM {table_name}"
+            result = tenant_conn.execute_sql(sql, fetch=True)
+            
+            if result and len(result) > 0:
+                count = result[0].get('cnt', 0)
+                return int(count) if count is not None else 0
+            return 0
+        except Exception as e:
+            logger.debug(f"获取表行数失败: {tenant_name}.{db_name}.{table_name}, {e}")
+            return -1
+        finally:
+            tenant_conn.close()
+    
+    def check_row_count_consistency(self, tenant_name: str, task_name: str) -> Dict[str, Dict]:
+        """检查上游表和下游表的行数一致性"""
+        results = {}
+        
+        # 获取任务信息
+        task_info = None
+        for tname, tinfo in self.tenants.items():
+            if tname == tenant_name:
+                for task in tinfo.get('cdc_tasks', []):
+                    if task['task_name'] == task_name:
+                        task_info = task
+                        break
+                break
+        
+        if not task_info:
+            return results
+        
+        source_db = task_info.get('source_db')
+        sink_db = task_info.get('sink_db')
+        level = task_info.get('level', 'database')
+        table_name = task_info.get('table_name')
+        
+        if not source_db or not sink_db:
+            return results
+        
+        # 根据任务级别检查表
+        if level == 'database':
+            # 数据库级别：检查所有表
+            for tbl_idx in range(1, NUM_TABLES_PER_DATABASE + 1):
+                table_name = f"table{tbl_idx}"
+                source_count = self.get_table_row_count(tenant_name, source_db, table_name)
+                sink_count = self.get_table_row_count(tenant_name, sink_db, table_name)
+                
+                if source_count >= 0 and sink_count >= 0:
+                    diff = abs(source_count - sink_count)
+                    diff_percent = (diff / source_count * 100) if source_count > 0 else 0
+                    
+                    results[table_name] = {
+                        'source_count': source_count,
+                        'sink_count': sink_count,
+                        'diff': diff,
+                        'diff_percent': diff_percent,
+                        'within_threshold': diff_percent <= (ROW_COUNT_DIFF_THRESHOLD * 100)
+                    }
+        else:
+            # 表级别：只检查指定的表
+            if table_name:
+                source_count = self.get_table_row_count(tenant_name, source_db, table_name)
+                sink_count = self.get_table_row_count(tenant_name, sink_db, table_name)
+                
+                if source_count >= 0 and sink_count >= 0:
+                    diff = abs(source_count - sink_count)
+                    diff_percent = (diff / source_count * 100) if source_count > 0 else 0
+                    
+                    results[table_name] = {
+                        'source_count': source_count,
+                        'sink_count': sink_count,
+                        'diff': diff,
+                        'diff_percent': diff_percent,
+                        'within_threshold': diff_percent <= (ROW_COUNT_DIFF_THRESHOLD * 100)
+                    }
+        
+        return results
+    
+    def random_check_row_counts(self) -> List[str]:
+        """随机检查行数一致性"""
+        issues = []
+        
+        # 随机选择一些任务进行检查
+        all_tasks = []
+        for tenant_name, tenant_info in self.tenants.items():
+            for task in tenant_info.get('cdc_tasks', []):
+                if not task.get('paused', False):
+                    all_tasks.append((tenant_name, task['task_name']))
+        
+        if not all_tasks:
+            return issues
+        
+        # 随机选择30%的任务进行检查
+        num_to_check = max(1, int(len(all_tasks) * 0.3))
+        selected_tasks = random.sample(all_tasks, min(num_to_check, len(all_tasks)))
+        
+        for tenant_name, task_name in selected_tasks:
+            results = self.check_row_count_consistency(tenant_name, task_name)
+            
+            for table_name, result in results.items():
+                if not result['within_threshold']:
+                    issue = f"{tenant_name}.{task_name}.{table_name}: 上游={result['source_count']}, 下游={result['sink_count']}, 差异={result['diff']} ({result['diff_percent']:.2f}%)"
+                    issues.append(issue)
+                    logger.warning(f"⚠️ 行数差异过大: {issue}")
+                else:
+                    logger.debug(f"✓ {tenant_name}.{task_name}.{table_name}: 上游={result['source_count']}, 下游={result['sink_count']}, 差异={result['diff']} ({result['diff_percent']:.2f}%)")
+        
+        return issues
     
     def load_existing_tasks(self) -> bool:
         """加载现有的CDC任务到本地状态"""
@@ -1088,6 +1211,17 @@ class AdvancedCDCTester:
                 self.stop()
                 # 退出程序
                 sys.exit(1)
+            
+            # 随机检查行数一致性
+            if random.random() < ROW_COUNT_CHECK_PROBABILITY:
+                logger.info("随机检查行数一致性...")
+                row_count_issues = self.random_check_row_counts()
+                if row_count_issues:
+                    logger.warning(f"发现 {len(row_count_issues)} 个行数差异过大的问题:")
+                    for issue in row_count_issues:
+                        logger.warning(f"  - {issue}")
+                else:
+                    logger.info("✓ 行数一致性检查通过")
             
             # 随机暂停和恢复任务（在独立线程中运行，不阻塞数据插入）
             if cycle % 2 == 0:  # 每2个循环执行一次
