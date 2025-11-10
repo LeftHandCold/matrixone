@@ -509,9 +509,104 @@ class AdvancedCDCTester:
         
         return watermarks
     
-    def check_watermark_stall(self) -> List[str]:
-        """检查水位停滞的任务"""
+    def compare_timestamps(self, ts1: str, ts2: str) -> int:
+        """比较两个时间戳字符串
+        支持格式：
+        - TS格式: "1762763441896327755-1" (physical-logical)
+          格式说明: physical time (纳秒) - logical time
+        - 时间格式: "2024-01-01 12:00:00.000000"
+        返回: -1 if ts1 < ts2, 0 if ts1 == ts2, 1 if ts1 > ts2
+        """
+        try:
+            # 首先尝试TS格式 (physical-logical)
+            # 格式: "1762763441896327755-1"
+            if '-' in ts1 and '-' in ts2:
+                parts1 = ts1.split('-', 1)  # 只分割第一个'-'，避免logical time中有'-'
+                parts2 = ts2.split('-', 1)
+                if len(parts1) == 2 and len(parts2) == 2:
+                    try:
+                        # physical time 是纳秒级时间戳（大整数）
+                        p1 = int(parts1[0])
+                        l1 = int(parts1[1])
+                        p2 = int(parts2[0])
+                        l2 = int(parts2[1])
+                        
+                        # 先比较 physical time
+                        if p1 < p2:
+                            return -1
+                        elif p1 > p2:
+                            return 1
+                        else:
+                            # physical time相同，比较logical time
+                            if l1 < l2:
+                                return -1
+                            elif l1 > l2:
+                                return 1
+                            else:
+                                return 0
+                    except ValueError as e:
+                        logger.debug(f"TS格式解析失败: {ts1} 或 {ts2}, {e}")
+                        pass  # 不是TS格式，继续尝试其他格式
+            
+            # 尝试解析时间戳字符串
+            # 格式可能是: "2024-01-01 12:00:00.000000" 或 "2024-01-01T12:00:00.000000Z"
+            from datetime import datetime
+            
+            formats = [
+                "%Y-%m-%d %H:%M:%S.%f",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S.%fZ",
+                "%Y-%m-%dT%H:%M:%SZ",
+            ]
+            
+            dt1 = None
+            dt2 = None
+            
+            for fmt in formats:
+                try:
+                    dt1 = datetime.strptime(ts1, fmt)
+                    break
+                except ValueError:
+                    continue
+            
+            for fmt in formats:
+                try:
+                    dt2 = datetime.strptime(ts2, fmt)
+                    break
+                except ValueError:
+                    continue
+            
+            if dt1 is not None and dt2 is not None:
+                if dt1 < dt2:
+                    return -1
+                elif dt1 > dt2:
+                    return 1
+                else:
+                    return 0
+            
+            # 如果无法解析，使用字符串比较
+            if ts1 < ts2:
+                return -1
+            elif ts1 > ts2:
+                return 1
+            else:
+                return 0
+        except Exception as e:
+            logger.error(f"比较时间戳失败: {ts1} vs {ts2}, {e}")
+            # 如果解析失败，使用字符串比较
+            if ts1 < ts2:
+                return -1
+            elif ts1 > ts2:
+                return 1
+            else:
+                return 0
+    
+    def check_watermark_stall(self) -> Tuple[List[str], bool]:
+        """检查水位停滞和回退的任务
+        返回: (停滞任务列表, 是否发现严重问题需要终止)
+        """
         stalled_tasks = []
+        has_critical_issue = False
         current_time = time.time()
         
         for tenant_name, tenant_info in self.tenants.items():
@@ -530,13 +625,31 @@ class AdvancedCDCTester:
                     last_watermark = self.watermark_history.get(task_name, {}).get(table_key)
                     last_update_time = self.watermark_last_update.get(task_name, {}).get(table_key, 0)
                     
-                    if watermark == last_watermark:
-                        # 水位没有变化
-                        if current_time - last_update_time > WATERMARK_STALL_TIMEOUT:
-                            stalled_tasks.append(f"{task_name} ({table_key})")
-                            logger.warning(f"⚠ 任务 {task_name} 表 {table_key} 水位停滞超过 {WATERMARK_STALL_TIMEOUT/60} 分钟")
+                    if last_watermark:
+                        # 检查水位是否回退
+                        comparison = self.compare_timestamps(watermark, last_watermark)
+                        if comparison < 0:
+                            # 水位回退了！
+                            has_critical_issue = True
+                            stalled_tasks.append(f"{task_name} ({table_key}) - 水位回退: {last_watermark} -> {watermark}")
+                            logger.error(f"❌ 严重错误: 任务 {task_name} 表 {table_key} 水位回退!")
+                            logger.error(f"   之前水位: {last_watermark}")
+                            logger.error(f"   当前水位: {watermark}")
+                        elif comparison > 0:
+                            # 水位正常前进
+                            self.watermark_history[task_name][table_key] = watermark
+                            self.watermark_last_update[task_name][table_key] = current_time
+                            logger.info(f"✓ 任务 {task_name} 表 {table_key} 水位更新: {watermark}")
+                        else:
+                            # 水位没有变化
+                            if current_time - last_update_time > WATERMARK_STALL_TIMEOUT:
+                                has_critical_issue = True
+                                stalled_tasks.append(f"{task_name} ({table_key}) - 水位停滞超过 {WATERMARK_STALL_TIMEOUT/60} 分钟")
+                                logger.error(f"❌ 严重错误: 任务 {task_name} 表 {table_key} 水位停滞超过 {WATERMARK_STALL_TIMEOUT/60} 分钟!")
+                                logger.error(f"   最后水位: {last_watermark}")
+                                logger.error(f"   停滞时间: {(current_time - last_update_time)/60:.1f} 分钟")
                     else:
-                        # 水位有更新
+                        # 第一次记录水位
                         if task_name not in self.watermark_history:
                             self.watermark_history[task_name] = {}
                         if task_name not in self.watermark_last_update:
@@ -544,9 +657,9 @@ class AdvancedCDCTester:
                         
                         self.watermark_history[task_name][table_key] = watermark
                         self.watermark_last_update[task_name][table_key] = current_time
-                        logger.info(f"✓ 任务 {task_name} 表 {table_key} 水位更新: {watermark}")
+                        logger.info(f"✓ 任务 {task_name} 表 {table_key} 首次记录水位: {watermark}")
         
-        return stalled_tasks
+        return stalled_tasks, has_critical_issue
     
     def insert_data_worker(self, tenant_name: str, db_name: str, table_name: str):
         """数据插入和删除工作线程（只操作源数据库，不操作sink数据库）
@@ -723,11 +836,24 @@ class AdvancedCDCTester:
             
             # 检查水位（在独立线程中运行，不阻塞数据插入）
             logger.info("检查水位...")
-            stalled_tasks = self.check_watermark_stall()
+            stalled_tasks, has_critical_issue = self.check_watermark_stall()
             if stalled_tasks:
-                logger.warning(f"发现 {len(stalled_tasks)} 个水位停滞的任务:")
+                logger.warning(f"发现 {len(stalled_tasks)} 个水位问题:")
                 for task in stalled_tasks:
                     logger.warning(f"  - {task}")
+            
+            # 如果发现严重问题（水位回退或长时间停滞），终止程序
+            if has_critical_issue:
+                logger.error("=" * 80)
+                logger.error("❌ 检测到严重问题（水位回退或长时间停滞），终止测试程序")
+                logger.error("=" * 80)
+                logger.error("问题详情:")
+                for task in stalled_tasks:
+                    logger.error(f"  - {task}")
+                logger.error("=" * 80)
+                self.stop()
+                # 退出程序
+                sys.exit(1)
             
             # 随机暂停和恢复任务（在独立线程中运行，不阻塞数据插入）
             if cycle % 2 == 0:  # 每2个循环执行一次
