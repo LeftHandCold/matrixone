@@ -416,28 +416,29 @@ class AdvancedCDCTester:
         return False
     
     def get_task_id_by_name(self, tenant_name: str, task_name: str) -> Optional[str]:
-        """根据task_name获取task_id"""
+        """根据task_name获取task_id（使用系统租户连接）"""
         tenant = self.tenants.get(tenant_name)
         if not tenant:
             return None
         
-        tenant_conn = CDCConnection(
+        # mo_cdc_task表在系统租户下，需要使用dump用户连接
+        sys_conn = CDCConnection(
             DB_HOST, DB_PORT,
-            f"{tenant_name}#{ADMIN_USER}",
-            ADMIN_PASS
+            DB_USER,  # dump用户
+            DB_PASS
         )
         
-        if not tenant_conn.connect():
+        if not sys_conn.connect():
             return None
         
         account_id = tenant['account_id']
         sql = f"SELECT task_id FROM mo_catalog.mo_cdc_task WHERE account_id={account_id} AND task_name='{task_name}' LIMIT 1"
-        task_id = tenant_conn.execute_sql_silent(sql)
-        tenant_conn.close()
+        task_id = sys_conn.execute_sql_silent(sql)
+        sys_conn.close()
         return task_id
     
     def check_watermark(self, tenant_name: str, task_name: str) -> Dict[str, str]:
-        """检查watermark"""
+        """检查watermark（使用系统租户连接）"""
         task_id = self.get_task_id_by_name(tenant_name, task_name)
         if not task_id:
             return {}
@@ -446,21 +447,22 @@ class AdvancedCDCTester:
         if not tenant:
             return {}
         
-        tenant_conn = CDCConnection(
+        # mo_cdc_watermark表在系统租户下，需要使用dump用户连接
+        sys_conn = CDCConnection(
             DB_HOST, DB_PORT,
-            f"{tenant_name}#{ADMIN_USER}",
-            ADMIN_PASS
+            DB_USER,  # dump用户
+            DB_PASS
         )
         
-        if not tenant_conn.connect():
+        if not sys_conn.connect():
             return {}
         
         account_id = tenant['account_id']
         sql = f"""SELECT db_name, table_name, watermark, err_msg 
                   FROM mo_catalog.mo_cdc_watermark 
                   WHERE account_id={account_id} AND task_id='{task_id}'"""
-        result = tenant_conn.execute_sql(sql, fetch=True)
-        tenant_conn.close()
+        result = sys_conn.execute_sql(sql, fetch=True)
+        sys_conn.close()
         
         watermarks = {}
         if result:
