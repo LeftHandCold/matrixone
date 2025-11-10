@@ -104,8 +104,9 @@ create_cdc_task() {
     local sink_db="$5"
     local level="${6:-database}"
     
-    # 格式: CREATE CDC task_name 'source_uri' 'source_db' 'sink_uri' 'source_db:sink_db' {'Level'='database'};
-    local sql="CREATE CDC ${task_id} '${source_uri}' '${source_db}' '${sink_uri}' '${source_db}:${sink_db}' {'Level'='${level}'};"
+    # 格式: CREATE CDC task_name 'source_uri' 'matrixone' 'sink_uri' 'source_db:sink_db' {'Level'='database'};
+    # 第三个参数固定为 'matrixone'，表示下游是我们自己的数据库
+    local sql="CREATE CDC ${task_id} '${source_uri}' 'matrixone' '${sink_uri}' '${source_db}:${sink_db}' {'Level'='${level}'};"
     log_info "创建CDC任务: ${task_id}"
     execute_sql_verbose "$sql"
 }
