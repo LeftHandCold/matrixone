@@ -109,11 +109,28 @@ execute_sql_verbose() {
     return 0
 }
 
+# 根据task_name获取task_id
+get_task_id_by_name() {
+    local task_name="$1"
+    local task_id=$(execute_sql "SELECT task_id FROM mo_catalog.mo_cdc_task WHERE account_id=${ACCOUNT_ID} AND task_name='${task_name}' LIMIT 1")
+    if [ -z "$task_id" ]; then
+        log_error "未找到任务: ${task_name}"
+        return 1
+    fi
+    echo "$task_id"
+}
+
 # 查询CDC watermark
 query_watermark() {
-    local task_id="$1"
+    local task_name="$1"
     local db_name="$2"
     local table_name="$3"
+    
+    # 根据task_name获取task_id
+    local task_id=$(get_task_id_by_name "${task_name}")
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
     
     if [ -n "$table_name" ]; then
         # 查询特定表的watermark
@@ -129,7 +146,7 @@ query_watermark() {
 
 # 创建CDC任务
 create_cdc_task() {
-    local task_id="$1"
+    local task_name="$1"
     local source_uri="$2"
     local source_db="$3"
     local sink_uri="$4"
@@ -138,24 +155,24 @@ create_cdc_task() {
     
     # 格式: CREATE CDC task_name 'source_uri' 'matrixone' 'sink_uri' 'source_db:sink_db' {'Level'='database'};
     # 第三个参数固定为 'matrixone'，表示下游是我们自己的数据库
-    local sql="CREATE CDC ${task_id} '${source_uri}' 'matrixone' '${sink_uri}' '${source_db}:${sink_db}' {'Level'='${level}'};"
-    log_info "创建CDC任务: ${task_id}"
+    local sql="CREATE CDC ${task_name} '${source_uri}' 'matrixone' '${sink_uri}' '${source_db}:${sink_db}' {'Level'='${level}'};"
+    log_info "创建CDC任务: ${task_name}"
     execute_sql_verbose "$sql"
 }
 
 # 暂停CDC任务
 pause_cdc_task() {
-    local task_id="$1"
-    local sql="PAUSE CDC TASK ${task_id};"
-    log_info "暂停CDC任务: ${task_id}"
+    local task_name="$1"
+    local sql="PAUSE CDC TASK ${task_name};"
+    log_info "暂停CDC任务: ${task_name}"
     execute_sql_verbose "$sql"
 }
 
 # 重启CDC任务
 resume_cdc_task() {
-    local task_id="$1"
-    local sql="RESUME CDC TASK ${task_id};"
-    log_info "重启CDC任务: ${task_id}"
+    local task_name="$1"
+    local sql="RESUME CDC TASK ${task_name};"
+    log_info "重启CDC任务: ${task_name}"
     execute_sql_verbose "$sql"
 }
 
@@ -165,7 +182,7 @@ test_basic_cdc_protection() {
     
     local test_db="test_cdc_db1"
     local test_table="test_table1"
-    local task_id="test_cdc_task1"
+    local task_name="test_cdc_task1"
     local sink_db="${test_db}_bak"
     local source_uri="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}"
     local sink_uri="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}"
@@ -176,7 +193,7 @@ test_basic_cdc_protection() {
     execute_sql_verbose "USE ${test_db}; CREATE TABLE IF NOT EXISTS ${test_table} (id INT PRIMARY KEY, name VARCHAR(100), ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
     
     # 创建CDC任务
-    create_cdc_task "${task_id}" "${source_uri}" "${test_db}" "${sink_uri}" "${sink_db}" "database"
+    create_cdc_task "${task_name}" "${source_uri}" "${test_db}" "${sink_uri}" "${sink_db}" "database"
     
     # 等待任务启动
     sleep 2
@@ -190,7 +207,7 @@ test_basic_cdc_protection() {
     
     # 查询watermark
     log_info "查询CDC watermark..."
-    query_watermark "${task_id}" "${test_db}" ""
+    query_watermark "${task_name}" "${test_db}" ""
     
     # 验证数据是否同步到目标库
     local count=$(execute_sql "USE ${sink_db}; SELECT COUNT(*) FROM ${test_table}" 2>/dev/null || echo "0")
@@ -212,7 +229,7 @@ test_min_watermark_strategy() {
     local test_db="test_cdc_db2"
     local test_table1="test_table1"
     local test_table2="test_table2"
-    local task_id="test_cdc_task2"
+    local task_name="test_cdc_task2"
     local sink_db="${test_db}_bak"
     local source_uri="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}"
     local sink_uri="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}"
@@ -224,7 +241,7 @@ test_min_watermark_strategy() {
     execute_sql_verbose "USE ${test_db}; CREATE TABLE IF NOT EXISTS ${test_table2} (id INT PRIMARY KEY, name VARCHAR(100))"
     
     # 创建CDC任务
-    create_cdc_task "${task_id}" "${source_uri}" "${test_db}" "${sink_uri}" "${sink_db}" "database"
+    create_cdc_task "${task_name}" "${source_uri}" "${test_db}" "${sink_uri}" "${sink_db}" "database"
     
     sleep 2
     
@@ -237,11 +254,11 @@ test_min_watermark_strategy() {
     
     # 查询watermark（应该显示两个表的watermark）
     log_info "查询CDC watermark（验证最小watermark策略）..."
-    query_watermark "${task_id}" "${test_db}" ""
+    query_watermark "${task_name}" "${test_db}" ""
     
     # 验证：两个表都应该有watermark
-    local wm1=$(query_watermark "${task_id}" "${test_db}" "${test_table1}")
-    local wm2=$(query_watermark "${task_id}" "${test_db}" "${test_table2}")
+    local wm1=$(query_watermark "${task_name}" "${test_db}" "${test_table1}")
+    local wm2=$(query_watermark "${task_name}" "${test_db}" "${test_table2}")
     
     log_info "表 ${test_table1} watermark: ${wm1}"
     log_info "表 ${test_table2} watermark: ${wm2}"
@@ -262,8 +279,8 @@ test_multi_database_protection() {
     local test_db1="test_cdc_db3_1"
     local test_db2="test_cdc_db3_2"
     local test_table="test_table"
-    local task_id1="test_cdc_task3_1"
-    local task_id2="test_cdc_task3_2"
+    local task_name1="test_cdc_task3_1"
+    local task_name2="test_cdc_task3_2"
     local sink_db1="${test_db1}_bak"
     local sink_db2="${test_db2}_bak"
     local source_uri="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}"
@@ -280,8 +297,8 @@ test_multi_database_protection() {
     
     # 创建多个CDC任务
     log_info "创建多个CDC任务..."
-    create_cdc_task "${task_id1}" "${source_uri}" "${test_db1}" "${sink_uri}" "${sink_db1}" "database"
-    create_cdc_task "${task_id2}" "${source_uri}" "${test_db2}" "${sink_uri}" "${sink_db2}" "database"
+    create_cdc_task "${task_name1}" "${source_uri}" "${test_db1}" "${sink_uri}" "${sink_db1}" "database"
+    create_cdc_task "${task_name2}" "${source_uri}" "${test_db2}" "${sink_uri}" "${sink_db2}" "database"
     
     sleep 2
     
@@ -294,8 +311,8 @@ test_multi_database_protection() {
     
     # 查询watermark
     log_info "查询多个数据库的watermark..."
-    query_watermark "${task_id1}" "${test_db1}" ""
-    query_watermark "${task_id2}" "${test_db2}" ""
+    query_watermark "${task_name1}" "${test_db1}" ""
+    query_watermark "${task_name2}" "${test_db2}" ""
     
     log_info "✓ 测试通过: 多数据库CDC保护工作正常"
     log_info "场景3测试完成\n"
@@ -307,7 +324,7 @@ test_continuous_write() {
     
     local test_db="test_cdc_db4"
     local test_table="test_table"
-    local task_id="test_cdc_task4"
+    local task_name="test_cdc_task4"
     local sink_db="${test_db}_bak"
     local source_uri="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}"
     local sink_uri="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}"
@@ -317,7 +334,7 @@ test_continuous_write() {
     execute_sql_verbose "USE ${test_db}; CREATE TABLE IF NOT EXISTS ${test_table} (id INT PRIMARY KEY, name VARCHAR(100), data VARCHAR(200))"
     
     # 创建CDC任务
-    create_cdc_task "${task_id}" "${source_uri}" "${test_db}" "${sink_uri}" "${sink_db}" "database"
+    create_cdc_task "${task_name}" "${source_uri}" "${test_db}" "${sink_uri}" "${sink_db}" "database"
     
     sleep 2
     
@@ -328,7 +345,7 @@ test_continuous_write() {
         
         if [ $((i % 3)) -eq 0 ]; then
             log_info "已插入 ${i} 条数据，查询watermark..."
-            local wm=$(query_watermark "${task_id}" "${test_db}" "${test_table}")
+            local wm=$(query_watermark "${task_name}" "${test_db}" "${test_table}")
             log_info "当前watermark: ${wm}"
         fi
         
@@ -337,7 +354,7 @@ test_continuous_write() {
     
     # 最终查询watermark
     log_info "最终watermark状态:"
-    query_watermark "${task_id}" "${test_db}" ""
+    query_watermark "${task_name}" "${test_db}" ""
     
     log_info "✓ 测试通过: 持续写入和watermark更新正常"
     log_info "场景4测试完成\n"
@@ -349,7 +366,7 @@ test_pause_resume() {
     
     local test_db="test_cdc_db5"
     local test_table="test_table"
-    local task_id="test_cdc_task5"
+    local task_name="test_cdc_task5"
     local sink_db="${test_db}_bak"
     local source_uri="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}"
     local sink_uri="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}"
@@ -359,7 +376,7 @@ test_pause_resume() {
     execute_sql_verbose "USE ${test_db}; CREATE TABLE IF NOT EXISTS ${test_table} (id INT PRIMARY KEY, name VARCHAR(100))"
     
     # 创建CDC任务
-    create_cdc_task "${task_id}" "${source_uri}" "${test_db}" "${sink_uri}" "${sink_db}" "database"
+    create_cdc_task "${task_name}" "${source_uri}" "${test_db}" "${sink_uri}" "${sink_db}" "database"
     
     sleep 2
     
@@ -370,10 +387,10 @@ test_pause_resume() {
     
     # 查询watermark
     log_info "暂停前的watermark:"
-    query_watermark "${task_id}" "${test_db}" ""
+    query_watermark "${task_name}" "${test_db}" ""
     
     # 暂停任务
-    pause_cdc_task "${task_id}"
+    pause_cdc_task "${task_name}"
     sleep 2
     
     # 在暂停期间插入数据
@@ -383,10 +400,10 @@ test_pause_resume() {
     
     # 查询watermark（应该不会更新）
     log_info "暂停期间的watermark:"
-    query_watermark "${task_id}" "${test_db}" ""
+    query_watermark "${task_name}" "${test_db}" ""
     
     # 重启任务
-    resume_cdc_task "${task_id}"
+    resume_cdc_task "${task_name}"
     sleep 2
     
     # 插入新数据
@@ -396,7 +413,7 @@ test_pause_resume() {
     
     # 查询watermark（应该更新）
     log_info "重启后的watermark:"
-    query_watermark "${task_id}" "${test_db}" ""
+    query_watermark "${task_name}" "${test_db}" ""
     
     log_info "✓ 测试通过: 任务暂停和重启功能正常"
     log_info "场景5测试完成\n"
@@ -407,7 +424,7 @@ test_multi_table_protection() {
     log_info "========== 测试场景6: 多表CDC保护 =========="
     
     local test_db="test_cdc_db6"
-    local task_id="test_cdc_task6"
+    local task_name="test_cdc_task6"
     local sink_db="${test_db}_bak"
     local source_uri="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}"
     local sink_uri="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}"
@@ -423,7 +440,7 @@ test_multi_table_protection() {
     done
     
     # 创建CDC任务
-    create_cdc_task "${task_id}" "${source_uri}" "${test_db}" "${sink_uri}" "${sink_db}" "database"
+    create_cdc_task "${task_name}" "${source_uri}" "${test_db}" "${sink_uri}" "${sink_db}" "database"
     
     sleep 2
     
@@ -441,13 +458,13 @@ test_multi_table_protection() {
     
     # 查询所有表的watermark
     log_info "查询所有表的watermark:"
-    query_watermark "${task_id}" "${test_db}" ""
+    query_watermark "${task_name}" "${test_db}" ""
     
     # 验证每个表都有watermark
     local all_have_wm=true
     for i in $(seq 1 $num_tables); do
         local table_name="test_table${i}"
-        local wm=$(query_watermark "${task_id}" "${test_db}" "${table_name}")
+        local wm=$(query_watermark "${task_name}" "${test_db}" "${table_name}")
         log_info "表 ${table_name} watermark: ${wm}"
         
         if [ -z "$wm" ]; then
