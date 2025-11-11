@@ -429,10 +429,12 @@ func (u *CDCWatermarkUpdater) onJobs(jobs ...any) {
 		case JT_CDC_CommittingWM:
 			u.committingBuffer = append(u.committingBuffer, job)
 		case JT_CDC_UpdateWMErrMsg:
-			if _, err := u.GetFromCache(context.Background(), job.Key); err != nil {
-				job.DoneWithErr(err)
-				continue
-			}
+			// Note: We don't require watermark to exist in cache before updating error message.
+			// The SQL uses ON DUPLICATE KEY UPDATE, which will create a new record if it doesn't exist.
+			// This is necessary because:
+			// 1. When task stops, RemoveCachedWM may clear the cache before UpdateWatermarkErrMsg
+			// 2. The watermark record may still exist in database even if cache is cleared
+			// 3. Error message update should work independently of cache state
 			u.committingErrMsgBuffer = append(u.committingErrMsgBuffer, job)
 		case JT_CDC_RemoveCachedWM:
 			u.Lock()
