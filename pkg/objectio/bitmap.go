@@ -16,6 +16,7 @@ package objectio
 
 import (
 	"fmt"
+	"runtime/debug"
 
 	"github.com/matrixorigin/matrixone/pkg/common/bitmap"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
@@ -118,6 +119,7 @@ func (r *Bitmap) PreExtend(nbits int) {
 		logutil.Warn(
 			"Bitmap-COW",
 			zap.Int("nbits", nbits),
+			zap.String("stack", string(debug.Stack())),
 		)
 		var nbm bitmap.Bitmap
 		nbm.TryExpandWithSize(nbits)
