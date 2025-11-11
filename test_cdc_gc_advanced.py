@@ -378,8 +378,8 @@ class AdvancedCDCTester:
             return existing_tasks
         
         try:
-            # 查询所有CDC任务
-            sql = "SELECT account_id, task_id, task_name, status FROM mo_catalog.mo_cdc_task"
+            # 查询所有CDC任务，包括tables字段以解析source_db和sink_db
+            sql = "SELECT account_id, task_id, task_name, state, tables FROM mo_catalog.mo_cdc_task"
             result = sys_conn.execute_sql(sql, fetch=True)
             
             if result:
@@ -387,7 +387,8 @@ class AdvancedCDCTester:
                     account_id = row['account_id']
                     task_id = row['task_id']
                     task_name = row['task_name']
-                    status = row.get('status', '')
+                    status = row.get('state', '')
+                    tables = row.get('tables', '')
                     
                     # 找到对应的租户
                     tenant_name = None
@@ -397,13 +398,50 @@ class AdvancedCDCTester:
                             break
                     
                     if tenant_name:
+                        # 解析tables字段，提取source_db和sink_db
+                        source_db = None
+                        sink_db = None
+                        level = "database"
+                        table_name = None
+                        
+                        if tables:
+                            # tables格式可能是: "source_db:sink_db" 或 "source_db.table_name:sink_db.table_name"
+                            # 也可能包含多个表，用逗号分隔
+                            parts = tables.split(',')
+                            if parts:
+                                first_part = parts[0].strip()
+                                if ':' in first_part:
+                                    source_sink = first_part.split(':', 1)
+                                    if len(source_sink) == 2:
+                                        source_spec = source_sink[0].strip()
+                                        sink_spec = source_sink[1].strip()
+                                        
+                                        # 检查是否是表级别（包含点号）
+                                        if '.' in source_spec and '.' in sink_spec:
+                                            # 表级别: source_db.table_name:sink_db.table_name
+                                            level = "table"
+                                            source_parts = source_spec.split('.', 1)
+                                            sink_parts = sink_spec.split('.', 1)
+                                            if len(source_parts) == 2 and len(sink_parts) == 2:
+                                                source_db = source_parts[0]
+                                                table_name = source_parts[1]
+                                                sink_db = sink_parts[0]
+                                        else:
+                                            # 数据库级别: source_db:sink_db
+                                            source_db = source_spec
+                                            sink_db = sink_spec
+                        
                         existing_tasks[task_name] = {
                             'tenant_name': tenant_name,
                             'task_id': task_id,
                             'status': status,
-                            'account_id': account_id
+                            'account_id': account_id,
+                            'source_db': source_db,
+                            'sink_db': sink_db,
+                            'level': level,
+                            'table_name': table_name
                         }
-                        logger.info(f"发现现有任务: {task_name} (租户: {tenant_name}, 状态: {status})")
+                        logger.info(f"发现现有任务: {task_name} (租户: {tenant_name}, 状态: {status}, source_db: {source_db}, sink_db: {sink_db})")
         except Exception as e:
             logger.error(f"检查现有任务失败: {e}")
         finally:
@@ -633,34 +671,31 @@ class AdvancedCDCTester:
             for task in tenant.get('cdc_tasks', []):
                 if task['task_name'] == task_name:
                     task_exists = True
-                    # 更新状态
+                    # 更新状态和任务信息
                     task['paused'] = 'PAUSE' not in task_info.get('status', '').upper()
+                    # 更新任务信息（如果之前是unknown，现在用实际值替换）
+                    if task_info.get('source_db'):
+                        task['source_db'] = task_info.get('source_db')
+                    if task_info.get('sink_db'):
+                        task['sink_db'] = task_info.get('sink_db')
+                    if task_info.get('level'):
+                        task['level'] = task_info.get('level')
+                    if task_info.get('table_name'):
+                        task['table_name'] = task_info.get('table_name')
                     break
             
             if not task_exists:
-                # 从任务名推断任务信息
-                # 任务名格式: cdc_task_{tenant_name}_{db_name} 或 cdc_task_{tenant_name}_{db_name}_{table_name}
-                parts = task_name.split('_')
-                if len(parts) >= 4:
-                    # 尝试解析任务信息
-                    db_name = None
-                    sink_db = None
-                    level = "database"
-                    table_name = None
-                    
-                    # 简化处理：从任务名中提取信息
-                    # 这里需要根据实际任务名格式来解析
-                    # 暂时使用一个通用的方式
-                    tenant['cdc_tasks'].append({
-                        'task_name': task_name,
-                        'tenant_name': tenant_name,
-                        'source_db': 'unknown',  # 需要从任务配置中获取
-                        'sink_db': 'unknown',
-                        'level': level,
-                        'table_name': table_name,
-                        'paused': 'PAUSE' not in task_info.get('status', '').upper()
-                    })
-                    loaded_count += 1
+                # 直接使用check_existing_tasks返回的完整任务信息
+                tenant['cdc_tasks'].append({
+                    'task_name': task_name,
+                    'tenant_name': tenant_name,
+                    'source_db': task_info.get('source_db', 'unknown'),
+                    'sink_db': task_info.get('sink_db', 'unknown'),
+                    'level': task_info.get('level', 'database'),
+                    'table_name': task_info.get('table_name'),
+                    'paused': 'PAUSE' not in task_info.get('status', '').upper()
+                })
+                loaded_count += 1
         
         if loaded_count > 0:
             logger.info(f"已加载 {loaded_count} 个现有任务到本地状态")
@@ -671,6 +706,33 @@ class AdvancedCDCTester:
         """检查任务是否已存在"""
         existing_tasks = self.check_existing_tasks()
         return task_name in existing_tasks
+    
+    def check_task_exists_by_db(self, existing_tasks: Dict[str, Dict], tenant_name: str, 
+                                source_db: str, sink_db: str, level: str = "database", 
+                                table_name: str = None) -> Optional[str]:
+        """检查是否已经有针对相同source_db和sink_db的任务
+        返回: 如果存在，返回任务名；否则返回None
+        """
+        for task_name, task_info in existing_tasks.items():
+            if task_info.get('tenant_name') != tenant_name:
+                continue
+            
+            task_source_db = task_info.get('source_db')
+            task_sink_db = task_info.get('sink_db')
+            task_level = task_info.get('level', 'database')
+            task_table_name = task_info.get('table_name')
+            
+            # 检查source_db和sink_db是否匹配
+            if task_source_db == source_db and task_sink_db == sink_db:
+                # 如果是表级别任务，还需要检查表名
+                if level == "table" and task_level == "table":
+                    if task_table_name == table_name:
+                        return task_name
+                # 如果是数据库级别任务，直接匹配
+                elif level == "database" and task_level == "database":
+                    return task_name
+        
+        return None
     
     def setup_cdc_tasks(self) -> bool:
         """设置CDC任务（如果任务已存在则跳过）"""
@@ -701,9 +763,9 @@ class AdvancedCDCTester:
             sink_db = f"{db_name}_bak"
             task_name = f"cdc_task_{tenant_name}_{db_name}"
             
-            # 检查任务是否已存在
+            # 首先检查任务名是否已存在
             if task_name in existing_task_names:
-                logger.info(f"任务 {task_name} 已存在，跳过创建")
+                logger.info(f"任务 {task_name} 已存在（通过任务名检查），跳过创建")
                 skipped_count += 1
                 # 加载到本地状态
                 tenant = self.tenants.get(tenant_name)
@@ -714,13 +776,40 @@ class AdvancedCDCTester:
                             task_exists = True
                             break
                     if not task_exists:
+                        existing_task_info = existing_tasks[task_name]
                         tenant['cdc_tasks'].append({
                             'task_name': task_name,
                             'tenant_name': tenant_name,
-                            'source_db': db_name,
-                            'sink_db': sink_db,
-                            'level': 'database',
-                            'table_name': None,
+                            'source_db': existing_task_info.get('source_db', db_name),
+                            'sink_db': existing_task_info.get('sink_db', sink_db),
+                            'level': existing_task_info.get('level', 'database'),
+                            'table_name': existing_task_info.get('table_name'),
+                            'paused': False
+                        })
+                continue
+            
+            # 检查是否已经有针对相同source_db和sink_db的任务（即使任务名不同）
+            existing_task = self.check_task_exists_by_db(existing_tasks, tenant_name, db_name, sink_db, "database")
+            if existing_task:
+                logger.info(f"发现已有针对 {tenant_name}.{db_name} -> {sink_db} 的CDC任务: {existing_task}，跳过创建 {task_name}")
+                skipped_count += 1
+                # 加载到本地状态
+                tenant = self.tenants.get(tenant_name)
+                if tenant:
+                    task_exists = False
+                    for task in tenant.get('cdc_tasks', []):
+                        if task['task_name'] == existing_task:
+                            task_exists = True
+                            break
+                    if not task_exists:
+                        existing_task_info = existing_tasks[existing_task]
+                        tenant['cdc_tasks'].append({
+                            'task_name': existing_task,
+                            'tenant_name': tenant_name,
+                            'source_db': existing_task_info.get('source_db', db_name),
+                            'sink_db': existing_task_info.get('sink_db', sink_db),
+                            'level': existing_task_info.get('level', 'database'),
+                            'table_name': existing_task_info.get('table_name'),
                             'paused': False
                         })
                 continue
@@ -742,15 +831,21 @@ class AdvancedCDCTester:
             table_name = "table1"  # 使用第一个表
             task_name = f"cdc_task_{tenant_name}_{db_name}_{table_name}"
             
-            # 检查任务是否已存在
+            # 首先检查任务名是否已存在
             if task_name in existing_task_names:
-                logger.info(f"任务 {task_name} 已存在，跳过创建")
+                logger.info(f"任务 {task_name} 已存在（通过任务名检查），跳过创建")
                 skipped_count += 1
             else:
-                # 创建sink数据库（sink数据库不需要创建表，CDC会自动同步）
-                if self.create_database(tenant_name, sink_db):
-                    if self.create_cdc_task(tenant_name, task_name, db_name, sink_db, "table", table_name):
-                        created_count += 1
+                # 检查是否已经有针对相同source_db、sink_db和table_name的任务
+                existing_task = self.check_task_exists_by_db(existing_tasks, tenant_name, db_name, sink_db, "table", table_name)
+                if existing_task:
+                    logger.info(f"发现已有针对 {tenant_name}.{db_name}.{table_name} -> {sink_db}.{table_name} 的CDC任务: {existing_task}，跳过创建 {task_name}")
+                    skipped_count += 1
+                else:
+                    # 创建sink数据库（sink数据库不需要创建表，CDC会自动同步）
+                    if self.create_database(tenant_name, sink_db):
+                        if self.create_cdc_task(tenant_name, task_name, db_name, sink_db, "table", table_name):
+                            created_count += 1
         
         logger.info(f"CDC任务设置完成: 创建 {created_count} 个新任务, 跳过 {skipped_count} 个已存在任务")
         logger.info(f"当前共有 {sum(len(t['cdc_tasks']) for t in self.tenants.values())} 个任务")
