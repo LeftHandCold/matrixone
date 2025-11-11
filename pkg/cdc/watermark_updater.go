@@ -516,6 +516,13 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 			errMsg = fmt.Sprintf("read sql \"%s\" bad watermark", readSql)
 			return
 		}
+		// Skip records with empty or NULL watermark (e.g., created by UpdateWatermarkErrMsg)
+		// These records only have err_msg but no watermark value
+		if watermarkStr == "" {
+			// Record exists but watermark is NULL/empty, skip it
+			// This can happen if UpdateWatermarkErrMsg created a record without watermark
+			continue
+		}
 		watermark = types.StringToTS(watermarkStr)
 
 		// update the readKeysBuffer
