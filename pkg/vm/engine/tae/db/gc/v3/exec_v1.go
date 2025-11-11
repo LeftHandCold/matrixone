@@ -433,6 +433,7 @@ func MakeSnapshotAndPitrFineFilter(
 									if entry.createTS.GT(&cdcTS) ||
 										(!entry.dropTS.IsEmpty() && entry.dropTS.GT(&cdcTS)) {
 										// Protect this object
+										logutil.Infof("obj %v, createTS %v, dropts %v, cdcTs %v", stats.ObjectName().UnsafeString(), entry.createTS.ToString(), entry.dropTS.ToString(), cdcTS.ToString())
 										continue
 									}
 								}
@@ -471,6 +472,7 @@ func MakeSnapshotAndPitrFineFilter(
 							if createTS.GT(&cdcTS) ||
 								(!deleteTS.IsEmpty() && deleteTS.GT(&cdcTS)) {
 								// Protect this object
+								logutil.Infof("obj %v, createTS %v, dropts %v, cdcTs %v", stats.ObjectName().UnsafeString(), createTS.ToString(), deleteTS.ToString(), cdcTS.ToString())
 								continue
 							}
 						}
