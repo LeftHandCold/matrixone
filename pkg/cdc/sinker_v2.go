@@ -710,26 +710,21 @@ func (s *mysqlSinker2) Sink(ctx context.Context, data *DecoderOutput) {
 		return
 	}
 
-	// Handle noMoreData first - this must always proceed to update watermark
-	// even if toTs <= watermark, as it's a heartbeat signal
-	if data.noMoreData {
-		// Flush any remaining data and update watermark
-		cmd := NewFlushCommand(true, data.fromTs, data.toTs)
-		s.sendCommand(cmd)
-		return
-	}
-
-	// Skip data that has already been processed (toTs < watermark)
-	// Note: We allow toTs == watermark to proceed, as this allows watermark to advance
-	// even when all data in a batch has already been processed.
-	// This is important for watermark progress when data is being skipped.
-	// According to CDC design: watermark lag is acceptable, but we should allow watermark to advance
-	if data.toTs.LT(&watermark) {
-		logutil.Debug("cdc.mysql_sinker2.skip_already_processed",
+	if data.toTs.LE(&watermark) {
+		logutil.Error("cdc.mysql_sinker2.unexpected_watermark",
 			zap.String("table", s.dbTblInfo.String()),
 			zap.String("toTs", data.toTs.ToString()),
 			zap.String("watermark", watermark.ToString()))
-		// Silently skip - this is expected behavior, not an error
+		err := moerr.NewInternalError(ctx, "unexpected watermark")
+		s.SetError(err)
+		return
+	}
+
+	// Handle based on data type
+	if data.noMoreData {
+		// Flush any remaining data
+		cmd := NewFlushCommand(true, data.fromTs, data.toTs)
+		s.sendCommand(cmd)
 		return
 	}
 

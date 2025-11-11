@@ -510,16 +510,12 @@ func (s *TableChangeStream) processOneRound(ctx context.Context, ar *ActiveRouti
 
 // clearErrorOnFirstSuccess clears error message on first successful data processing
 // This preserves lazy batch processing design (asynchronous, eventual consistency)
-// Note: This method can be called multiple times, but will only clear error once per stream instance.
-// On service restart, a new stream instance is created, so error will be cleared again on first success.
 func (s *TableChangeStream) clearErrorOnFirstSuccess(ctx context.Context) {
 	if !s.hasSucceeded.CompareAndSwap(false, true) {
-		// Already cleared in this stream instance, skip
 		return
 	}
 	// Clear error asynchronously (preserves lazy batch processing design)
 	if err := s.watermarkUpdater.UpdateWatermarkErrMsg(ctx, s.watermarkKey, "", nil); err != nil {
-		// Reset flag so we can retry clearing on next success
 		s.hasSucceeded.Store(false)
 		logutil.Warn(
 			"cdc.table_stream.clear_error_failed",
@@ -527,12 +523,6 @@ func (s *TableChangeStream) clearErrorOnFirstSuccess(ctx context.Context) {
 			zap.Error(err),
 		)
 		// Don't fail the operation if error clearing fails
-	} else {
-		logutil.Info(
-			"cdc.table_stream.clear_error_success",
-			zap.String("table", s.tableInfo.String()),
-			zap.String("key", s.watermarkKey.String()),
-		)
 	}
 }
 
@@ -575,22 +565,6 @@ func (s *TableChangeStream) processWithTxn(
 	toTs := types.TimestampToTS(GetSnapshotTS(txnOp))
 	if !s.endTs.IsEmpty() && toTs.GT(&s.endTs) {
 		toTs = s.endTs
-	}
-
-	// If no new data to process (fromTs >= toTs), clear error and return
-	// This can happen when watermark has advanced but we're checking again
-	// It's a successful state (no errors), so we should clear any previous errors
-	if fromTs.GE(&toTs) {
-		logutil.Debug(
-			"cdc.table_stream.no_new_data",
-			zap.String("table", s.tableInfo.String()),
-			zap.String("from-ts", fromTs.ToString()),
-			zap.String("to-ts", toTs.ToString()),
-			zap.String("reason", "watermark already advanced, no new data to process"))
-		// Clear error on successful check (no new data is a success, not an error)
-		s.clearErrorOnFirstSuccess(ctx)
-		s.progressTracker.EndRound(true, nil)
-		return nil
 	}
 
 	// Start tracking this round
