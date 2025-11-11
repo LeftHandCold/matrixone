@@ -32,12 +32,12 @@ ADMIN_USER = "admin"
 ADMIN_PASS = "111"
 NUM_DATABASES_PER_TENANT = 3
 NUM_TABLES_PER_DATABASE = 3
-WATERMARK_CHECK_INTERVAL = 60  # 检查水位间隔（秒）
+WATERMARK_CHECK_INTERVAL = 60  # 检查水位间隔（秒，更频繁检查）
 WATERMARK_STALL_TIMEOUT = 1200  # 水位停滞超时（20分钟）
 TASK_PAUSE_INTERVAL = 300  # 任务暂停间隔（5分钟）
 TASK_RESUME_INTERVAL = 300  # 任务恢复间隔（5分钟）
 DATA_INSERT_INTERVAL = 1  # 数据操作间隔（秒）
-DELETE_PROBABILITY = 0.7  # 删除操作概率（30%）
+DELETE_PROBABILITY = 0.4  # 删除操作概率（30%）
 ROW_COUNT_CHECK_PROBABILITY = 0.3  # 行数校验概率（30%）
 ROW_COUNT_DIFF_THRESHOLD = 0.1  # 行数差异阈值（10%）
 INIT_DATA_COUNT = 100000  # 初始化时每个表插入的数据量（10万条）
@@ -987,21 +987,21 @@ class AdvancedCDCTester:
                         if comparison < 0:
                             # 水位回退了！
                             has_critical_issue = True
-                            stalled_tasks.append(f"{task_name} ({table_key}) - 水位回退: {last_watermark} -> {watermark}")
-                            logger.error(f"❌ 严重错误: 任务 {task_name} 表 {table_key} 水位回退!")
+                            stalled_tasks.append(f"{tenant_name}.{task_name} ({table_key}) - 水位回退: {last_watermark} -> {watermark}")
+                            logger.error(f"❌ 严重错误: 租户 {tenant_name} 任务 {task_name} 表 {table_key} 水位回退!")
                             logger.error(f"   之前水位: {last_watermark}")
                             logger.error(f"   当前水位: {watermark}")
                         elif comparison > 0:
                             # 水位正常前进
                             self.watermark_history[task_name][table_key] = watermark
                             self.watermark_last_update[task_name][table_key] = current_time
-                            logger.info(f"✓ 任务 {task_name} 表 {table_key} 水位更新: {watermark}")
+                            logger.info(f"✓ 租户 {tenant_name} 任务 {task_name} 表 {table_key} 水位更新: {watermark}")
                         else:
                             # 水位没有变化
                             if current_time - last_update_time > WATERMARK_STALL_TIMEOUT:
                                 has_critical_issue = True
-                                stalled_tasks.append(f"{task_name} ({table_key}) - 水位停滞超过 {WATERMARK_STALL_TIMEOUT/60} 分钟")
-                                logger.error(f"❌ 严重错误: 任务 {task_name} 表 {table_key} 水位停滞超过 {WATERMARK_STALL_TIMEOUT/60} 分钟!")
+                                stalled_tasks.append(f"{tenant_name}.{task_name} ({table_key}) - 水位停滞超过 {WATERMARK_STALL_TIMEOUT/60} 分钟")
+                                logger.error(f"❌ 严重错误: 租户 {tenant_name} 任务 {task_name} 表 {table_key} 水位停滞超过 {WATERMARK_STALL_TIMEOUT/60} 分钟!")
                                 logger.error(f"   最后水位: {last_watermark}")
                                 logger.error(f"   停滞时间: {(current_time - last_update_time)/60:.1f} 分钟")
                     else:
@@ -1013,7 +1013,7 @@ class AdvancedCDCTester:
                         
                         self.watermark_history[task_name][table_key] = watermark
                         self.watermark_last_update[task_name][table_key] = current_time
-                        logger.info(f"✓ 任务 {task_name} 表 {table_key} 首次记录水位: {watermark}")
+                        logger.info(f"✓ 租户 {tenant_name} 任务 {task_name} 表 {table_key} 首次记录水位: {watermark}")
         
         return stalled_tasks, has_critical_issue
     
