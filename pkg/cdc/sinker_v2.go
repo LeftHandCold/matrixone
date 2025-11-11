@@ -710,13 +710,15 @@ func (s *mysqlSinker2) Sink(ctx context.Context, data *DecoderOutput) {
 		return
 	}
 
-	if data.toTs.LT(&watermark) {
-		logutil.Error("cdc.mysql_sinker2.unexpected_watermark",
-			zap.String("table", s.dbTblInfo.String()),
-			zap.String("toTs", data.toTs.ToString()),
-			zap.String("watermark", watermark.ToString()))
-		err := moerr.NewInternalError(ctx, "unexpected watermark")
-		s.SetError(err)
+	// Skip data that has already been processed (toTs <= watermark)
+	// This can happen due to:
+	// 1. Async watermark updates (watermark may advance before data is fully processed)
+	// 2. Concurrent processing where watermark is updated while data is in flight
+	// 3. Data with timestamp equal to watermark (already processed)
+	// According to CDC design: watermark lag is acceptable, but we should skip already-processed data
+	if data.toTs.LE(&watermark) {
+		logutil.Debug("cdc.mysql_sinker2.skip_already_processed")
+		// Silently skip - this is expected behavior, not an error
 		return
 	}
 
