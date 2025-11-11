@@ -711,12 +711,15 @@ func (s *mysqlSinker2) Sink(ctx context.Context, data *DecoderOutput) {
 	}
 
 	if data.toTs.LE(&watermark) {
-		logutil.Error("cdc.mysql_sinker2.unexpected_watermark",
+		// Skip old data that has already been processed
+		// This can happen after MO restart when watermark from database
+		// is greater than current transaction snapshot TS
+		logutil.Warn("cdc.mysql_sinker2.skip_old_data",
 			zap.String("table", s.dbTblInfo.String()),
 			zap.String("toTs", data.toTs.ToString()),
-			zap.String("watermark", watermark.ToString()))
-		err := moerr.NewInternalError(ctx, "unexpected watermark")
-		s.SetError(err)
+			zap.String("watermark", watermark.ToString()),
+			zap.String("reason", "data timestamp is less than or equal to watermark, likely already processed"))
+		// Skip this batch and continue processing subsequent data
 		return
 	}
 

@@ -429,12 +429,10 @@ func (u *CDCWatermarkUpdater) onJobs(jobs ...any) {
 		case JT_CDC_CommittingWM:
 			u.committingBuffer = append(u.committingBuffer, job)
 		case JT_CDC_UpdateWMErrMsg:
-			// Note: We don't require watermark to exist in cache before updating error message.
-			// The SQL uses ON DUPLICATE KEY UPDATE, which will create a new record if it doesn't exist.
-			// This is necessary because:
-			// 1. When task stops, RemoveCachedWM may clear the cache before UpdateWatermarkErrMsg
-			// 2. The watermark record may still exist in database even if cache is cleared
-			// 3. Error message update should work independently of cache state
+			//if _, err := u.GetFromCache(context.Background(), job.Key); err != nil {
+			//	job.DoneWithErr(err)
+			//	continue
+			//}
 			u.committingErrMsgBuffer = append(u.committingErrMsgBuffer, job)
 		case JT_CDC_RemoveCachedWM:
 			u.Lock()
@@ -515,13 +513,6 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 		if watermarkStr, err = res.GetString(ctx, i, 4); err != nil {
 			errMsg = fmt.Sprintf("read sql \"%s\" bad watermark", readSql)
 			return
-		}
-		// Skip records with empty or NULL watermark (e.g., created by UpdateWatermarkErrMsg)
-		// These records only have err_msg but no watermark value
-		if watermarkStr == "" {
-			// Record exists but watermark is NULL/empty, skip it
-			// This can happen if UpdateWatermarkErrMsg created a record without watermark
-			continue
 		}
 		watermark = types.StringToTS(watermarkStr)
 
