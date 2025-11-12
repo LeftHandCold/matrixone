@@ -15,6 +15,7 @@
 package cdc
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -88,11 +89,36 @@ func ParseErrorMetadata(errMsg string) *ErrorMetadata {
 	if len(parts) >= 3 && parts[0] == "N" {
 		firstSeen, _ := strconv.ParseInt(parts[1], 10, 64)
 		message := strings.Join(parts[2:], ":")
+		
+		// Reclassify non-retryable errors if message indicates retryable error
+		// This handles cases where errors were incorrectly classified before
+		isRetryable := false
+		retryCount := 0
+		messageLower := strings.ToLower(message)
+		
+		// Check if message contains retryable error patterns
+		if strings.Contains(message, "20701") || strings.Contains(message, "Error 20701") {
+			isRetryable = true
+			retryCount = 1 // Start with retry count 1 for reclassified errors
+		} else if strings.Contains(messageLower, "deadlock") {
+			isRetryable = true
+			retryCount = 1
+		} else if strings.Contains(messageLower, "retry") {
+			isRetryable = true
+			retryCount = 1
+		} else if strings.Contains(messageLower, "timeout") {
+			isRetryable = true
+			retryCount = 1
+		} else if strings.Contains(messageLower, "connection") {
+			isRetryable = true
+			retryCount = 1
+		}
 
 		return &ErrorMetadata{
-			IsRetryable: false,
-			RetryCount:  0,
+			IsRetryable: isRetryable,
+			RetryCount:  retryCount,
 			FirstSeen:   time.Unix(firstSeen, 0),
+			LastSeen:    time.Unix(firstSeen, 0), // Use firstSeen as lastSeen for reclassified errors
 			Message:     message,
 		}
 	}
@@ -236,17 +262,28 @@ func IsRetryableError(err error) bool {
 
 	// Check error message for retryable patterns
 	errMsg := err.Error()
-	if strings.Contains(errMsg, "deadlock") || strings.Contains(errMsg, "Deadlock") {
+	errMsgLower := strings.ToLower(errMsg)
+	
+	// Check for error code 20701 (deadlock) in the message
+	if strings.Contains(errMsg, "20701") || strings.Contains(errMsg, "Error 20701") {
 		return true
 	}
-	if strings.Contains(errMsg, "retry") || strings.Contains(errMsg, "Retry") {
+	if strings.Contains(errMsgLower, "deadlock") {
 		return true
 	}
-	if strings.Contains(errMsg, "timeout") || strings.Contains(errMsg, "Timeout") {
+	if strings.Contains(errMsgLower, "retry") {
 		return true
 	}
-	if strings.Contains(errMsg, "connection") || strings.Contains(errMsg, "Connection") {
+	if strings.Contains(errMsgLower, "timeout") {
 		return true
+	}
+	if strings.Contains(errMsgLower, "connection") {
+		return true
+	}
+	
+	// Check for wrapped errors - unwrap and check recursively
+	if wrappedErr := errors.Unwrap(err); wrappedErr != nil {
+		return IsRetryableError(wrappedErr)
 	}
 
 	return false

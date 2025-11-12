@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -882,6 +883,18 @@ var GetTableErrMsg = func(
 	metadata := cdc.ParseErrorMetadata(errMsg)
 	if metadata == nil {
 		return false, nil
+	}
+
+	// Log if error was reclassified from non-retryable to retryable
+	if metadata.IsRetryable && strings.HasPrefix(errMsg, "N:") {
+		logutil.Info(
+			"cdc.frontend.task.error_reclassified",
+			zap.String("db", tbl.SourceDbName),
+			zap.String("table", tbl.SourceTblName),
+			zap.String("original-format", "N"),
+			zap.String("message", metadata.Message),
+			zap.String("reason", "message_contains_retryable_pattern"),
+		)
 	}
 
 	// Use unified retry logic

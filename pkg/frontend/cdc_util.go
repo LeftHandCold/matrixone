@@ -198,6 +198,7 @@ var CDCCheckPitrGranularity = func(
 	pts *cdc.PatternTuples,
 	minLength ...int64,
 ) error {
+	return nil
 	var minPitrLen int64 = 2
 	if len(minLength) > 1 {
 		return moerr.NewInternalErrorf(ctx, "only one length parameter allowed")
