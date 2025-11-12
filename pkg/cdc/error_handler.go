@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 )
 
 // Error handling constants
@@ -199,5 +201,53 @@ func ShouldRetry(meta *ErrorMetadata) bool {
 
 	// Non-retryable error: permanently block
 	// User must manually clear error via Pause → Resume or directly update mo_cdc_watermark
+	return false
+}
+
+// IsRetryableError determines if an error is retryable based on error code and message
+// This function is used to classify errors before they are recorded in the database
+func IsRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check MO error codes
+	if moerr.IsMoErrCode(err, moerr.ErrDeadLockDetected) {
+		return true // Deadlock is retryable
+	}
+	if moerr.IsMoErrCode(err, moerr.ErrTxnNeedRetry) {
+		return true // Transaction retry errors are retryable
+	}
+	if moerr.IsMoErrCode(err, moerr.ErrTAENeedRetry) {
+		return true // TAE retry errors are retryable
+	}
+	if moerr.IsMoErrCode(err, moerr.ErrTxnNeedRetryWithDefChanged) {
+		return true // Transaction retry with def changed is retryable
+	}
+	if moerr.IsMoErrCode(err, moerr.ErrRetryForCNRollingRestart) {
+		return true // CN rolling restart retry is retryable
+	}
+	if moerr.IsMoErrCode(err, moerr.ErrLockTableBindChanged) {
+		return true // Lock table bind changed is retryable
+	}
+	if moerr.IsMoErrCode(err, moerr.ErrDeadlockCheckBusy) {
+		return true // Deadlock check busy is retryable
+	}
+
+	// Check error message for retryable patterns
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "deadlock") || strings.Contains(errMsg, "Deadlock") {
+		return true
+	}
+	if strings.Contains(errMsg, "retry") || strings.Contains(errMsg, "Retry") {
+		return true
+	}
+	if strings.Contains(errMsg, "timeout") || strings.Contains(errMsg, "Timeout") {
+		return true
+	}
+	if strings.Contains(errMsg, "connection") || strings.Contains(errMsg, "Connection") {
+		return true
+	}
+
 	return false
 }

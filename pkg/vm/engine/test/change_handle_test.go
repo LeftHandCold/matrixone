@@ -87,7 +87,7 @@ func TestGetErrorMsg(t *testing.T) {
 	hasError, err := frontend.GetTableErrMsg(ctxWithTimeout, accountId, ie, taskID, &cdc.DbTableInfo{
 		SourceDbName:  "test_db",
 		SourceTblName: "test_table",
-	}, nil)
+	})
 	require.False(t, hasError)
 	require.NoError(t, err)
 	insert_sql := cdc.CDCSQLBuilder.InsertWatermarkSQL(uint64(accountId), taskID, "test_db", "test_table", "1000")
@@ -99,7 +99,7 @@ func TestGetErrorMsg(t *testing.T) {
 	hasError, err = frontend.GetTableErrMsg(ctxWithTimeout, accountId, ie, taskID, &cdc.DbTableInfo{
 		SourceDbName:  "test_db",
 		SourceTblName: "test_table",
-	}, nil)
+	})
 	require.False(t, hasError)
 	require.NoError(t, err)
 
@@ -111,7 +111,7 @@ func TestGetErrorMsg(t *testing.T) {
 	hasError, err = frontend.GetTableErrMsg(ctxWithTimeout, accountId, ie, taskID, &cdc.DbTableInfo{
 		SourceDbName:  "test_db",
 		SourceTblName: "test_table",
-	}, nil)
+	})
 	require.True(t, hasError)
 	require.NoError(t, err)
 
@@ -120,7 +120,7 @@ func TestGetErrorMsg(t *testing.T) {
 	hasError, err = frontend.GetTableErrMsg(ctxWithTimeout, accountId, ie, taskID, &cdc.DbTableInfo{
 		SourceDbName:  "test_db",
 		SourceTblName: "test_table",
-	}, nil)
+	})
 	require.False(t, hasError)
 	require.Error(t, err)
 
@@ -130,7 +130,7 @@ func TestGetErrorMsg(t *testing.T) {
 	hasError, err = frontend.GetTableErrMsg(ctxWithTimeout, accountId, ie, taskID, &cdc.DbTableInfo{
 		SourceDbName:  "test_db",
 		SourceTblName: "test_table",
-	}, nil)
+	})
 	require.False(t, hasError)
 	require.Error(t, err)
 
@@ -144,7 +144,7 @@ func TestGetErrorMsg(t *testing.T) {
 	hasError, err = frontend.GetTableErrMsg(ctxWithTimeout, accountId, ie, taskID, &cdc.DbTableInfo{
 		SourceDbName:  "test_db",
 		SourceTblName: "test_table",
-	}, nil)
+	})
 	require.False(t, hasError)
 	require.NoError(t, err)
 }

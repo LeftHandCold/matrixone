@@ -385,6 +385,8 @@ func (s *TableChangeStream) Run(ctx context.Context, ar *ActiveRoutine) {
 
 		if err != nil {
 			s.lastError = err
+			// Determine if error is retryable based on error type
+			s.retryable = IsRetryableError(err)
 			s.progressTracker.SetState("error")
 			s.progressTracker.RecordError(err)
 			s.progressTracker.EndRound(false, err)
@@ -454,6 +456,13 @@ func (s *TableChangeStream) cleanup(ctx context.Context) {
 			IsRetryable:     s.retryable,
 			IsPauseOrCancel: IsPauseOrCancelError(s.lastError.Error()),
 		}
+
+		logutil.Info(
+			"cdc.table_stream.persisting_error",
+			zap.String("table", s.tableInfo.String()),
+			zap.Bool("retryable", s.retryable),
+			zap.String("error", s.lastError.Error()),
+		)
 
 		if err := s.watermarkUpdater.UpdateWatermarkErrMsg(ctx, s.watermarkKey, s.lastError.Error(), errorCtx); err != nil {
 			logutil.Error(

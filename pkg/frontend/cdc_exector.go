@@ -770,7 +770,7 @@ func (exec *CDCTaskExecutor) handleNewTables(allAccountTbls map[uint32]cdc.TblMa
 		if !exec.matchAnyPattern(key, newTableInfo) {
 			continue
 		}
-		hasError, err := GetTableErrMsg(ctx, accountId, exec.ie, exec.spec.TaskId, newTableInfo, exec.watermarkUpdater)
+		hasError, err := GetTableErrMsg(ctx, accountId, exec.ie, exec.spec.TaskId, newTableInfo)
 		if err != nil {
 			logutil.Error(
 				"cdc.frontend.task.get_table_errmsg_failed",
@@ -858,8 +858,7 @@ var GetTableErrMsg = func(
 	accountId uint32,
 	ieExecutor ie.InternalExecutor,
 	taskId string,
-	tbl *cdc.DbTableInfo,
-	watermarkUpdater *cdc.CDCWatermarkUpdater) (
+	tbl *cdc.DbTableInfo) (
 	hasError bool, err error,
 ) {
 	ctx = defines.AttachAccountId(ctx, catalog.System_Account)
@@ -896,6 +895,8 @@ var GetTableErrMsg = func(
 				zap.Int("retry-count", metadata.RetryCount),
 				zap.Int("max-retry", cdc.MaxRetryCount),
 				zap.String("message", metadata.Message),
+				zap.Duration("age", time.Since(metadata.FirstSeen)),
+				zap.String("status", "will_retry"),
 			)
 		} else {
 			// Expired non-retryable error
@@ -911,45 +912,18 @@ var GetTableErrMsg = func(
 		return false, nil
 	}
 
-	// Cannot retry - check if it's a retryable error that exceeded max retry count
-	// For retryable errors that exceeded max retry count, clear on restart to allow retry
-	if metadata.IsRetryable && metadata.RetryCount > cdc.MaxRetryCount {
-		// This is a retryable error that exceeded max retry count
-		// On restart, clear it to allow retry (restart may have resolved the issue)
-		if watermarkUpdater != nil {
-			watermarkKey := cdc.WatermarkKey{
-				AccountId: uint64(accountId),
-				TaskId:    taskId,
-				DBName:    tbl.SourceDbName,
-				TableName: tbl.SourceTblName,
-			}
-			logutil.Info(
-				"cdc.frontend.task.clear_exceeded_retry_error_on_restart",
-				zap.String("db", tbl.SourceDbName),
-				zap.String("table", tbl.SourceTblName),
-				zap.Int("retry-count", metadata.RetryCount),
-				zap.String("message", metadata.Message),
-			)
-			// Clear the error to allow retry after restart
-			if clearErr := watermarkUpdater.UpdateWatermarkErrMsg(ctx, &watermarkKey, "", nil); clearErr != nil {
-				logutil.Warn(
-					"cdc.frontend.task.clear_error_failed",
-					zap.String("db", tbl.SourceDbName),
-					zap.String("table", tbl.SourceTblName),
-					zap.Error(clearErr),
-				)
-			} else {
-				// Successfully cleared, allow retry
-				return false, nil
-			}
-		}
+	// Cannot retry
+	if metadata.IsRetryable {
 		// Exceeded max retry count
 		logutil.Warn(
 			"cdc.frontend.task.max_retry_exceeded",
 			zap.String("db", tbl.SourceDbName),
 			zap.String("table", tbl.SourceTblName),
 			zap.Int("retry-count", metadata.RetryCount),
+			zap.Int("max-retry", cdc.MaxRetryCount),
 			zap.String("message", metadata.Message),
+			zap.Duration("age", time.Since(metadata.FirstSeen)),
+			zap.String("status", "retry_exhausted"),
 		)
 	} else {
 		// Fresh non-retryable error
@@ -960,6 +934,7 @@ var GetTableErrMsg = func(
 			zap.String("table", tbl.SourceTblName),
 			zap.Duration("age", age),
 			zap.String("message", metadata.Message),
+			zap.String("status", "permanent_blocked"),
 		)
 	}
 
