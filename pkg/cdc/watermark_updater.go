@@ -84,7 +84,7 @@ var ErrNoWatermarkFound = moerr.NewInternalErrorNoCtx("no watermark found")
 
 const (
 	WatermarkUpdateInterval          = time.Second * 3
-	ReadWatermarkProjectionList      = "account_id, task_id, db_name, table_name, watermark"
+	ReadWatermarkProjectionList      = "account_id, task_id, db_name, table_name, watermark, err_msg"
 	UpdateWatermarkCronJobNamePrefix = "CDCWatermarkUpdater-CronJob"
 )
 
@@ -498,6 +498,7 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 		key          WatermarkKey
 		watermarkStr string
 		watermark    types.TS
+		errMsgStr    string
 	)
 	for i, rows := uint64(0), res.RowCount(); i < rows; i++ {
 		if key.AccountId, err = res.GetUint64(ctx, i, 0); err != nil {
@@ -522,10 +523,31 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 		}
 		watermark = types.StringToTS(watermarkStr)
 
+		// Read err_msg (column 5) - optional, may be empty
+		if errMsgStr, err = res.GetString(ctx, i, 5); err != nil {
+			// err_msg column may not exist in older schemas, treat as empty
+			errMsgStr = ""
+		}
+
 		// update the readKeysBuffer
 		u.readKeysBuffer[key] = WatermarkResult{
 			Watermark: watermark,
 			Ok:        true,
+		}
+
+		// Load error metadata into cache if err_msg exists
+		if errMsgStr != "" {
+			metadata := ParseErrorMetadata(errMsgStr)
+			if metadata != nil {
+				u.errorMetadataCache[key] = metadata
+				logutil.Info(
+					"cdc.watermark.load_errmsg_from_db",
+					zap.String("key", key.String()),
+					zap.Bool("retryable", metadata.IsRetryable),
+					zap.Int("retry-count", metadata.RetryCount),
+					zap.String("message", metadata.Message),
+				)
+			}
 		}
 	}
 
