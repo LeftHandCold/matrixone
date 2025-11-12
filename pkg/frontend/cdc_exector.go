@@ -183,19 +183,21 @@ func (exec *CDCTaskExecutor) Start(rootCtx context.Context) (err error) {
 	cnUUID := exec.cnUUID
 	accountId := uint32(exec.spec.Accounts[0].GetId())
 
-	// Check if this task is already registered in TableDetector
-	// This prevents duplicate task execution when taskservice schedules the same task twice
+	// Check if this task is already registered in TableDetector on this CN node
+	// This prevents duplicate task execution when taskservice schedules the same task twice on the same CN
+	// For multi-CN scenarios, if the task is registered on a different CN, we allow registration on this CN
+	// (handles task migration between CNs)
 	detector := cdc.GetTableDetector(cnUUID)
-	if detector.IsTaskRegistered(taskId) {
+	if detector.IsTaskRegistered(taskId, cnUUID) {
 		logutil.Warn(
 			"cdc.frontend.task.already_registered",
 			zap.String("task-id", taskId),
 			zap.String("task-name", taskName),
 			zap.String("cn-uuid", cnUUID),
 			zap.Uint32("account-id", accountId),
-			zap.String("reason", "task is already registered in TableDetector, skipping duplicate start"),
+			zap.String("reason", "task is already registered in TableDetector on this CN, skipping duplicate start"),
 		)
-		return moerr.NewInternalErrorf(rootCtx, "task %s is already running", taskId)
+		return moerr.NewInternalErrorf(rootCtx, "task %s is already running on CN %s", taskId, cnUUID)
 	}
 
 	// Transition to Starting state (skip if already Starting, e.g., from Resume)
@@ -291,8 +293,8 @@ func (exec *CDCTaskExecutor) Start(rootCtx context.Context) (err error) {
 	// start watermarkUpdater
 	exec.watermarkUpdater = cdc.GetCDCWatermarkUpdater(exec.cnUUID, exec.ie)
 
-	// register to table scanner
-	cdc.GetTableDetector(cnUUID).Register(taskId, accountId, dbs, tables, exec.handleNewTables)
+	// register to table scanner with CN UUID for multi-CN scenarios
+	cdc.GetTableDetector(cnUUID).RegisterWithCN(taskId, accountId, dbs, tables, exec.handleNewTables, cnUUID)
 
 	// Transition to Running state
 	if err = exec.stateMachine.Transition(TransitionStartSuccess); err != nil {

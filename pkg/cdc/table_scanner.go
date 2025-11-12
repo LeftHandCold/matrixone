@@ -69,6 +69,7 @@ var GetTableDetector = func(cnUUID string) *TableDetector {
 			cleanupPeriod:        DefaultWatermarkCleanupPeriod,
 			cleanupWarn:          DefaultCleanupWarnThreshold,
 			nowFn:                time.Now,
+			taskCNMap:            make(map[string]string),
 		}
 		detector.scanTableFn = detector.scanTable
 	})
@@ -226,9 +227,19 @@ type TableDetector struct {
 	cleanupPeriod   time.Duration
 	cleanupWarn     time.Duration
 	nowFn           func() time.Time
+
+	// taskId -> cnUUID: track which CN node registered each task
+	// This is needed for multi-CN scenarios to prevent false positives
+	// when a task migrates from one CN to another
+	taskCNMap map[string]string
 }
 
 func (s *TableDetector) Register(id string, accountId uint32, dbs []string, tables []string, cb TableCallback) {
+	s.RegisterWithCN(id, accountId, dbs, tables, cb, "")
+}
+
+// RegisterWithCN registers a task with its CN UUID for multi-CN scenarios
+func (s *TableDetector) RegisterWithCN(id string, accountId uint32, dbs []string, tables []string, cb TableCallback, cnUUID string) {
 	s.Lock()
 	defer s.Unlock()
 
@@ -256,19 +267,37 @@ func (s *TableDetector) Register(id string, accountId uint32, dbs []string, tabl
 		go s.scanTableLoop(ctx)
 	}
 	s.Callbacks[id] = cb
+	if cnUUID != "" {
+		s.taskCNMap[id] = cnUUID
+	}
 	logutil.Debug(
 		"cdc.table_detector.register",
 		zap.String("task-id", id),
 		zap.Uint32("account-id", accountId),
+		zap.String("cn-uuid", cnUUID),
 	)
 }
 
 // IsTaskRegistered checks if a task is already registered
-func (s *TableDetector) IsTaskRegistered(id string) bool {
+// If cnUUID is provided, it also checks if the task is registered on the same CN node
+// This prevents false positives in multi-CN scenarios when a task migrates between CNs
+func (s *TableDetector) IsTaskRegistered(id string, cnUUID ...string) bool {
 	s.Lock()
 	defer s.Unlock()
 	_, exists := s.Callbacks[id]
-	return exists
+	if !exists {
+		return false
+	}
+	// If cnUUID is provided, check if the task is registered on the same CN
+	if len(cnUUID) > 0 && cnUUID[0] != "" {
+		registeredCN, ok := s.taskCNMap[id]
+		if ok && registeredCN != cnUUID[0] {
+			// Task is registered on a different CN, allow registration on this CN
+			// This handles the case where a task migrates from one CN to another
+			return false
+		}
+	}
+	return true
 }
 
 func (s *TableDetector) UnRegister(id string) {
@@ -316,6 +345,7 @@ func (s *TableDetector) UnRegister(id string) {
 	}
 
 	delete(s.Callbacks, id)
+	delete(s.taskCNMap, id)
 
 	logutil.Debug(
 		"cdc.table_detector.unregister",
