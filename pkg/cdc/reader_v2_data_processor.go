@@ -300,6 +300,16 @@ func (dp *DataProcessor) processTailDone(ctx context.Context, data *ChangeData) 
 		tracker.UpdateToTs(dp.toTs)
 	}
 
+	// Get row counts before sending to sinker (Sink() may close the batches asynchronously)
+	insertRows := 0
+	deleteRows := 0
+	if dp.insertAtmBatch != nil {
+		insertRows = dp.insertAtmBatch.RowCount()
+	}
+	if dp.deleteAtmBatch != nil {
+		deleteRows = dp.deleteAtmBatch.RowCount()
+	}
+
 	// Send accumulated data to sinker
 	dp.sinker.Sink(ctx, &DecoderOutput{
 		outputTyp:      OutputTypeTail,
@@ -315,8 +325,8 @@ func (dp *DataProcessor) processTailDone(ctx context.Context, data *ChangeData) 
 		zap.Uint64("account-id", dp.accountId),
 		zap.String("db", dp.dbName),
 		zap.String("table", dp.tableName),
-		zap.Int("insert-rows", dp.insertAtmBatch.RowCount()),
-		zap.Int("delete-rows", dp.deleteAtmBatch.RowCount()),
+		zap.Int("insert-rows", insertRows),
+		zap.Int("delete-rows", deleteRows),
 	)
 
 	// Note: Sink() takes ownership of the atomic batches
