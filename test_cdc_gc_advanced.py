@@ -34,8 +34,8 @@ NUM_DATABASES_PER_TENANT = 3
 NUM_TABLES_PER_DATABASE = 3
 WATERMARK_CHECK_INTERVAL = 60  # 检查水位间隔（秒，更频繁检查）
 WATERMARK_STALL_TIMEOUT = 2400  # 水位停滞超时（20分钟）
-TASK_PAUSE_INTERVAL = 300  # 任务暂停间隔（5分钟）
-TASK_RESUME_INTERVAL = 300  # 任务恢复间隔（5分钟）
+# TASK_PAUSE_INTERVAL = 300  # 任务暂停间隔（5分钟）- 已移除随机暂停功能
+# TASK_RESUME_INTERVAL = 300  # 任务恢复间隔（5分钟）- 已移除随机暂停功能
 DATA_INSERT_INTERVAL = 1  # 数据操作间隔（秒）
 DELETE_PROBABILITY = 0.6  # 删除操作概率（30%）
 ROW_COUNT_CHECK_PROBABILITY = 0.3  # 行数校验概率（30%）
@@ -1229,35 +1229,6 @@ class AdvancedCDCTester:
         logger.info(f"数据操作线程启动完成，共 {len(threads)} 个线程（只操作源数据库）")
         return threads
     
-    def random_pause_resume_tasks(self):
-        """随机暂停和恢复任务"""
-        all_tasks = []
-        for tenant_name, tenant_info in self.tenants.items():
-            for task in tenant_info['cdc_tasks']:
-                all_tasks.append((tenant_name, task))
-        
-        if not all_tasks:
-            return
-        
-        # 随机选择一些任务暂停
-        num_to_pause = max(1, len(all_tasks) // 3)
-        tasks_to_pause = random.sample(all_tasks, min(num_to_pause, len(all_tasks)))
-        
-        for tenant_name, task in tasks_to_pause:
-            if not task['paused']:
-                self.pause_cdc_task(tenant_name, task['task_name'])
-                time.sleep(1)
-        
-        # 等待一段时间
-        logger.info(f"等待 {TASK_PAUSE_INTERVAL} 秒后恢复任务...")
-        time.sleep(TASK_PAUSE_INTERVAL)
-        
-        # 恢复暂停的任务
-        for tenant_name, task in tasks_to_pause:
-            if task['paused']:
-                self.resume_cdc_task(tenant_name, task['task_name'])
-                time.sleep(1)
-    
     def run_test_loop(self):
         """运行测试循环"""
         logger.info("=" * 80)
@@ -1317,16 +1288,6 @@ class AdvancedCDCTester:
                         logger.warning(f"  - {issue}")
                 else:
                     logger.info("✓ 行数一致性检查通过")
-            
-            # 随机暂停和恢复任务（在独立线程中运行，不阻塞数据插入）
-            if cycle % 2 == 0:  # 每2个循环执行一次
-                logger.info("随机暂停和恢复任务...")
-                # 在独立线程中执行，不阻塞主循环
-                pause_thread = threading.Thread(
-                    target=self.random_pause_resume_tasks,
-                    daemon=True
-                )
-                pause_thread.start()
             
             # 等待下一次检查（数据插入线程继续运行）
             logger.info(f"等待 {WATERMARK_CHECK_INTERVAL} 秒后进行下一次检查（数据插入持续进行）...")
