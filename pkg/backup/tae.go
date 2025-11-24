@@ -190,6 +190,7 @@ func parallelCopyData(srcFs, dstFs fileservice.FileService,
 						Res: nil,
 					}
 				}
+				time.Sleep(2 * time.Second)
 				checksum, err := CopyFileWithRetry(context.Background(), srcFs, dstFs, backupObject.Location.Name().String(), "")
 				if err != nil {
 					if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {

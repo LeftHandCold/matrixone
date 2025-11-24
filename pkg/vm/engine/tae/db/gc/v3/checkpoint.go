@@ -728,6 +728,13 @@ func (c *checkpointCleaner) deleteStaleCKPMetaFileLocked() (err error) {
 	window := c.GetScannedWindowLocked()
 	metaFiles := c.CloneMetaFilesLocked()
 	filesToDelete := make([]string, 0)
+
+	// Check backup protection
+	c.backupProtection.RLock()
+	hasBackupProtection := c.backupProtection.isActive && time.Since(c.backupProtection.lastUpdateTime) <= 20*time.Minute
+	protectedTS := c.backupProtection.protectedTS
+	c.backupProtection.RUnlock()
+
 	for _, metaFile := range metaFiles {
 		if !metaFile.IsCKPFile() ||
 			(metaFile.RangeEqual(&window.tsRange.start, &window.tsRange.end)) {
@@ -738,6 +745,22 @@ func (c *checkpointCleaner) deleteStaleCKPMetaFileLocked() (err error) {
 			)
 			continue
 		}
+
+		// Check if this checkpoint meta file is protected by backup
+		if hasBackupProtection {
+			endTS := metaFile.GetEnd()
+			if endTS.LE(&protectedTS) {
+				logutil.Info(
+					"GC-Backup-Protection-Block-Delete-CKP-Meta",
+					zap.String("file", metaFile.GetName()),
+					zap.String("file-end-ts", endTS.ToString()),
+					zap.String("protected-ts", protectedTS.ToString()),
+					zap.String("task", c.TaskNameLocked()),
+				)
+				continue // Skip deletion of protected checkpoint meta file
+			}
+		}
+
 		gcWindow := NewGCWindow(c.mp, c.fs)
 		defer gcWindow.Close()
 		if err = gcWindow.ReadTable(
@@ -811,6 +834,8 @@ func (c *checkpointCleaner) getEntriesToMerge(lowWaterMark *types.TS) (
 }
 
 // filterCheckpoints filters the checkpoints with the endTS less than the highWater
+// Note: This function only filters by highWater, backup protection is checked separately
+// in mergeCheckpointFilesLocked when actually merging/deleting files
 func (c *checkpointCleaner) filterCheckpoints(
 	highWater *types.TS,
 	checkpoints []*checkpoint.CheckpointEntry,
@@ -1819,11 +1844,6 @@ func (c *checkpointCleaner) mutAddMetaFileLocked(
 }
 
 func (c *checkpointCleaner) checkExtras(item any) bool {
-	// First check backup protection
-	if !c.checkBackupProtection(item) {
-		return false
-	}
-
 	c.checker.RLock()
 	defer c.checker.RUnlock()
 	for _, checker := range c.checker.extras {
@@ -1900,51 +1920,6 @@ func (c *checkpointCleaner) GetBackupProtection() (protectedTS types.TS, lastUpd
 	c.backupProtection.RLock()
 	defer c.backupProtection.RUnlock()
 	return c.backupProtection.protectedTS, c.backupProtection.lastUpdateTime, c.backupProtection.isActive
-}
-
-// checkBackupProtection checks if the checkpoint should be protected from GC
-// Returns true if the checkpoint can be GC'ed, false if it should be protected
-func (c *checkpointCleaner) checkBackupProtection(item any) bool {
-	c.backupProtection.RLock()
-	defer c.backupProtection.RUnlock()
-
-	// If backup protection is not active, allow GC
-	if !c.backupProtection.isActive {
-		return true
-	}
-
-	// Check if protection has expired (20 minutes without update)
-	if time.Since(c.backupProtection.lastUpdateTime) > 20*time.Minute {
-		logutil.Warn(
-			"GC-Backup-Protection-Expired",
-			zap.Duration("time-since-update", time.Since(c.backupProtection.lastUpdateTime)),
-		)
-		// Protection expired, allow GC but don't remove it here (will be removed in Process)
-		return true
-	}
-
-	// Check if the item is a checkpoint entry
-	ckp, ok := item.(*checkpoint.CheckpointEntry)
-	if !ok {
-		// For non-checkpoint items, allow GC (metadata files are checked separately in deleteStaleSnapshotFilesLocked)
-		return true
-	}
-
-	// For checkpoint entries, check if the end timestamp is less than or equal to protected timestamp
-	// We protect checkpoints whose end timestamp is <= protected timestamp
-	// This means we protect all checkpoints up to and including the backup time point
-	endTS := ckp.GetEnd()
-	if endTS.LE(&c.backupProtection.protectedTS) {
-		logutil.Info(
-			"GC-Backup-Protection-Block-Checkpoint",
-			zap.String("checkpoint-end-ts", endTS.ToString()),
-			zap.String("protected-ts", c.backupProtection.protectedTS.ToString()),
-			zap.String("checkpoint", ckp.String()),
-		)
-		return false
-	}
-
-	return true
 }
 
 // appendFilesToWAL append the GC meta files to WAL.
