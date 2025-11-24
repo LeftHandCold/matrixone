@@ -556,6 +556,19 @@ func (c *checkpointCleaner) CloneMetaFilesLocked() map[string]ioutil.TSRangeFile
 }
 
 func (c *checkpointCleaner) deleteStaleSnapshotFilesLocked() error {
+	// Skip deletion if backup protection is active
+	c.backupProtection.RLock()
+	hasBackupProtection := c.backupProtection.isActive && time.Since(c.backupProtection.lastUpdateTime) <= 20*time.Minute
+	c.backupProtection.RUnlock()
+	if hasBackupProtection {
+		logutil.Info(
+			"GC-Backup-Protection-Skip-Delete-Snapshot-Files",
+			zap.String("task", c.TaskNameLocked()),
+			zap.String("protected-ts", c.backupProtection.protectedTS.ToString()),
+		)
+		return nil
+	}
+
 	var (
 		maxSnapEnd  types.TS
 		maxSnapFile string
@@ -724,16 +737,23 @@ func (c *checkpointCleaner) deleteStaleSnapshotFilesLocked() error {
 // `c.mutation.scanned`: [t300, t400]
 // `t100_t200_xxx.ckp`, `t200_t300_xxx.ckp` are hard deleted
 func (c *checkpointCleaner) deleteStaleCKPMetaFileLocked() (err error) {
+	// Skip deletion if backup protection is active
+	c.backupProtection.RLock()
+	hasBackupProtection := c.backupProtection.isActive && time.Since(c.backupProtection.lastUpdateTime) <= 20*time.Minute
+	c.backupProtection.RUnlock()
+	if hasBackupProtection {
+		logutil.Info(
+			"GC-Backup-Protection-Skip-Delete-CKP-Meta",
+			zap.String("task", c.TaskNameLocked()),
+			zap.String("protected-ts", c.backupProtection.protectedTS.ToString()),
+		)
+		return nil
+	}
+
 	// TODO: add log
 	window := c.GetScannedWindowLocked()
 	metaFiles := c.CloneMetaFilesLocked()
 	filesToDelete := make([]string, 0)
-
-	// Check backup protection
-	c.backupProtection.RLock()
-	hasBackupProtection := c.backupProtection.isActive && time.Since(c.backupProtection.lastUpdateTime) <= 20*time.Minute
-	protectedTS := c.backupProtection.protectedTS
-	c.backupProtection.RUnlock()
 
 	for _, metaFile := range metaFiles {
 		if !metaFile.IsCKPFile() ||
@@ -744,21 +764,6 @@ func (c *checkpointCleaner) deleteStaleCKPMetaFileLocked() (err error) {
 				zap.String("skip-file", metaFile.GetName()),
 			)
 			continue
-		}
-
-		// Check if this checkpoint meta file is protected by backup
-		if hasBackupProtection {
-			endTS := metaFile.GetEnd()
-			if endTS.LE(&protectedTS) {
-				logutil.Info(
-					"GC-Backup-Protection-Block-Delete-CKP-Meta",
-					zap.String("file", metaFile.GetName()),
-					zap.String("file-end-ts", endTS.ToString()),
-					zap.String("protected-ts", protectedTS.ToString()),
-					zap.String("task", c.TaskNameLocked()),
-				)
-				continue // Skip deletion of protected checkpoint meta file
-			}
 		}
 
 		gcWindow := NewGCWindow(c.mp, c.fs)
@@ -874,6 +879,19 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 	// min(min(startTS of all incremental checkpoints),min(endTS of global checkpoints))
 	if checkpointLowWaterMark.IsEmpty() {
 		return
+	}
+
+	// Skip merge checkpoint if backup protection is active
+	c.backupProtection.RLock()
+	hasBackupProtection := c.backupProtection.isActive && time.Since(c.backupProtection.lastUpdateTime) <= 20*time.Minute
+	c.backupProtection.RUnlock()
+	if hasBackupProtection {
+		logutil.Info(
+			"GC-Backup-Protection-Skip-Merge-Checkpoint",
+			zap.String("task", c.TaskNameLocked()),
+			zap.String("protected-ts", c.backupProtection.protectedTS.ToString()),
+		)
+		return nil
 	}
 
 	now := time.Now()
@@ -992,31 +1010,8 @@ func (c *checkpointCleaner) mergeCheckpointFilesLocked(
 		return err
 	}
 
-	// Filter out protected files from deleteFiles
-	c.backupProtection.RLock()
-	if c.backupProtection.isActive && time.Since(c.backupProtection.lastUpdateTime) <= 20*time.Minute {
-		filteredDeleteFiles := make([]string, 0, len(deleteFiles))
-		for _, deleteFile := range deleteFiles {
-			// Try to decode the file name to get its timestamp
-			_, decodedFile := ioutil.TryDecodeTSRangeFile(deleteFile)
-			if decodedFile.IsMetadataFile() || decodedFile.IsCompactExt() {
-				// Check if this checkpoint file should be protected
-				endTS := decodedFile.GetEnd()
-				if endTS.LE(&c.backupProtection.protectedTS) {
-					logutil.Info(
-						"GC-Backup-Protection-Block-Delete-File",
-						zap.String("file", deleteFile),
-						zap.String("file-end-ts", endTS.ToString()),
-						zap.String("protected-ts", c.backupProtection.protectedTS.ToString()),
-					)
-					continue
-				}
-			}
-			filteredDeleteFiles = append(filteredDeleteFiles, deleteFile)
-		}
-		deleteFiles = filteredDeleteFiles
-	}
-	c.backupProtection.RUnlock()
+	// Note: Backup protection check is done at the beginning of this function
+	// If backup protection is active, the function returns early and no files are deleted
 	logtail.FillUsageBatOfCompacted(
 		ctx,
 		c.checkpointCli.GetCatalog().GetUsageMemo().(*logtail.TNUsageMemo),
