@@ -18,6 +18,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lni/vfs"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -65,6 +68,126 @@ func isUserUpdate(cmd []byte) bool {
 
 func isSetLeaseHolderUpdate(cmd []byte) bool {
 	return parseCmdTag(cmd) == pb.LeaseHolderIDUpdate
+}
+
+// checkNFSFilesystem checks if the given directory is on an NFS filesystem.
+// Returns (isNFS, error) where:
+//   - isNFS: true if NFS is detected
+//   - error: non-nil if NFS is detected and there's a problem (for backward compatibility)
+//
+// NFS filesystems have limitations that affect Dragonboat:
+//   - Directory fsync() is not supported, causing "operation not supported" errors
+//   - File locking may be unreliable across network partitions
+//   - Atomic operations may not be guaranteed
+//
+// Dragonboat (the underlying Raft library) requires these operations in startShard,
+// which will fail with "operation not supported" on NFS. Specifically:
+//   - In startShard -> CreateSnapshotDir -> Mkdir -> SyncDir -> df.Sync()
+//   - The SyncDir function calls fsync() on a directory file descriptor
+//   - NFS does not support fsync() on directories, causing "operation not supported"
+//
+// See: dragonboat/internal/fileutil/utils.go:SyncDir() line 168
+//
+//	dragonboat/internal/server/environment.go:CreateSnapshotDir() line 184
+//	dragonboat/nodehost.go:startShard() line 1657
+func checkNFSFilesystem(dataDir string) (bool, error) {
+	if dataDir == "" {
+		return false, nil
+	}
+
+	// Get absolute path
+	absPath, err := filepath.Abs(dataDir)
+	if err != nil {
+		return false, nil // If we can't get absolute path, skip the check
+	}
+
+	// Ensure the directory exists or can be created
+	if err := os.MkdirAll(absPath, 0755); err != nil {
+		return false, nil // If we can't create it, skip the check
+	}
+
+	var nfsDetected bool
+	var nfsError error
+
+	// Check if the path is on NFS by reading /proc/mounts (Linux)
+	// On Linux, we can check /proc/mounts to detect NFS mounts
+	if mountInfo, err := os.ReadFile("/proc/mounts"); err == nil {
+		lines := strings.Split(string(mountInfo), "\n")
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 {
+				mountPoint := fields[1]
+				fstype := fields[2]
+				// Check if it's an NFS filesystem (nfs, nfs4, nfsd, etc.)
+				if strings.HasPrefix(fstype, "nfs") {
+					// Check if our dataDir is under this mount point
+					// Use the longest matching mount point to handle nested mounts
+					if strings.HasPrefix(absPath, mountPoint) {
+						nfsDetected = true
+						nfsError = moerr.NewInternalErrorNoCtx(
+							fmt.Sprintf("logservice DataDir '%s' is on an NFS filesystem (type: %s, mount: %s). "+
+								"NFS filesystems have limitations that affect Dragonboat (the Raft library):\n"+
+								"  - Directory fsync() is not supported (will cause 'operation not supported')\n"+
+								"  - File locking may be unreliable across network partitions\n"+
+								"  - Atomic operations may not be guaranteed\n\n"+
+								"An NFS compatibility layer will be used, but this reduces durability guarantees. "+
+								"For production use, please use a local filesystem (ext4, xfs, etc.) or a properly "+
+								"configured network block device (iSCSI, FC) instead.",
+								dataDir, fstype, mountPoint))
+					}
+				}
+			}
+		}
+	}
+
+	// Additional check: try to detect unsupported operations by testing common
+	// operations that Dragonboat uses in startShard. This is a best-effort check,
+	// as some NFS configurations might pass this but still fail later.
+	testFile := filepath.Join(absPath, ".nfs_check")
+	if f, err := os.Create(testFile); err == nil {
+		// Test 1: Try to sync the file - if this fails with "operation not supported",
+		// it's likely an unsupported filesystem
+		if err := f.Sync(); err != nil {
+			if strings.Contains(err.Error(), "operation not supported") ||
+				strings.Contains(err.Error(), "not supported") {
+				os.Remove(testFile)
+				nfsDetected = true
+				nfsError = moerr.NewInternalErrorNoCtx(
+					fmt.Sprintf("logservice DataDir '%s' appears to be on a filesystem that doesn't support "+
+						"required operations (fsync failed: %v). This is the same error that will occur when "+
+						"Dragonboat's startShard tries to initialize Raft shards. An NFS compatibility layer "+
+						"will be used, but this reduces durability guarantees. For production use, please use "+
+						"a local filesystem instead.",
+						dataDir, err))
+			}
+		}
+		f.Close()
+
+		// Test 2: Try to open the directory and sync it (syncfs operation)
+		// This is another operation that Dragonboat may use
+		if dir, err := os.Open(absPath); err == nil {
+			if err := dir.Sync(); err != nil {
+				if strings.Contains(err.Error(), "operation not supported") ||
+					strings.Contains(err.Error(), "not supported") {
+					dir.Close()
+					os.Remove(testFile)
+					nfsDetected = true
+					if nfsError == nil {
+						nfsError = moerr.NewInternalErrorNoCtx(
+							fmt.Sprintf("logservice DataDir '%s' appears to be on a filesystem that doesn't support "+
+								"directory sync operations (syncfs failed: %v). An NFS compatibility layer will be used, "+
+								"but this reduces durability guarantees. For production use, please use a local filesystem instead.",
+								dataDir, err))
+					}
+				}
+			}
+			dir.Close()
+		}
+
+		os.Remove(testFile)
+	}
+
+	return nfsDetected, nfsError
 }
 
 func getNodeHostConfig(cfg Config, fs fileservice.FileService) config.NodeHostConfig {
@@ -160,6 +283,39 @@ func newLogStore(cfg Config,
 	rt runtime.Runtime,
 	fs fileservice.FileService,
 ) (*store, error) {
+	// Check if DataDir is on an NFS filesystem before initializing dragonboat
+	nfsDetected, nfsErr := checkNFSFilesystem(cfg.DataDir)
+	if nfsErr != nil {
+		// If NFS is detected, wrap the vfs.FS with NFS compatibility layer
+		// This allows Dragonboat to work on NFS by gracefully handling unsupported operations
+		if cfg.FS == nil || cfg.FS == vfs.Default {
+			// Use default FS wrapped with NFS compatibility
+			cfg.FS = newNFSCompatibleFS(vfs.Default)
+			rt.SubLogger(runtime.SystemInit).Warn("NFS filesystem detected for logservice DataDir. "+
+				"Using NFS compatibility mode with reduced durability guarantees. "+
+				"This is not recommended for production use.",
+				zap.String("dataDir", cfg.DataDir),
+				zap.Error(nfsErr))
+		} else {
+			// Wrap the existing FS with NFS compatibility
+			cfg.FS = newNFSCompatibleFS(cfg.FS)
+			rt.SubLogger(runtime.SystemInit).Warn("NFS filesystem detected for logservice DataDir. "+
+				"Wrapping provided vfs.FS with NFS compatibility layer. "+
+				"This may reduce durability guarantees.",
+				zap.String("dataDir", cfg.DataDir),
+				zap.Error(nfsErr))
+		}
+	} else if nfsDetected {
+		// NFS detected but no error (e.g., during testing), still wrap for safety
+		if cfg.FS == nil || cfg.FS == vfs.Default {
+			cfg.FS = newNFSCompatibleFS(vfs.Default)
+		} else {
+			cfg.FS = newNFSCompatibleFS(cfg.FS)
+		}
+		rt.SubLogger(runtime.SystemInit).Info("NFS filesystem detected, using compatibility mode",
+			zap.String("dataDir", cfg.DataDir))
+	}
+
 	nh, err := dragonboat.NewNodeHost(getNodeHostConfig(cfg, fs))
 	if err != nil {
 		return nil, err
