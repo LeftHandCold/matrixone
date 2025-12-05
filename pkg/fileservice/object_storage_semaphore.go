@@ -16,6 +16,7 @@ package fileservice
 
 import (
 	"context"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"io"
 	"iter"
 	"sync"
@@ -31,6 +32,7 @@ func newObjectStorageSemaphore(
 	upstream ObjectStorage,
 	capacity int64,
 ) *objectStorageSemaphore {
+	logutil.Infof("capacitycapacity %v", capacity)
 	return &objectStorageSemaphore{
 		upstream:  upstream,
 		semaphore: make(chan struct{}, capacity),
