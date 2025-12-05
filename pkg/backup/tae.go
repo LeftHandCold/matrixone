@@ -662,7 +662,7 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, name, d
 	hasher := sha256.New()
 	hashingReader := io.TeeReader(reader, hasher)
 	dstIoVec := fileservice.IOVector{
-		FilePath: "test/" + newName,
+		FilePath: "test2/" + newName,
 		Entries: []fileservice.IOEntry{
 			{
 				ReaderForWrite: hashingReader,
