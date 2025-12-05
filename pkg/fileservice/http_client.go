@@ -28,12 +28,18 @@ import (
 )
 
 var (
-	connectTimeout      = time.Second * 5
-	readWriteTimeout    = time.Second * 20
-	maxIdleConns        = 100
-	maxIdleConnsPerHost = 100
-	maxConnsPerHost     = 100
-	idleConnTimeout     = 10 * time.Second
+	connectTimeout   = time.Second * 5
+	readWriteTimeout = time.Second * 20
+	maxIdleConns     = 100
+	// maxIdleConnsPerHost: 每个主机的最大空闲连接数
+	// 应该与 maxConnsPerHost 保持一致，以充分利用连接池
+	maxIdleConnsPerHost = 500
+	// maxConnsPerHost: 每个主机的最大并发连接数
+	// 如果并发任务数较多（如 100+），需要相应增加此值
+	// 每个 Write 操作可能需要 2 个连接（Exists + Write），所以 100 个并发至少需要 200
+	// 设置为 500 以支持更高的并发场景
+	maxConnsPerHost = 500
+	idleConnTimeout = 10 * time.Second
 )
 
 var dnsResolver = dns.NewCachingResolver(
