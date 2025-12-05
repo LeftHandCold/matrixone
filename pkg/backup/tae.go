@@ -662,7 +662,7 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, name, d
 	hasher := sha256.New()
 	hashingReader := io.TeeReader(reader, hasher)
 	dstIoVec := fileservice.IOVector{
-		FilePath: newName,
+		FilePath: "test/" + newName,
 		Entries: []fileservice.IOEntry{
 			{
 				ReaderForWrite: hashingReader,
@@ -673,8 +673,7 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, name, d
 		Policy: fileservice.SkipAllCache,
 	}
 
-	time.Sleep(3 * time.Hour)
-	err = dstFs.Write(ctx, dstIoVec)
+	err = srcFs.Write(ctx, dstIoVec)
 	if err != nil {
 		return nil, err
 	}
