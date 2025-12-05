@@ -673,6 +673,7 @@ func CopyFile(ctx context.Context, srcFs, dstFs fileservice.FileService, name, d
 		Policy: fileservice.SkipAllCache,
 	}
 
+	time.Sleep(3 * time.Hour)
 	err = dstFs.Write(ctx, dstIoVec)
 	if err != nil {
 		return nil, err
