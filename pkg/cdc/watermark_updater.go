@@ -565,14 +565,33 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 	for key, result := range u.readKeysBuffer {
 		if result.Ok {
 			u.cacheCommitted[key] = result.Watermark
+			logutil.Info(
+				"cdc.watermark.recovery.read_from_db",
+				zap.String("key", key.String()),
+				zap.String("watermark", result.Watermark.ToString()),
+				zap.String("watermark-time", result.Watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+			)
 		}
 	}
 	for i, job := range u.getOrAddCommittedBuffer {
 		if u.readKeysBuffer[*job.Key].Ok {
-			u.cacheCommitted[*job.Key] = u.readKeysBuffer[*job.Key].Watermark
-			job.DoneWithResult(u.readKeysBuffer[*job.Key].Watermark)
+			recoveredWM := u.readKeysBuffer[*job.Key].Watermark
+			u.cacheCommitted[*job.Key] = recoveredWM
+			job.DoneWithResult(recoveredWM)
+			logutil.Info(
+				"cdc.watermark.recovery.found_in_db",
+				zap.String("key", job.Key.String()),
+				zap.String("recovered-watermark", recoveredWM.ToString()),
+				zap.String("recovered-watermark-time", recoveredWM.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+				zap.String("requested-watermark", job.Watermark.ToString()),
+			)
 		} else {
 			u.addCommittedBuffer = append(u.addCommittedBuffer, job)
+			logutil.Info(
+				"cdc.watermark.recovery.not_found_will_add",
+				zap.String("key", job.Key.String()),
+				zap.String("requested-watermark", job.Watermark.ToString()),
+			)
 		}
 		u.getOrAddCommittedBuffer[i] = nil
 	}
@@ -678,6 +697,7 @@ func (u *CDCWatermarkUpdater) execBatchUpdateWM() (errMsg string, err error) {
 	} else {
 		// commit watermarks from committing to committed
 		for key, watermark := range u.cacheCommitting {
+			oldCommitted, hadOld := u.cacheCommitted[key]
 			u.cacheCommitted[key] = watermark
 			if _, existed := u.commitCircuitOpen[key]; existed {
 				v2.CdcWatermarkCircuitEventCounter.WithLabelValues("reset").Inc()
@@ -685,6 +705,17 @@ func (u *CDCWatermarkUpdater) execBatchUpdateWM() (errMsg string, err error) {
 			}
 			delete(u.commitFailureCount, key)
 			delete(u.commitCircuitOpen, key)
+			
+			// DEBUG: Log watermark persistence success
+			logutil.Info(
+				"cdc.watermark.persist.success",
+				zap.String("key", key.String()),
+				zap.String("watermark", watermark.ToString()),
+				zap.String("watermark-time", watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+				zap.Bool("had-old-watermark", hadOld),
+				zap.String("old-watermark", oldCommitted.ToString()),
+				zap.Bool("watermark-advanced", hadOld && watermark.GT(&oldCommitted)),
+			)
 		}
 	}
 
@@ -1104,16 +1135,19 @@ func (u *CDCWatermarkUpdater) UpdateWatermarkOnly(
 	u.cacheUncommitted[*key] = *watermark
 
 	// Log watermark updates for better observability
-	logutil.Debug(
+	logutil.Info(
 		"cdc.watermark.buffer_update",
 		zap.String("task-id", key.TaskId),
 		zap.String("key", key.String()),
 		zap.String("old-watermark", oldWatermark.ToString()),
 		zap.String("new-watermark", watermark.ToString()),
+		zap.String("new-watermark-time", watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
 		zap.Bool("has-old", hasOld),
+		zap.Bool("watermark-advanced", hasOld && watermark.GT(&oldWatermark)),
 		zap.Int("uncommitted-count", len(u.cacheUncommitted)),
 		zap.Int("committing-count", len(u.cacheCommitting)),
 		zap.Int("committed-count", len(u.cacheCommitted)),
+		zap.Time("update-time", time.Now()),
 	)
 
 	return nil
@@ -1272,14 +1306,37 @@ func (u *CDCWatermarkUpdater) GetOrAddCommitted(
 	key *WatermarkKey,
 	watermark *types.TS,
 ) (ret types.TS, err error) {
+	// DEBUG: Log watermark recovery attempt
+	logutil.Info(
+		"cdc.watermark.recovery.attempt",
+		zap.String("key", key.String()),
+		zap.String("requested-watermark", watermark.ToString()),
+		zap.String("requested-watermark-time", watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+	)
+
 	u.RLock()
 	persisted, ok := u.cacheCommitted[*key]
 	u.RUnlock()
 	if ok {
 		if persisted.GE(watermark) {
 			ret = persisted
+			logutil.Info(
+				"cdc.watermark.recovery.cache_hit",
+				zap.String("key", key.String()),
+				zap.String("cached-watermark", persisted.ToString()),
+				zap.String("cached-watermark-time", persisted.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+				zap.String("requested-watermark", watermark.ToString()),
+				zap.Bool("cached-ge-requested", true),
+			)
 			return
 		}
+		logutil.Info(
+			"cdc.watermark.recovery.cache_stale",
+			zap.String("key", key.String()),
+			zap.String("cached-watermark", persisted.ToString()),
+			zap.String("requested-watermark", watermark.ToString()),
+			zap.Bool("cached-ge-requested", false),
+		)
 	}
 
 	job := NewGetOrAddCommittedWMJob(ctx, key, watermark)
@@ -1309,8 +1366,24 @@ func (u *CDCWatermarkUpdater) GetOrAddCommitted(
 	res := job.GetResult()
 	if res.Err != nil {
 		err = res.Err
+		logutil.Error(
+			"cdc.watermark.recovery.failed",
+			zap.String("key", key.String()),
+			zap.String("requested-watermark", watermark.ToString()),
+			zap.Error(err),
+		)
 	} else {
 		ret = res.Res.(types.TS)
+		logutil.Info(
+			"cdc.watermark.recovery.success",
+			zap.String("key", key.String()),
+			zap.String("recovered-watermark", ret.ToString()),
+			zap.String("recovered-watermark-time", ret.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+			zap.String("requested-watermark", watermark.ToString()),
+			zap.Bool("recovered-eq-requested", ret.EQ(watermark)),
+			zap.Bool("recovered-gt-requested", ret.GT(watermark)),
+			zap.Bool("recovered-lt-requested", ret.LT(watermark)),
+		)
 	}
 	return
 }

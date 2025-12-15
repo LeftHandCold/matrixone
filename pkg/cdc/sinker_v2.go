@@ -436,10 +436,11 @@ func (s *mysqlSinker2) handleCommit(ctx context.Context) error {
 	// Transition back to IDLE
 	s.txnState.Store(v2TxnStateIdle)
 
-	logutil.Debug("cdc.mysql_sinker2.commit_success",
+	logutil.Info("cdc.mysql_sinker2.commit_success",
 		zap.String("task-id", s.taskId),
 		zap.String("table", s.dbTblInfo.String()),
-		zap.Duration("commit-duration", time.Since(start)))
+		zap.Duration("commit-duration", time.Since(start)),
+		zap.Time("commit-time", time.Now()))
 
 	return nil
 }
@@ -679,27 +680,30 @@ func (s *mysqlSinker2) handleInsertDeleteBatch(ctx context.Context, cmd *Command
 		}
 	}
 
-	if logutil.GetSkip1Logger().Core().Enabled(zap.DebugLevel) {
-		completeFields := []zap.Field{
-			zap.String("table", s.dbTblInfo.String()),
-			zap.Int("insert-rows", insertRows),
-			zap.Int("delete-rows", deleteRows),
-			zap.Duration("total-duration", time.Since(start)),
-		}
-		if insertTotalRows != insertRows || insertDuplicates > 0 {
-			completeFields = append(completeFields,
-				zap.Int("insert-total-rows", insertTotalRows),
-				zap.Int("insert-duplicates", insertDuplicates),
-			)
-		}
-		if deleteTotalRows != deleteRows || deleteDuplicates > 0 {
-			completeFields = append(completeFields,
-				zap.Int("delete-total-rows", deleteTotalRows),
-				zap.Int("delete-duplicates", deleteDuplicates),
-			)
-		}
-		logutil.Debug("cdc.mysql_sinker2.insert_delete_batch_complete", completeFields...)
+	completeFields := []zap.Field{
+		zap.String("task-id", s.taskId),
+		zap.String("table", s.dbTblInfo.String()),
+		zap.Int("insert-rows-written", insertRows),
+		zap.Int("delete-rows-written", deleteRows),
+		zap.String("from-ts", cmd.Meta.FromTs.ToString()),
+		zap.String("to-ts", cmd.Meta.ToTs.ToString()),
+		zap.String("from-ts-time", cmd.Meta.FromTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+		zap.String("to-ts-time", cmd.Meta.ToTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+		zap.Duration("total-duration", time.Since(start)),
 	}
+	if insertTotalRows != insertRows || insertDuplicates > 0 {
+		completeFields = append(completeFields,
+			zap.Int("insert-total-rows", insertTotalRows),
+			zap.Int("insert-duplicates", insertDuplicates),
+		)
+	}
+	if deleteTotalRows != deleteRows || deleteDuplicates > 0 {
+		completeFields = append(completeFields,
+			zap.Int("delete-total-rows", deleteTotalRows),
+			zap.Int("delete-duplicates", deleteDuplicates),
+		)
+	}
+	logutil.Info("cdc.mysql_sinker2.insert_delete_batch_complete", completeFields...)
 
 	// Clean up atomic batches after processing
 	if cmd.InsertAtmBatch != nil {

@@ -17,6 +17,7 @@ package cdc
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
@@ -196,6 +197,7 @@ func (tm *TransactionManager) CommitTransaction(ctx context.Context) error {
 
 	// Step 2: Update watermark (persistent proof of success)
 	// This MUST happen BEFORE marking tracker as committed
+	watermarkUpdateTime := time.Now()
 	if err := tm.watermarkUpdater.UpdateWatermarkOnly(
 		ctx,
 		tm.watermarkKey,
@@ -208,23 +210,40 @@ func (tm *TransactionManager) CommitTransaction(ctx context.Context) error {
 			zap.String("db", tm.dbName),
 			zap.String("table", tm.tableName),
 			zap.String("to-ts", toTs.ToString()),
+			zap.String("to-ts-time", toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
 			zap.Error(err),
 		)
 		// Note: UpdateWatermarkOnly always returns nil (eventual consistency)
 		// But we log it anyway for monitoring
+	} else {
+		logutil.Info(
+			"cdc.txn_manager.watermark_updated_after_commit",
+			zap.String("task-id", tm.taskId),
+			zap.Uint64("account-id", tm.accountId),
+			zap.String("db", tm.dbName),
+			zap.String("table", tm.tableName),
+			zap.String("watermark", toTs.ToString()),
+			zap.String("watermark-time", toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+			zap.Time("update-time", watermarkUpdateTime),
+			zap.String("from-ts", tm.tracker.fromTs.ToString()),
+		)
 	}
 
 	// Step 3: Mark tracker as committed (memory state sync)
 	tm.tracker.MarkCommit()
 	tm.tracker.MarkWatermarkUpdated()
 
-	logutil.Debug(
+	logutil.Info(
 		"cdc.txn_manager.commit_success",
 		zap.String("task-id", tm.taskId),
 		zap.Uint64("account-id", tm.accountId),
 		zap.String("db", tm.dbName),
 		zap.String("table", tm.tableName),
+		zap.String("from-ts", tm.tracker.fromTs.ToString()),
 		zap.String("to-ts", toTs.ToString()),
+		zap.String("from-ts-time", tm.tracker.fromTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+		zap.String("to-ts-time", toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+		zap.Time("commit-time", time.Now()),
 	)
 
 	return nil

@@ -17,6 +17,7 @@ package cdc
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -210,14 +211,16 @@ func (dp *DataProcessor) processSnapshot(ctx context.Context, data *ChangeData) 
 	// because snapshot data might span multiple batches.
 	// Watermark should only be updated when ALL snapshot data is processed (in processNoMoreData)
 
-	logutil.Debug(
+	logutil.Info(
 		"cdc.data_processor.process_snapshot_complete",
 		zap.String("task-id", dp.taskId),
 		zap.String("db", dp.dbName),
 		zap.String("table", dp.tableName),
-		zap.Int("rows", rows),
+		zap.Int("rows-read", rows),
 		zap.String("from-ts", dp.fromTs.ToString()),
 		zap.String("to-ts", dp.toTs.ToString()),
+		zap.String("from-ts-time", dp.fromTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+		zap.String("to-ts-time", dp.toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
 	)
 
 	return nil
@@ -315,18 +318,20 @@ func (dp *DataProcessor) processTailDone(ctx context.Context, data *ChangeData) 
 		toTs:           dp.toTs,
 	})
 
-	logutil.Debug(
+	insertRows := dp.insertAtmBatch.RowCount()
+	deleteRows := dp.deleteAtmBatch.RowCount()
+	logutil.Info(
 		"cdc.data_processor.process_tail_done",
 		zap.String("task-id", dp.taskId),
 		zap.Uint64("account-id", dp.accountId),
 		zap.String("db", dp.dbName),
 		zap.String("table", dp.tableName),
-		zap.Int("insert-rows", dp.insertAtmBatch.RowCount()),
-		zap.Int("delete-rows", dp.deleteAtmBatch.RowCount()),
+		zap.Int("insert-rows-read", insertRows),
+		zap.Int("delete-rows-read", deleteRows),
 		zap.String("from-ts", dp.fromTs.ToString()),
 		zap.String("to-ts", dp.toTs.ToString()),
-		zap.Int("insert-rows", dp.insertAtmBatch.RowCount()),
-		zap.Int("delete-rows", dp.deleteAtmBatch.RowCount()),
+		zap.String("from-ts-time", dp.fromTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+		zap.String("to-ts-time", dp.toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
 	)
 
 	// Note: Sink() takes ownership of the atomic batches
@@ -413,6 +418,7 @@ func (dp *DataProcessor) processNoMoreData(ctx context.Context) error {
 			zap.String("to-ts", dp.toTs.ToString()),
 		)
 
+		watermarkUpdateTime := time.Now()
 		if err := dp.txnManager.watermarkUpdater.UpdateWatermarkOnly(
 			ctx,
 			dp.txnManager.watermarkKey,
@@ -425,9 +431,22 @@ func (dp *DataProcessor) processNoMoreData(ctx context.Context) error {
 				zap.String("db", dp.dbName),
 				zap.String("table", dp.tableName),
 				zap.String("to-ts", dp.toTs.ToString()),
+				zap.String("to-ts-time", dp.toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
 				zap.Error(err),
 			)
 			// Note: UpdateWatermarkOnly always returns nil, but we log it anyway
+		} else {
+			logutil.Info(
+				"cdc.data_processor.no_more_data_watermark_updated",
+				zap.String("task-id", dp.taskId),
+				zap.Uint64("account-id", dp.accountId),
+				zap.String("db", dp.dbName),
+				zap.String("table", dp.tableName),
+				zap.String("watermark", dp.toTs.ToString()),
+				zap.String("watermark-time", dp.toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+				zap.String("from-ts", dp.fromTs.ToString()),
+				zap.Time("update-time", watermarkUpdateTime),
+			)
 		}
 	}
 

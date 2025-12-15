@@ -17,6 +17,7 @@ package morpc
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"runtime"
@@ -1000,15 +1001,20 @@ func (rb *remoteBackend) isExpectedReadError(err error) bool {
 	if err == nil {
 		return false
 	}
+	
+	// Check for specific error types first
+	if err == backendClosed || err == io.EOF {
+		return true
+	}
+	
 	errStr := err.Error()
 	// These errors are expected during normal connection lifecycle:
 	// - "use of closed network connection": connection was closed by peer or locally
 	// - "illegal state": connection is in an invalid state (often during shutdown)
-	// - "EOF": end of file, connection closed normally
+	// - "EOF": end of file, connection closed normally (check exact match or io.EOF)
 	return strings.Contains(errStr, "use of closed network connection") ||
 		strings.Contains(errStr, "illegal state") ||
-		strings.Contains(errStr, "EOF") ||
-		err == backendClosed
+		errStr == "EOF" // Only match exact "EOF" string, not "unexpected EOF" etc.
 }
 
 // isExpectedCloseError checks if the error is an expected error when closing connections

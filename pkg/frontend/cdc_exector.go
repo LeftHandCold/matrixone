@@ -1147,6 +1147,22 @@ func (exec *CDCTaskExecutor) addExecPipelineForTable(
 		return err
 	}
 
+	// DEBUG: Log pipeline initialization with recovered watermark
+	logutil.Info(
+		"cdc.frontend.task.pipeline_init",
+		zap.String("task-id", exec.spec.TaskId),
+		zap.String("task-name", exec.spec.TaskName),
+		zap.String("source-db", info.SourceDbName),
+		zap.String("source-table", info.SourceTblName),
+		zap.String("sink-db", info.SinkDbName),
+		zap.String("sink-table", info.SinkTblName),
+		zap.String("recovered-watermark", watermark.ToString()),
+		zap.String("recovered-watermark-time", watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+		zap.String("start-ts", exec.startTs.ToString()),
+		zap.Bool("no-full", exec.noFull),
+		zap.String("phase", "after_watermark_recovery"),
+	)
+
 	// Note: Do NOT clear err_msg here
 	// Error should only be cleared when reader successfully syncs data (lazy, eventual consistency)
 	// This allows retry count to accumulate properly (1→2→3→4)
