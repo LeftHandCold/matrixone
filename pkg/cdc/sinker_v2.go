@@ -680,29 +680,29 @@ func (s *mysqlSinker2) handleInsertDeleteBatch(ctx context.Context, cmd *Command
 		}
 	}
 
-	completeFields := []zap.Field{
+		completeFields := []zap.Field{
 		zap.String("task-id", s.taskId),
-		zap.String("table", s.dbTblInfo.String()),
+			zap.String("table", s.dbTblInfo.String()),
 		zap.Int("insert-rows-written", insertRows),
 		zap.Int("delete-rows-written", deleteRows),
 		zap.String("from-ts", cmd.Meta.FromTs.ToString()),
 		zap.String("to-ts", cmd.Meta.ToTs.ToString()),
 		zap.String("from-ts-time", cmd.Meta.FromTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
 		zap.String("to-ts-time", cmd.Meta.ToTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
-		zap.Duration("total-duration", time.Since(start)),
-	}
-	if insertTotalRows != insertRows || insertDuplicates > 0 {
-		completeFields = append(completeFields,
-			zap.Int("insert-total-rows", insertTotalRows),
-			zap.Int("insert-duplicates", insertDuplicates),
-		)
-	}
-	if deleteTotalRows != deleteRows || deleteDuplicates > 0 {
-		completeFields = append(completeFields,
-			zap.Int("delete-total-rows", deleteTotalRows),
-			zap.Int("delete-duplicates", deleteDuplicates),
-		)
-	}
+			zap.Duration("total-duration", time.Since(start)),
+		}
+		if insertTotalRows != insertRows || insertDuplicates > 0 {
+			completeFields = append(completeFields,
+				zap.Int("insert-total-rows", insertTotalRows),
+				zap.Int("insert-duplicates", insertDuplicates),
+			)
+		}
+		if deleteTotalRows != deleteRows || deleteDuplicates > 0 {
+			completeFields = append(completeFields,
+				zap.Int("delete-total-rows", deleteTotalRows),
+				zap.Int("delete-duplicates", deleteDuplicates),
+			)
+		}
 	logutil.Info("cdc.mysql_sinker2.insert_delete_batch_complete", completeFields...)
 
 	// Clean up atomic batches after processing
