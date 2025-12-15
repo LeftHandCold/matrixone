@@ -215,46 +215,18 @@ func (tm *TransactionManager) CommitTransaction(ctx context.Context) error {
 		)
 		// Note: UpdateWatermarkOnly always returns nil (eventual consistency)
 		// But we log it anyway for monitoring
-	}
-
-	// Step 2b: Force synchronous persistence of watermark to eliminate recovery bias window.
-	// This ties the watermark durability closely to the sinker COMMIT: once this returns,
-	// both downstream data and watermark should be durable.
-	if realUpdater, ok := tm.watermarkUpdater.(*CDCWatermarkUpdater); ok {
-		if err := realUpdater.ForceFlush(ctx); err != nil {
-			logutil.Error(
-				"cdc.txn_manager.force_flush_watermark_failed",
-				zap.String("task-id", tm.taskId),
-				zap.Uint64("account-id", tm.accountId),
-				zap.String("db", tm.dbName),
-				zap.String("table", tm.tableName),
-				zap.String("to-ts", toTs.ToString()),
-				zap.Time("update-time", watermarkUpdateTime),
-				zap.Error(err),
-			)
-		} else {
-			logutil.Info(
-				"cdc.txn_manager.watermark_updated_after_commit",
-				zap.String("task-id", tm.taskId),
-				zap.Uint64("account-id", tm.accountId),
-				zap.String("db", tm.dbName),
-				zap.String("table", tm.tableName),
-				zap.String("watermark", toTs.ToString()),
-				zap.String("watermark-time", toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
-				zap.Time("update-time", watermarkUpdateTime),
-				zap.String("from-ts", tm.tracker.fromTs.ToString()),
-			)
-			logutil.Info(
-				"cdc.txn_manager.force_flush_watermark_success",
-				zap.String("task-id", tm.taskId),
-				zap.Uint64("account-id", tm.accountId),
-				zap.String("db", tm.dbName),
-				zap.String("table", tm.tableName),
-				zap.String("watermark", toTs.ToString()),
-				zap.String("watermark-time", toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
-				zap.Time("update-time", watermarkUpdateTime),
-			)
-		}
+	} else {
+		logutil.Info(
+			"cdc.txn_manager.watermark_updated_after_commit",
+			zap.String("task-id", tm.taskId),
+			zap.Uint64("account-id", tm.accountId),
+			zap.String("db", tm.dbName),
+			zap.String("table", tm.tableName),
+			zap.String("watermark", toTs.ToString()),
+			zap.String("watermark-time", toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+			zap.Time("update-time", watermarkUpdateTime),
+			zap.String("from-ts", tm.tracker.fromTs.ToString()),
+		)
 	}
 
 	// Step 3: Mark tracker as committed (memory state sync)
