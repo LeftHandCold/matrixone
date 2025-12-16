@@ -459,9 +459,22 @@ func (bat *AtomicBatch) ExtractAndReset() *AtomicBatch {
 	}
 
 	// Create a new AtomicBatch with the current data
+	// IMPORTANT: We must copy Batches and Rows to avoid sharing references
+	// If we share references, modifications to the original will affect the extracted batch
 	newBatch := NewAtomicBatch(bat.Mp)
-	newBatch.Batches = bat.Batches
-	newBatch.Rows = bat.Rows
+	
+	// Copy Batches slice (shallow copy of the slice, but batches themselves are shared)
+	// This is OK because batches are read-only after being sent to sinker
+	if bat.Batches != nil && len(bat.Batches) > 0 {
+		newBatch.Batches = make([]*batch.Batch, len(bat.Batches))
+		copy(newBatch.Batches, bat.Batches)
+	}
+	
+	// Copy Rows btree (deep copy to avoid sharing)
+	if bat.Rows != nil && bat.Rows.Len() > 0 {
+		newBatch.Rows = bat.Rows.Copy()
+	}
+	
 	newBatch.totalRows = bat.totalRows
 	newBatch.duplicateRows = bat.duplicateRows
 	newBatch.duplicateLogged = bat.duplicateLogged
