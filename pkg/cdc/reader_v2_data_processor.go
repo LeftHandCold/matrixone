@@ -116,7 +116,7 @@ func (dp *DataProcessor) SetTransactionRange(fromTs, toTs types.TS) {
 	// Only update fromTs if it's empty (first time) or if the new fromTs is greater
 	// This preserves the fromTs updated after successful commit
 	if dp.fromTs.IsEmpty() || fromTs.GT(&dp.fromTs) {
-		dp.fromTs = fromTs
+	dp.fromTs = fromTs
 	} else {
 		// Preserve the existing fromTs (from last successful commit)
 		// The fromTs parameter will be ignored, we use dp.fromTs instead
@@ -332,6 +332,14 @@ func (dp *DataProcessor) processTailDone(ctx context.Context, data *ChangeData) 
 	dp.insertAtmBatch.Append(packer, data.InsertBatch, dp.insTsColIdx, dp.insCompositedPkColIdx)
 	dp.deleteAtmBatch.Append(packer, data.DeleteBatch, dp.delTsColIdx, dp.delCompositedPkColIdx)
 
+	// Check for potential non-idempotent cases: same row in both INSERT and DELETE batches
+	// This can happen if the same row is inserted and then deleted in the same transaction
+	// While REPLACE INTO and DELETE are idempotent individually, the combination might cause issues
+	// if the same data range is processed multiple times
+	if dp.insertAtmBatch.RowCount() > 0 && dp.deleteAtmBatch.RowCount() > 0 {
+		checkInsertDeleteOverlap(dp.insertAtmBatch, dp.deleteAtmBatch, dp.taskId, dp.dbName, dp.tableName)
+	}
+
 	// Begin transaction if not already begun
 	tracker := dp.txnManager.GetTracker()
 	if tracker == nil || !tracker.hasBegin {
@@ -546,4 +554,38 @@ func (dp *DataProcessor) GetInsertAtmBatch() *AtomicBatch {
 // GetDeleteAtmBatch returns the current delete atomic batch (for testing)
 func (dp *DataProcessor) GetDeleteAtmBatch() *AtomicBatch {
 	return dp.deleteAtmBatch
+}
+
+// checkInsertDeleteOverlap checks if the same primary key appears in both INSERT and DELETE batches
+// This is a potential non-idempotent case that should be logged for debugging
+func checkInsertDeleteOverlap(insertBatch, deleteBatch *AtomicBatch, taskId, dbName, tableName string) {
+	insertPkSet := insertBatch.GetPkSet()
+	deletePkSet := deleteBatch.GetPkSet()
+
+	// Find overlapping primary keys
+	overlapCount := 0
+	overlapPks := make([]string, 0, 10) // Limit to first 10 for logging
+
+	for pk := range insertPkSet {
+		if deletePkSet[pk] {
+			overlapCount++
+			if len(overlapPks) < 10 {
+				overlapPks = append(overlapPks, pk)
+			}
+		}
+	}
+
+	if overlapCount > 0 {
+		logutil.Warn("cdc.data_processor.insert_delete_overlap",
+			zap.String("task-id", taskId),
+			zap.String("db", dbName),
+			zap.String("table", tableName),
+			zap.Int("overlap-count", overlapCount),
+			zap.Int("insert-rows", insertBatch.RowCount()),
+			zap.Int("delete-rows", deleteBatch.RowCount()),
+			zap.Strings("sample-overlap-pks", overlapPks),
+			zap.String("note", "Same PK in both INSERT and DELETE batches. "+
+				"This is normal for INSERT+DELETE in same transaction, but may cause issues if data range is reprocessed."),
+		)
+	}
 }

@@ -414,10 +414,20 @@ func (bat *AtomicBatch) Append(
 				Offset: i,
 				Src:    batch,
 			}
-			_, replaced := bat.Rows.Set(row)
+			oldRow, replaced := bat.Rows.Set(row)
 			bat.totalRows++
 			if replaced {
 				bat.duplicateRows++
+				// Log duplicate row detection for debugging non-idempotent cases
+				if bat.duplicateRows == 1 || bat.duplicateRows%100 == 0 {
+					logutil.Info("cdc.atomic_batch.duplicate_row_detected",
+						zap.Int("duplicate-count", bat.duplicateRows),
+						zap.String("ts", ts.ToString()),
+						zap.String("pk-hex", fmt.Sprintf("%x", pk)),
+						zap.String("old-ts", oldRow.Ts.ToString()),
+						zap.Bool("ts-changed", !ts.Equal(&oldRow.Ts)),
+					)
+				}
 			}
 		}
 
@@ -438,6 +448,20 @@ func (bat *AtomicBatch) Close() {
 	bat.totalRows = 0
 	bat.duplicateRows = 0
 	bat.duplicateLogged = false
+}
+
+// GetPkSet returns a set of all primary keys in the batch (for overlap detection)
+func (bat *AtomicBatch) GetPkSet() map[string]bool {
+	pkSet := make(map[string]bool)
+	if bat.Rows == nil {
+		return pkSet
+	}
+	bat.Rows.Scan(func(row AtomicBatchRow) bool {
+		pkKey := fmt.Sprintf("%x", row.Pk)
+		pkSet[pkKey] = true
+		return true // Continue scanning
+	})
+	return pkSet
 }
 
 func (bat *AtomicBatch) GetRowIterator() RowIterator {
