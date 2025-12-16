@@ -564,7 +564,21 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 	defer u.Unlock()
 	for key, result := range u.readKeysBuffer {
 		if result.Ok {
+			oldCommitted, hadOld := u.cacheCommitted[key]
 			u.cacheCommitted[key] = result.Watermark
+			
+			// 简洁的水位更新日志（从数据库恢复）
+			if !hadOld || result.Watermark.GT(&oldCommitted) {
+				logutil.Info(
+					"cdc.watermark.updated",
+					zap.String("task-id", key.TaskId),
+					zap.String("key", key.String()),
+					zap.String("watermark", result.Watermark.ToString()),
+					zap.String("watermark-time", result.Watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+					zap.String("stage", "recovered"), // recovered: 从数据库恢复
+				)
+			}
+			
 			logutil.Info(
 				"cdc.watermark.recovery.read_from_db",
 				zap.String("key", key.String()),
@@ -576,8 +590,22 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 	for i, job := range u.getOrAddCommittedBuffer {
 		if u.readKeysBuffer[*job.Key].Ok {
 			recoveredWM := u.readKeysBuffer[*job.Key].Watermark
+			oldCommitted, hadOld := u.cacheCommitted[*job.Key]
 			u.cacheCommitted[*job.Key] = recoveredWM
 			job.DoneWithResult(recoveredWM)
+			
+			// 简洁的水位更新日志（恢复时找到）
+			if !hadOld || recoveredWM.GT(&oldCommitted) {
+				logutil.Info(
+					"cdc.watermark.updated",
+					zap.String("task-id", job.Key.TaskId),
+					zap.String("key", job.Key.String()),
+					zap.String("watermark", recoveredWM.ToString()),
+					zap.String("watermark-time", recoveredWM.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+					zap.String("stage", "recovered"), // recovered: 从数据库恢复
+				)
+			}
+			
 			logutil.Info(
 				"cdc.watermark.recovery.found_in_db",
 				zap.String("key", job.Key.String()),
@@ -706,8 +734,20 @@ func (u *CDCWatermarkUpdater) execBatchUpdateWM() (errMsg string, err error) {
 			delete(u.commitFailureCount, key)
 			delete(u.commitCircuitOpen, key)
 			
+			// 简洁的水位更新日志（持久化到数据库）
+			if !hadOld || watermark.GT(&oldCommitted) {
+				logutil.Info(
+					"cdc.watermark.updated",
+					zap.String("task-id", key.TaskId),
+					zap.String("key", key.String()),
+					zap.String("watermark", watermark.ToString()),
+					zap.String("watermark-time", watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+					zap.String("stage", "persisted"), // persisted: 已持久化到数据库
+				)
+			}
+			
 			// DEBUG: Log watermark persistence success
-			logutil.Info(
+			logutil.Debug(
 				"cdc.watermark.persist.success",
 				zap.String("key", key.String()),
 				zap.String("watermark", watermark.ToString()),
@@ -819,7 +859,21 @@ func (u *CDCWatermarkUpdater) execAddWM() (errMsg string, err error) {
 	defer u.Unlock()
 	for i, job := range u.addCommittedBuffer {
 		// add the watermark to the cacheCommitted
+		oldCommitted, hadOld := u.cacheCommitted[*job.Key]
 		u.cacheCommitted[*job.Key] = job.Watermark
+		
+		// 简洁的水位更新日志（新增水位到数据库）
+		if !hadOld || job.Watermark.GT(&oldCommitted) {
+			logutil.Info(
+				"cdc.watermark.updated",
+				zap.String("task-id", job.Key.TaskId),
+				zap.String("key", job.Key.String()),
+				zap.String("watermark", job.Watermark.ToString()),
+				zap.String("watermark-time", job.Watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+				zap.String("stage", "added"), // added: 新增到数据库
+			)
+		}
+		
 		// notify the job with the watermark
 		job.DoneWithResult(job.Watermark)
 		// clear the addCommittedBuffer
@@ -1134,8 +1188,20 @@ func (u *CDCWatermarkUpdater) UpdateWatermarkOnly(
 	oldWatermark, hasOld := u.cacheUncommitted[*key]
 	u.cacheUncommitted[*key] = *watermark
 
+	// 简洁的水位更新日志
+	if !hasOld || watermark.GT(&oldWatermark) {
+		logutil.Info(
+			"cdc.watermark.updated",
+			zap.String("task-id", key.TaskId),
+			zap.String("key", key.String()),
+			zap.String("watermark", watermark.ToString()),
+			zap.String("watermark-time", watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+			zap.String("stage", "buffer"), // buffer: 更新到内存缓存
+		)
+	}
+
 	// Log watermark updates for better observability
-	logutil.Info(
+	logutil.Debug(
 		"cdc.watermark.buffer_update",
 		zap.String("task-id", key.TaskId),
 		zap.String("key", key.String()),
@@ -1344,7 +1410,21 @@ func (u *CDCWatermarkUpdater) GetOrAddCommitted(
 		if errors.Is(err, sm.ErrClose) {
 			if watermark != nil {
 				u.Lock()
+				oldCommitted, hadOld := u.cacheCommitted[*key]
 				u.cacheCommitted[*key] = *watermark
+				
+				// 简洁的水位更新日志（fallback 模式）
+				if !hadOld || watermark.GT(&oldCommitted) {
+					logutil.Info(
+						"cdc.watermark.updated",
+						zap.String("task-id", key.TaskId),
+						zap.String("key", key.String()),
+						zap.String("watermark", watermark.ToString()),
+						zap.String("watermark-time", watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+						zap.String("stage", "fallback"), // fallback: 队列关闭时的降级处理
+					)
+				}
+				
 				u.Unlock()
 				ret = *watermark
 			}
