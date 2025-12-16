@@ -513,6 +513,7 @@ func (dp *DataProcessor) processNoMoreData(ctx context.Context) error {
 // Cleanup cleans up any remaining resources
 // This should be called in defer to ensure cleanup even on errors
 // This method is safe to call concurrently and is idempotent
+// NOTE: This does NOT reset fromTs/toTs, as they need to persist across rounds
 func (dp *DataProcessor) Cleanup() {
 	dp.cleanupMu.Lock()
 	defer dp.cleanupMu.Unlock()
@@ -525,6 +526,8 @@ func (dp *DataProcessor) Cleanup() {
 		dp.deleteAtmBatch.Close()
 		dp.deleteAtmBatch = nil
 	}
+	// NOTE: We intentionally do NOT reset fromTs/toTs here
+	// They need to persist across rounds to avoid using stale cached watermarks
 
 	logutil.Debug(
 		"cdc.data_processor.cleanup",
