@@ -378,17 +378,35 @@ func (dp *DataProcessor) processTailDone(ctx context.Context, data *ChangeData) 
 		)
 	}
 
-	// Send accumulated data to sinker
+	// Extract current batches to send (create new AtomicBatch instances)
+	// This ensures that if the same transaction continues, we don't send duplicate batches
+	insertBatchToSend := dp.insertAtmBatch.ExtractAndReset()
+	deleteBatchToSend := dp.deleteAtmBatch.ExtractAndReset()
+
+	// If both batches are empty, nothing to send
+	if (insertBatchToSend == nil || insertBatchToSend.RowCount() == 0) &&
+		(deleteBatchToSend == nil || deleteBatchToSend.RowCount() == 0) {
+		return nil
+	}
+
+	insertRows := 0
+	deleteRows := 0
+	if insertBatchToSend != nil {
+		insertRows = insertBatchToSend.RowCount()
+	}
+	if deleteBatchToSend != nil {
+		deleteRows = deleteBatchToSend.RowCount()
+	}
+
+	// Send extracted batches to sinker
 	dp.sinker.Sink(ctx, &DecoderOutput{
 		outputTyp:      OutputTypeTail,
-		insertAtmBatch: dp.insertAtmBatch,
-		deleteAtmBatch: dp.deleteAtmBatch,
+		insertAtmBatch: insertBatchToSend,
+		deleteAtmBatch: deleteBatchToSend,
 		fromTs:         dp.fromTs,
 		toTs:           dp.toTs,
 	})
 
-	insertRows := dp.insertAtmBatch.RowCount()
-	deleteRows := dp.deleteAtmBatch.RowCount()
 	logutil.Info(
 		"cdc.data_processor.process_tail_done",
 		zap.String("task-id", dp.taskId),
@@ -403,12 +421,10 @@ func (dp *DataProcessor) processTailDone(ctx context.Context, data *ChangeData) 
 		zap.String("to-ts-time", dp.toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
 	)
 
-	// Note: Sink() takes ownership of the atomic batches
-	// Don't Close them here - they might still be used by Sinker asynchronously
+	// Note: Sink() takes ownership of the extracted atomic batches
 	// The Sinker or Command should be responsible for closing them
-	// For now, just reset our references
-	dp.insertAtmBatch = nil
-	dp.deleteAtmBatch = nil
+	// We've already reset dp.insertAtmBatch and dp.deleteAtmBatch via ExtractAndReset()
+	// so they're ready for the next batch in the same transaction
 
 	return nil
 }

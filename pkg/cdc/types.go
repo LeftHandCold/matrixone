@@ -450,6 +450,32 @@ func (bat *AtomicBatch) Close() {
 	bat.duplicateLogged = false
 }
 
+// ExtractAndReset creates a new AtomicBatch with the current data and resets this one
+// This is used when we need to send the current batches to sinker but continue accumulating
+// new batches in the same transaction
+func (bat *AtomicBatch) ExtractAndReset() *AtomicBatch {
+	if bat == nil || (bat.Batches == nil || len(bat.Batches) == 0) && (bat.Rows == nil || bat.Rows.Len() == 0) {
+		return nil
+	}
+
+	// Create a new AtomicBatch with the current data
+	newBatch := NewAtomicBatch(bat.Mp)
+	newBatch.Batches = bat.Batches
+	newBatch.Rows = bat.Rows
+	newBatch.totalRows = bat.totalRows
+	newBatch.duplicateRows = bat.duplicateRows
+	newBatch.duplicateLogged = bat.duplicateLogged
+
+	// Reset this AtomicBatch (but keep the MPool reference)
+	bat.Batches = nil
+	bat.Rows = btree.NewBTreeGOptions(AtomicBatchRow.Less, btree.Options{Degree: 64})
+	bat.totalRows = 0
+	bat.duplicateRows = 0
+	bat.duplicateLogged = false
+
+	return newBatch
+}
+
 // GetPkSet returns a set of all primary keys in the batch (for overlap detection)
 func (bat *AtomicBatch) GetPkSet() map[string]bool {
 	pkSet := make(map[string]bool)
