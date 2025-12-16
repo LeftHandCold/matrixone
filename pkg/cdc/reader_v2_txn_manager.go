@@ -122,7 +122,7 @@ func (tm *TransactionManager) BeginTransaction(ctx context.Context, fromTs, toTs
 	// Mark as begun
 	tm.tracker.MarkBegin()
 
-	logutil.Debug(
+	logutil.Info(
 		"cdc.txn_manager.begin_success",
 		zap.String("task-id", tm.taskId),
 		zap.Uint64("account-id", tm.accountId),
@@ -130,6 +130,8 @@ func (tm *TransactionManager) BeginTransaction(ctx context.Context, fromTs, toTs
 		zap.String("table", tm.tableName),
 		zap.String("from-ts", fromTs.ToString()),
 		zap.String("to-ts", toTs.ToString()),
+		zap.String("from-ts-time", fromTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+		zap.String("to-ts-time", toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
 	)
 
 	return nil
@@ -233,6 +235,16 @@ func (tm *TransactionManager) CommitTransaction(ctx context.Context) error {
 	tm.tracker.MarkCommit()
 	tm.tracker.MarkWatermarkUpdated()
 
+	// Check if this to-ts has been committed before (potential duplicate processing)
+	// This is a best-effort check using the watermark cache
+	currentWatermark, err := tm.watermarkUpdater.GetFromCache(ctx, tm.watermarkKey)
+	hasPotentialDuplicate := false
+	if err == nil && !currentWatermark.IsEmpty() && toTs.LE(&currentWatermark) {
+		// If the to-ts we're committing is less than or equal to the current watermark,
+		// it might be a duplicate commit
+		hasPotentialDuplicate = true
+	}
+
 	logutil.Info(
 		"cdc.txn_manager.commit_success",
 		zap.String("task-id", tm.taskId),
@@ -244,6 +256,8 @@ func (tm *TransactionManager) CommitTransaction(ctx context.Context) error {
 		zap.String("from-ts-time", tm.tracker.fromTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
 		zap.String("to-ts-time", toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
 		zap.Time("commit-time", time.Now()),
+		zap.Bool("potential-duplicate", hasPotentialDuplicate),
+		zap.String("current-watermark", currentWatermark.ToString()),
 	)
 
 	return nil

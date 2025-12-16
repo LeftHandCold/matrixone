@@ -623,15 +623,31 @@ func (s *mysqlSinker2) handleInsertDeleteBatch(ctx context.Context, cmd *Command
 				if err != nil {
 					s.recordSQLFailure("insert", duration)
 					logutil.Error("cdc.mysql_sinker2.exec_insert_sql_failed",
+						zap.String("task-id", s.taskId),
 						zap.String("table", s.dbTblInfo.String()),
 						zap.Int("sql-index", i),
 						zap.Int("total-sqls", len(sqls)),
 						zap.Duration("duration", duration),
+						zap.String("from-ts", cmd.Meta.FromTs.ToString()),
+						zap.String("to-ts", cmd.Meta.ToTs.ToString()),
 						zap.Error(err))
 					return err
 				}
 
 				s.recordSQLSuccess("insert", duration)
+
+				// Log successful INSERT execution
+				logutil.Info("cdc.mysql_sinker2.exec_insert_sql_success",
+					zap.String("task-id", s.taskId),
+					zap.String("table", s.dbTblInfo.String()),
+					zap.Int("sql-index", i),
+					zap.Int("total-sqls", len(sqls)),
+					zap.Int("insert-rows", srcBatch.RowCount()),
+					zap.Duration("duration", duration),
+					zap.String("from-ts", cmd.Meta.FromTs.ToString()),
+					zap.String("to-ts", cmd.Meta.ToTs.ToString()),
+					zap.String("from-ts-time", cmd.Meta.FromTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+					zap.String("to-ts-time", cmd.Meta.ToTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)))
 
 				if duration > time.Second {
 					logutil.Warn("cdc.mysql_sinker2.exec_insert_sql_slow",
@@ -661,15 +677,31 @@ func (s *mysqlSinker2) handleInsertDeleteBatch(ctx context.Context, cmd *Command
 			if err != nil {
 				s.recordSQLFailure("delete", duration)
 				logutil.Error("cdc.mysql_sinker2.exec_delete_sql_failed",
+					zap.String("task-id", s.taskId),
 					zap.String("table", s.dbTblInfo.String()),
 					zap.Int("sql-index", i),
 					zap.Int("total-sqls", len(sqls)),
 					zap.Duration("duration", duration),
+					zap.String("from-ts", cmd.Meta.FromTs.ToString()),
+					zap.String("to-ts", cmd.Meta.ToTs.ToString()),
 					zap.Error(err))
 				return err
 			}
 
 			s.recordSQLSuccess("delete", duration)
+
+			// Log successful DELETE execution
+			logutil.Info("cdc.mysql_sinker2.exec_delete_sql_success",
+				zap.String("task-id", s.taskId),
+				zap.String("table", s.dbTblInfo.String()),
+				zap.Int("sql-index", i),
+				zap.Int("total-sqls", len(sqls)),
+				zap.Int("delete-rows", deleteRows),
+				zap.Duration("duration", duration),
+				zap.String("from-ts", cmd.Meta.FromTs.ToString()),
+				zap.String("to-ts", cmd.Meta.ToTs.ToString()),
+				zap.String("from-ts-time", cmd.Meta.FromTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+				zap.String("to-ts-time", cmd.Meta.ToTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)))
 
 			if duration > time.Second {
 				logutil.Warn("cdc.mysql_sinker2.exec_delete_sql_slow",

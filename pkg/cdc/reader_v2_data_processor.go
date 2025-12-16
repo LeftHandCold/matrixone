@@ -343,13 +343,18 @@ func (dp *DataProcessor) processTailDone(ctx context.Context, data *ChangeData) 
 	// Begin transaction if not already begun
 	tracker := dp.txnManager.GetTracker()
 	if tracker == nil || !tracker.hasBegin {
-		logutil.Debug(
+		logutil.Info(
 			"cdc.data_processor.begin_transaction",
 			zap.String("task-id", dp.taskId),
+			zap.Uint64("account-id", dp.accountId),
 			zap.String("db", dp.dbName),
 			zap.String("table", dp.tableName),
 			zap.String("from-ts", dp.fromTs.ToString()),
 			zap.String("to-ts", dp.toTs.ToString()),
+			zap.String("from-ts-time", dp.fromTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+			zap.String("to-ts-time", dp.toTs.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+			zap.Int("insert-rows", dp.insertAtmBatch.RowCount()),
+			zap.Int("delete-rows", dp.deleteAtmBatch.RowCount()),
 		)
 		if err := dp.txnManager.BeginTransaction(ctx, dp.fromTs, dp.toTs); err != nil {
 			return err
@@ -357,7 +362,20 @@ func (dp *DataProcessor) processTailDone(ctx context.Context, data *ChangeData) 
 	} else {
 		// Transaction already active - update the toTs to the latest value
 		// This is important when multiple Tail batches are processed in one transaction
+		oldToTs := tracker.GetToTs()
 		tracker.UpdateToTs(dp.toTs)
+		logutil.Info(
+			"cdc.data_processor.update_transaction_to_ts",
+			zap.String("task-id", dp.taskId),
+			zap.Uint64("account-id", dp.accountId),
+			zap.String("db", dp.dbName),
+			zap.String("table", dp.tableName),
+			zap.String("from-ts", dp.fromTs.ToString()),
+			zap.String("old-to-ts", oldToTs.ToString()),
+			zap.String("new-to-ts", dp.toTs.ToString()),
+			zap.Int("insert-rows", dp.insertAtmBatch.RowCount()),
+			zap.Int("delete-rows", dp.deleteAtmBatch.RowCount()),
+		)
 	}
 
 	// Send accumulated data to sinker
@@ -576,6 +594,8 @@ func checkInsertDeleteOverlap(insertBatch, deleteBatch *AtomicBatch, taskId, dbN
 	}
 
 	if overlapCount > 0 {
+		// WARN: Same PK in both INSERT and DELETE batches
+		// This is normal for INSERT+DELETE in same transaction, but may cause issues if data range is reprocessed
 		logutil.Warn("cdc.data_processor.insert_delete_overlap",
 			zap.String("task-id", taskId),
 			zap.String("db", dbName),
@@ -586,6 +606,19 @@ func checkInsertDeleteOverlap(insertBatch, deleteBatch *AtomicBatch, taskId, dbN
 			zap.Strings("sample-overlap-pks", overlapPks),
 			zap.String("note", "Same PK in both INSERT and DELETE batches. "+
 				"This is normal for INSERT+DELETE in same transaction, but may cause issues if data range is reprocessed."),
+		)
+	} else {
+		// DEBUG: No overlap detected (this is the normal case)
+		// Log at DEBUG level to help understand why overlap log is not found
+		logutil.Debug("cdc.data_processor.insert_delete_overlap_check",
+			zap.String("task-id", taskId),
+			zap.String("db", dbName),
+			zap.String("table", tableName),
+			zap.Int("insert-rows", insertBatch.RowCount()),
+			zap.Int("delete-rows", deleteBatch.RowCount()),
+			zap.Int("overlap-count", 0),
+			zap.String("note", "No overlapping PKs found between INSERT and DELETE batches. "+
+				"This is normal - it means no row was both inserted and deleted in the same transaction."),
 		)
 	}
 }
