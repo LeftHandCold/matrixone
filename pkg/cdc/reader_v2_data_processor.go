@@ -108,8 +108,14 @@ func NewDataProcessor(
 }
 
 // SetTransactionRange sets the from/to timestamps for the current transaction
+// Fix: If fromTs is already set (from last successful commit), preserve it
+// to avoid using stale cached watermark
 func (dp *DataProcessor) SetTransactionRange(fromTs, toTs types.TS) {
-	dp.fromTs = fromTs
+	// Only update fromTs if it's empty (first time) or if the new fromTs is greater
+	// This preserves the fromTs updated after successful commit
+	if dp.fromTs.IsEmpty() || fromTs.GT(&dp.fromTs) {
+		dp.fromTs = fromTs
+	}
 	dp.toTs = toTs
 }
 
@@ -402,12 +408,12 @@ func (dp *DataProcessor) processNoMoreData(ctx context.Context) error {
 		// instead of using stale cached watermark
 		oldFromTs := dp.fromTs
 		dp.fromTs = dp.toTs
-		logutil.Debug(
+		logutil.Info(
 			"cdc.data_processor.no_more_data_commit_success",
 			zap.String("task-id", dp.taskId),
 			zap.String("db", dp.dbName),
 			zap.String("table", dp.tableName),
-			zap.String("from-ts", oldFromTs.ToString()),
+			zap.String("old-from-ts", oldFromTs.ToString()),
 			zap.String("to-ts", dp.toTs.ToString()),
 			zap.String("updated-from-ts", dp.fromTs.ToString()),
 		)

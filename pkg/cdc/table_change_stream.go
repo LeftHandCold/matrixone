@@ -1114,6 +1114,7 @@ func (s *TableChangeStream) processWithTxn(
 	// This ensures we don't use stale cached watermark after commit
 	// Only fallback to GetFromCache if DataProcessor doesn't have a valid fromTs
 	fromTs := s.dataProcessor.GetFromTs()
+	fromCache := false
 	if fromTs.IsEmpty() {
 		// DataProcessor doesn't have a valid fromTs yet, get from cache
 		var err error
@@ -1121,7 +1122,15 @@ func (s *TableChangeStream) processWithTxn(
 		if err != nil {
 			return err
 		}
+		fromCache = true
 	}
+	logutil.Debug(
+		"cdc.table_stream.get_from_ts",
+		zap.String("table", s.tableInfo.String()),
+		zap.String("from-ts", fromTs.ToString()),
+		zap.Bool("from-cache", fromCache),
+		zap.String("data-processor-from-ts", s.dataProcessor.GetFromTs().ToString()),
+	)
 
 	// Check if reached end time
 	if !s.endTs.IsEmpty() && fromTs.GE(&s.endTs) {
