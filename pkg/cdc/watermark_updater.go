@@ -513,6 +513,14 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 	defer cancel()
 
 	readSql := u.constructReadWMSQL(u.readKeysBuffer)
+	
+	// 记录查询时使用的 account_id（用于调试多租户问题）
+	logutil.Info(
+		"cdc.watermark.recovery.read_sql_executing",
+		zap.String("sql", readSql),
+		zap.Int("key-count", len(u.readKeysBuffer)),
+	)
+	
 	ctx = defines.AttachAccountId(ctx, catalog.System_Account)
 	res := u.ie.Query(ctx, readSql, ie.SessionOverrideOptions{})
 	if res.Error() != nil {
@@ -526,7 +534,15 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 		watermarkStr string
 		watermark    types.TS
 	)
-	for i, rows := uint64(0), res.RowCount(); i < rows; i++ {
+	// 记录查询结果数量
+	rowCount := res.RowCount()
+	logutil.Info(
+		"cdc.watermark.recovery.read_sql_result",
+		zap.Uint64("row-count", rowCount),
+		zap.Int("expected-key-count", len(u.readKeysBuffer)),
+	)
+	
+	for i, rows := uint64(0), rowCount; i < rows; i++ {
 		if key.AccountId, err = res.GetUint64(ctx, i, 0); err != nil {
 			errMsg = fmt.Sprintf("read sql \"%s\" bad account_id", readSql)
 			return
@@ -548,6 +564,17 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 			return
 		}
 		watermark = types.StringToTS(watermarkStr)
+
+		// 记录从数据库读取到的水位（用于调试多租户问题）
+		logutil.Info(
+			"cdc.watermark.recovery.read_from_db_detail",
+			zap.Uint64("account-id", key.AccountId),
+			zap.String("task-id", key.TaskId),
+			zap.String("db-name", key.DBName),
+			zap.String("table-name", key.TableName),
+			zap.String("watermark", watermark.ToString()),
+			zap.String("watermark-time", watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
+		)
 
 		// update the readKeysBuffer
 		u.readKeysBuffer[key] = WatermarkResult{
@@ -571,6 +598,7 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 			if !hadOld || result.Watermark.GT(&oldCommitted) {
 				logutil.Info(
 					"cdc.watermark.updated",
+					zap.Uint64("account-id", key.AccountId),
 					zap.String("task-id", key.TaskId),
 					zap.String("key", key.String()),
 					zap.String("watermark", result.Watermark.ToString()),
@@ -588,8 +616,38 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 		}
 	}
 	for i, job := range u.getOrAddCommittedBuffer {
-		if u.readKeysBuffer[*job.Key].Ok {
-			recoveredWM := u.readKeysBuffer[*job.Key].Watermark
+		// 检查查询结果中是否有匹配的 key（注意：查询结果中的 key 可能 account_id 不同）
+		found := false
+		var recoveredWM types.TS
+		var recoveredKey WatermarkKey
+		
+		for dbKey, result := range u.readKeysBuffer {
+			if result.Ok && 
+			   dbKey.TaskId == job.Key.TaskId && 
+			   dbKey.DBName == job.Key.DBName && 
+			   dbKey.TableName == job.Key.TableName {
+				// 找到匹配的记录（可能 account_id 不同！）
+				found = true
+				recoveredWM = result.Watermark
+				recoveredKey = dbKey
+				
+				// 检查 account_id 是否匹配
+				if dbKey.AccountId != job.Key.AccountId {
+					logutil.Warn(
+						"cdc.watermark.recovery.account_id_mismatch",
+						zap.Uint64("requested-account-id", job.Key.AccountId),
+						zap.Uint64("found-account-id", dbKey.AccountId),
+						zap.String("task-id", job.Key.TaskId),
+						zap.String("db-name", job.Key.DBName),
+						zap.String("table-name", job.Key.TableName),
+						zap.String("note", "⚠️ 查询到的 account_id 与请求的不一致！这可能是多租户问题的根源"),
+					)
+				}
+				break
+			}
+		}
+		
+		if found {
 			oldCommitted, hadOld := u.cacheCommitted[*job.Key]
 			u.cacheCommitted[*job.Key] = recoveredWM
 			job.DoneWithResult(recoveredWM)
@@ -598,6 +656,7 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 			if !hadOld || recoveredWM.GT(&oldCommitted) {
 				logutil.Info(
 					"cdc.watermark.updated",
+					zap.Uint64("account-id", job.Key.AccountId),
 					zap.String("task-id", job.Key.TaskId),
 					zap.String("key", job.Key.String()),
 					zap.String("watermark", recoveredWM.ToString()),
@@ -608,6 +667,8 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 			
 			logutil.Info(
 				"cdc.watermark.recovery.found_in_db",
+				zap.Uint64("requested-account-id", job.Key.AccountId),
+				zap.Uint64("found-account-id", recoveredKey.AccountId),
 				zap.String("key", job.Key.String()),
 				zap.String("recovered-watermark", recoveredWM.ToString()),
 				zap.String("recovered-watermark-time", recoveredWM.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
@@ -617,8 +678,11 @@ func (u *CDCWatermarkUpdater) execReadWM() (errMsg string, err error) {
 			u.addCommittedBuffer = append(u.addCommittedBuffer, job)
 			logutil.Info(
 				"cdc.watermark.recovery.not_found_will_add",
+				zap.Uint64("account-id", job.Key.AccountId),
+				zap.String("task-id", job.Key.TaskId),
 				zap.String("key", job.Key.String()),
 				zap.String("requested-watermark", job.Watermark.ToString()),
+				zap.String("note", "水位不存在，将创建新记录（使用请求的 account_id）"),
 			)
 		}
 		u.getOrAddCommittedBuffer[i] = nil
@@ -738,6 +802,7 @@ func (u *CDCWatermarkUpdater) execBatchUpdateWM() (errMsg string, err error) {
 			if !hadOld || watermark.GT(&oldCommitted) {
 				logutil.Info(
 					"cdc.watermark.updated",
+					zap.Uint64("account-id", key.AccountId),
 					zap.String("task-id", key.TaskId),
 					zap.String("key", key.String()),
 					zap.String("watermark", watermark.ToString()),
@@ -866,6 +931,7 @@ func (u *CDCWatermarkUpdater) execAddWM() (errMsg string, err error) {
 		if !hadOld || job.Watermark.GT(&oldCommitted) {
 			logutil.Info(
 				"cdc.watermark.updated",
+				zap.Uint64("account-id", job.Key.AccountId),
 				zap.String("task-id", job.Key.TaskId),
 				zap.String("key", job.Key.String()),
 				zap.String("watermark", job.Watermark.ToString()),
@@ -1192,6 +1258,7 @@ func (u *CDCWatermarkUpdater) UpdateWatermarkOnly(
 	if !hasOld || watermark.GT(&oldWatermark) {
 		logutil.Info(
 			"cdc.watermark.updated",
+			zap.Uint64("account-id", key.AccountId),
 			zap.String("task-id", key.TaskId),
 			zap.String("key", key.String()),
 			zap.String("watermark", watermark.ToString()),
@@ -1375,6 +1442,8 @@ func (u *CDCWatermarkUpdater) GetOrAddCommitted(
 	// DEBUG: Log watermark recovery attempt
 	logutil.Info(
 		"cdc.watermark.recovery.attempt",
+		zap.Uint64("account-id", key.AccountId),
+		zap.String("task-id", key.TaskId),
 		zap.String("key", key.String()),
 		zap.String("requested-watermark", watermark.ToString()),
 		zap.String("requested-watermark-time", watermark.ToTimestamp().ToStdTime().Format(time.RFC3339Nano)),
@@ -1417,6 +1486,7 @@ func (u *CDCWatermarkUpdater) GetOrAddCommitted(
 				if !hadOld || watermark.GT(&oldCommitted) {
 					logutil.Info(
 						"cdc.watermark.updated",
+						zap.Uint64("account-id", key.AccountId),
 						zap.String("task-id", key.TaskId),
 						zap.String("key", key.String()),
 						zap.String("watermark", watermark.ToString()),
