@@ -113,6 +113,11 @@ func (dp *DataProcessor) SetTransactionRange(fromTs, toTs types.TS) {
 	dp.toTs = toTs
 }
 
+// GetFromTs returns the current fromTs
+func (dp *DataProcessor) GetFromTs() types.TS {
+	return dp.fromTs
+}
+
 // ProcessChange processes a single ChangeData
 // Returns error if processing fails
 func (dp *DataProcessor) ProcessChange(ctx context.Context, data *ChangeData) error {
@@ -392,13 +397,19 @@ func (dp *DataProcessor) processNoMoreData(ctx context.Context) error {
 			)
 			return err
 		}
+		// Fix: Update fromTs to toTs after successful commit
+		// This ensures the next round starts from the correct position
+		// instead of using stale cached watermark
+		oldFromTs := dp.fromTs
+		dp.fromTs = dp.toTs
 		logutil.Debug(
 			"cdc.data_processor.no_more_data_commit_success",
 			zap.String("task-id", dp.taskId),
 			zap.String("db", dp.dbName),
 			zap.String("table", dp.tableName),
-			zap.String("from-ts", dp.fromTs.ToString()),
+			zap.String("from-ts", oldFromTs.ToString()),
 			zap.String("to-ts", dp.toTs.ToString()),
+			zap.String("updated-from-ts", dp.fromTs.ToString()),
 		)
 	} else {
 		// Even if no transaction is active (e.g., initSnapshotSplitTxn=true),

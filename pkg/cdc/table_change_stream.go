@@ -1110,9 +1110,17 @@ func (s *TableChangeStream) processWithTxn(
 	}
 
 	// Get time range
-	fromTs, err := s.watermarkUpdater.GetFromCache(ctx, s.watermarkKey)
-	if err != nil {
-		return err
+	// Fix: Prefer using DataProcessor's fromTs if available (from last successful commit)
+	// This ensures we don't use stale cached watermark after commit
+	// Only fallback to GetFromCache if DataProcessor doesn't have a valid fromTs
+	fromTs := s.dataProcessor.GetFromTs()
+	if fromTs.IsEmpty() {
+		// DataProcessor doesn't have a valid fromTs yet, get from cache
+		var err error
+		fromTs, err = s.watermarkUpdater.GetFromCache(ctx, s.watermarkKey)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Check if reached end time
