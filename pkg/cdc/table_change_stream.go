@@ -1113,9 +1113,20 @@ func (s *TableChangeStream) processWithTxn(
 	// Fix: Prefer using DataProcessor's fromTs if available (from last successful commit)
 	// This ensures we don't use stale cached watermark after commit
 	// Only fallback to GetFromCache if DataProcessor doesn't have a valid fromTs
-	fromTs := s.dataProcessor.GetFromTs()
+	dpFromTs := s.dataProcessor.GetFromTs()
 	fromCache := false
-	if fromTs.IsEmpty() {
+	var fromTs types.TS
+	if !dpFromTs.IsEmpty() {
+		// Use DataProcessor's fromTs (from last successful commit)
+		fromTs = dpFromTs
+		logutil.Info(
+			"cdc.table_stream.get_from_ts_from_dp",
+			zap.String("table", s.tableInfo.String()),
+			zap.String("from-ts", fromTs.ToString()),
+			zap.Bool("from-cache", fromCache),
+			zap.String("data-processor-from-ts", dpFromTs.ToString()),
+		)
+	} else {
 		// DataProcessor doesn't have a valid fromTs yet, get from cache
 		var err error
 		fromTs, err = s.watermarkUpdater.GetFromCache(ctx, s.watermarkKey)
@@ -1123,14 +1134,14 @@ func (s *TableChangeStream) processWithTxn(
 			return err
 		}
 		fromCache = true
+		logutil.Info(
+			"cdc.table_stream.get_from_ts_from_cache",
+			zap.String("table", s.tableInfo.String()),
+			zap.String("from-ts", fromTs.ToString()),
+			zap.Bool("from-cache", fromCache),
+			zap.String("data-processor-from-ts", dpFromTs.ToString()),
+		)
 	}
-	logutil.Debug(
-		"cdc.table_stream.get_from_ts",
-		zap.String("table", s.tableInfo.String()),
-		zap.String("from-ts", fromTs.ToString()),
-		zap.Bool("from-cache", fromCache),
-		zap.String("data-processor-from-ts", s.dataProcessor.GetFromTs().ToString()),
-	)
 
 	// Check if reached end time
 	if !s.endTs.IsEmpty() && fromTs.GE(&s.endTs) {

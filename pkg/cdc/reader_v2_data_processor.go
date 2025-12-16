@@ -111,12 +111,36 @@ func NewDataProcessor(
 // Fix: If fromTs is already set (from last successful commit), preserve it
 // to avoid using stale cached watermark
 func (dp *DataProcessor) SetTransactionRange(fromTs, toTs types.TS) {
+	oldFromTs := dp.fromTs
+	requestedFromTs := fromTs
 	// Only update fromTs if it's empty (first time) or if the new fromTs is greater
 	// This preserves the fromTs updated after successful commit
 	if dp.fromTs.IsEmpty() || fromTs.GT(&dp.fromTs) {
 		dp.fromTs = fromTs
+	} else {
+		// Preserve the existing fromTs (from last successful commit)
+		// The fromTs parameter will be ignored, we use dp.fromTs instead
+		logutil.Info(
+			"cdc.data_processor.set_transaction_range_preserved",
+			zap.String("task-id", dp.taskId),
+			zap.String("db", dp.dbName),
+			zap.String("table", dp.tableName),
+			zap.String("preserved-from-ts", dp.fromTs.ToString()),
+			zap.String("requested-from-ts", requestedFromTs.ToString()),
+			zap.String("to-ts", toTs.ToString()),
+		)
 	}
 	dp.toTs = toTs
+	logutil.Info(
+		"cdc.data_processor.set_transaction_range",
+		zap.String("task-id", dp.taskId),
+		zap.String("db", dp.dbName),
+		zap.String("table", dp.tableName),
+		zap.String("old-from-ts", oldFromTs.ToString()),
+		zap.String("new-from-ts", dp.fromTs.ToString()),
+		zap.String("requested-from-ts", requestedFromTs.ToString()),
+		zap.String("to-ts", toTs.ToString()),
+	)
 }
 
 // GetFromTs returns the current fromTs
@@ -311,6 +335,14 @@ func (dp *DataProcessor) processTailDone(ctx context.Context, data *ChangeData) 
 	// Begin transaction if not already begun
 	tracker := dp.txnManager.GetTracker()
 	if tracker == nil || !tracker.hasBegin {
+		logutil.Debug(
+			"cdc.data_processor.begin_transaction",
+			zap.String("task-id", dp.taskId),
+			zap.String("db", dp.dbName),
+			zap.String("table", dp.tableName),
+			zap.String("from-ts", dp.fromTs.ToString()),
+			zap.String("to-ts", dp.toTs.ToString()),
+		)
 		if err := dp.txnManager.BeginTransaction(ctx, dp.fromTs, dp.toTs); err != nil {
 			return err
 		}
