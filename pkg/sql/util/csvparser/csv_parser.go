@@ -674,6 +674,7 @@ func (parser *CSVParser) readQuotedField() error {
 	for {
 		prevPos := parser.pos
 		content, terminator, err := parser.readUntil(&parser.quoteByteSet)
+		err = parser.replaceEOF(err, errUnterminatedQuotedField)
 		if err != nil {
 			if err == io.EOF {
 				// return the position of quote to the caller.
