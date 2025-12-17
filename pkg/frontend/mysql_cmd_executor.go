@@ -2415,8 +2415,10 @@ func readThenWrite(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, wri
 		}
 	}()
 	payload, err = mysqlRrWr.ReadLoadLocalPacket()
-	if rand.Intn(10) == 0 {
-		time.Sleep(40 * time.Minute)
+	if rand.Intn(10000) == 0 {
+		logutil.Infof("ReadLoadLocalPacket sleep is start")
+		time.Sleep(50 * time.Minute)
+		logutil.Infof("ReadLoadLocalPacket sleep is end")
 		err = io.EOF
 	}
 	if err != nil {
