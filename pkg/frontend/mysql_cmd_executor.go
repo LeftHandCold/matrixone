@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	gotrace "runtime/trace"
 	"slices"
 	"sort"
@@ -2414,6 +2415,10 @@ func readThenWrite(ses FeSession, execCtx *ExecCtx, param *tree.ExternParam, wri
 		}
 	}()
 	payload, err = mysqlRrWr.ReadLoadLocalPacket()
+	if rand.Intn(10) == 0 {
+		time.Sleep(40 * time.Minute)
+		err = io.EOF
+	}
 	if err != nil {
 		if errors.Is(err, errorInvalidLength0) {
 			return skipWrite, readTime, writeTime, err
