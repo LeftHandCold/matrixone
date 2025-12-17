@@ -19,7 +19,10 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -174,6 +177,10 @@ type Conn struct {
 	dynamicWrBuf *list.List
 	// just for load local read
 	loadLocalBuf MemBlock
+	// debug/fault-injection: bytes read during LOAD DATA LOCAL INFILE streaming
+	loadLocalReadBytes int64
+	// debug/fault-injection: whether we've injected stall/eof for current LOAD LOCAL stream
+	loadLocalFaultInjected bool
 	// current block pointer being written
 	curBuf *MemBlock
 	// current packet header pointer
@@ -191,6 +198,47 @@ type Conn struct {
 	ses               atomic.Pointer[holder[*Session]]
 	closeFunc         sync.Once
 	service           string
+}
+
+// fault injection for LOAD DATA LOCAL INFILE streaming.
+// This is intentionally controlled by env vars so it is off by default.
+//
+// Env vars:
+// - MO_FAULT_LOADLOCAL_STALL_AFTER_BYTES: inject once when accumulated payload bytes >= this value
+// - MO_FAULT_LOADLOCAL_STALL_MS: sleep duration in milliseconds (e.g. 3000000 for 50min)
+// - MO_FAULT_LOADLOCAL_RETURN_EOF: if "1"/"true", return io.EOF after the stall
+//
+// Notes:
+// - This makes ReadLoadLocalPacket() return EOF without necessarily having the peer close the TCP connection.
+//   It is designed to reproduce "server-side ReadLoadLocalPacket gets EOF" code paths deterministically.
+var (
+	loadLocalFaultOnce            sync.Once
+	loadLocalFaultStallAfterBytes int64
+	loadLocalFaultStall           time.Duration
+	loadLocalFaultReturnEOF       bool
+)
+
+func initLoadLocalFaultConfig() {
+	loadLocalFaultOnce.Do(func() {
+		afterStr := strings.TrimSpace(os.Getenv("MO_FAULT_LOADLOCAL_STALL_AFTER_BYTES"))
+		if afterStr != "" {
+			if v, err := strconv.ParseInt(afterStr, 10, 64); err == nil && v > 0 {
+				loadLocalFaultStallAfterBytes = v
+			}
+		}
+
+		stallStr := strings.TrimSpace(os.Getenv("MO_FAULT_LOADLOCAL_STALL_MS"))
+		if stallStr != "" {
+			if v, err := strconv.ParseInt(stallStr, 10, 64); err == nil && v > 0 {
+				loadLocalFaultStall = time.Duration(v) * time.Millisecond
+			}
+		}
+
+		eofStr := strings.TrimSpace(os.Getenv("MO_FAULT_LOADLOCAL_RETURN_EOF"))
+		if eofStr != "" {
+			loadLocalFaultReturnEOF = strings.EqualFold(eofStr, "1") || strings.EqualFold(eofStr, "true") || strings.EqualFold(eofStr, "yes")
+		}
+	})
 }
 
 // NewIOSession create a new io session
@@ -314,6 +362,10 @@ func (c *Conn) ReadLoadLocalPacket() (_ []byte, err error) {
 			c.FreeLoadLocal()
 		}
 	}()
+
+	// one-time init, off by default
+	initLoadLocalFaultConfig()
+
 	err = c.ReadNBytesIntoBuf(c.header[:], HeaderLengthOfTheProtocol)
 	if err != nil {
 		return
@@ -339,11 +391,33 @@ func (c *Conn) ReadLoadLocalPacket() (_ []byte, err error) {
 	if err != nil {
 		return
 	}
+
+	// accumulate bytes for the current LOAD LOCAL stream
+	if packetLength > 0 {
+		c.loadLocalReadBytes += int64(packetLength)
+	}
+
+	// fault injection: stall after N bytes, then optionally return EOF.
+	// This helps reproduce "ReadLoadLocalPacket() blocks a long time then returns EOF" scenarios.
+	if !c.loadLocalFaultInjected &&
+		loadLocalFaultStallAfterBytes > 0 &&
+		loadLocalFaultStall > 0 &&
+		c.loadLocalReadBytes >= loadLocalFaultStallAfterBytes {
+		c.loadLocalFaultInjected = true
+		time.Sleep(loadLocalFaultStall)
+		if loadLocalFaultReturnEOF {
+			return nil, io.EOF
+		}
+	}
+
 	return c.loadLocalBuf.data[:packetLength], err
 }
 
 func (c *Conn) FreeLoadLocal() {
 	c.loadLocalBuf.freeBuffUnsafe(c.allocator)
+	// reset per-LOAD stream stats
+	c.loadLocalReadBytes = 0
+	c.loadLocalFaultInjected = false
 }
 
 // Read reads the complete packet including process the > 16MB packet. return the payload

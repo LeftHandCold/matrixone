@@ -706,7 +706,6 @@ func (u *CDCWatermarkUpdater) execBatchUpdateWM() (errMsg string, err error) {
 					zap.String("key", key.String()),
 					zap.String("watermark", watermark.ToString()),
 					zap.Int("batch-size", committingCount),
-					zap.Duration("duration", duration),
 				)
 			}
 		}
@@ -932,7 +931,7 @@ func (u *CDCWatermarkUpdater) GetFromCache(
 			cacheSource = "committed"
 		}
 		u.RUnlock()
-		
+
 		logutil.Info(
 			"cdc.watermark.get_from_cache_success",
 			zap.String("task-id", key.TaskId),
