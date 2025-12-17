@@ -1127,21 +1127,8 @@ func (s *TableChangeStream) processWithTxn(
 	// Get time range
 	fromTs, err := s.watermarkUpdater.GetFromCache(ctx, s.watermarkKey)
 	if err != nil {
-		logutil.Info(
-			"cdc.table_stream.get_from_cache_failed",
-			zap.String("task-id", s.taskId),
-			zap.String("table", s.tableInfo.String()),
-			zap.Error(err),
-		)
 		return err
 	}
-	
-	logutil.Info(
-		"cdc.table_stream.get_from_cache_success",
-		zap.String("task-id", s.taskId),
-		zap.String("table", s.tableInfo.String()),
-		zap.String("from-ts", fromTs.ToString()),
-	)
 
 	// Check if reached end time
 	if !s.endTs.IsEmpty() && fromTs.GE(&s.endTs) {
@@ -1209,13 +1196,6 @@ func (s *TableChangeStream) processWithTxn(
 	defer collector.Close()
 
 	// Set transaction range for data processor
-	logutil.Info(
-		"cdc.table_stream.before_set_transaction_range",
-		zap.String("task-id", s.taskId),
-		zap.String("table", s.tableInfo.String()),
-		zap.String("from-ts", fromTs.ToString()),
-		zap.String("to-ts", toTs.ToString()),
-	)
 	s.dataProcessor.SetTransactionRange(fromTs, toTs)
 	defer s.dataProcessor.Cleanup()
 

@@ -108,24 +108,8 @@ func NewDataProcessor(
 
 // SetTransactionRange sets the from/to timestamps for the current transaction
 func (dp *DataProcessor) SetTransactionRange(fromTs, toTs types.TS) {
-	oldFromTs := dp.fromTs
-	oldToTs := dp.toTs
 	dp.fromTs = fromTs
 	dp.toTs = toTs
-	
-	logutil.Info(
-		"cdc.data_processor.set_transaction_range",
-		zap.String("task-id", dp.taskId),
-		zap.Uint64("account-id", dp.accountId),
-		zap.String("db", dp.dbName),
-		zap.String("table", dp.tableName),
-		zap.String("old-from-ts", oldFromTs.ToString()),
-		zap.String("new-from-ts", fromTs.ToString()),
-		zap.String("old-to-ts", oldToTs.ToString()),
-		zap.String("new-to-ts", toTs.ToString()),
-		zap.Bool("from-ts-changed", !oldFromTs.Equal(&fromTs)),
-		zap.Bool("to-ts-changed", !oldToTs.Equal(&toTs)),
-	)
 }
 
 // ProcessChange processes a single ChangeData
@@ -342,7 +326,7 @@ func (dp *DataProcessor) processTailDone(ctx context.Context, data *ChangeData) 
 		toTs:           dp.toTs,
 	})
 
-	logutil.Info(
+	logutil.Debug(
 		"cdc.data_processor.process_tail_done",
 		zap.String("task-id", dp.taskId),
 		zap.Uint64("account-id", dp.accountId),
@@ -412,10 +396,9 @@ func (dp *DataProcessor) processNoMoreData(ctx context.Context) error {
 			)
 			return err
 		}
-		logutil.Info(
+		logutil.Debug(
 			"cdc.data_processor.no_more_data_commit_success",
 			zap.String("task-id", dp.taskId),
-			zap.Uint64("account-id", dp.accountId),
 			zap.String("db", dp.dbName),
 			zap.String("table", dp.tableName),
 			zap.String("from-ts", dp.fromTs.ToString()),
