@@ -179,6 +179,8 @@ type Conn struct {
 	loadLocalBuf MemBlock
 	// debug/fault-injection: bytes read during LOAD DATA LOCAL INFILE streaming
 	loadLocalReadBytes int64
+	// debug/fault-injection: call count during LOAD DATA LOCAL INFILE streaming
+	loadLocalReadCalls int64
 	// debug/fault-injection: whether we've injected stall/eof for current LOAD LOCAL stream
 	loadLocalFaultInjected bool
 	// current block pointer being written
@@ -204,6 +206,7 @@ type Conn struct {
 // This is intentionally controlled by env vars so it is off by default.
 //
 // Env vars:
+// - MO_FAULT_LOADLOCAL_STALL_ON_CALL: inject once when ReadLoadLocalPacket() call count reaches this value (1-based)
 // - MO_FAULT_LOADLOCAL_STALL_AFTER_BYTES: inject once when accumulated payload bytes >= this value
 // - MO_FAULT_LOADLOCAL_STALL_MS: sleep duration in milliseconds (e.g. 3000000 for 50min)
 // - MO_FAULT_LOADLOCAL_RETURN_EOF: if "1"/"true", return io.EOF after the stall
@@ -213,6 +216,7 @@ type Conn struct {
 //   It is designed to reproduce "server-side ReadLoadLocalPacket gets EOF" code paths deterministically.
 var (
 	loadLocalFaultOnce            sync.Once
+	loadLocalFaultStallOnCall     int64
 	loadLocalFaultStallAfterBytes int64
 	loadLocalFaultStall           time.Duration
 	loadLocalFaultReturnEOF       bool
@@ -220,6 +224,13 @@ var (
 
 func initLoadLocalFaultConfig() {
 	loadLocalFaultOnce.Do(func() {
+		callStr := strings.TrimSpace(os.Getenv("MO_FAULT_LOADLOCAL_STALL_ON_CALL"))
+		if callStr != "" {
+			if v, err := strconv.ParseInt(callStr, 10, 64); err == nil && v > 0 {
+				loadLocalFaultStallOnCall = v
+			}
+		}
+
 		afterStr := strings.TrimSpace(os.Getenv("MO_FAULT_LOADLOCAL_STALL_AFTER_BYTES"))
 		if afterStr != "" {
 			if v, err := strconv.ParseInt(afterStr, 10, 64); err == nil && v > 0 {
@@ -366,6 +377,20 @@ func (c *Conn) ReadLoadLocalPacket() (_ []byte, err error) {
 	// one-time init, off by default
 	initLoadLocalFaultConfig()
 
+	// fault injection: stall on the Nth call (1-based), then optionally return EOF.
+	// This matches scenarios like: "the 50th ReadLoadLocalPacket call blocks for 50 minutes and then returns EOF".
+	c.loadLocalReadCalls++
+	if !c.loadLocalFaultInjected &&
+		loadLocalFaultStallOnCall > 0 &&
+		loadLocalFaultStall > 0 &&
+		c.loadLocalReadCalls == loadLocalFaultStallOnCall {
+		c.loadLocalFaultInjected = true
+		time.Sleep(loadLocalFaultStall)
+		if loadLocalFaultReturnEOF {
+			return nil, io.EOF
+		}
+	}
+
 	err = c.ReadNBytesIntoBuf(c.header[:], HeaderLengthOfTheProtocol)
 	if err != nil {
 		return
@@ -417,6 +442,7 @@ func (c *Conn) FreeLoadLocal() {
 	c.loadLocalBuf.freeBuffUnsafe(c.allocator)
 	// reset per-LOAD stream stats
 	c.loadLocalReadBytes = 0
+	c.loadLocalReadCalls = 0
 	c.loadLocalFaultInjected = false
 }
 
