@@ -575,8 +575,22 @@ func (p *baseHandle) fillInSkipTS(iter btree.IterG[objectio.ObjectEntry], start,
 			ts := obj.DeleteTime
 			if ts.GE(&start) && ts.LE(&end) {
 				p.skipTS[obj.DeleteTime] = struct{}{}
+				logutil.Info(
+					"cdc.fill_skip_ts.add",
+					zap.String("object-name", obj.ObjectShortName().ShortString()),
+					zap.String("delete-time", ts.ToString()),
+					zap.Bool("appendable", obj.GetAppendable()),
+				)
 			}
 		}
+	}
+	if len(p.skipTS) > 0 {
+		logutil.Info(
+			"cdc.fill_skip_ts.summary",
+			zap.Int("skip-ts-count", len(p.skipTS)),
+			zap.String("start", start.ToString()),
+			zap.String("end", end.ToString()),
+		)
 	}
 }
 func (p *baseHandle) IsEmpty() bool {
@@ -672,6 +686,8 @@ func (p *baseHandle) newBatchHandleWithRowIterator(ctx context.Context, iter btr
 	return
 }
 func (p *baseHandle) getBatchesFromRowIterator(iter btree.IterG[*RowEntry], start, end types.TS, tombstone bool, mp *mpool.MPool) (bat *batch.Batch) {
+	var skippedBySkipTS int
+	var totalTombstone int
 	for iter.Next() {
 		entry := iter.Item()
 		if checkTS(start, end, entry.Time) {
@@ -679,15 +695,31 @@ func (p *baseHandle) getBatchesFromRowIterator(iter btree.IterG[*RowEntry], star
 				fillInInsertBatch(&bat, entry, mp)
 			}
 			if entry.Deleted && tombstone {
+				totalTombstone++
 				if p.skipTS != nil {
 					_, ok := p.skipTS[entry.Time]
 					if ok {
+						skippedBySkipTS++
+						logutil.Info(
+							"cdc.inmem_tombstone.skipped_by_skipTS",
+							zap.String("entry-time", entry.Time.ToString()),
+							zap.String("block-id", entry.BlockID.String()),
+							zap.String("row-id", entry.RowID.String()),
+						)
 						continue
 					}
 				}
 				fillInDeleteBatch(&bat, entry, mp)
 			}
 		}
+	}
+	if tombstone && skippedBySkipTS > 0 {
+		logutil.Info(
+			"cdc.inmem_tombstone.summary",
+			zap.Int("total-tombstone", totalTombstone),
+			zap.Int("skipped-by-skipTS", skippedBySkipTS),
+			zap.Int("collected", totalTombstone-skippedBySkipTS),
+		)
 	}
 	return
 }
@@ -1324,17 +1356,31 @@ func applyTSFilterForBatch(bat *batch.Batch, sortIdx int, skipTS map[types.TS]st
 	}
 	commitTSs := vector.MustFixedColWithTypeCheck[types.TS](bat.Vecs[sortIdx])
 	deletes := make([]int64, 0)
+	var deletedByRange, deletedBySkipTS int
 	for i, ts := range commitTSs {
 		if ts.LT(&start) || ts.GT(&end) {
 			deletes = append(deletes, int64(i))
+			deletedByRange++
 		} else {
 			if skipTS != nil {
 				_, ok := skipTS[ts]
 				if ok {
 					deletes = append(deletes, int64(i))
+					deletedBySkipTS++
 				}
 			}
 		}
+	}
+	// Log if skipTS caused any filtering
+	if deletedBySkipTS > 0 {
+		logutil.Info(
+			"cdc.apply_ts_filter.skipTS_effect",
+			zap.Int("total-rows", len(commitTSs)),
+			zap.Int("deleted-by-range", deletedByRange),
+			zap.Int("deleted-by-skipTS", deletedBySkipTS),
+			zap.Int("remaining", len(commitTSs)-len(deletes)),
+			zap.Int("skipTS-count", len(skipTS)),
+		)
 	}
 	for _, vec := range bat.Vecs {
 		vec.Shrink(deletes, true)
