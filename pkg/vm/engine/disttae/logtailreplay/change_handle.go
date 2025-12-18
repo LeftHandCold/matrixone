@@ -541,6 +541,18 @@ func NewBaseHandler(state *PartitionState, changesHandle *ChangeHandler, start, 
 	}
 	defer iter.Release()
 	if tombstone {
+		// Log PartitionState info for debugging
+		dataObjCount := state.dataObjectsNameIndex.Len()
+		tombstoneObjCount := state.tombstoneObjectsNameIndex.Len()
+		logutil.Info(
+			"cdc.new_base_handler.partition_state_info",
+			zap.Int("data-obj-count", dataObjCount),
+			zap.Int("tombstone-obj-count", tombstoneObjCount),
+			zap.String("ps-start", state.start.ToString()),
+			zap.String("ps-end", state.end.ToString()),
+			zap.String("query-start", start.ToString()),
+			zap.String("query-end", end.ToString()),
+		)
 		dataIter := state.dataObjectsNameIndex.Iter()
 		p.fillInSkipTS(dataIter, start, end)
 		dataIter.Release()
@@ -644,11 +656,17 @@ func (p *baseHandle) init(ctx context.Context, quick bool, mp *mpool.MPool) (err
 }
 func (p *baseHandle) fillInSkipTS(iter btree.IterG[objectio.ObjectEntry], start, end types.TS) {
 	var totalEntries int
+	var totalObjs int
+	var deletedObjs int
+	var inRangeObjs int
 	for iter.Next() {
+		totalObjs++
 		obj := iter.Item()
 		if !obj.DeleteTime.IsEmpty() {
+			deletedObjs++
 			ts := obj.DeleteTime
 			if ts.GE(&start) && ts.LE(&end) {
+				inRangeObjs++
 				// Get the segment ID from the object
 				segmentId := obj.ObjectStats.ObjectName().SegmentId()
 
@@ -668,15 +686,17 @@ func (p *baseHandle) fillInSkipTS(iter btree.IterG[objectio.ObjectEntry], start,
 			}
 		}
 	}
-	if totalEntries > 0 {
-		logutil.Info(
-			"cdc.fill_skip_ts.summary",
-			zap.Int("skip-ts-count", len(p.skipTS)),
-			zap.Int("total-entries", totalEntries),
-			zap.String("start", start.ToString()),
-			zap.String("end", end.ToString()),
-		)
-	}
+	// Always log summary for debugging
+	logutil.Info(
+		"cdc.fill_skip_ts.summary",
+		zap.Int("skip-ts-count", len(p.skipTS)),
+		zap.Int("total-entries", totalEntries),
+		zap.Int("total-objs-scanned", totalObjs),
+		zap.Int("deleted-objs-count", deletedObjs),
+		zap.Int("in-range-objs-count", inRangeObjs),
+		zap.String("start", start.ToString()),
+		zap.String("end", end.ToString()),
+	)
 }
 func (p *baseHandle) IsEmpty() bool {
 	return p.aobjHandle.IsEmpty() && p.inMemoryHandle.IsEmpty() && p.cnObjectHandle.IsEmpty()
