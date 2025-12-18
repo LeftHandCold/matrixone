@@ -964,9 +964,46 @@ func (p *ChangeHandler) quickNext(ctx context.Context, mp *mpool.MPool) (data, t
 		if err != nil {
 			return
 		}
+
+		// Log before filtering
+		insertBeforeFilter := 0
+		deleteBeforeFilter := 0
+		if data != nil {
+			insertBeforeFilter = data.RowCount()
+		}
+		if tombstone != nil {
+			deleteBeforeFilter = tombstone.RowCount()
+		}
+
 		if err = filterBatch(data, tombstone, p.primarySeqnum, p.skipDeletes); err != nil {
 			return
 		}
+
+		// Log after filtering
+		insertAfterFilter := 0
+		deleteAfterFilter := 0
+		if data != nil {
+			insertAfterFilter = data.RowCount()
+		}
+		if tombstone != nil {
+			deleteAfterFilter = tombstone.RowCount()
+		}
+
+		// Log if we have data
+		if insertBeforeFilter > 0 || deleteBeforeFilter > 0 {
+			logutil.Info(
+				"cdc.change_handler.quick_next",
+				zap.String("start-ts", p.start.ToString()),
+				zap.Int("insert-before-filter", insertBeforeFilter),
+				zap.Int("insert-after-filter", insertAfterFilter),
+				zap.Int("delete-before-filter", deleteBeforeFilter),
+				zap.Int("delete-after-filter", deleteAfterFilter),
+				zap.Int("insert-filtered", insertBeforeFilter-insertAfterFilter),
+				zap.Int("delete-filtered", deleteBeforeFilter-deleteAfterFilter),
+				zap.Bool("skip-deletes", p.skipDeletes),
+			)
+		}
+
 		if tombstoneEnd && dataEnd {
 			break
 		}
@@ -999,6 +1036,16 @@ func (p *ChangeHandler) quickNext(ctx context.Context, mp *mpool.MPool) (data, t
 func filterBatch(data, tombstone *batch.Batch, primarySeqnum int, skipDeletes bool) (err error) {
 	if data == nil || tombstone == nil {
 		return
+	}
+
+	// Log before filtering
+	insertBefore := 0
+	deleteBefore := 0
+	if data != nil {
+		insertBefore = data.RowCount()
+	}
+	if tombstone != nil {
+		deleteBefore = tombstone.RowCount()
 	}
 
 	type rowInfo struct {
@@ -1128,6 +1175,31 @@ func filterBatch(data, tombstone *batch.Batch, primarySeqnum int, skipDeletes bo
 	})
 	tombstone.Shrink(tombstoneRowsToDelete, true)
 	data.Shrink(dataRowsToDelete, true)
+
+	// Log after filtering
+	insertAfter := 0
+	deleteAfter := 0
+	if data != nil {
+		insertAfter = data.RowCount()
+	}
+	if tombstone != nil {
+		deleteAfter = tombstone.RowCount()
+	}
+
+	// Log if filtering removed rows
+	if insertBefore != insertAfter || deleteBefore != deleteAfter {
+		logutil.Info(
+			"cdc.filter_batch.filtered",
+			zap.Int("insert-before", insertBefore),
+			zap.Int("insert-after", insertAfter),
+			zap.Int("delete-before", deleteBefore),
+			zap.Int("delete-after", deleteAfter),
+			zap.Int("insert-filtered", insertBefore-insertAfter),
+			zap.Int("delete-filtered", deleteBefore-deleteAfter),
+			zap.Bool("skip-deletes", skipDeletes),
+		)
+	}
+
 	return
 }
 func (p *ChangeHandler) Next(ctx context.Context, mp *mpool.MPool) (data, tombstone *batch.Batch, hint engine.ChangesHandle_Hint, err error) {
