@@ -498,7 +498,8 @@ func (s *stateMachine) handleGetIDCmd(cmd []byte) sm.Result {
 
 	_, ok := s.state.NextIDByKey[allocIDCmd.Key]
 	if !ok {
-		s.state.NextIDByKey[allocIDCmd.Key] = 0
+		// Set minimum starting ID to 5000000 for key-based IDs
+		s.state.NextIDByKey[allocIDCmd.Key] = 5000000 - 1
 	}
 	s.state.NextIDByKey[allocIDCmd.Key]++
 	v := s.state.NextIDByKey[allocIDCmd.Key]
@@ -743,6 +744,12 @@ func (s *stateMachine) handleInitialClusterRequestCmd(cmd []byte) sm.Result {
 	}
 	if len(req.NextIDByKey) > 0 {
 		s.state.NextIDByKey = req.NextIDByKey
+		// Ensure all key-based IDs are at least 5000000
+		for key, id := range s.state.NextIDByKey {
+			if id < 5000000 {
+				s.state.NextIDByKey[key] = 5000000
+			}
+		}
 	}
 
 	s.state.NonVotingLocality.Value = req.NonVotingLocality
