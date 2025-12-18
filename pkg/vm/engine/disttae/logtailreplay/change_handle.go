@@ -562,11 +562,55 @@ func NewBaseHandlerWithObjEntries(
 	tombstone bool,
 	mp *mpool.MPool,
 	fs fileservice.FileService,
+	dataObjsForSkipTS []*objectio.ObjectEntry, // Data objects to fill skipTS (only used when tombstone=true)
 ) (p *baseHandle, err error) {
 	p = &baseHandle{
 		skipTS:        make(map[types.TS]map[objectio.Segmentid]struct{}),
 		changesHandle: changesHandle,
 	}
+	
+	// For tombstone handlers, we need to fill in skipTS from data objects
+	// This is the same logic as in NewBaseHandler but using the provided data object entries
+	if tombstone && dataObjsForSkipTS != nil {
+		for _, obj := range dataObjsForSkipTS {
+			if !obj.DeleteTime.IsEmpty() {
+				ts := obj.DeleteTime
+				if ts.GE(&start) && ts.LE(&end) {
+					// Get the segment ID from the object
+					segmentId := obj.ObjectStats.ObjectName().SegmentId()
+					
+					// Initialize the inner map if needed
+					if p.skipTS[ts] == nil {
+						p.skipTS[ts] = make(map[objectio.Segmentid]struct{})
+					}
+					p.skipTS[ts][segmentId] = struct{}{}
+					
+					logutil.Info(
+						"cdc.fill_skip_ts.add_from_checkpoint",
+						zap.String("object-name", obj.ObjectShortName().ShortString()),
+						zap.String("segment-id", segmentId.String()),
+						zap.String("delete-time", ts.ToString()),
+						zap.Bool("appendable", obj.GetAppendable()),
+					)
+				}
+			}
+		}
+		
+		if len(p.skipTS) > 0 {
+			totalEntries := 0
+			for _, segments := range p.skipTS {
+				totalEntries += len(segments)
+			}
+			logutil.Info(
+				"cdc.fill_skip_ts.summary_from_checkpoint",
+				zap.Int("skip-ts-count", len(p.skipTS)),
+				zap.Int("total-entries", totalEntries),
+				zap.String("start", start.ToString()),
+				zap.String("end", end.ToString()),
+			)
+		}
+	}
+	
 	p.aobjHandle = NewAObjectHandle(ctx, p, tombstone, start, end, aobj, fs, mp)
 	p.cnObjectHandle = NewCNObjectHandle(tombstone, cnObj, fs, p, mp)
 	return
@@ -576,7 +620,10 @@ func (p *baseHandle) init(ctx context.Context, quick bool, mp *mpool.MPool) (err
 	if err != nil {
 		return
 	}
-	err = p.inMemoryHandle.init(quick, mp)
+	// Only initialize inMemoryHandle if it's not nil
+	if p.inMemoryHandle != nil {
+		err = p.inMemoryHandle.init(quick, mp)
+	}
 	return
 }
 func (p *baseHandle) fillInSkipTS(iter btree.IterG[objectio.ObjectEntry], start, end types.TS) {
@@ -838,14 +885,17 @@ func NewChangesHandlerWithCheckpointEntries(
 	if err != nil {
 		return
 	}
-	changeHandle.dataHandle, err = NewBaseHandlerWithObjEntries(ctx, changeHandle, start, end, dataAobj, dataCNObj, false, mp, fs)
+	// For dataHandle, pass nil for dataObjsForSkipTS since it's not a tombstone handler
+	changeHandle.dataHandle, err = NewBaseHandlerWithObjEntries(ctx, changeHandle, start, end, dataAobj, dataCNObj, false, mp, fs, nil)
 	if err != nil {
 		return
 	}
 	if err = changeHandle.dataHandle.init(ctx, changeHandle.quick, mp); err != nil {
 		return
 	}
-	changeHandle.tombstoneHandle, err = NewBaseHandlerWithObjEntries(ctx, changeHandle, start, end, tombstoneAobj, tombstoneCNObj, true, mp, fs)
+	// For tombstoneHandle, pass combined data objects (aobj + cnObj) for skipTS filling
+	allDataObjs := append(dataAobj, dataCNObj...)
+	changeHandle.tombstoneHandle, err = NewBaseHandlerWithObjEntries(ctx, changeHandle, start, end, tombstoneAobj, tombstoneCNObj, true, mp, fs, allDataObjs)
 	if err != nil {
 		return
 	}
