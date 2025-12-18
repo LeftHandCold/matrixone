@@ -16,6 +16,7 @@ package cdc
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
@@ -663,6 +664,32 @@ func (s *mysqlSinker2) handleInsertDeleteBatch(ctx context.Context, cmd *Command
 			v2.CdcBytesProcessedCounter.WithLabelValues("insert", tableLabel).Add(float64(insertBytes))
 		}
 
+		// Collect PK samples for debugging (first 5 and last 5 PKs)
+		pkSamples := make([]string, 0, 10)
+		if cmd.InsertAtmBatch != nil && cmd.InsertAtmBatch.Rows != nil {
+			iter := cmd.InsertAtmBatch.Rows.Iter()
+			count := 0
+			total := cmd.InsertAtmBatch.Rows.Len()
+			for iter.Next() && count < 5 {
+				row := iter.Item()
+				pkSamples = append(pkSamples, hex.EncodeToString(row.Pk)[:16]+"...")
+				count++
+			}
+			iter.Release()
+			// Get last 5
+			if total > 5 {
+				iter = cmd.InsertAtmBatch.Rows.Iter()
+				skip := total - 5
+				for i := 0; i < skip && iter.Next(); i++ {
+				}
+				for iter.Next() {
+					row := iter.Item()
+					pkSamples = append(pkSamples, hex.EncodeToString(row.Pk)[:16]+"...")
+				}
+				iter.Release()
+			}
+		}
+
 		logutil.Info(
 			"cdc.mysql_sinker2.insert_batch_start",
 			zap.String("table", s.dbTblInfo.String()),
@@ -672,6 +699,7 @@ func (s *mysqlSinker2) handleInsertDeleteBatch(ctx context.Context, cmd *Command
 			zap.Int("batch-count", len(cmd.InsertAtmBatch.Batches)),
 			zap.String("from-ts", cmd.Meta.FromTs.ToString()),
 			zap.String("to-ts", cmd.Meta.ToTs.ToString()),
+			zap.Strings("pk-samples", pkSamples),
 		)
 
 		// AtomicBatch contains multiple source batches, we need to process each one
@@ -754,6 +782,32 @@ func (s *mysqlSinker2) handleInsertDeleteBatch(ctx context.Context, cmd *Command
 			v2.CdcBytesProcessedCounter.WithLabelValues("delete", tableLabel).Add(float64(deleteBytes))
 		}
 
+		// Collect PK samples for debugging (first 5 and last 5 PKs)
+		deletePkSamples := make([]string, 0, 10)
+		if cmd.DeleteAtmBatch != nil && cmd.DeleteAtmBatch.Rows != nil {
+			iter := cmd.DeleteAtmBatch.Rows.Iter()
+			count := 0
+			total := cmd.DeleteAtmBatch.Rows.Len()
+			for iter.Next() && count < 5 {
+				row := iter.Item()
+				deletePkSamples = append(deletePkSamples, hex.EncodeToString(row.Pk)[:16]+"...")
+				count++
+			}
+			iter.Release()
+			// Get last 5
+			if total > 5 {
+				iter = cmd.DeleteAtmBatch.Rows.Iter()
+				skip := total - 5
+				for i := 0; i < skip && iter.Next(); i++ {
+				}
+				for iter.Next() {
+					row := iter.Item()
+					deletePkSamples = append(deletePkSamples, hex.EncodeToString(row.Pk)[:16]+"...")
+				}
+				iter.Release()
+			}
+		}
+
 		logutil.Info(
 			"cdc.mysql_sinker2.delete_batch_start",
 			zap.String("table", s.dbTblInfo.String()),
@@ -763,6 +817,7 @@ func (s *mysqlSinker2) handleInsertDeleteBatch(ctx context.Context, cmd *Command
 			zap.Int("batch-count", len(cmd.DeleteAtmBatch.Batches)),
 			zap.String("from-ts", cmd.Meta.FromTs.ToString()),
 			zap.String("to-ts", cmd.Meta.ToTs.ToString()),
+			zap.Strings("pk-samples", deletePkSamples),
 		)
 
 		sqls, err := s.builder.BuildDeleteSQL(ctx, cmd.DeleteAtmBatch, cmd.Meta.FromTs, cmd.Meta.ToTs)

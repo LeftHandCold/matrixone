@@ -1136,12 +1136,18 @@ func (s *TableChangeStream) processWithTxn(
 		return err
 	}
 	
+	// Check if fromTS is the same as last round (potential issue)
+	lastFromTs := s.dataProcessor.fromTs
+	sameFromTs := !lastFromTs.IsEmpty() && fromTs.Equal(&lastFromTs)
+	
 	logutil.Info(
 		"cdc.table_stream.get_from_cache_success",
 		zap.String("task-id", s.taskId),
 		zap.String("table", s.tableInfo.String()),
 		zap.String("from-ts", fromTs.ToString()),
+		zap.String("last-from-ts", lastFromTs.ToString()),
 		zap.Bool("from-ts-is-empty", fromTs.IsEmpty()),
+		zap.Bool("same-from-ts-as-last", sameFromTs),
 	)
 
 	// Check if reached end time
@@ -1162,6 +1168,28 @@ func (s *TableChangeStream) processWithTxn(
 	if !s.endTs.IsEmpty() && toTs.GT(&s.endTs) {
 		toTs = s.endTs
 	}
+
+	// Log the data range being processed
+	lastToTs := s.dataProcessor.toTs
+	rangeSize := toTs.PhysicalTime - fromTs.PhysicalTime
+	lastRangeSize := int64(0)
+	if !lastToTs.IsEmpty() && !s.dataProcessor.fromTs.IsEmpty() {
+		lastRangeSize = lastToTs.PhysicalTime - s.dataProcessor.fromTs.PhysicalTime
+	}
+	
+	logutil.Info(
+		"cdc.table_stream.collect_changes_range",
+		zap.String("task-id", s.taskId),
+		zap.String("table", s.tableInfo.String()),
+		zap.String("from-ts", fromTs.ToString()),
+		zap.String("to-ts", toTs.ToString()),
+		zap.String("last-from-ts", s.dataProcessor.fromTs.ToString()),
+		zap.String("last-to-ts", lastToTs.ToString()),
+		zap.Int64("range-size-ns", rangeSize),
+		zap.Int64("last-range-size-ns", lastRangeSize),
+		zap.Bool("from-ts-unchanged", !s.dataProcessor.fromTs.IsEmpty() && fromTs.Equal(&s.dataProcessor.fromTs)),
+		zap.Bool("to-ts-advanced", !lastToTs.IsEmpty() && toTs.GT(&lastToTs)),
+	)
 
 	if !toTs.GT(&fromTs) {
 		return s.handleSnapshotNoProgress(ctx, fromTs, toTs)
