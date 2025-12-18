@@ -498,6 +498,13 @@ func (h *AObjectHandle) NextTS() types.TS {
 	return vector.GetFixedAtNoTypeCheck[types.TS](commitTSVec, h.rowOffsetCursor)
 }
 
+// skipTSEntry records a timestamp and its associated object Segment ID.
+// This is used to skip tombstone records that belong to deleted data objects.
+type skipTSEntry struct {
+	ts        types.TS
+	segmentId objectio.Segmentid
+}
+
 type baseHandle struct {
 	aobjHandle     *AObjectHandle
 	cnObjectHandle *CNObjectHandle
@@ -505,7 +512,11 @@ type baseHandle struct {
 
 	changesHandle *ChangeHandler
 
-	skipTS map[types.TS]struct{}
+	// skipTS maps timestamp to a set of segment IDs.
+	// A tombstone record should only be skipped if BOTH the timestamp AND the segment ID match.
+	// This fixes the bug where tombstone records from different objects with the same timestamp
+	// were incorrectly skipped.
+	skipTS map[types.TS]map[objectio.Segmentid]struct{}
 }
 
 const (
@@ -519,7 +530,7 @@ const (
 
 func NewBaseHandler(state *PartitionState, changesHandle *ChangeHandler, start, end types.TS, mp *mpool.MPool, tombstone bool, fs fileservice.FileService, ctx context.Context) (p *baseHandle, err error) {
 	p = &baseHandle{
-		skipTS:        make(map[types.TS]struct{}),
+		skipTS:        make(map[types.TS]map[objectio.Segmentid]struct{}),
 		changesHandle: changesHandle,
 	}
 	var iter btree.IterG[objectio.ObjectEntry]
@@ -553,7 +564,7 @@ func NewBaseHandlerWithObjEntries(
 	fs fileservice.FileService,
 ) (p *baseHandle, err error) {
 	p = &baseHandle{
-		skipTS:        make(map[types.TS]struct{}),
+		skipTS:        make(map[types.TS]map[objectio.Segmentid]struct{}),
 		changesHandle: changesHandle,
 	}
 	p.aobjHandle = NewAObjectHandle(ctx, p, tombstone, start, end, aobj, fs, mp)
@@ -569,25 +580,36 @@ func (p *baseHandle) init(ctx context.Context, quick bool, mp *mpool.MPool) (err
 	return
 }
 func (p *baseHandle) fillInSkipTS(iter btree.IterG[objectio.ObjectEntry], start, end types.TS) {
+	var totalEntries int
 	for iter.Next() {
 		obj := iter.Item()
 		if !obj.DeleteTime.IsEmpty() {
 			ts := obj.DeleteTime
 			if ts.GE(&start) && ts.LE(&end) {
-				p.skipTS[obj.DeleteTime] = struct{}{}
+				// Get the segment ID from the object
+				segmentId := obj.ObjectStats.ObjectName().SegmentId()
+
+				// Initialize the inner map if needed
+				if p.skipTS[ts] == nil {
+					p.skipTS[ts] = make(map[objectio.Segmentid]struct{})
+				}
+				p.skipTS[ts][segmentId] = struct{}{}
+				totalEntries++
 				logutil.Info(
 					"cdc.fill_skip_ts.add",
 					zap.String("object-name", obj.ObjectShortName().ShortString()),
+					zap.String("segment-id", segmentId.String()),
 					zap.String("delete-time", ts.ToString()),
 					zap.Bool("appendable", obj.GetAppendable()),
 				)
 			}
 		}
 	}
-	if len(p.skipTS) > 0 {
+	if totalEntries > 0 {
 		logutil.Info(
 			"cdc.fill_skip_ts.summary",
 			zap.Int("skip-ts-count", len(p.skipTS)),
+			zap.Int("total-entries", totalEntries),
 			zap.String("start", start.ToString()),
 			zap.String("end", end.ToString()),
 		)
@@ -697,16 +719,27 @@ func (p *baseHandle) getBatchesFromRowIterator(iter btree.IterG[*RowEntry], star
 			if entry.Deleted && tombstone {
 				totalTombstone++
 				if p.skipTS != nil {
-					_, ok := p.skipTS[entry.Time]
-					if ok {
-						skippedBySkipTS++
-						logutil.Info(
-							"cdc.inmem_tombstone.skipped_by_skipTS",
-							zap.String("entry-time", entry.Time.ToString()),
-							zap.String("block-id", entry.BlockID.String()),
-							zap.String("row-id", entry.RowID.String()),
-						)
-						continue
+					// Check if this tombstone should be skipped:
+					// It should only be skipped if BOTH the timestamp AND the segment ID match.
+					segmentIds, tsExists := p.skipTS[entry.Time]
+					if tsExists {
+						// Get the segment ID from the entry's BlockID
+						entrySegmentId := *entry.BlockID.Segment()
+						_, segmentMatches := segmentIds[entrySegmentId]
+						if segmentMatches {
+							// Both timestamp and segment ID match - skip this tombstone
+							skippedBySkipTS++
+							logutil.Info(
+								"cdc.inmem_tombstone.skipped_by_skipTS",
+								zap.String("entry-time", entry.Time.ToString()),
+								zap.String("segment-id", entrySegmentId.String()),
+								zap.String("block-id", entry.BlockID.String()),
+								zap.String("row-id", entry.RowID.String()),
+							)
+							continue
+						}
+						// Timestamp matches but segment ID doesn't - do NOT skip
+						// This is the bug fix: previously we would skip here incorrectly
 					}
 				}
 				fillInDeleteBatch(&bat, entry, mp)
@@ -1347,7 +1380,7 @@ func (p *ChangeHandler) Next(ctx context.Context, mp *mpool.MPool) (data, tombst
 	}
 }
 
-func applyTSFilterForBatch(bat *batch.Batch, sortIdx int, skipTS map[types.TS]struct{}, start, end types.TS) error {
+func applyTSFilterForBatch(bat *batch.Batch, sortIdx int, skipTS map[types.TS]map[objectio.Segmentid]struct{}, start, end types.TS) error {
 	if bat == nil {
 		return nil
 	}
@@ -1356,21 +1389,62 @@ func applyTSFilterForBatch(bat *batch.Batch, sortIdx int, skipTS map[types.TS]st
 	}
 	commitTSs := vector.MustFixedColWithTypeCheck[types.TS](bat.Vecs[sortIdx])
 	deletes := make([]int64, 0)
-	var deletedByRange, deletedBySkipTS int
+	var deletedByRange int
 	for i, ts := range commitTSs {
 		if ts.LT(&start) || ts.GT(&end) {
 			deletes = append(deletes, int64(i))
 			deletedByRange++
-		} else {
-			if skipTS != nil {
-				_, ok := skipTS[ts]
-				if ok {
+		}
+		// Note: skipTS filtering is now done in applyTSFilterForBatchWithRowId
+		// because we need rowid information to match segment IDs
+	}
+	for _, vec := range bat.Vecs {
+		vec.Shrink(deletes, true)
+	}
+	return nil
+}
+
+// applyTSFilterForBatchWithRowId filters batch using both timestamp and segment ID from rowid.
+// This is the correct way to filter tombstone batches - it only skips rows where BOTH
+// the timestamp AND the segment ID match an entry in skipTS.
+func applyTSFilterForBatchWithRowId(bat *batch.Batch, rowidIdx, tsIdx int, skipTS map[types.TS]map[objectio.Segmentid]struct{}, start, end types.TS) error {
+	if bat == nil {
+		return nil
+	}
+	if bat.Vecs[tsIdx].GetType().Oid != types.T_TS {
+		panic(fmt.Sprintf("logic error, batch attrs %v, ts idx %d", bat.Attrs, tsIdx))
+	}
+	if bat.Vecs[rowidIdx].GetType().Oid != types.T_Rowid {
+		panic(fmt.Sprintf("logic error, batch attrs %v, rowid idx %d", bat.Attrs, rowidIdx))
+	}
+
+	commitTSs := vector.MustFixedColWithTypeCheck[types.TS](bat.Vecs[tsIdx])
+	rowids := vector.MustFixedColWithTypeCheck[types.Rowid](bat.Vecs[rowidIdx])
+	deletes := make([]int64, 0)
+	var deletedByRange, deletedBySkipTS int
+
+	for i, ts := range commitTSs {
+		if ts.LT(&start) || ts.GT(&end) {
+			deletes = append(deletes, int64(i))
+			deletedByRange++
+		} else if skipTS != nil {
+			// Check if this row should be skipped based on timestamp AND segment ID
+			segmentIds, tsExists := skipTS[ts]
+			if tsExists {
+				// Get the segment ID from the rowid
+				blockId := rowids[i].BorrowBlockID()
+				rowSegmentId := *blockId.Segment()
+				_, segmentMatches := segmentIds[rowSegmentId]
+				if segmentMatches {
+					// Both timestamp and segment ID match - skip this row
 					deletes = append(deletes, int64(i))
 					deletedBySkipTS++
 				}
+				// If segment doesn't match, do NOT skip - this is the bug fix
 			}
 		}
 	}
+
 	// Log if skipTS caused any filtering
 	if deletedBySkipTS > 0 {
 		logutil.Info(
@@ -1379,9 +1453,9 @@ func applyTSFilterForBatch(bat *batch.Batch, sortIdx int, skipTS map[types.TS]st
 			zap.Int("deleted-by-range", deletedByRange),
 			zap.Int("deleted-by-skipTS", deletedBySkipTS),
 			zap.Int("remaining", len(commitTSs)-len(deletes)),
-			zap.Int("skipTS-count", len(skipTS)),
 		)
 	}
+
 	for _, vec := range bat.Vecs {
 		vec.Shrink(deletes, true)
 	}
@@ -1569,14 +1643,18 @@ func prefetchObjects(
 	return
 }
 
-func updateTombstoneBatch(bat *batch.Batch, start, end types.TS, skipTS map[types.TS]struct{}, sort bool, mp *mpool.MPool) {
+func updateTombstoneBatch(bat *batch.Batch, start, end types.TS, skipTS map[types.TS]map[objectio.Segmentid]struct{}, sort bool, mp *mpool.MPool) {
+	// Apply skipTS filter BEFORE freeing rowid, because we need rowid to get segment ID
+	// Batch structure: [rowid(0), pk(1), commitTS(2)]
+	applyTSFilterForBatchWithRowId(bat, 0, 2, skipTS, start, end)
+
+	// Now free rowid and restructure batch
 	bat.Vecs[0].Free(mp) // rowid
 	//bat.Vecs[2].Free(mp) // phyaddr
 	bat.Vecs = []*vector.Vector{bat.Vecs[1], bat.Vecs[2]}
 	bat.Attrs = []string{
 		objectio.TombstoneAttr_PK_Attr,
 		objectio.DefaultCommitTS_Attr}
-	applyTSFilterForBatch(bat, 1, skipTS, start, end)
 	if sort {
 		sortBatch(bat, 1, mp)
 	}
