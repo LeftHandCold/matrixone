@@ -420,10 +420,20 @@ func (bat *AtomicBatch) Append(
 				Offset: i,
 				Src:    batch,
 			}
-			_, replaced := bat.Rows.Set(row)
+			oldRow, replaced := bat.Rows.Set(row)
 			bat.totalRows++
 			if replaced {
 				bat.duplicateRows++
+				// Log duplicate row detection for debugging
+				if !bat.duplicateLogged && bat.duplicateRows <= 10 {
+					logutil.Info(
+						"cdc.atomic_batch.duplicate_row_detected",
+						zap.String("pk-hex", hex.EncodeToString(pk)),
+						zap.String("old-ts", oldRow.Ts.ToString()),
+						zap.String("new-ts", ts.ToString()),
+						zap.Int("total-duplicates", bat.duplicateRows),
+					)
+				}
 			}
 		}
 
