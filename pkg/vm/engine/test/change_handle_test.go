@@ -1640,7 +1640,7 @@ func TestGetObjectsFromCheckpointEntriesDedup(t *testing.T) {
 			entry1 := checkpoint.NewCheckpointEntry("", start, end, checkpoint.ET_Global)
 			entry2 := checkpoint.NewCheckpointEntry("", start, end, checkpoint.ET_Global)
 
-			dataAobjs, dataCNObjs, tombstoneAobjs, tombstoneCNObjs, err := logtailreplay.TestGetObjectsFromCheckpointEntries(ctx, 1, "", start, end, []*checkpoint.CheckpointEntry{entry1, entry2}, nil, nil)
+			dataAobjs, dataCNObjs, tombstoneAobjs, tombstoneCNObjs, _, err := logtailreplay.TestGetObjectsFromCheckpointEntries(ctx, 1, "", start, end, []*checkpoint.CheckpointEntry{entry1, entry2}, nil, nil)
 			require.NoError(t, err)
 
 			require.Len(t, dataAobjs, 1)

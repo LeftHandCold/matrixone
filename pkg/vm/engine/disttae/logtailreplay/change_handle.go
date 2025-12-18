@@ -569,13 +569,28 @@ func NewBaseHandlerWithObjEntries(
 		changesHandle: changesHandle,
 	}
 	
+	// Log entry point for debugging
+	logutil.Info(
+		"cdc.new_base_handler_with_obj_entries",
+		zap.Bool("tombstone", tombstone),
+		zap.Int("aobj-count", len(aobj)),
+		zap.Int("cnobj-count", len(cnObj)),
+		zap.Int("data-objs-for-skipTS-count", len(dataObjsForSkipTS)),
+		zap.String("start", start.ToString()),
+		zap.String("end", end.ToString()),
+	)
+	
 	// For tombstone handlers, we need to fill in skipTS from data objects
 	// This is the same logic as in NewBaseHandler but using the provided data object entries
 	if tombstone && dataObjsForSkipTS != nil {
+		deletedObjCount := 0
+		inRangeCount := 0
 		for _, obj := range dataObjsForSkipTS {
 			if !obj.DeleteTime.IsEmpty() {
+				deletedObjCount++
 				ts := obj.DeleteTime
 				if ts.GE(&start) && ts.LE(&end) {
+					inRangeCount++
 					// Get the segment ID from the object
 					segmentId := obj.ObjectStats.ObjectName().SegmentId()
 					
@@ -596,19 +611,20 @@ func NewBaseHandlerWithObjEntries(
 			}
 		}
 		
-		if len(p.skipTS) > 0 {
-			totalEntries := 0
-			for _, segments := range p.skipTS {
-				totalEntries += len(segments)
-			}
-			logutil.Info(
-				"cdc.fill_skip_ts.summary_from_checkpoint",
-				zap.Int("skip-ts-count", len(p.skipTS)),
-				zap.Int("total-entries", totalEntries),
-				zap.String("start", start.ToString()),
-				zap.String("end", end.ToString()),
-			)
+		// Summary log
+		totalEntries := 0
+		for _, segments := range p.skipTS {
+			totalEntries += len(segments)
 		}
+		logutil.Info(
+			"cdc.fill_skip_ts.summary_from_checkpoint",
+			zap.Int("skip-ts-count", len(p.skipTS)),
+			zap.Int("total-entries", totalEntries),
+			zap.Int("deleted-obj-count", deletedObjCount),
+			zap.Int("in-range-count", inRangeCount),
+			zap.String("start", start.ToString()),
+			zap.String("end", end.ToString()),
+		)
 	}
 	
 	p.aobjHandle = NewAObjectHandle(ctx, p, tombstone, start, end, aobj, fs, mp)
@@ -881,7 +897,7 @@ func NewChangesHandlerWithCheckpointEntries(
 		mp:            mp,
 		scheduler:     tasks.NewParallelJobScheduler(LoadParallism),
 	}
-	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj, err := getObjectsFromCheckpointEntries(ctx, tid, sid, start, end, checkpoints, mp, fs)
+	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj, deletedDataObjs, err := getObjectsFromCheckpointEntries(ctx, tid, sid, start, end, checkpoints, mp, fs)
 	if err != nil {
 		return
 	}
@@ -893,9 +909,9 @@ func NewChangesHandlerWithCheckpointEntries(
 	if err = changeHandle.dataHandle.init(ctx, changeHandle.quick, mp); err != nil {
 		return
 	}
-	// For tombstoneHandle, pass combined data objects (aobj + cnObj) for skipTS filling
-	allDataObjs := append(dataAobj, dataCNObj...)
-	changeHandle.tombstoneHandle, err = NewBaseHandlerWithObjEntries(ctx, changeHandle, start, end, tombstoneAobj, tombstoneCNObj, true, mp, fs, allDataObjs)
+	// For tombstoneHandle, pass deletedDataObjs for skipTS filling
+	// deletedDataObjs contains data objects that were deleted within [start, end] range
+	changeHandle.tombstoneHandle, err = NewBaseHandlerWithObjEntries(ctx, changeHandle, start, end, tombstoneAobj, tombstoneCNObj, true, mp, fs, deletedDataObjs)
 	if err != nil {
 		return
 	}
@@ -914,13 +930,15 @@ func getObjectsFromCheckpointEntries(
 	mp *mpool.MPool,
 	fs fileservice.FileService,
 ) (
-	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj []*objectio.ObjectEntry,
+	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj, deletedDataObjs []*objectio.ObjectEntry,
 	err error,
 ) {
 	dataAobjMap := make(map[string]*objectio.ObjectEntry)
 	dataCNObjMap := make(map[string]*objectio.ObjectEntry)
 	tombstoneAobjMap := make(map[string]*objectio.ObjectEntry)
 	tombstoneCNObjMap := make(map[string]*objectio.ObjectEntry)
+	// Map for data objects that have been deleted within [start, end] range - for skipTS
+	deletedDataObjsMap := make(map[string]*objectio.ObjectEntry)
 	readers := make([]checkpointEntryReader, 0)
 	for _, entry := range checkpoint {
 		reader := newCKPReaderWithTableID(entry.GetVersion(), entry.GetLocation(), tid, mp, fs)
@@ -948,6 +966,14 @@ func getObjectsFromCheckpointEntries(
 							dataAobjMap[obj.ObjectShortName().ShortString()] = &obj
 						}
 					}
+					// For skipTS: collect data objects deleted within [start, end] range
+					// These objects may have been created before 'start' but deleted within the range
+					if !isTombstone && !obj.DeleteTime.IsEmpty() {
+						delTs := obj.DeleteTime
+						if delTs.GE(&start) && delTs.LE(&end) {
+							deletedDataObjsMap[obj.ObjectShortName().ShortString()] = &obj
+						}
+					}
 				}
 				if obj.GetCNCreated() {
 					if obj.CreateTime.GE(&start) {
@@ -955,6 +981,13 @@ func getObjectsFromCheckpointEntries(
 							tombstoneCNObjMap[obj.ObjectShortName().ShortString()] = &obj
 						} else {
 							dataCNObjMap[obj.ObjectShortName().ShortString()] = &obj
+						}
+					}
+					// For skipTS: collect CN-created data objects deleted within [start, end] range
+					if !isTombstone && !obj.DeleteTime.IsEmpty() {
+						delTs := obj.DeleteTime
+						if delTs.GE(&start) && delTs.LE(&end) {
+							deletedDataObjsMap[obj.ObjectShortName().ShortString()] = &obj
 						}
 					}
 				}
@@ -979,6 +1012,11 @@ func getObjectsFromCheckpointEntries(
 	tombstoneCNObj = make([]*objectio.ObjectEntry, 0)
 	for _, obj := range tombstoneCNObjMap {
 		tombstoneCNObj = append(tombstoneCNObj, obj)
+	}
+	// Build deletedDataObjs list for skipTS filling
+	deletedDataObjs = make([]*objectio.ObjectEntry, 0, len(deletedDataObjsMap))
+	for _, obj := range deletedDataObjsMap {
+		deletedDataObjs = append(deletedDataObjs, obj)
 	}
 	return
 }
@@ -1754,7 +1792,7 @@ func TestGetObjectsFromCheckpointEntries(
 	mp *mpool.MPool,
 	fs fileservice.FileService,
 ) (
-	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj []*objectio.ObjectEntry,
+	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj, deletedDataObjs []*objectio.ObjectEntry,
 	err error,
 ) {
 	return getObjectsFromCheckpointEntries(ctx, tid, sid, start, end, checkpoint, mp, fs)
