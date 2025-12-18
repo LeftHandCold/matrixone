@@ -1135,11 +1135,11 @@ func (s *TableChangeStream) processWithTxn(
 		)
 		return err
 	}
-	
+
 	// Check if fromTS is the same as last round (potential issue)
 	lastFromTs := s.dataProcessor.fromTs
 	sameFromTs := !lastFromTs.IsEmpty() && fromTs.Equal(&lastFromTs)
-	
+
 	logutil.Info(
 		"cdc.table_stream.get_from_cache_success",
 		zap.String("task-id", s.taskId),
@@ -1171,12 +1171,12 @@ func (s *TableChangeStream) processWithTxn(
 
 	// Log the data range being processed
 	lastToTs := s.dataProcessor.toTs
-	rangeSize := toTs.PhysicalTime - fromTs.PhysicalTime
+	rangeSize := toTs.Physical() - fromTs.Physical()
 	lastRangeSize := int64(0)
 	if !lastToTs.IsEmpty() && !s.dataProcessor.fromTs.IsEmpty() {
-		lastRangeSize = lastToTs.PhysicalTime - s.dataProcessor.fromTs.PhysicalTime
+		lastRangeSize = lastToTs.Physical() - s.dataProcessor.fromTs.Physical()
 	}
-	
+
 	logutil.Info(
 		"cdc.table_stream.collect_changes_range",
 		zap.String("task-id", s.taskId),
