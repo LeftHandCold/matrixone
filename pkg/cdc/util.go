@@ -635,7 +635,11 @@ var GetSnapshotTS = func(txnOp client.TxnOperator) timestamp.Timestamp {
 }
 
 var CollectChanges = func(ctx context.Context, rel engine.Relation, fromTs, toTs types.TS, mp *mpool.MPool) (engine.ChangesHandle, error) {
-	return rel.CollectChanges(ctx, fromTs, toTs, true, mp)
+	// Use skipDeletes=false to ensure all DELETE operations are processed
+	// When skipDeletes=true, filterBatch may filter out DELETE operations when
+	// a PK has both DELETE and INSERT in the same batch, leading to data inconsistency
+	// (downstream will have more rows because DELETE was not executed)
+	return rel.CollectChanges(ctx, fromTs, toTs, false, mp)
 }
 
 var EnterRunSql = func(txnOp client.TxnOperator) {
