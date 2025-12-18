@@ -1125,6 +1125,10 @@ func (s *TableChangeStream) processWithTxn(
 	}
 
 	// Get time range
+	// IMPORTANT: Prioritize DataProcessor.fromTs over cache to ensure fromTS is only used once
+	// After processTailDone sends data, DataProcessor.fromTs is updated to toTs
+	// This prevents the same fromTS from being used multiple times
+	lastFromTs := s.dataProcessor.fromTs
 	fromTs, err := s.watermarkUpdater.GetFromCache(ctx, s.watermarkKey)
 	if err != nil {
 		logutil.Info(
@@ -1136,8 +1140,20 @@ func (s *TableChangeStream) processWithTxn(
 		return err
 	}
 
+	// If DataProcessor has a valid fromTs (not empty and greater than cache), use it
+	// This ensures that once data is sent to sinker, we don't reprocess the same range
+	if !lastFromTs.IsEmpty() && lastFromTs.GT(&fromTs) {
+		logutil.Info(
+			"cdc.table_stream.using_data_processor_from_ts",
+			zap.String("task-id", s.taskId),
+			zap.String("table", s.tableInfo.String()),
+			zap.String("cache-from-ts", fromTs.ToString()),
+			zap.String("processor-from-ts", lastFromTs.ToString()),
+		)
+		fromTs = lastFromTs
+	}
+
 	// Check if fromTS is the same as last round (potential issue)
-	lastFromTs := s.dataProcessor.fromTs
 	sameFromTs := !lastFromTs.IsEmpty() && fromTs.Equal(&lastFromTs)
 
 	logutil.Info(
