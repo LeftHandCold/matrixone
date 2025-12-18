@@ -533,6 +533,13 @@ func NewBaseHandler(state *PartitionState, changesHandle *ChangeHandler, start, 
 		dataIter := state.dataObjectsNameIndex.Iter()
 		p.fillInSkipTS(dataIter, start, end)
 		dataIter.Release()
+		logutil.Info(
+			"cdc.new_base_handler.skip_ts_initialized",
+			zap.String("start-ts", start.ToString()),
+			zap.String("end-ts", end.ToString()),
+			zap.Bool("tombstone", tombstone),
+			zap.Int("skip-ts-count", len(p.skipTS)),
+		)
 	}
 	rowIter := state.rows.Iter()
 	defer rowIter.Release()
@@ -569,14 +576,36 @@ func (p *baseHandle) init(ctx context.Context, quick bool, mp *mpool.MPool) (err
 	return
 }
 func (p *baseHandle) fillInSkipTS(iter btree.IterG[objectio.ObjectEntry], start, end types.TS) {
+	skipCount := 0
+	skipTSList := make([]types.TS, 0, 10)
 	for iter.Next() {
 		obj := iter.Item()
 		if !obj.DeleteTime.IsEmpty() {
 			ts := obj.DeleteTime
 			if ts.GE(&start) && ts.LE(&end) {
 				p.skipTS[obj.DeleteTime] = struct{}{}
+				skipCount++
+				if len(skipTSList) < 10 {
+					skipTSList = append(skipTSList, ts)
+				}
 			}
 		}
+	}
+	if skipCount > 0 {
+		logutil.Info(
+			"cdc.fill_in_skip_ts",
+			zap.String("start-ts", start.ToString()),
+			zap.String("end-ts", end.ToString()),
+			zap.Int("skip-ts-count", skipCount),
+			zap.Int("skip-ts-samples", len(skipTSList)),
+			zap.Strings("skip-ts-samples", func() []string {
+				result := make([]string, len(skipTSList))
+				for i, ts := range skipTSList {
+					result[i] = ts.ToString()
+				}
+				return result
+			}()),
+		)
 	}
 }
 func (p *baseHandle) IsEmpty() bool {
@@ -633,7 +662,16 @@ func (p *baseHandle) Next(ctx context.Context, bat **batch.Batch, mp *mpool.MPoo
 	return
 }
 func (p *baseHandle) QuickNext(ctx context.Context, bat **batch.Batch, mp *mpool.MPool) (err error) {
+	initialRowCount := 0
+	if *bat != nil {
+		initialRowCount = (*bat).RowCount()
+	}
+	
 	if p.aobjHandle != nil {
+		beforeCount := 0
+		if *bat != nil {
+			beforeCount = (*bat).RowCount()
+		}
 		err = p.aobjHandle.QuickNext(ctx, bat, mp)
 		if moerr.IsMoErrCode(err, moerr.OkExpectedEOF) {
 			p.aobjHandle = nil
@@ -642,11 +680,29 @@ func (p *baseHandle) QuickNext(ctx context.Context, bat **batch.Batch, mp *mpool
 		if err != nil {
 			return
 		}
+		afterCount := 0
+		if *bat != nil {
+			afterCount = (*bat).RowCount()
+		}
+		if afterCount > beforeCount {
+			logutil.Info(
+				"cdc.base_handle.quick_next.aobj",
+				zap.String("start-ts", p.changesHandle.start.ToString()),
+				zap.String("end-ts", p.changesHandle.end.ToString()),
+				zap.Int("before-count", beforeCount),
+				zap.Int("after-count", afterCount),
+				zap.Int("added-rows", afterCount-beforeCount),
+			)
+		}
 	}
 	if (*bat) != nil && (*bat).RowCount() > p.changesHandle.coarseMaxRow {
 		return
 	}
 	if p.inMemoryHandle != nil {
+		beforeCount := 0
+		if *bat != nil {
+			beforeCount = (*bat).RowCount()
+		}
 		err = p.inMemoryHandle.QuickNext(bat, mp)
 		if moerr.IsMoErrCode(err, moerr.OkExpectedEOF) {
 			p.inMemoryHandle.Close()
@@ -656,11 +712,53 @@ func (p *baseHandle) QuickNext(ctx context.Context, bat **batch.Batch, mp *mpool
 		if err != nil {
 			return
 		}
+		afterCount := 0
+		if *bat != nil {
+			afterCount = (*bat).RowCount()
+		}
+		if afterCount > beforeCount {
+			logutil.Info(
+				"cdc.base_handle.quick_next.in_memory",
+				zap.String("start-ts", p.changesHandle.start.ToString()),
+				zap.String("end-ts", p.changesHandle.end.ToString()),
+				zap.Int("before-count", beforeCount),
+				zap.Int("after-count", afterCount),
+				zap.Int("added-rows", afterCount-beforeCount),
+			)
+		}
 	}
 	if (*bat) != nil && (*bat).RowCount() > p.changesHandle.coarseMaxRow {
 		return
 	}
+	beforeCount := 0
+	if *bat != nil {
+		beforeCount = (*bat).RowCount()
+	}
 	err = p.cnObjectHandle.QuickNext(ctx, bat, mp)
+	afterCount := 0
+	if *bat != nil {
+		afterCount = (*bat).RowCount()
+	}
+	if afterCount > beforeCount {
+		logutil.Info(
+			"cdc.base_handle.quick_next.cn_obj",
+			zap.String("start-ts", p.changesHandle.start.ToString()),
+			zap.String("end-ts", p.changesHandle.end.ToString()),
+			zap.Int("before-count", beforeCount),
+			zap.Int("after-count", afterCount),
+			zap.Int("added-rows", afterCount-beforeCount),
+		)
+	}
+	if initialRowCount > 0 || afterCount > 0 {
+		logutil.Info(
+			"cdc.base_handle.quick_next.total",
+			zap.String("start-ts", p.changesHandle.start.ToString()),
+			zap.String("end-ts", p.changesHandle.end.ToString()),
+			zap.Int("initial-count", initialRowCount),
+			zap.Int("final-count", afterCount),
+			zap.Int("total-added", afterCount-initialRowCount),
+		)
+	}
 	return
 }
 func (p *baseHandle) newBatchHandleWithRowIterator(ctx context.Context, iter btree.IterG[*RowEntry], start, end types.TS, tombstone bool, mp *mpool.MPool) (h *BatchHandle) {
@@ -672,22 +770,59 @@ func (p *baseHandle) newBatchHandleWithRowIterator(ctx context.Context, iter btr
 	return
 }
 func (p *baseHandle) getBatchesFromRowIterator(iter btree.IterG[*RowEntry], start, end types.TS, tombstone bool, mp *mpool.MPool) (bat *batch.Batch) {
+	insertCount := 0
+	deleteCount := 0
+	skipDeleteCount := 0
+	skipDeleteTSList := make([]types.TS, 0, 10)
+	outOfRangeCount := 0
+	
 	for iter.Next() {
 		entry := iter.Item()
 		if checkTS(start, end, entry.Time) {
 			if !entry.Deleted && !tombstone {
 				fillInInsertBatch(&bat, entry, mp)
+				insertCount++
 			}
 			if entry.Deleted && tombstone {
 				if p.skipTS != nil {
 					_, ok := p.skipTS[entry.Time]
 					if ok {
+						skipDeleteCount++
+						if len(skipDeleteTSList) < 10 {
+							skipDeleteTSList = append(skipDeleteTSList, entry.Time)
+						}
 						continue
 					}
 				}
 				fillInDeleteBatch(&bat, entry, mp)
+				deleteCount++
+			}
+		} else {
+			if entry.Deleted && tombstone {
+				outOfRangeCount++
 			}
 		}
+	}
+	
+	if tombstone && (skipDeleteCount > 0 || outOfRangeCount > 0) {
+		logutil.Info(
+			"cdc.get_batches_from_row_iterator",
+			zap.String("start-ts", start.ToString()),
+			zap.String("end-ts", end.ToString()),
+			zap.Bool("tombstone", tombstone),
+			zap.Int("insert-count", insertCount),
+			zap.Int("delete-count", deleteCount),
+			zap.Int("skip-delete-count", skipDeleteCount),
+			zap.Int("out-of-range-delete-count", outOfRangeCount),
+			zap.Int("skip-ts-samples", len(skipDeleteTSList)),
+			zap.Strings("skip-ts-samples", func() []string {
+				result := make([]string, len(skipDeleteTSList))
+				for i, ts := range skipDeleteTSList {
+					result[i] = ts.ToString()
+				}
+				return result
+			}()),
+		)
 	}
 	return
 }
