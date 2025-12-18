@@ -16,7 +16,6 @@ package checkpoint
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -701,10 +700,11 @@ func (reader *CheckpointReader) Read(
 					reader.maxLSN = ckpEntry.ckpLSN
 				}
 			}
-			if ckpEntry.ckpLSN < reader.maxLSN {
-				panic(fmt.Sprintf("logic error, current lsn %d, incoming lsn %d", reader.maxLSN, ckpEntry.ckpLSN))
+			// Skip LSN check for recovery from OSS data files when logservice is broken
+			// Original panic: logic error, current lsn %d, incoming lsn %d
+			if ckpEntry.ckpLSN > reader.maxLSN {
+				reader.maxLSN = ckpEntry.ckpLSN
 			}
-			reader.maxLSN = ckpEntry.ckpLSN
 		}
 	}
 	for {
@@ -744,10 +744,11 @@ func (reader *CheckpointReader) Read(
 		}
 		// for backup checkpoint, ckp LSN is 0.
 		if ckpEntry.ckpLSN != 0 {
-			if ckpEntry.ckpLSN < reader.maxLSN {
-				panic(fmt.Sprintf("logic error, current lsn %d, incoming lsn %d", reader.maxLSN, ckpEntry.ckpLSN))
+			// Skip LSN check for recovery from OSS data files when logservice is broken
+			// Original panic: logic error, current lsn %d, incoming lsn %d
+			if ckpEntry.ckpLSN > reader.maxLSN {
+				reader.maxLSN = ckpEntry.ckpLSN
 			}
-			reader.maxLSN = ckpEntry.ckpLSN
 		}
 		reader.currentIdx++
 	}

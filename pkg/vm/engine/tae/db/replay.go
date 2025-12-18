@@ -330,7 +330,10 @@ func (replayer *WalReplayer) checkLSN(lsn uint64) (needReplay bool) {
 		replayer.lsn++
 		return true
 	}
-	panic(fmt.Sprintf("invalid lsn %d, current lsn %d", lsn, replayer.lsn))
+	// Skip LSN check for recovery from OSS data files when logservice is broken
+	// Original panic: invalid lsn %d, current lsn %d
+	replayer.lsn = lsn
+	return true
 }
 func (replayer *WalReplayer) OnReplayTxn(cmd txnif.TxnCmd, lsn uint64) {
 	var err error

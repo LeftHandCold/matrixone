@@ -486,6 +486,10 @@ func (s *stateMachine) handleGetIDCmd(cmd []byte) sm.Result {
 	allocIDCmd := parseAllocateIDCmd(cmd)
 	// Empty key means it is a shared ID.
 	if len(allocIDCmd.Key) == 0 {
+		// Set minimum starting ID to 5000000
+		if s.state.NextID < 5000000 {
+			s.state.NextID = 5000000
+		}
 		s.state.NextID++
 		v := s.state.NextID
 		s.state.NextID += allocIDCmd.Batch - 1
@@ -732,6 +736,10 @@ func (s *stateMachine) handleInitialClusterRequestCmd(cmd []byte) sm.Result {
 		s.state.NextID = req.NextID
 	} else {
 		s.state.NextID = K8SIDRangeEnd
+	}
+	// Set minimum starting ID to 5000000
+	if s.state.NextID < 5000000 {
+		s.state.NextID = 5000000
 	}
 	if len(req.NextIDByKey) > 0 {
 		s.state.NextIDByKey = req.NextIDByKey
