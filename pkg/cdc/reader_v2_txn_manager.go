@@ -233,12 +233,13 @@ func (tm *TransactionManager) CommitTransaction(ctx context.Context) error {
 	tm.tracker.MarkCommit()
 	tm.tracker.MarkWatermarkUpdated()
 
-	logutil.Debug(
+	logutil.Info(
 		"cdc.txn_manager.commit_success",
 		zap.String("task-id", tm.taskId),
 		zap.Uint64("account-id", tm.accountId),
 		zap.String("db", tm.dbName),
 		zap.String("table", tm.tableName),
+		zap.String("from-ts", tm.tracker.GetFromTs().ToString()),
 		zap.String("to-ts", toTs.ToString()),
 	)
 

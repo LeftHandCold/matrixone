@@ -894,10 +894,34 @@ func (u *CDCWatermarkUpdater) GetFromCache(
 	key *WatermarkKey,
 ) (watermark types.TS, err error) {
 	var ok bool
+	var cacheSource string
 	if watermark, ok = u.getFromCache(key); ok {
+		// Determine which cache tier the watermark came from
+		u.RLock()
+		if _, found := u.cacheUncommitted[*key]; found {
+			cacheSource = "uncommitted"
+		} else if _, found := u.cacheCommitting[*key]; found {
+			cacheSource = "committing"
+		} else if _, found := u.cacheCommitted[*key]; found {
+			cacheSource = "committed"
+		}
+		u.RUnlock()
+		
+		logutil.Info(
+			"cdc.watermark.get_from_cache_success",
+			zap.String("task-id", key.TaskId),
+			zap.String("key", key.String()),
+			zap.String("watermark", watermark.ToString()),
+			zap.String("cache-source", cacheSource),
+		)
 		return
 	}
 	err = ErrNoWatermarkFound
+	logutil.Info(
+		"cdc.watermark.get_from_cache_not_found",
+		zap.String("task-id", key.TaskId),
+		zap.String("key", key.String()),
+	)
 	return
 }
 
@@ -1137,13 +1161,14 @@ func (u *CDCWatermarkUpdater) UpdateWatermarkOnly(
 	v2.CdcWatermarkUpdateCounter.WithLabelValues(tableLabel, "commit").Inc()
 
 	// Log watermark updates for better observability
-	logutil.Debug(
+	logutil.Info(
 		"cdc.watermark.buffer_update",
 		zap.String("task-id", key.TaskId),
 		zap.String("key", key.String()),
 		zap.String("old-watermark", oldWatermark.ToString()),
 		zap.String("new-watermark", watermark.ToString()),
 		zap.Bool("has-old", hasOld),
+		zap.Bool("watermark-advanced", hasOld && watermark.GT(&oldWatermark)),
 		zap.Int("uncommitted-count", len(u.cacheUncommitted)),
 		zap.Int("committing-count", len(u.cacheCommitting)),
 		zap.Int("committed-count", len(u.cacheCommitted)),
