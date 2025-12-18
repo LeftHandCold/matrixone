@@ -252,13 +252,18 @@ func (dp *DataProcessor) processTailWip(ctx context.Context, data *ChangeData) e
 		deleteRows = data.DeleteBatch.RowCount()
 	}
 
-	logutil.Debug(
+	logutil.Info(
 		"cdc.data_processor.process_tail_wip",
 		zap.String("task-id", dp.taskId),
+		zap.Uint64("account-id", dp.accountId),
 		zap.String("db", dp.dbName),
 		zap.String("table", dp.tableName),
 		zap.Int("insert-rows", insertRows),
 		zap.Int("delete-rows", deleteRows),
+		zap.Int("accumulated-insert-rows", dp.insertAtmBatch.RowCount()),
+		zap.Int("accumulated-delete-rows", dp.deleteAtmBatch.RowCount()),
+		zap.String("from-ts", dp.fromTs.ToString()),
+		zap.String("to-ts", dp.toTs.ToString()),
 	)
 
 	// Get packer from pool
@@ -362,26 +367,6 @@ func (dp *DataProcessor) processTailDone(ctx context.Context, data *ChangeData) 
 	// For now, just reset our references
 	dp.insertAtmBatch = nil
 	dp.deleteAtmBatch = nil
-
-	// IMPORTANT: Update fromTs immediately after sending data to sinker
-	// This ensures that the same fromTS is not used multiple times
-	// Even if the transaction fails later, we should not reprocess the same data
-	// The watermark will be updated only after successful commit
-	oldFromTs := dp.fromTs
-	dp.fromTs = dp.toTs
-
-	logutil.Info(
-		"cdc.data_processor.from_ts_updated_after_sink",
-		zap.String("task-id", dp.taskId),
-		zap.Uint64("account-id", dp.accountId),
-		zap.String("db", dp.dbName),
-		zap.String("table", dp.tableName),
-		zap.String("old-from-ts", oldFromTs.ToString()),
-		zap.String("new-from-ts", dp.fromTs.ToString()),
-		zap.String("to-ts", dp.toTs.ToString()),
-		zap.Int("insert-rows", insertRows),
-		zap.Int("delete-rows", deleteRows),
-	)
 
 	return nil
 }

@@ -651,11 +651,6 @@ func (s *mysqlSinker2) handleInsertDeleteBatch(ctx context.Context, cmd *Command
 		logutil.Debug("cdc.mysql_sinker2.insert_delete_batch_start", startFields...)
 	}
 
-	// IMPORTANT: Ensure atomicity of INSERT and DELETE
-	// Both INSERT and DELETE must succeed together, or the entire transaction should rollback
-	// The transaction is already started in processTailDone before calling Sink()
-	// If any error occurs, the transaction will be rolled back automatically
-
 	// Build and execute INSERT SQL
 	if cmd.InsertAtmBatch != nil && cmd.InsertAtmBatch.RowCount() > 0 {
 		// Record metrics for insert operation
@@ -831,8 +826,6 @@ func (s *mysqlSinker2) handleInsertDeleteBatch(ctx context.Context, cmd *Command
 				zap.String("table", s.dbTblInfo.String()),
 				zap.Int("rows", deleteRows),
 				zap.Error(err))
-			// If DELETE SQL build fails, the transaction will be rolled back
-			// This ensures atomicity: INSERT and DELETE must succeed together
 			return err
 		}
 
@@ -848,9 +841,6 @@ func (s *mysqlSinker2) handleInsertDeleteBatch(ctx context.Context, cmd *Command
 					zap.Int("total-sqls", len(sqls)),
 					zap.Duration("duration", duration),
 					zap.Error(err))
-				// If DELETE execution fails, the transaction will be rolled back
-				// This ensures atomicity: INSERT and DELETE must succeed together
-				// The INSERT operations that already succeeded will be rolled back
 				return err
 			}
 

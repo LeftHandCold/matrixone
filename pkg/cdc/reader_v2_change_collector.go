@@ -200,7 +200,16 @@ func (cc *ChangeCollector) Next(ctx context.Context) (*ChangeData, error) {
 		}
 	}
 
-	logutil.Debug(
+	insertRows := 0
+	deleteRows := 0
+	if insertBatch != nil {
+		insertRows = insertBatch.RowCount()
+	}
+	if deleteBatch != nil {
+		deleteRows = deleteBatch.RowCount()
+	}
+
+	logutil.Info(
 		"cdc.change_collector.next",
 		zap.String("task-id", cc.taskId),
 		zap.Uint64("account-id", cc.accountId),
@@ -209,6 +218,10 @@ func (cc *ChangeCollector) Next(ctx context.Context) (*ChangeData, error) {
 		zap.String("type", changeType.String()),
 		zap.Bool("has-insert", insertBatch != nil),
 		zap.Bool("has-delete", deleteBatch != nil),
+		zap.Int("insert-rows", insertRows),
+		zap.Int("delete-rows", deleteRows),
+		zap.String("from-ts", cc.fromTs.ToString()),
+		zap.String("to-ts", cc.toTs.ToString()),
 	)
 
 	return &ChangeData{
