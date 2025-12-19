@@ -665,6 +665,13 @@ func (p *baseHandle) fillInSkipTS(iter btree.IterG[objectio.ObjectEntry], start,
 		if !obj.DeleteTime.IsEmpty() {
 			deletedObjs++
 			ts := obj.DeleteTime
+			// FIX: Changed condition from `ts.GE(&start) && ts.LE(&end)` to `ts.LE(&end)`
+			// Reason: After CDC restart, the watermark may have advanced past the DeleteTime.
+			// If we only check ts.GE(&start), objects deleted before the watermark won't be tracked,
+			// causing their tombstone records to be sent to downstream incorrectly.
+			// By using ts.LE(&end), we track all objects deleted before the query ends,
+			// ensuring their tombstone records are properly filtered.
+			shouldTrack := ts.LE(&end)
 			// Log ALL deleted objects for debugging
 			logutil.Info(
 				"cdc.fill_skip_ts.deleted_obj",
@@ -673,15 +680,14 @@ func (p *baseHandle) fillInSkipTS(iter btree.IterG[objectio.ObjectEntry], start,
 				zap.String("create-time", obj.CreateTime.ToString()),
 				zap.String("query-start", start.ToString()),
 				zap.String("query-end", end.ToString()),
-				zap.Bool("delete-ge-start", ts.GE(&start)),
 				zap.Bool("delete-le-end", ts.LE(&end)),
-				zap.Bool("in-range", ts.GE(&start) && ts.LE(&end)),
+				zap.Bool("should-track", shouldTrack),
 			)
-			if ts.GE(&start) && ts.LE(&end) {
+			if shouldTrack {
 				inRangeObjs++
 				// Get the segment ID from the object
 				segmentId := obj.ObjectStats.ObjectName().SegmentId()
-	
+
 				// Initialize the inner map if needed
 				if p.skipTS[ts] == nil {
 					p.skipTS[ts] = make(map[objectio.Segmentid]struct{})
@@ -705,7 +711,7 @@ func (p *baseHandle) fillInSkipTS(iter btree.IterG[objectio.ObjectEntry], start,
 		zap.Int("total-entries", totalEntries),
 		zap.Int("total-objs-scanned", totalObjs),
 		zap.Int("deleted-objs-count", deletedObjs),
-		zap.Int("in-range-objs-count", inRangeObjs),
+		zap.Int("tracked-objs-count", inRangeObjs),
 		zap.String("start", start.ToString()),
 		zap.String("end", end.ToString()),
 	)
