@@ -1132,8 +1132,14 @@ func filterBatch(data, tombstone *batch.Batch, primarySeqnum int, skipDeletes bo
 					}
 				}
 			} else {
-				// Delete all rows
-				for _, ri := range rowInfos {
+				// FIX: Keep the last delete, delete all other rows
+				// This ensures that if a PK was inserted and then deleted in this range,
+				// we still send the delete to downstream in case the insert was already
+				// sent before a restart (CDC restart scenario).
+				// Previously: deleted all rows including the delete, which caused
+				// downstream to have stale data (insert sent before restart,
+				// but delete not sent after restart).
+				for _, ri := range rowInfos[:len(rowInfos)-1] {
 					if ri.isDelete {
 						tombstoneRowsToDelete = append(tombstoneRowsToDelete, int64(ri.row))
 					} else {
