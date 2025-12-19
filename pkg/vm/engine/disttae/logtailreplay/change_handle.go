@@ -418,7 +418,7 @@ func (h *AObjectHandle) getNextAObject(ctx context.Context) (err error) {
 		h.cache = h.cache[1:]
 		t0 := time.Now()
 		if h.isTombstone {
-			updateTombstoneBatch(h.currentBatch, h.start, h.end, h.p.deletedSegments, !h.quick, h.mp)
+			updateTombstoneBatch(h.currentBatch, h.start, h.end, !h.quick, h.mp)
 		} else {
 			updateDataBatch(h.currentBatch, h.start, h.end, h.mp)
 		}
@@ -504,15 +504,6 @@ type baseHandle struct {
 	inMemoryHandle *BatchHandle
 
 	changesHandle *ChangeHandler
-
-	// deletedSegments stores segment IDs of deleted data objects.
-	// A tombstone record should be skipped if its segment ID is in this set.
-	// This ensures tombstone records from deleted objects are not sent to downstream.
-	// Note: We only check segment ID, not timestamp, because:
-	// - Object DeleteTime = compaction time (when object was merged)
-	// - Tombstone entry.Time = row delete time (when user executed DELETE)
-	// These are completely different timestamps and should not be matched.
-	deletedSegments map[objectio.Segmentid]struct{}
 }
 
 const (
@@ -526,8 +517,7 @@ const (
 
 func NewBaseHandler(state *PartitionState, changesHandle *ChangeHandler, start, end types.TS, mp *mpool.MPool, tombstone bool, fs fileservice.FileService, ctx context.Context) (p *baseHandle, err error) {
 	p = &baseHandle{
-		deletedSegments: make(map[objectio.Segmentid]struct{}),
-		changesHandle:   changesHandle,
+		changesHandle: changesHandle,
 	}
 	var iter btree.IterG[objectio.ObjectEntry]
 	if tombstone {
@@ -536,23 +526,6 @@ func NewBaseHandler(state *PartitionState, changesHandle *ChangeHandler, start, 
 		iter = state.dataObjectsNameIndex.Iter()
 	}
 	defer iter.Release()
-	if tombstone {
-		// Log PartitionState info for debugging
-		dataObjCount := state.dataObjectsNameIndex.Len()
-		tombstoneObjCount := state.tombstoneObjectsNameIndex.Len()
-		logutil.Info(
-			"cdc.new_base_handler.partition_state_info",
-			zap.Int("data-obj-count", dataObjCount),
-			zap.Int("tombstone-obj-count", tombstoneObjCount),
-			zap.String("ps-start", state.start.ToString()),
-			zap.String("ps-end", state.end.ToString()),
-			zap.String("query-start", start.ToString()),
-			zap.String("query-end", end.ToString()),
-		)
-		dataIter := state.dataObjectsNameIndex.Iter()
-		p.fillDeletedSegments(dataIter, start, end)
-		dataIter.Release()
-	}
 	rowIter := state.rows.Iter()
 	defer rowIter.Release()
 	p.inMemoryHandle = p.newBatchHandleWithRowIterator(ctx, rowIter, start, end, tombstone, mp)
@@ -570,53 +543,10 @@ func NewBaseHandlerWithObjEntries(
 	tombstone bool,
 	mp *mpool.MPool,
 	fs fileservice.FileService,
-	deletedDataObjs []*objectio.ObjectEntry, // Deleted data objects to build deletedSegments (only used when tombstone=true)
 ) (p *baseHandle, err error) {
 	p = &baseHandle{
-		deletedSegments: make(map[objectio.Segmentid]struct{}),
-		changesHandle:   changesHandle,
+		changesHandle: changesHandle,
 	}
-	
-	// Log entry point for debugging
-	logutil.Info(
-		"cdc.new_base_handler_with_obj_entries",
-		zap.Bool("tombstone", tombstone),
-		zap.Int("aobj-count", len(aobj)),
-		zap.Int("cnobj-count", len(cnObj)),
-		zap.Int("deleted-data-objs-count", len(deletedDataObjs)),
-		zap.String("start", start.ToString()),
-		zap.String("end", end.ToString()),
-	)
-	
-	// For tombstone handlers, we need to record deleted data object segment IDs
-	// This ensures tombstone records from these deleted objects are filtered out
-	if tombstone && deletedDataObjs != nil {
-		for _, obj := range deletedDataObjs {
-			if !obj.DeleteTime.IsEmpty() {
-				// Get the segment ID from the object
-				segmentId := obj.ObjectStats.ObjectName().SegmentId()
-				p.deletedSegments[segmentId] = struct{}{}
-				
-				logutil.Info(
-					"cdc.fill_deleted_segments.add_from_checkpoint",
-					zap.String("object-name", obj.ObjectShortName().ShortString()),
-					zap.String("segment-id", segmentId.String()),
-					zap.String("delete-time", obj.DeleteTime.ToString()),
-					zap.Bool("appendable", obj.GetAppendable()),
-				)
-			}
-		}
-		
-		// Summary log
-		logutil.Info(
-			"cdc.fill_deleted_segments.summary_from_checkpoint",
-			zap.Int("deleted-segments-count", len(p.deletedSegments)),
-			zap.Int("deleted-objs-input", len(deletedDataObjs)),
-			zap.String("start", start.ToString()),
-			zap.String("end", end.ToString()),
-		)
-	}
-	
 	p.aobjHandle = NewAObjectHandle(ctx, p, tombstone, start, end, aobj, fs, mp)
 	p.cnObjectHandle = NewCNObjectHandle(tombstone, cnObj, fs, p, mp)
 	return
@@ -631,39 +561,6 @@ func (p *baseHandle) init(ctx context.Context, quick bool, mp *mpool.MPool) (err
 		err = p.inMemoryHandle.init(quick, mp)
 	}
 	return
-}
-func (p *baseHandle) fillDeletedSegments(iter btree.IterG[objectio.ObjectEntry], start, end types.TS) {
-	var totalObjs int
-	var deletedObjs int
-	for iter.Next() {
-		totalObjs++
-		obj := iter.Item()
-		if !obj.DeleteTime.IsEmpty() {
-			deletedObjs++
-			// Get the segment ID from the object
-			segmentId := obj.ObjectStats.ObjectName().SegmentId()
-			p.deletedSegments[segmentId] = struct{}{}
-			
-			// Log for debugging
-			logutil.Info(
-				"cdc.fill_deleted_segments.add",
-				zap.String("object-name", obj.ObjectShortName().ShortString()),
-				zap.String("segment-id", segmentId.String()),
-				zap.String("delete-time", obj.DeleteTime.ToString()),
-				zap.String("create-time", obj.CreateTime.ToString()),
-				zap.Bool("appendable", obj.GetAppendable()),
-			)
-		}
-	}
-	// Always log summary for debugging
-	logutil.Info(
-		"cdc.fill_deleted_segments.summary",
-		zap.Int("deleted-segments-count", len(p.deletedSegments)),
-		zap.Int("total-objs-scanned", totalObjs),
-		zap.Int("deleted-objs-count", deletedObjs),
-		zap.String("start", start.ToString()),
-		zap.String("end", end.ToString()),
-	)
 }
 func (p *baseHandle) IsEmpty() bool {
 	return p.aobjHandle.IsEmpty() && p.inMemoryHandle.IsEmpty() && p.cnObjectHandle.IsEmpty()
@@ -758,8 +655,6 @@ func (p *baseHandle) newBatchHandleWithRowIterator(ctx context.Context, iter btr
 	return
 }
 func (p *baseHandle) getBatchesFromRowIterator(iter btree.IterG[*RowEntry], start, end types.TS, tombstone bool, mp *mpool.MPool) (bat *batch.Batch) {
-	var skippedByDeletedSegment int
-	var totalTombstone int
 	for iter.Next() {
 		entry := iter.Item()
 		if checkTS(start, end, entry.Time) {
@@ -767,38 +662,9 @@ func (p *baseHandle) getBatchesFromRowIterator(iter btree.IterG[*RowEntry], star
 				fillInInsertBatch(&bat, entry, mp)
 			}
 			if entry.Deleted && tombstone {
-				totalTombstone++
-				if p.deletedSegments != nil {
-					// Check if this tombstone belongs to a deleted data object
-					// We only check segment ID, not timestamp, because:
-					// - Object DeleteTime = compaction time (when object was merged)
-					// - Tombstone entry.Time = row delete time (when user executed DELETE)
-					// These are completely different timestamps.
-					entrySegmentId := *entry.BlockID.Segment()
-					if _, exists := p.deletedSegments[entrySegmentId]; exists {
-						// This tombstone belongs to a deleted object - skip it
-						skippedByDeletedSegment++
-						logutil.Info(
-							"cdc.inmem_tombstone.skipped_by_deleted_segment",
-							zap.String("entry-time", entry.Time.ToString()),
-							zap.String("segment-id", entrySegmentId.String()),
-							zap.String("block-id", entry.BlockID.String()),
-							zap.String("row-id", entry.RowID.String()),
-						)
-						continue
-					}
-				}
 				fillInDeleteBatch(&bat, entry, mp)
 			}
 		}
-	}
-	if tombstone && skippedByDeletedSegment > 0 {
-		logutil.Info(
-			"cdc.inmem_tombstone.summary",
-			zap.Int("total-tombstone", totalTombstone),
-			zap.Int("skipped-by-deleted-segment", skippedByDeletedSegment),
-			zap.Int("collected", totalTombstone-skippedByDeletedSegment),
-		)
 	}
 	return
 }
@@ -880,21 +746,18 @@ func NewChangesHandlerWithCheckpointEntries(
 		mp:            mp,
 		scheduler:     tasks.NewParallelJobScheduler(LoadParallism),
 	}
-	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj, deletedDataObjs, err := getObjectsFromCheckpointEntries(ctx, tid, sid, start, end, checkpoints, mp, fs)
+	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj, err := getObjectsFromCheckpointEntries(ctx, tid, sid, start, end, checkpoints, mp, fs)
 	if err != nil {
 		return
 	}
-	// For dataHandle, pass nil for dataObjsForSkipTS since it's not a tombstone handler
-	changeHandle.dataHandle, err = NewBaseHandlerWithObjEntries(ctx, changeHandle, start, end, dataAobj, dataCNObj, false, mp, fs, nil)
+	changeHandle.dataHandle, err = NewBaseHandlerWithObjEntries(ctx, changeHandle, start, end, dataAobj, dataCNObj, false, mp, fs)
 	if err != nil {
 		return
 	}
 	if err = changeHandle.dataHandle.init(ctx, changeHandle.quick, mp); err != nil {
 		return
 	}
-	// For tombstoneHandle, pass deletedDataObjs to build deletedSegments
-	// deletedDataObjs contains data objects that were deleted within [start, end] range
-	changeHandle.tombstoneHandle, err = NewBaseHandlerWithObjEntries(ctx, changeHandle, start, end, tombstoneAobj, tombstoneCNObj, true, mp, fs, deletedDataObjs)
+	changeHandle.tombstoneHandle, err = NewBaseHandlerWithObjEntries(ctx, changeHandle, start, end, tombstoneAobj, tombstoneCNObj, true, mp, fs)
 	if err != nil {
 		return
 	}
@@ -913,15 +776,13 @@ func getObjectsFromCheckpointEntries(
 	mp *mpool.MPool,
 	fs fileservice.FileService,
 ) (
-	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj, deletedDataObjs []*objectio.ObjectEntry,
+	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj []*objectio.ObjectEntry,
 	err error,
 ) {
 	dataAobjMap := make(map[string]*objectio.ObjectEntry)
 	dataCNObjMap := make(map[string]*objectio.ObjectEntry)
 	tombstoneAobjMap := make(map[string]*objectio.ObjectEntry)
 	tombstoneCNObjMap := make(map[string]*objectio.ObjectEntry)
-	// Map for data objects that have been deleted within [start, end] range - for deletedSegments
-	deletedDataObjsMap := make(map[string]*objectio.ObjectEntry)
 	readers := make([]checkpointEntryReader, 0)
 	for _, entry := range checkpoint {
 		reader := newCKPReaderWithTableID(entry.GetVersion(), entry.GetLocation(), tid, mp, fs)
@@ -949,14 +810,6 @@ func getObjectsFromCheckpointEntries(
 							dataAobjMap[obj.ObjectShortName().ShortString()] = &obj
 						}
 					}
-					// For deletedSegments: collect data objects deleted within [start, end] range
-					// These objects may have been created before 'start' but deleted within the range
-					if !isTombstone && !obj.DeleteTime.IsEmpty() {
-						delTs := obj.DeleteTime
-						if delTs.GE(&start) && delTs.LE(&end) {
-							deletedDataObjsMap[obj.ObjectShortName().ShortString()] = &obj
-						}
-					}
 				}
 				if obj.GetCNCreated() {
 					if obj.CreateTime.GE(&start) {
@@ -964,13 +817,6 @@ func getObjectsFromCheckpointEntries(
 							tombstoneCNObjMap[obj.ObjectShortName().ShortString()] = &obj
 						} else {
 							dataCNObjMap[obj.ObjectShortName().ShortString()] = &obj
-						}
-					}
-					// For deletedSegments: collect CN-created data objects deleted within [start, end] range
-					if !isTombstone && !obj.DeleteTime.IsEmpty() {
-						delTs := obj.DeleteTime
-						if delTs.GE(&start) && delTs.LE(&end) {
-							deletedDataObjsMap[obj.ObjectShortName().ShortString()] = &obj
 						}
 					}
 				}
@@ -995,11 +841,6 @@ func getObjectsFromCheckpointEntries(
 	tombstoneCNObj = make([]*objectio.ObjectEntry, 0)
 	for _, obj := range tombstoneCNObjMap {
 		tombstoneCNObj = append(tombstoneCNObj, obj)
-	}
-	// Build deletedDataObjs list for deletedSegments filling
-	deletedDataObjs = make([]*objectio.ObjectEntry, 0, len(deletedDataObjsMap))
-	for _, obj := range deletedDataObjsMap {
-		deletedDataObjs = append(deletedDataObjs, obj)
 	}
 	return
 }
@@ -1473,53 +1314,23 @@ func applyTSFilterForBatch(bat *batch.Batch, sortIdx int, start, end types.TS) e
 	return nil
 }
 
-// applyTSFilterForBatchWithRowId filters batch using timestamp range and deleted segments.
-// Tombstone rows are filtered out if they belong to deleted data objects (by segment ID).
-// We only check segment ID, not timestamp matching, because:
-// - Object DeleteTime = compaction time (when object was merged)
-// - Tombstone entry.Time = row delete time (when user executed DELETE)
-// These are completely different timestamps.
-func applyTSFilterForBatchWithRowId(bat *batch.Batch, rowidIdx, tsIdx int, deletedSegments map[objectio.Segmentid]struct{}, start, end types.TS) error {
+// applyTSFilterForBatchWithRowId filters batch using timestamp range.
+// Batch structure: [rowid(0), pk(1), commitTS(2)]
+func applyTSFilterForBatchWithRowId(bat *batch.Batch, rowidIdx, tsIdx int, start, end types.TS) error {
 	if bat == nil {
 		return nil
 	}
 	if bat.Vecs[tsIdx].GetType().Oid != types.T_TS {
 		panic(fmt.Sprintf("logic error, batch attrs %v, ts idx %d", bat.Attrs, tsIdx))
 	}
-	if bat.Vecs[rowidIdx].GetType().Oid != types.T_Rowid {
-		panic(fmt.Sprintf("logic error, batch attrs %v, rowid idx %d", bat.Attrs, rowidIdx))
-	}
 
 	commitTSs := vector.MustFixedColWithTypeCheck[types.TS](bat.Vecs[tsIdx])
-	rowids := vector.MustFixedColWithTypeCheck[types.Rowid](bat.Vecs[rowidIdx])
 	deletes := make([]int64, 0)
-	var deletedByRange, deletedByDeletedSegment int
 
 	for i, ts := range commitTSs {
 		if ts.LT(&start) || ts.GT(&end) {
 			deletes = append(deletes, int64(i))
-			deletedByRange++
-		} else if deletedSegments != nil {
-			// Check if this row belongs to a deleted data object
-			blockId := rowids[i].BorrowBlockID()
-			rowSegmentId := *blockId.Segment()
-			if _, exists := deletedSegments[rowSegmentId]; exists {
-				// This tombstone belongs to a deleted object - skip it
-				deletes = append(deletes, int64(i))
-				deletedByDeletedSegment++
-			}
 		}
-	}
-
-	// Log if deleted segments caused any filtering
-	if deletedByDeletedSegment > 0 {
-		logutil.Info(
-			"cdc.apply_ts_filter.deleted_segment_effect",
-			zap.Int("total-rows", len(commitTSs)),
-			zap.Int("deleted-by-range", deletedByRange),
-			zap.Int("deleted-by-deleted-segment", deletedByDeletedSegment),
-			zap.Int("remaining", len(commitTSs)-len(deletes)),
-		)
 	}
 
 	for _, vec := range bat.Vecs {
@@ -1709,10 +1520,8 @@ func prefetchObjects(
 	return
 }
 
-func updateTombstoneBatch(bat *batch.Batch, start, end types.TS, deletedSegments map[objectio.Segmentid]struct{}, sort bool, mp *mpool.MPool) {
-	// Apply deleted segments filter BEFORE freeing rowid, because we need rowid to get segment ID
-	// Batch structure: [rowid(0), pk(1), commitTS(2)]
-	applyTSFilterForBatchWithRowId(bat, 0, 2, deletedSegments, start, end)
+func updateTombstoneBatch(bat *batch.Batch, start, end types.TS, sort bool, mp *mpool.MPool) {
+	applyTSFilterForBatchWithRowId(bat, 0, 2, start, end)
 
 	// Now free rowid and restructure batch
 	bat.Vecs[0].Free(mp) // rowid
@@ -1770,7 +1579,7 @@ func TestGetObjectsFromCheckpointEntries(
 	mp *mpool.MPool,
 	fs fileservice.FileService,
 ) (
-	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj, deletedDataObjs []*objectio.ObjectEntry,
+	dataAobj, dataCNObj, tombstoneAobj, tombstoneCNObj []*objectio.ObjectEntry,
 	err error,
 ) {
 	return getObjectsFromCheckpointEntries(ctx, tid, sid, start, end, checkpoint, mp, fs)
