@@ -665,11 +665,23 @@ func (p *baseHandle) fillInSkipTS(iter btree.IterG[objectio.ObjectEntry], start,
 		if !obj.DeleteTime.IsEmpty() {
 			deletedObjs++
 			ts := obj.DeleteTime
+			// Log ALL deleted objects for debugging
+			logutil.Info(
+				"cdc.fill_skip_ts.deleted_obj",
+				zap.String("object-name", obj.ObjectShortName().ShortString()),
+				zap.String("delete-time", ts.ToString()),
+				zap.String("create-time", obj.CreateTime.ToString()),
+				zap.String("query-start", start.ToString()),
+				zap.String("query-end", end.ToString()),
+				zap.Bool("delete-ge-start", ts.GE(&start)),
+				zap.Bool("delete-le-end", ts.LE(&end)),
+				zap.Bool("in-range", ts.GE(&start) && ts.LE(&end)),
+			)
 			if ts.GE(&start) && ts.LE(&end) {
 				inRangeObjs++
 				// Get the segment ID from the object
 				segmentId := obj.ObjectStats.ObjectName().SegmentId()
-
+	
 				// Initialize the inner map if needed
 				if p.skipTS[ts] == nil {
 					p.skipTS[ts] = make(map[objectio.Segmentid]struct{})
