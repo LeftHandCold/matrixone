@@ -637,7 +637,7 @@ func (s *Scope) getRelData(c *Compile, blockExprList []*plan.Expr) error {
 	// }
 
 	//collect uncommited data if it's local cn
-	if rand.Intn(100) == 0 {
+	if rand.Intn(10) == 0 {
 		logutil.Infof("sleep start to debug")
 		time.Sleep(5 * time.Second)
 		logutil.Infof("sleep end to debug")
