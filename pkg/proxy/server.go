@@ -129,11 +129,6 @@ func NewServer(ctx context.Context, config Config, opts ...Option) (*Server, err
 
 // Start starts the proxy server.
 func (s *Server) Start() error {
-	// Enable packet drop simulation for testing
-	// Drop 1 packet after 5MB transferred from client to server
-	// This simulates network issues that cause MO CN to wait for data
-	SetPacketDropConfig(true, 5*1024*1024, 1)
-
 	err := s.app.Start()
 	if err != nil {
 		s.runtime.Logger().Error("proxy server start failed", zap.Error(err))

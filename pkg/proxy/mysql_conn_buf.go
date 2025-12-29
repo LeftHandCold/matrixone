@@ -19,39 +19,12 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 
 	"go.uber.org/zap"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 )
-
-// Variables for simulating packet drop (for testing only)
-var (
-	// EnablePacketDrop enables packet drop simulation
-	EnablePacketDrop atomic.Bool
-	// PacketDropAfterBytes starts dropping after this many bytes transferred
-	PacketDropAfterBytes atomic.Int64
-	// PacketDropCount is the number of packets to drop (0 = unlimited)
-	PacketDropCount atomic.Int32
-	// packetDropped tracks how many packets have been dropped
-	packetDropped atomic.Int32
-	// totalBytesTransferred tracks total bytes transferred
-	totalBytesTransferred atomic.Int64
-)
-
-// SetPacketDropConfig configures packet drop simulation
-func SetPacketDropConfig(enable bool, afterBytes int64, dropCount int32) {
-	EnablePacketDrop.Store(enable)
-	PacketDropAfterBytes.Store(afterBytes)
-	PacketDropCount.Store(dropCount)
-	packetDropped.Store(0)
-	totalBytesTransferred.Store(0)
-	if enable {
-		logutil.Infof("Proxy packet drop enabled: afterBytes=%d, dropCount=%d", afterBytes, dropCount)
-	}
-}
 
 const (
 	// the default message buffer size, 8K.
@@ -294,28 +267,6 @@ func (b *msgBuf) sendTo(dst io.Writer) error {
 
 	b.writeMu.Lock()
 	defer b.writeMu.Unlock()
-
-	// Simulate packet drop for testing
-	if EnablePacketDrop.Load() && b.name == connClientName {
-		totalBytesTransferred.Add(int64(writePos - readPos + dataLeft))
-		if totalBytesTransferred.Load() > PacketDropAfterBytes.Load() {
-			maxDrop := PacketDropCount.Load()
-			dropped := packetDropped.Load()
-			if maxDrop == 0 || dropped < maxDrop {
-				packetDropped.Add(1)
-				logutil.Infof("Proxy DROPPING packet: conn=%d, size=%d, totalBytes=%d, dropped=%d/%d",
-					b.cid, writePos-readPos+dataLeft, totalBytesTransferred.Load(), dropped+1, maxDrop)
-				// Don't write to dst, just return nil to simulate packet drop
-				// But we still need to consume the remaining data from src
-				if dataLeft > 0 {
-					discardBuf := make([]byte, dataLeft)
-					_, _ = io.ReadFull(b.src, discardBuf)
-				}
-				return nil
-			}
-		}
-	}
-
 	// Write the data in buffer.
 	n, err := dst.Write(b.buf[readPos:writePos])
 	if err != nil {
