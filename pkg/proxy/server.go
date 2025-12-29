@@ -129,10 +129,9 @@ func NewServer(ctx context.Context, config Config, opts ...Option) (*Server, err
 
 // Start starts the proxy server.
 func (s *Server) Start() error {
-	// Enable proxy block simulation for testing
-	// After 5MB transferred from client, proxy stops forwarding to CN
-	// This causes CN's conn.Read() to block waiting for data
-	SetProxyBlockConfig(true, 5*1024*1024)
+	// 启用模拟：传输 5MB 后 Proxy 永久阻塞，不再转发数据给 CN
+	// 这模拟 CN 处理慢导致 TCP 缓冲区满的场景
+	SetWriteBlockSimulation(true, 5*1024*1024, 0, 0)
 
 	err := s.app.Start()
 	if err != nil {

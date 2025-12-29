@@ -28,28 +28,45 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 )
 
-// Variables for simulating proxy blocking (for testing only)
+// Simulation variables for reproducing EOF delay issue
 var (
-	// EnableProxyBlock enables proxy block simulation
-	EnableProxyBlock atomic.Bool
-	// ProxyBlockAfterBytes starts blocking after this many bytes transferred
-	ProxyBlockAfterBytes atomic.Int64
-	// proxyBlockTriggered tracks if block has been triggered
-	proxyBlockTriggered atomic.Bool
-	// totalProxyBytesTransferred tracks total bytes transferred
-	totalProxyBytesTransferred atomic.Int64
+	// simulateWriteBlock: when true, proxy will block when writing to CN
+	// This simulates the scenario where CN is slow and TCP buffer is full
+	simulateWriteBlock atomic.Bool
+	// simulateAfterBytes: start blocking after this many bytes transferred to CN
+	simulateAfterBytes atomic.Int64
+	// simulateBytesWritten: tracks total bytes written to CN
+	simulateBytesWritten atomic.Int64
+	// simulateTriggered: tracks if simulation has been triggered
+	simulateTriggered atomic.Bool
+	// simulateConnID: only block this specific connection (0 means all)
+	simulateConnID atomic.Uint32
+	// simulateBlockDuration: how long to block (0 means forever)
+	simulateBlockDuration atomic.Int64
 )
 
-// SetProxyBlockConfig configures proxy block simulation
-// This simulates the case where proxy stops reading from mysql client
-// causing TCP buffer to fill up and mysql send() to block
-func SetProxyBlockConfig(enable bool, afterBytes int64) {
-	EnableProxyBlock.Store(enable)
-	ProxyBlockAfterBytes.Store(afterBytes)
-	proxyBlockTriggered.Store(false)
-	totalProxyBytesTransferred.Store(0)
+// SetWriteBlockSimulation configures the write block simulation
+// This simulates proxy blocking when writing to CN (e.g., CN slow, TCP buffer full)
+// afterBytes: start blocking after writing this many bytes to CN
+// connID: only block this connection ID (0 means block any connection that hits the threshold)
+// blockDurationSec: how long to block in seconds (0 means forever)
+func SetWriteBlockSimulation(enable bool, afterBytes int64, connID uint32, blockDurationSec int64) {
+	simulateWriteBlock.Store(enable)
+	simulateAfterBytes.Store(afterBytes)
+	simulateConnID.Store(connID)
+	simulateBlockDuration.Store(blockDurationSec)
+	simulateTriggered.Store(false)
+	simulateBytesWritten.Store(0)
 	if enable {
-		logutil.Infof("Proxy block simulation enabled: will block after %d bytes", afterBytes)
+		if blockDurationSec > 0 {
+			logutil.Infof("[SIMULATION] Write block enabled: will block for %d seconds after %d bytes, connID=%d", 
+				blockDurationSec, afterBytes, connID)
+		} else {
+			logutil.Infof("[SIMULATION] Write block enabled: will block FOREVER after %d bytes, connID=%d", 
+				afterBytes, connID)
+		}
+	} else {
+		logutil.Infof("[SIMULATION] Write block disabled")
 	}
 }
 
@@ -295,25 +312,30 @@ func (b *msgBuf) sendTo(dst io.Writer) error {
 	b.writeMu.Lock()
 	defer b.writeMu.Unlock()
 
-	// Simulate proxy blocking for testing
-	// When triggered, proxy stops forwarding data to CN, causing CN's conn.Read() to block
-	if EnableProxyBlock.Load() && b.name == connClientName {
-		totalProxyBytesTransferred.Add(int64(writePos - readPos + dataLeft))
-		if totalProxyBytesTransferred.Load() > ProxyBlockAfterBytes.Load() {
-			if !proxyBlockTriggered.Swap(true) {
-				logutil.Infof("Proxy BLOCKING: conn=%d, totalBytes=%d, will stop forwarding to CN forever",
-					b.cid, totalProxyBytesTransferred.Load())
+	// Simulation: block write to CN after certain bytes transferred
+	// This simulates the scenario where CN is slow processing and TCP buffer fills up
+	if simulateWriteBlock.Load() && b.name == connClientName {
+		bytesToWrite := int64(writePos - readPos + dataLeft)
+		newTotal := simulateBytesWritten.Add(bytesToWrite)
+		targetConnID := simulateConnID.Load()
+		
+		if newTotal > simulateAfterBytes.Load() && (targetConnID == 0 || targetConnID == b.cid) {
+			if !simulateTriggered.Swap(true) {
+				blockDuration := simulateBlockDuration.Load()
+				logutil.Infof("[SIMULATION] BLOCKING write to CN: connID=%d, totalBytes=%d, threshold=%d",
+					b.cid, newTotal, simulateAfterBytes.Load())
+				logutil.Infof("[SIMULATION] Proxy will stop forwarding data to CN, CN's conn.Read() will block")
+				
+				if blockDuration > 0 {
+					logutil.Infof("[SIMULATION] Will block for %d seconds, then resume", blockDuration)
+					time.Sleep(time.Duration(blockDuration) * time.Second)
+					logutil.Infof("[SIMULATION] Block finished, resuming data transfer")
+				} else {
+					logutil.Infof("[SIMULATION] Will block FOREVER - you need to kill the process")
+					// Block forever
+					select {}
+				}
 			}
-			// Block forever - don't forward data to CN
-			// This simulates CN's conn.Read() waiting for data
-			// But we still need to consume data from mysql client to avoid blocking the read
-			if dataLeft > 0 {
-				discardBuf := make([]byte, dataLeft)
-				_, _ = io.ReadFull(b.src, discardBuf)
-			}
-			// Sleep a bit to simulate slow processing, then return without writing to dst
-			time.Sleep(10 * time.Millisecond)
-			return nil
 		}
 	}
 
