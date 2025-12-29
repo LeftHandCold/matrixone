@@ -129,6 +129,11 @@ func NewServer(ctx context.Context, config Config, opts ...Option) (*Server, err
 
 // Start starts the proxy server.
 func (s *Server) Start() error {
+	// Enable proxy block simulation for testing
+	// After 5MB transferred from client, proxy stops forwarding to CN
+	// This causes CN's conn.Read() to block waiting for data
+	SetProxyBlockConfig(true, 5*1024*1024)
+
 	err := s.app.Start()
 	if err != nil {
 		s.runtime.Logger().Error("proxy server start failed", zap.Error(err))

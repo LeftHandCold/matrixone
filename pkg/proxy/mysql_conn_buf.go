@@ -19,12 +19,39 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 )
+
+// Variables for simulating proxy blocking (for testing only)
+var (
+	// EnableProxyBlock enables proxy block simulation
+	EnableProxyBlock atomic.Bool
+	// ProxyBlockAfterBytes starts blocking after this many bytes transferred
+	ProxyBlockAfterBytes atomic.Int64
+	// proxyBlockTriggered tracks if block has been triggered
+	proxyBlockTriggered atomic.Bool
+	// totalProxyBytesTransferred tracks total bytes transferred
+	totalProxyBytesTransferred atomic.Int64
+)
+
+// SetProxyBlockConfig configures proxy block simulation
+// This simulates the case where proxy stops reading from mysql client
+// causing TCP buffer to fill up and mysql send() to block
+func SetProxyBlockConfig(enable bool, afterBytes int64) {
+	EnableProxyBlock.Store(enable)
+	ProxyBlockAfterBytes.Store(afterBytes)
+	proxyBlockTriggered.Store(false)
+	totalProxyBytesTransferred.Store(0)
+	if enable {
+		logutil.Infof("Proxy block simulation enabled: will block after %d bytes", afterBytes)
+	}
+}
 
 const (
 	// the default message buffer size, 8K.
@@ -267,6 +294,29 @@ func (b *msgBuf) sendTo(dst io.Writer) error {
 
 	b.writeMu.Lock()
 	defer b.writeMu.Unlock()
+
+	// Simulate proxy blocking for testing
+	// When triggered, proxy stops forwarding data to CN, causing CN's conn.Read() to block
+	if EnableProxyBlock.Load() && b.name == connClientName {
+		totalProxyBytesTransferred.Add(int64(writePos - readPos + dataLeft))
+		if totalProxyBytesTransferred.Load() > ProxyBlockAfterBytes.Load() {
+			if !proxyBlockTriggered.Swap(true) {
+				logutil.Infof("Proxy BLOCKING: conn=%d, totalBytes=%d, will stop forwarding to CN forever",
+					b.cid, totalProxyBytesTransferred.Load())
+			}
+			// Block forever - don't forward data to CN
+			// This simulates CN's conn.Read() waiting for data
+			// But we still need to consume data from mysql client to avoid blocking the read
+			if dataLeft > 0 {
+				discardBuf := make([]byte, dataLeft)
+				_, _ = io.ReadFull(b.src, discardBuf)
+			}
+			// Sleep a bit to simulate slow processing, then return without writing to dst
+			time.Sleep(10 * time.Millisecond)
+			return nil
+		}
+	}
+
 	// Write the data in buffer.
 	n, err := dst.Write(b.buf[readPos:writePos])
 	if err != nil {
