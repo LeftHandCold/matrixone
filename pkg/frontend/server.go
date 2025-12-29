@@ -87,11 +87,6 @@ func (mo *MOServer) GetRoutineManager() *RoutineManager {
 
 func (mo *MOServer) Start() error {
 	logutil.Infof("Server Listening on : %s ", mo.addr)
-
-	// Enable read hang simulation for testing LOAD DATA LOCAL issues
-	// Hang after reading 5MB, only hang once
-	SetReadHangConfig(true, 5*1024*1024, true)
-
 	mo.running = true
 	mo.startListener()
 	setMoServerStarted(mo.service, true)

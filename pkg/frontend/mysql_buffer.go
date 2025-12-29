@@ -31,35 +31,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 )
 
-// Variables for simulating read hang (for testing only)
-var (
-	// EnableReadHang enables read hang simulation for LOAD DATA LOCAL
-	EnableReadHang atomic.Bool
-	// ReadHangAfterBytes starts hanging after this many bytes read
-	ReadHangAfterBytes atomic.Int64
-	// ReadHangOnce only hang once
-	ReadHangOnce atomic.Bool
-	// readHangTriggered tracks if hang has been triggered
-	readHangTriggered atomic.Bool
-	// totalLoadLocalBytesRead tracks total bytes read in LOAD DATA LOCAL
-	totalLoadLocalBytesRead atomic.Int64
-)
-
-// SetReadHangConfig configures read hang simulation for testing
-// enable: whether to enable the simulation
-// afterBytes: hang after reading this many bytes
-// once: if true, only hang once; if false, hang forever
-func SetReadHangConfig(enable bool, afterBytes int64, once bool) {
-	EnableReadHang.Store(enable)
-	ReadHangAfterBytes.Store(afterBytes)
-	ReadHangOnce.Store(once)
-	readHangTriggered.Store(false)
-	totalLoadLocalBytesRead.Store(0)
-	if enable {
-		logutil.Infof("CN ReadHang simulation enabled: afterBytes=%d, once=%v", afterBytes, once)
-	}
-}
-
 const (
 	fixBufferSize = 1024 * 1024
 )
@@ -345,26 +316,6 @@ func (c *Conn) ReadLoadLocalPacket() (_ []byte, err error) {
 			c.FreeLoadLocal()
 		}
 	}()
-
-	// Simulate read hang for testing
-	if EnableReadHang.Load() {
-		totalBytes := totalLoadLocalBytesRead.Load()
-		if totalBytes > ReadHangAfterBytes.Load() {
-			if ReadHangOnce.Load() {
-				// Only hang once
-				if !readHangTriggered.Swap(true) {
-					logutil.Infof("CN ReadLoadLocalPacket HANGING: totalBytes=%d, will block forever until timeout", totalBytes)
-					// Block forever (until read timeout)
-					select {}
-				}
-			} else {
-				// Hang forever
-				logutil.Infof("CN ReadLoadLocalPacket HANGING: totalBytes=%d, will block forever", totalBytes)
-				select {}
-			}
-		}
-	}
-
 	err = c.ReadNBytesIntoBuf(c.header[:], HeaderLengthOfTheProtocol)
 	if err != nil {
 		return
@@ -372,11 +323,6 @@ func (c *Conn) ReadLoadLocalPacket() (_ []byte, err error) {
 	packetLength = int(uint32(c.header[0]) | uint32(c.header[1])<<8 | uint32(c.header[2])<<16)
 	sequenceId := c.header[3]
 	c.sequenceId = sequenceId + 1
-
-	// Track bytes read for hang simulation
-	if EnableReadHang.Load() {
-		totalLoadLocalBytesRead.Add(int64(packetLength))
-	}
 
 	if c.loadLocalBuf.data == nil {
 		c.loadLocalBuf.data, err = c.allocator.Alloc(packetLength)
