@@ -129,9 +129,10 @@ func NewServer(ctx context.Context, config Config, opts ...Option) (*Server, err
 
 // Start starts the proxy server.
 func (s *Server) Start() error {
-	// 启用模拟：传输 5MB 后 Proxy 永久阻塞，不再转发数据给 CN
-	// 这模拟 CN 处理慢导致 TCP 缓冲区满的场景
-	SetWriteBlockSimulation(true, 5*1024*1024, 0, 0)
+	// 启用模拟：传输 5MB 后 Proxy 阻塞 120 秒，然后恢复
+	// 这模拟 CN 处理慢导致 Write 阻塞的场景
+	// 120 秒后恢复，Proxy 会尝试从 MySQL 读取，发现连接已断开
+	SetWriteBlockSimulation(true, 5*1024*1024, 0, 120) // 阻塞 120 秒
 
 	err := s.app.Start()
 	if err != nil {

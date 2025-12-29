@@ -329,10 +329,9 @@ func (b *msgBuf) sendTo(dst io.Writer) error {
 				if blockDuration > 0 {
 					logutil.Infof("[SIMULATION] Will block for %d seconds, then resume", blockDuration)
 					time.Sleep(time.Duration(blockDuration) * time.Second)
-					logutil.Infof("[SIMULATION] Block finished, resuming data transfer")
+					logutil.Infof("[SIMULATION] Block finished, resuming data transfer - will now try to read from MySQL")
 				} else {
 					logutil.Infof("[SIMULATION] Will block FOREVER - you need to kill the process")
-					// Block forever
 					select {}
 				}
 			}
