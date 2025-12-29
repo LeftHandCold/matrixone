@@ -129,10 +129,11 @@ func NewServer(ctx context.Context, config Config, opts ...Option) (*Server, err
 
 // Start starts the proxy server.
 func (s *Server) Start() error {
-	// 启用模拟：传输 5MB 后 Proxy 阻塞 120 秒，然后恢复
+	// 启用模拟：传输 1MB 后 Proxy 永久阻塞
 	// 这模拟 CN 处理慢导致 Write 阻塞的场景
-	// 120 秒后恢复，Proxy 会尝试从 MySQL 读取，发现连接已断开
-	SetWriteBlockSimulation(true, 5*1024*1024, 0, 120) // 阻塞 120 秒
+	// 阻塞后，Python proxy 会在 60 秒后断开 MySQL 客户端
+	// 然后观察 CN 什么时候收到 EOF
+	SetWriteBlockSimulation(true, 1*1024*1024, 0, 0) // 1MB 后永久阻塞
 
 	err := s.app.Start()
 	if err != nil {

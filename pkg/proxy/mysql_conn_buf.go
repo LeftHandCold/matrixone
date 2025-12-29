@@ -35,14 +35,16 @@ var (
 	simulateWriteBlock atomic.Bool
 	// simulateAfterBytes: start blocking after this many bytes transferred to CN
 	simulateAfterBytes atomic.Int64
-	// simulateBytesWritten: tracks total bytes written to CN
-	simulateBytesWritten atomic.Int64
-	// simulateTriggered: tracks if simulation has been triggered
-	simulateTriggered atomic.Bool
 	// simulateConnID: only block this specific connection (0 means all)
 	simulateConnID atomic.Uint32
 	// simulateBlockDuration: how long to block (0 means forever)
 	simulateBlockDuration atomic.Int64
+)
+
+// Per-connection tracking for simulation
+var (
+	simulateConnBytes sync.Map // map[uint32]int64 - bytes per connection
+	simulateConnTriggered sync.Map // map[uint32]bool - triggered per connection
 )
 
 // SetWriteBlockSimulation configures the write block simulation
@@ -55,8 +57,9 @@ func SetWriteBlockSimulation(enable bool, afterBytes int64, connID uint32, block
 	simulateAfterBytes.Store(afterBytes)
 	simulateConnID.Store(connID)
 	simulateBlockDuration.Store(blockDurationSec)
-	simulateTriggered.Store(false)
-	simulateBytesWritten.Store(0)
+	// Clear per-connection tracking
+	simulateConnBytes = sync.Map{}
+	simulateConnTriggered = sync.Map{}
 	if enable {
 		if blockDurationSec > 0 {
 			logutil.Infof("[SIMULATION] Write block enabled: will block for %d seconds after %d bytes, connID=%d", 
@@ -316,11 +319,17 @@ func (b *msgBuf) sendTo(dst io.Writer) error {
 	// This simulates the scenario where CN is slow processing and TCP buffer fills up
 	if simulateWriteBlock.Load() && b.name == connClientName {
 		bytesToWrite := int64(writePos - readPos + dataLeft)
-		newTotal := simulateBytesWritten.Add(bytesToWrite)
 		targetConnID := simulateConnID.Load()
 		
+		// Track bytes per connection
+		connKey := b.cid
+		oldBytes, _ := simulateConnBytes.LoadOrStore(connKey, int64(0))
+		newTotal := oldBytes.(int64) + bytesToWrite
+		simulateConnBytes.Store(connKey, newTotal)
+		
 		if newTotal > simulateAfterBytes.Load() && (targetConnID == 0 || targetConnID == b.cid) {
-			if !simulateTriggered.Swap(true) {
+			// Check if this connection has already triggered
+			if _, triggered := simulateConnTriggered.LoadOrStore(connKey, true); !triggered {
 				blockDuration := simulateBlockDuration.Load()
 				logutil.Infof("[SIMULATION] BLOCKING write to CN: connID=%d, totalBytes=%d, threshold=%d",
 					b.cid, newTotal, simulateAfterBytes.Load())
