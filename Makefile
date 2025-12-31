@@ -388,6 +388,8 @@ dev-help:
 	@echo "    make dev-chaos-congestion     - Network congestion (50-100ms delay, 10-20% loss)"
 	@echo "    make dev-chaos-bandwidth     - Bandwidth limitation (10Mbps)"
 	@echo "    make dev-chaos-random        - Random delay or loss"
+	@echo "    make dev-chaos-bridge-loss   - Packet loss on Docker bridge (simulates F5/proxy, 10% default)"
+	@echo "    make dev-chaos-bridge-loss LOSS=20  # 20% packet loss on Docker bridge"
 	@echo ""
 	@echo "  Custom network chaos:"
 	@echo "    make dev-chaos CN=cn1 TYPE=delay DELAY=100    # 100ms delay on cn1 (inject until Ctrl+C)"
@@ -613,7 +615,7 @@ dev-check-grafana:
 	@cd $(DEV_DIR) && ./start.sh check-grafana
 
 # Network Chaos Testing Commands
-.PHONY: dev-chaos dev-chaos-light dev-chaos-moderate dev-chaos-severe dev-chaos-inter-region dev-chaos-inter-continent dev-chaos-congestion dev-chaos-bandwidth dev-chaos-random
+.PHONY: dev-chaos dev-chaos-light dev-chaos-moderate dev-chaos-severe dev-chaos-inter-region dev-chaos-inter-continent dev-chaos-congestion dev-chaos-bandwidth dev-chaos-random dev-chaos-bridge-loss
 dev-chaos:
 	@if [ -z "$(CN)" ]; then \
 		echo "Error: CN is required. Use: make dev-chaos CN=cn1 TYPE=delay DELAY=100"; \
@@ -654,6 +656,9 @@ dev-chaos-bandwidth:
 
 dev-chaos-random:
 	@cd $(DEV_DIR) && ./chaos-test.sh --network-only -c $(or $(CN),cn1) --random
+
+dev-chaos-bridge-loss:
+	@cd $(DEV_DIR) && ./chaos-test.sh --network-only --scenario bridge-loss $(if $(LOSS),--loss $(LOSS),)
 
 .PHONY: dev-setup-docker-mirror
 dev-setup-docker-mirror:

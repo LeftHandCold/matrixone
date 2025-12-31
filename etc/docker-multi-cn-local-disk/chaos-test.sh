@@ -24,15 +24,18 @@ SELECTED_CNS=()  # Array to store multiple containers
 
 # Network chaos settings
 NETWORK_CHAOS_ENABLED=false
-NETWORK_CHAOS_TYPE=""  # loss, delay, bandwidth, or combined
+NETWORK_CHAOS_TYPE=""  # loss, delay, bandwidth, combined, or bridge-loss
 NETWORK_LOSS_PERCENT=10
 NETWORK_DELAY_MS=100
 NETWORK_BANDWIDTH_MBIT=10
 NETWORK_BANDWIDTH_SET=false  # Track if bandwidth was explicitly set by user
 NETWORK_ONLY_MODE=false  # Only inject network chaos, don't stop containers
-NETWORK_SCENARIO=""  # Preset scenario: light, moderate, severe, inter-region, inter-continent, congestion, bandwidth, random
+NETWORK_SCENARIO=""  # Preset scenario: light, moderate, severe, inter-region, inter-continent, congestion, bandwidth, random, bridge-loss
 NETWORK_RANDOM=false  # Randomly choose delay or loss
 NETWORK_CHAOS_DURATION=0  # Duration in seconds (0 = inject until manually stopped, default)
+
+# Bridge-level chaos settings (simulates F5/proxy packet loss)
+BRIDGE_INTERFACE=""  # Docker bridge interface (auto-detected if empty)
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,8 +56,9 @@ Options:
   -d, --down-time RANGE    Wait time after stopping before starting (default: 10-20)
                            Format: min-max or min,max (e.g., 10-20 or 10,20)
   -n, --network TYPE       Enable network chaos injection
-                           Types: loss, delay, bandwidth, combined
-                           Examples: -n loss, -n delay, -n bandwidth, -n combined
+                           Types: loss, delay, bandwidth, combined, bridge-loss
+                           Examples: -n loss, -n delay, -n bandwidth, -n combined, -n bridge-loss
+  --bridge INTERFACE       Docker bridge interface for bridge-loss (auto-detected if not specified)
   --loss PERCENT           Packet loss percentage (default: 10, used with -n loss/combined)
   --delay MS               Network delay in milliseconds (default: 100, used with -n delay/combined)
   --bandwidth MBIT         Bandwidth limit in Mbps (default: 10, used with -n bandwidth/combined)
@@ -74,6 +78,7 @@ Network Chaos Scenarios (--scenario):
   congestion      - Network congestion (50-100ms delay, 10-20% loss)
   bandwidth       - Bandwidth limitation (10Mbps)
   random          - Randomly select delay or loss
+  bridge-loss     - Packet loss on Docker bridge (simulates F5/proxy packet loss, 10% default)
 
 Workflow (default mode):
   1. Container runs for UP_TIME seconds (random in range)
@@ -115,6 +120,12 @@ Examples:
   $0 --network-only -c cn1 --scenario moderate --duration 60    # Moderate chaos for 60 seconds
   $0 --network-only -c cn1,cn2 -n delay --delay 100 --duration 120  # 100ms delay for 120 seconds
   $0 --network-only -c cn1,tn --scenario severe --duration 300  # Severe chaos for 5 minutes
+
+  # Bridge-level packet loss (simulates F5/proxy packet loss - affects all containers)
+  $0 --network-only --scenario bridge-loss                      # 10% packet loss on Docker bridge
+  $0 --network-only --scenario bridge-loss --loss 20            # 20% packet loss on Docker bridge
+  $0 --network-only -n bridge-loss --loss 5                     # 5% packet loss on Docker bridge
+  $0 --network-only -n bridge-loss --bridge br-xxxxx --loss 10  # Specify bridge interface
 
 EOF
 }
@@ -218,9 +229,19 @@ apply_scenario() {
                 echo -e "  Loss: ${NETWORK_LOSS_PERCENT}%"
             fi
             ;;
+        bridge-loss)
+            # Packet loss on Docker bridge (simulates F5/proxy packet loss)
+            NETWORK_CHAOS_TYPE="bridge-loss"
+            if [ "$NETWORK_LOSS_PERCENT" -eq 10 ]; then
+                # Use default if not explicitly set
+                NETWORK_LOSS_PERCENT=10
+            fi
+            echo -e "${BLUE}Scenario: Bridge-level packet loss (simulates F5/proxy)${NC}"
+            echo -e "  Loss: ${NETWORK_LOSS_PERCENT}%"
+            ;;
         *)
             echo "Error: Unknown scenario: $scenario" >&2
-            echo "Available scenarios: light, moderate, severe, inter-region, inter-continent, congestion, bandwidth, random" >&2
+            echo "Available scenarios: light, moderate, severe, inter-region, inter-continent, congestion, bandwidth, random, bridge-loss" >&2
             exit 1
             ;;
     esac
@@ -267,17 +288,26 @@ while [[ $# -gt 0 ]]; do
             ;;
         -n|--network)
             if [ -z "$2" ]; then
-                echo "Error: --network requires a type (loss, delay, bandwidth, or combined)" >&2
+                echo "Error: --network requires a type (loss, delay, bandwidth, combined, or bridge-loss)" >&2
                 show_usage
                 exit 1
             fi
-            if [ "$2" != "loss" ] && [ "$2" != "delay" ] && [ "$2" != "bandwidth" ] && [ "$2" != "combined" ]; then
-                echo "Error: --network must be 'loss', 'delay', 'bandwidth', or 'combined'" >&2
+            if [ "$2" != "loss" ] && [ "$2" != "delay" ] && [ "$2" != "bandwidth" ] && [ "$2" != "combined" ] && [ "$2" != "bridge-loss" ]; then
+                echo "Error: --network must be 'loss', 'delay', 'bandwidth', 'combined', or 'bridge-loss'" >&2
                 show_usage
                 exit 1
             fi
             NETWORK_CHAOS_ENABLED=true
             NETWORK_CHAOS_TYPE="$2"
+            shift 2
+            ;;
+        --bridge)
+            if [ -z "$2" ]; then
+                echo "Error: --bridge requires an interface name" >&2
+                show_usage
+                exit 1
+            fi
+            BRIDGE_INTERFACE="$2"
             shift 2
             ;;
         --loss)
@@ -521,6 +551,112 @@ get_container_interface() {
     echo "$iface"
 }
 
+# Function to get Docker bridge interface
+get_docker_bridge() {
+    # If user specified a bridge, use it
+    if [ -n "$BRIDGE_INTERFACE" ]; then
+        echo "$BRIDGE_INTERFACE"
+        return
+    fi
+    
+    # Try to find the bridge used by mo-proxy or mo-cn1
+    local container=""
+    if check_container "mo-proxy"; then
+        container="mo-proxy"
+    elif check_container "mo-cn1"; then
+        container="mo-cn1"
+    else
+        echo ""
+        return
+    fi
+    
+    # Get the network name from container
+    local network=$(docker inspect "$container" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null | head -1)
+    if [ -z "$network" ]; then
+        echo ""
+        return
+    fi
+    
+    # Get the bridge interface for this network
+    local bridge=$(docker network inspect "$network" --format '{{.Options.com.docker.network.bridge.name}}' 2>/dev/null)
+    if [ -z "$bridge" ]; then
+        # Try to find br-xxx interface
+        local network_id=$(docker network inspect "$network" --format '{{.Id}}' 2>/dev/null | cut -c1-12)
+        bridge="br-${network_id}"
+    fi
+    
+    # Verify the bridge exists
+    if ip link show "$bridge" > /dev/null 2>&1; then
+        echo "$bridge"
+    else
+        echo ""
+    fi
+}
+
+# Function to inject bridge-level packet loss (simulates F5/proxy packet loss)
+inject_bridge_chaos() {
+    local bridge=$(get_docker_bridge)
+    
+    if [ -z "$bridge" ]; then
+        echo -e "${RED}Error: Could not detect Docker bridge interface${NC}"
+        echo -e "${YELLOW}Please specify the bridge interface with --bridge option${NC}"
+        echo ""
+        echo "Available bridge interfaces:"
+        ip link show type bridge 2>/dev/null | grep -E "^[0-9]+:" | awk -F': ' '{print "  " $2}'
+        return 1
+    fi
+    
+    echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S')] Injecting packet loss on Docker bridge ${bridge}...${NC}"
+    echo -e "  ${RED}Packet loss: ${NETWORK_LOSS_PERCENT}%${NC}"
+    echo -e "  ${BLUE}This simulates F5/proxy packet loss affecting all containers${NC}"
+    
+    # Check if tc is available on host
+    if ! which tc > /dev/null 2>&1; then
+        echo -e "${RED}Error: 'tc' command not found on host${NC}"
+        echo "Please install iproute2: sudo apt-get install iproute2"
+        return 1
+    fi
+    
+    # Remove existing qdisc if any
+    sudo tc qdisc del dev "$bridge" root > /dev/null 2>&1 || true
+    
+    # Add packet loss
+    if ! sudo tc qdisc add dev "$bridge" root netem loss ${NETWORK_LOSS_PERCENT}% 2>&1; then
+        echo -e "${RED}Error: Failed to inject packet loss on bridge ${bridge}${NC}"
+        echo -e "${YELLOW}Make sure you have sudo privileges${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] Packet loss injected on bridge ${bridge}${NC}"
+    
+    # Show tc stats
+    echo -e "${BLUE}Current tc rules:${NC}"
+    tc qdisc show dev "$bridge"
+    
+    return 0
+}
+
+# Function to restore bridge network
+restore_bridge_chaos() {
+    local bridge=$(get_docker_bridge)
+    
+    if [ -z "$bridge" ]; then
+        echo -e "${YELLOW}Warning: Could not detect Docker bridge interface for cleanup${NC}"
+        return 0
+    fi
+    
+    echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S')] Restoring network on bridge ${bridge}...${NC}"
+    
+    # Remove qdisc rules
+    if sudo tc qdisc del dev "$bridge" root > /dev/null 2>&1; then
+        echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] Network restored on bridge ${bridge}${NC}"
+    else
+        echo -e "${YELLOW}No tc rules to remove on bridge ${bridge}${NC}"
+    fi
+    
+    return 0
+}
+
 # Function to inject network chaos
 inject_network_chaos() {
     local container=$1
@@ -698,13 +834,24 @@ if [ "$NETWORK_CHAOS_ENABLED" = true ]; then
     elif [ "$NETWORK_CHAOS_TYPE" = "combined" ] && [ "$NETWORK_BANDWIDTH_SET" = true ]; then
         echo -e "    Bandwidth: ${NETWORK_BANDWIDTH_MBIT}Mbps"
     fi
+    if [ "$NETWORK_CHAOS_TYPE" = "bridge-loss" ]; then
+        echo -e "    Packet loss: ${NETWORK_LOSS_PERCENT}%"
+        echo -e "    Target: Docker bridge (affects all containers)"
+    fi
 fi
 echo ""
 echo "Press Ctrl+C to stop."
 echo ""
 
 # Check if containers exist
-if [ ${#SELECTED_CNS[@]} -gt 0 ]; then
+if [ "$NETWORK_CHAOS_TYPE" = "bridge-loss" ]; then
+    # For bridge-loss, we don't need specific containers, just check if any MO container is running
+    if ! check_container "mo-cn1" && ! check_container "mo-cn2" && ! check_container "mo-proxy"; then
+        echo -e "${RED}Error: No MO containers are running.${NC}"
+        echo "Please start the containers first with: make dev-up"
+        exit 1
+    fi
+elif [ ${#SELECTED_CNS[@]} -gt 0 ]; then
     # Check if all specified containers exist
     missing_containers=()
     for container in "${SELECTED_CNS[@]}"; do
@@ -764,20 +911,25 @@ cleanup() {
     echo -e "\n${YELLOW}Script interrupted. Cleaning up...${NC}"
     # Restore network for affected containers if network chaos was enabled
     if [ "$NETWORK_CHAOS_ENABLED" = true ]; then
-        # If specific containers were selected, restore only those
-        if [ ${#SELECTED_CNS[@]} -gt 0 ]; then
-            for container in "${SELECTED_CNS[@]}"; do
-                if check_container "$container"; then
-                    restore_network "$container" 2>/dev/null || true
-                fi
-            done
+        # Handle bridge-loss type
+        if [ "$NETWORK_CHAOS_TYPE" = "bridge-loss" ]; then
+            restore_bridge_chaos 2>/dev/null || true
         else
-            # Otherwise restore all possible containers
-            for container in mo-cn1 mo-cn2 mo-tn; do
-                if check_container "$container"; then
-                    restore_network "$container" 2>/dev/null || true
-                fi
-            done
+            # If specific containers were selected, restore only those
+            if [ ${#SELECTED_CNS[@]} -gt 0 ]; then
+                for container in "${SELECTED_CNS[@]}"; do
+                    if check_container "$container"; then
+                        restore_network "$container" 2>/dev/null || true
+                    fi
+                done
+            else
+                # Otherwise restore all possible containers
+                for container in mo-cn1 mo-cn2 mo-tn; do
+                    if check_container "$container"; then
+                        restore_network "$container" 2>/dev/null || true
+                    fi
+                done
+            fi
         fi
     fi
     echo -e "${YELLOW}Cleanup complete. Exiting...${NC}"
@@ -824,37 +976,55 @@ while true; do
             apply_random_chaos
         fi
         
-        # Inject network chaos on all selected containers (in parallel)
+        # Inject network chaos
         if [ "$NETWORK_CHAOS_ENABLED" = true ]; then
-            for container in "${selected_containers[@]}"; do
-                if check_container "$container"; then
-                    inject_network_chaos "$container" &
-                fi
-            done
-            wait  # Wait for all background jobs to complete
+            if [ "$NETWORK_CHAOS_TYPE" = "bridge-loss" ]; then
+                # Bridge-level packet loss (affects all containers)
+                inject_bridge_chaos
+            else
+                # Container-level network chaos
+                for container in "${selected_containers[@]}"; do
+                    if check_container "$container"; then
+                        inject_network_chaos "$container" &
+                    fi
+                done
+                wait  # Wait for all background jobs to complete
+            fi
         fi
         
         # Handle chaos duration
         if [ "$NETWORK_CHAOS_DURATION" -eq 0 ]; then
             # Duration = 0: Inject until manually stopped (Ctrl+C)
-            echo -e "${GREEN}Network chaos active on ${#selected_containers[@]} container(s). Press Ctrl+C to stop...${NC}"
+            if [ "$NETWORK_CHAOS_TYPE" = "bridge-loss" ]; then
+                echo -e "${GREEN}Bridge packet loss active. Press Ctrl+C to stop...${NC}"
+            else
+                echo -e "${GREEN}Network chaos active on ${#selected_containers[@]} container(s). Press Ctrl+C to stop...${NC}"
+            fi
             # Wait indefinitely (until Ctrl+C triggers cleanup)
             while true; do
                 sleep 1
             done
         else
             # Duration > 0: Inject for specified duration, then restore and exit
-            echo -e "${GREEN}Network chaos active for ${NETWORK_CHAOS_DURATION} seconds on ${#selected_containers[@]} container(s)...${NC}"
+            if [ "$NETWORK_CHAOS_TYPE" = "bridge-loss" ]; then
+                echo -e "${GREEN}Bridge packet loss active for ${NETWORK_CHAOS_DURATION} seconds...${NC}"
+            else
+                echo -e "${GREEN}Network chaos active for ${NETWORK_CHAOS_DURATION} seconds on ${#selected_containers[@]} container(s)...${NC}"
+            fi
             wait_seconds "$NETWORK_CHAOS_DURATION" "Network chaos is active"
             
-            # Restore network on all selected containers (in parallel)
+            # Restore network
             if [ "$NETWORK_CHAOS_ENABLED" = true ]; then
-                for container in "${selected_containers[@]}"; do
-                    if check_container "$container"; then
-                        restore_network "$container" &
-                    fi
-                done
-                wait  # Wait for all background jobs to complete
+                if [ "$NETWORK_CHAOS_TYPE" = "bridge-loss" ]; then
+                    restore_bridge_chaos
+                else
+                    for container in "${selected_containers[@]}"; do
+                        if check_container "$container"; then
+                            restore_network "$container" &
+                        fi
+                    done
+                    wait  # Wait for all background jobs to complete
+                fi
                 echo -e "${GREEN}Network chaos duration completed. Network restored.${NC}"
             fi
             
