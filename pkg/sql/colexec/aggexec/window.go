@@ -268,3 +268,247 @@ func (exec *singleWindowExec) flushRowNumber() ([]*vector.Vector, error) {
 	}
 	return exec.ret.flushAll(), nil
 }
+
+// LagReturnType returns the type of the first argument (the expression to lag)
+func LagReturnType(args []types.Type) types.Type {
+	if len(args) > 0 {
+		return args[0]
+	}
+	return types.T_any.ToType()
+}
+
+// lagWindowExec is the executor for LAG window function
+// LAG(expr [, offset [, default]]) OVER (...)
+type lagWindowExec struct {
+	singleAggInfo
+	ret aggResultWithBytesType
+
+	// store the values for each group
+	// each group contains the actual values from the input
+	groups [][]lagValue
+}
+
+type lagValue struct {
+	isNull bool
+	data   []byte
+}
+
+func makeLagExec(mp *mpool.MPool, aggID int64, isDistinct bool, params ...types.Type) (AggFuncExec, error) {
+	if isDistinct {
+		return nil, moerr.NewInternalErrorNoCtx("window function does not support `distinct`")
+	}
+
+	retType := types.T_any.ToType()
+	if len(params) > 0 {
+		retType = params[0]
+	}
+
+	info := singleAggInfo{
+		aggID:     aggID,
+		distinct:  false,
+		argType:   retType,
+		retType:   retType,
+		emptyNull: true,
+	}
+	return newLagWindowExec(mp, info), nil
+}
+
+func newLagWindowExec(mp *mpool.MPool, info singleAggInfo) *lagWindowExec {
+	return &lagWindowExec{
+		singleAggInfo: info,
+		ret:           initAggResultWithBytesTypeResult(mp, info.retType, info.emptyNull, "", false),
+	}
+}
+
+func (exec *lagWindowExec) AggID() int64 {
+	return exec.singleAggInfo.aggID
+}
+
+func (exec *lagWindowExec) IsDistinct() bool {
+	return exec.singleAggInfo.distinct
+}
+
+func (exec *lagWindowExec) TypesInfo() ([]types.Type, types.Type) {
+	return []types.Type{exec.singleAggInfo.argType}, exec.singleAggInfo.retType
+}
+
+func (exec *lagWindowExec) GroupGrow(more int) error {
+	exec.groups = append(exec.groups, make([][]lagValue, more)...)
+	return exec.ret.grows(more)
+}
+
+func (exec *lagWindowExec) PreAllocateGroups(more int) error {
+	return exec.ret.preExtend(more)
+}
+
+func (exec *lagWindowExec) Fill(groupIndex int, row int, vectors []*vector.Vector) error {
+	if len(vectors) == 0 {
+		return nil
+	}
+
+	vec := vectors[0]
+	isNull := vec.IsNull(uint64(row))
+
+	var data []byte
+	if !isNull {
+		data = vec.GetRawBytesAt(row)
+		// Make a copy of the data
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+		data = dataCopy
+	}
+
+	exec.groups[groupIndex] = append(exec.groups[groupIndex], lagValue{
+		isNull: isNull,
+		data:   data,
+	})
+	return nil
+}
+
+func (exec *lagWindowExec) GetOptResult() SplitResult {
+	return &exec.ret.optSplitResult
+}
+
+func (exec *lagWindowExec) marshal() ([]byte, error) {
+	d := exec.singleAggInfo.getEncoded()
+	r, em, _, err := exec.ret.marshalToBytes()
+	if err != nil {
+		return nil, err
+	}
+
+	encoded := EncodedAgg{
+		Info:    d,
+		Result:  r,
+		Empties: em,
+		Groups:  nil,
+	}
+	if len(exec.groups) > 0 {
+		encoded.Groups = make([][]byte, len(exec.groups))
+		for i := range encoded.Groups {
+			// Encode each group's values
+			var buf bytes.Buffer
+			groupLen := int32(len(exec.groups[i]))
+			buf.Write(types.EncodeInt32(&groupLen))
+			for _, v := range exec.groups[i] {
+				buf.Write(types.EncodeBool(&v.isNull))
+				if !v.isNull {
+					dataLen := int32(len(v.data))
+					buf.Write(types.EncodeInt32(&dataLen))
+					buf.Write(v.data)
+				}
+			}
+			encoded.Groups[i] = buf.Bytes()
+		}
+	}
+	return encoded.Marshal()
+}
+
+func (exec *lagWindowExec) SaveIntermediateResult(cnt int64, flags [][]uint8, buf *bytes.Buffer) error {
+	return moerr.NewInternalErrorNoCtx("lag window function does not support intermediate result")
+}
+
+func (exec *lagWindowExec) SaveIntermediateResultOfChunk(chunk int, buf *bytes.Buffer) error {
+	return moerr.NewInternalErrorNoCtx("lag window function does not support intermediate result")
+}
+
+func (exec *lagWindowExec) UnmarshalFromReader(reader io.Reader, mp *mpool.MPool) error {
+	return moerr.NewInternalErrorNoCtx("lag window function does not support unmarshal")
+}
+
+func (exec *lagWindowExec) unmarshal(mp *mpool.MPool, result, empties, groups [][]byte) error {
+	return exec.ret.unmarshalFromBytes(result, empties, nil)
+}
+
+func (exec *lagWindowExec) BulkFill(groupIndex int, vectors []*vector.Vector) error {
+	panic("implement me")
+}
+
+func (exec *lagWindowExec) BatchFill(offset int, groups []uint64, vectors []*vector.Vector) error {
+	panic("implement me")
+}
+
+func (exec *lagWindowExec) Merge(next AggFuncExec, groupIdx1, groupIdx2 int) error {
+	other := next.(*lagWindowExec)
+	exec.groups[groupIdx1] = append(exec.groups[groupIdx1], other.groups[groupIdx2]...)
+	return nil
+}
+
+func (exec *lagWindowExec) BatchMerge(next AggFuncExec, offset int, groups []uint64) error {
+	other := next.(*lagWindowExec)
+	for i := range groups {
+		if groups[i] != GroupNotMatched {
+			groupIdx1 := int(groups[i] - 1)
+			groupIdx2 := i + offset
+			exec.groups[groupIdx1] = append(exec.groups[groupIdx1], other.groups[groupIdx2]...)
+		}
+	}
+	return nil
+}
+
+func (exec *lagWindowExec) SetExtraInformation(partialResult any, groupIndex int) error {
+	panic("window function do not support the extra information")
+}
+
+func (exec *lagWindowExec) Flush() ([]*vector.Vector, error) {
+	return exec.flushLag()
+}
+
+func (exec *lagWindowExec) Free() {
+	exec.ret.free()
+}
+
+func (exec *lagWindowExec) Size() int64 {
+	var size int64
+	size += exec.ret.Size()
+	for _, group := range exec.groups {
+		for _, v := range group {
+			size += int64(len(v.data)) + 1 // 1 for isNull bool
+		}
+		size += int64(cap(group)) * 24 // approximate size of lagValue struct
+	}
+	size += int64(cap(exec.groups)) * 24
+	return size
+}
+
+func (exec *lagWindowExec) flushLag() ([]*vector.Vector, error) {
+	// LAG returns the value from a row that is offset rows before the current row
+	// Default offset is 1
+	offset := 1
+
+	totalRows := 0
+	for _, group := range exec.groups {
+		totalRows += len(group)
+	}
+
+	resultVec := vector.NewVec(exec.retType)
+	mp := exec.ret.mp
+
+	for _, group := range exec.groups {
+		for i := range group {
+			// LAG looks back 'offset' rows
+			lagIdx := i - offset
+			if lagIdx < 0 {
+				// No previous row, return NULL
+				if err := vector.AppendBytes(resultVec, nil, true, mp); err != nil {
+					resultVec.Free(mp)
+					return nil, err
+				}
+			} else {
+				lagVal := group[lagIdx]
+				if lagVal.isNull {
+					if err := vector.AppendBytes(resultVec, nil, true, mp); err != nil {
+						resultVec.Free(mp)
+						return nil, err
+					}
+				} else {
+					if err := vector.AppendBytes(resultVec, lagVal.data, false, mp); err != nil {
+						resultVec.Free(mp)
+						return nil, err
+					}
+				}
+			}
+		}
+	}
+
+	return []*vector.Vector{resultVec}, nil
+}

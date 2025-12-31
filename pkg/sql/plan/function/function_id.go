@@ -990,4 +990,7 @@ var functionIdRegister = map[string]int32{
 
 	// fault inject function
 	"fault_inject": FAULT_INJECT,
+
+	// window function
+	"lag": LAG,
 }

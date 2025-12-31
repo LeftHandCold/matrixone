@@ -600,6 +600,23 @@ func TestAggExecSize(t *testing.T) {
 			},
 		},
 		{
+			name: "window_lag",
+			factory: func(mg *mpool.MPool) (AggFuncExec, error) {
+				return makeLagExec(mg, WinIdOfLag, false, types.T_varchar.ToType())
+			},
+			groupCount: 5,
+			fillFunc: func(t *testing.T, agg AggFuncExec, mp *mpool.MPool, groupCount int) bool {
+				v := fromValueListToVector(mp, types.T_varchar.ToType(), []string{"a", "b", "c", "d", "e"}, nil)
+				defer v.Free(mp)
+				for i := 0; i < groupCount; i++ {
+					for j := 0; j < v.Length(); j++ {
+						require.NoError(t, agg.Fill(i, j, []*vector.Vector{v}))
+					}
+				}
+				return true // Size should increase as it buffers values.
+			},
+		},
+		{
 			name: "fixed_to_fixed_with_context",
 			factory: func(mg *mpool.MPool) (AggFuncExec, error) {
 				info := singleAggInfo{
@@ -976,4 +993,172 @@ func TestDistinctHashMarshalUnmarshal(t *testing.T) {
 		newDh.free()
 	}
 
+}
+
+// TestLagWindowExec tests the LAG window function implementation
+func TestLagWindowExec(t *testing.T) {
+	mp := mpool.MustNewZeroNoFixed()
+	defer func() {
+		require.Equal(t, int64(0), mp.CurrNB())
+	}()
+
+	// Test basic LAG functionality with varchar type
+	t.Run("basic_lag_varchar", func(t *testing.T) {
+		exec, err := makeLagExec(mp, WinIdOfLag, false, types.T_varchar.ToType())
+		require.NoError(t, err)
+		require.NotNil(t, exec)
+
+		// Create a single group with 5 values: "a", "b", "c", "d", "e"
+		require.NoError(t, exec.GroupGrow(1))
+
+		v := vector.NewVec(types.T_varchar.ToType())
+		defer v.Free(mp)
+		require.NoError(t, vector.AppendBytes(v, []byte("a"), false, mp))
+		require.NoError(t, vector.AppendBytes(v, []byte("b"), false, mp))
+		require.NoError(t, vector.AppendBytes(v, []byte("c"), false, mp))
+		require.NoError(t, vector.AppendBytes(v, []byte("d"), false, mp))
+		require.NoError(t, vector.AppendBytes(v, []byte("e"), false, mp))
+
+		// Fill the group with all values
+		for i := 0; i < v.Length(); i++ {
+			require.NoError(t, exec.Fill(0, i, []*vector.Vector{v}))
+		}
+
+		// Flush and verify results
+		// LAG with offset 1 should return: NULL, "a", "b", "c", "d"
+		results, err := exec.Flush()
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+
+		resultVec := results[0]
+		require.Equal(t, 5, resultVec.Length())
+
+		// First value should be NULL (no previous row)
+		require.True(t, resultVec.IsNull(0))
+
+		// Second value should be "a"
+		require.False(t, resultVec.IsNull(1))
+		require.Equal(t, []byte("a"), resultVec.GetBytesAt(1))
+
+		// Third value should be "b"
+		require.False(t, resultVec.IsNull(2))
+		require.Equal(t, []byte("b"), resultVec.GetBytesAt(2))
+
+		// Fourth value should be "c"
+		require.False(t, resultVec.IsNull(3))
+		require.Equal(t, []byte("c"), resultVec.GetBytesAt(3))
+
+		// Fifth value should be "d"
+		require.False(t, resultVec.IsNull(4))
+		require.Equal(t, []byte("d"), resultVec.GetBytesAt(4))
+
+		resultVec.Free(mp)
+		exec.Free()
+	})
+
+	// Test LAG with NULL values in input
+	t.Run("lag_with_nulls", func(t *testing.T) {
+		exec, err := makeLagExec(mp, WinIdOfLag, false, types.T_varchar.ToType())
+		require.NoError(t, err)
+
+		require.NoError(t, exec.GroupGrow(1))
+
+		v := vector.NewVec(types.T_varchar.ToType())
+		defer v.Free(mp)
+		require.NoError(t, vector.AppendBytes(v, []byte("a"), false, mp))
+		require.NoError(t, vector.AppendBytes(v, nil, true, mp)) // NULL
+		require.NoError(t, vector.AppendBytes(v, []byte("c"), false, mp))
+
+		for i := 0; i < v.Length(); i++ {
+			require.NoError(t, exec.Fill(0, i, []*vector.Vector{v}))
+		}
+
+		results, err := exec.Flush()
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+
+		resultVec := results[0]
+		require.Equal(t, 3, resultVec.Length())
+
+		// First: NULL (no previous)
+		require.True(t, resultVec.IsNull(0))
+
+		// Second: "a" (previous was "a")
+		require.False(t, resultVec.IsNull(1))
+		require.Equal(t, []byte("a"), resultVec.GetBytesAt(1))
+
+		// Third: NULL (previous was NULL)
+		require.True(t, resultVec.IsNull(2))
+
+		resultVec.Free(mp)
+		exec.Free()
+	})
+
+	// Test LAG with multiple groups
+	t.Run("lag_multiple_groups", func(t *testing.T) {
+		exec, err := makeLagExec(mp, WinIdOfLag, false, types.T_varchar.ToType())
+		require.NoError(t, err)
+
+		require.NoError(t, exec.GroupGrow(2))
+
+		v1 := vector.NewVec(types.T_varchar.ToType())
+		defer v1.Free(mp)
+		require.NoError(t, vector.AppendBytes(v1, []byte("x"), false, mp))
+		require.NoError(t, vector.AppendBytes(v1, []byte("y"), false, mp))
+
+		v2 := vector.NewVec(types.T_varchar.ToType())
+		defer v2.Free(mp)
+		require.NoError(t, vector.AppendBytes(v2, []byte("1"), false, mp))
+		require.NoError(t, vector.AppendBytes(v2, []byte("2"), false, mp))
+		require.NoError(t, vector.AppendBytes(v2, []byte("3"), false, mp))
+
+		// Fill group 0
+		for i := 0; i < v1.Length(); i++ {
+			require.NoError(t, exec.Fill(0, i, []*vector.Vector{v1}))
+		}
+
+		// Fill group 1
+		for i := 0; i < v2.Length(); i++ {
+			require.NoError(t, exec.Fill(1, i, []*vector.Vector{v2}))
+		}
+
+		results, err := exec.Flush()
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+
+		resultVec := results[0]
+		// Total rows: 2 (group 0) + 3 (group 1) = 5
+		require.Equal(t, 5, resultVec.Length())
+
+		// Group 0: NULL, "x"
+		require.True(t, resultVec.IsNull(0))
+		require.Equal(t, []byte("x"), resultVec.GetBytesAt(1))
+
+		// Group 1: NULL, "1", "2"
+		require.True(t, resultVec.IsNull(2))
+		require.Equal(t, []byte("1"), resultVec.GetBytesAt(3))
+		require.Equal(t, []byte("2"), resultVec.GetBytesAt(4))
+
+		resultVec.Free(mp)
+		exec.Free()
+	})
+
+	// Test LAG TypesInfo
+	t.Run("lag_types_info", func(t *testing.T) {
+		exec, err := makeLagExec(mp, WinIdOfLag, false, types.T_int64.ToType())
+		require.NoError(t, err)
+
+		argTypes, retType := exec.TypesInfo()
+		require.Len(t, argTypes, 1)
+		require.Equal(t, types.T_int64, argTypes[0].Oid)
+		require.Equal(t, types.T_int64, retType.Oid)
+
+		exec.Free()
+	})
+
+	// Test LAG with distinct should fail
+	t.Run("lag_distinct_error", func(t *testing.T) {
+		_, err := makeLagExec(mp, WinIdOfLag, true, types.T_varchar.ToType())
+		require.Error(t, err)
+	})
 }

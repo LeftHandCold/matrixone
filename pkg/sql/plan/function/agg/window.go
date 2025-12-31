@@ -27,3 +27,7 @@ func RegisterRowNumber(id int64) {
 func RegisterDenseRank(id int64) {
 	aggexec.RegisterDenseRankWin(id)
 }
+
+func RegisterLag(id int64) {
+	aggexec.RegisterLagWin(id)
+}

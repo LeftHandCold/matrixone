@@ -88,4 +88,28 @@ var supportedWindowInNewFramework = []FuncNew{
 			},
 		},
 	},
+	{
+		functionId: LAG,
+		class:      plan.Function_WIN_VALUE,
+		layout:     STANDARD_FUNCTION,
+		checkFn: func(overloads []overload, inputs []types.Type) checkResult {
+			// LAG(expr [, offset [, default]])
+			// At least 1 argument (the expression), at most 3 arguments
+			if len(inputs) >= 1 && len(inputs) <= 3 {
+				return newCheckResultWithSuccess(0)
+			}
+			return newCheckResultWithFailure(failedFunctionParametersWrong)
+		},
+		Overloads: []overload{
+			{
+				overloadId: 0,
+				isWin:      true,
+				retType:    aggexec.LagReturnType,
+				aggFramework: aggregationLogicOfOverload{
+					str:         "lag",
+					aggRegister: agg.RegisterLag,
+				},
+			},
+		},
+	},
 }

@@ -226,6 +226,8 @@ func Test_GetFunctionByName(t *testing.T) {
 func TestGetFunctionIsWinfunByName(t *testing.T) {
 	assert.Equal(t, true, GetFunctionIsWinFunByName("rank"))
 	assert.Equal(t, false, GetFunctionIsWinFunByName("floor"))
+	// Test LAG window function
+	assert.Equal(t, true, GetFunctionIsWinFunByName("lag"))
 }
 
 func TestRunFunctionDirectly(t *testing.T) {

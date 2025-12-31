@@ -234,6 +234,9 @@ func makeSpecialAggExec(
 		case WinIdOfRowNumber, WinIdOfRank, WinIdOfDenseRank:
 			exec, err := makeWindowExec(mp, id, isDistinct)
 			return exec, true, err
+		case WinIdOfLag:
+			exec, err := makeLagExec(mp, id, isDistinct, params...)
+			return exec, true, err
 		}
 	}
 	return nil, false, nil
