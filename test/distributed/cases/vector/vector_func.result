@@ -918,3 +918,23 @@ subvector(c2, 50, 5)    subvector(c2, 50, 5) + cast([4.0,0.82,0.09,3.8,2.98] as 
 [9, 4, 3, 11, 0]    [13, 4.82, 3.09, 14.8, 2.98]
 [28, 13, 1, 4, 8]    [32, 13.82, 1.09, 7.8, 10.98]
 [5, 0, 0, 0, 2]    [9, 0.82, 0.09, 3.8, 4.98]
+
+-- Test window function with cosine_similarity in ORDER BY clause (issue #23155)
+select id, dense_rank() over (order by cosine_similarity(vecf32_3, "[1,1,1]")) from vtab32;
+id    dense_rank() over (order by cosine_similarity(vecf32_3, [1,1,1]))
+4    1
+3    2
+2    3
+1    4
+select id, rank() over (order by cosine_similarity(vecf32_3, "[1,1,1]")) from vtab32;
+id    rank() over (order by cosine_similarity(vecf32_3, [1,1,1]))
+4    1
+3    2
+2    3
+1    4
+select id, row_number() over (order by cosine_similarity(vecf32_3, "[1,1,1]")) from vtab32;
+id    row_number() over (order by cosine_similarity(vecf32_3, [1,1,1]))
+4    1
+3    2
+2    3
+1    4

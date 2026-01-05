@@ -254,3 +254,8 @@ select subvector(c2,50,5),subvector(c2,50,5) + cast("[4.0,0.82,0.09,3.8,2.98]" a
 
 -- Vector & Scalar Arithemetic
 
+
+-- Test window function with cosine_similarity in ORDER BY clause (issue #23155)
+select id, dense_rank() over (order by cosine_similarity(vecf32_3, "[1,1,1]")) from vtab32;
+select id, rank() over (order by cosine_similarity(vecf32_3, "[1,1,1]")) from vtab32;
+select id, row_number() over (order by cosine_similarity(vecf32_3, "[1,1,1]")) from vtab32;
