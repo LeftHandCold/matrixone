@@ -338,6 +338,19 @@ var writeDataToCSVFile = func(ep *ExportConfig, output []byte) error {
 	return nil
 }
 
+func formatJsonString(str string, flag bool, terminatedBy string) string {
+	if len(str) < 2 {
+		return "\"" + str + "\""
+	}
+	var tmp string
+	if !flag {
+		tmp = strings.ReplaceAll(str, terminatedBy, "\\"+terminatedBy)
+	} else {
+		tmp = strings.ReplaceAll(str, "\",", "\"\",")
+	}
+	return tmp
+}
+
 func escapeJSONControlChars(s string) string {
 	var builder strings.Builder
 	builder.Grow(len(s))
@@ -408,6 +421,7 @@ func constructByte(ctx context.Context, obj FeSession, bat *batch.Batch, index i
 
 	symbol := ep.Symbol
 	closeby := ep.userConfig.Fields.EnclosedBy.Value
+	terminated := ep.userConfig.Fields.Terminated.Value
 	flag := ep.ColumnFlag
 
 	buffer := &bytes.Buffer{}
@@ -421,8 +435,12 @@ func constructByte(ctx context.Context, obj FeSession, bat *batch.Batch, index i
 			switch vec.GetType().Oid { //get col
 			case types.T_json:
 				val := types.DecodeJson(vec.GetBytesAt(i))
-				value := addEscapeToString([]byte(val.String()), closeby)
-				formatOutputString(ep, value, symbol[j], closeby, true, buffer)
+				formatOutputString(ep, []byte(formatJsonString(
+					escapeJSONControlChars(
+						val.String(),
+					),
+					flag[j], terminated),
+				), symbol[j], closeby, flag[j], buffer)
 			case types.T_bool:
 				val := vector.GetFixedAtNoTypeCheck[bool](vec, i)
 				if val {
@@ -507,9 +525,6 @@ func constructByte(ctx context.Context, obj FeSession, bat *batch.Batch, index i
 				scale := vec.GetType().Scale
 				val := vector.GetFixedAtNoTypeCheck[types.Timestamp](vec, i).String2(timeZone, scale)
 				formatOutputString(ep, []byte(val), symbol[j], closeby, flag[j], buffer)
-			case types.T_year:
-				val := vector.GetFixedAtNoTypeCheck[types.MoYear](vec, i).String()
-				formatOutputString(ep, []byte(val), symbol[j], closeby, flag[j], buffer)
 			case types.T_decimal64:
 				scale := vec.GetType().Scale
 				val := vector.GetFixedAtNoTypeCheck[types.Decimal64](vec, i).Format(scale)
@@ -575,11 +590,24 @@ func constructByte(ctx context.Context, obj FeSession, bat *batch.Batch, index i
 }
 
 func addEscapeToString(s []byte, escape byte) []byte {
-	s = bytes.ReplaceAll(s, []byte("\\"[:1]), []byte("\\\\"[:2]))
-	if escape != 0 && escape != "\\"[0] {
-		s = bytes.ReplaceAll(s, []byte{escape}, []byte{escape, escape})
+	pos := make([]int, 0)
+	for i := 0; i < len(s); i++ {
+		if s[i] == escape {
+			pos = append(pos, i)
+		}
 	}
-	return s
+	if len(pos) == 0 {
+		return s
+	}
+	ret := make([]byte, 0)
+	cur := 0
+	for i := 0; i < len(pos); i++ {
+		ret = append(ret, s[cur:pos[i]]...)
+		ret = append(ret, escape)
+		cur = pos[i]
+	}
+	ret = append(ret, s[cur:]...)
+	return ret
 }
 
 func exportDataFromResultSetToCSVFile(oq *ExportConfig) error {

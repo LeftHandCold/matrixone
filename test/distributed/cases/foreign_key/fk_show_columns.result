@@ -315,8 +315,7 @@ level  ¦  ENUM('cluster','account','database','table')  ¦  YES  ¦    ¦  null
 account_name  ¦  VARCHAR(300)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
 database_name  ¦  VARCHAR(5000)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
 table_name  ¦  VARCHAR(5000)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
-obj_id  ¦  BIGINT UNSIGNED(64)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
-kind  ¦  VARCHAR(32)  ¦  NO  ¦    ¦  user  ¦    ¦  
+obj_id  ¦  BIGINT UNSIGNED(64)  ¦  YES  ¦    ¦  null  ¦    ¦  
 show columns from	mo_catalog.mo_database                ;
 ➤ Field[1,0,0]  ¦  Type[1,0,0]  ¦  Null[1,0,0]  ¦  Key[1,0,0]  ¦  Default[1,0,0]  ¦  Extra[1,0,0]  ¦  Comment[1,0,0]  𝄀
 dat_id  ¦  BIGINT UNSIGNED(0)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
@@ -632,8 +631,7 @@ level  ¦  ENUM('cluster','account','database','table')  ¦  YES  ¦    ¦  null
 account_name  ¦  VARCHAR(300)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
 database_name  ¦  VARCHAR(5000)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
 table_name  ¦  VARCHAR(5000)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
-obj_id  ¦  BIGINT UNSIGNED(64)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
-kind  ¦  VARCHAR(32)  ¦  NO  ¦    ¦  user  ¦    ¦  
+obj_id  ¦  BIGINT UNSIGNED(64)  ¦  YES  ¦    ¦  null  ¦    ¦  
 desc	mo_catalog.mo_database                ;
 ➤ Field[1,0,0]  ¦  Type[1,0,0]  ¦  Null[1,0,0]  ¦  Key[1,0,0]  ¦  Default[1,0,0]  ¦  Extra[1,0,0]  ¦  Comment[1,0,0]  𝄀
 dat_id  ¦  BIGINT UNSIGNED(0)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
@@ -927,8 +925,7 @@ level  ¦  ENUM('cluster','account','database','table')  ¦  YES  ¦    ¦  null
 account_name  ¦  VARCHAR(300)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
 database_name  ¦  VARCHAR(5000)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
 table_name  ¦  VARCHAR(5000)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
-obj_id  ¦  BIGINT UNSIGNED(64)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
-kind  ¦  VARCHAR(32)  ¦  NO  ¦    ¦  user  ¦    ¦  
+obj_id  ¦  BIGINT UNSIGNED(64)  ¦  YES  ¦    ¦  null  ¦    ¦  
 show columns from	mo_catalog.mo_database                ;
 ➤ Field[1,0,0]  ¦  Type[1,0,0]  ¦  Null[1,0,0]  ¦  Key[1,0,0]  ¦  Default[1,0,0]  ¦  Extra[1,0,0]  ¦  Comment[1,0,0]  𝄀
 dat_id  ¦  BIGINT UNSIGNED(0)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
@@ -1222,6 +1219,5 @@ level  ¦  ENUM('cluster','account','database','table')  ¦  YES  ¦    ¦  null
 account_name  ¦  VARCHAR(300)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
 database_name  ¦  VARCHAR(5000)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
 table_name  ¦  VARCHAR(5000)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
-obj_id  ¦  BIGINT UNSIGNED(64)  ¦  YES  ¦    ¦  null  ¦    ¦    𝄀
-kind  ¦  VARCHAR(32)  ¦  NO  ¦    ¦  user  ¦    ¦  
+obj_id  ¦  BIGINT UNSIGNED(64)  ¦  YES  ¦    ¦  null  ¦    ¦  
 drop account if exists fk_show_column;

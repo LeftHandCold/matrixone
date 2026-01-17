@@ -33,6 +33,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/txn"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
+	"github.com/matrixorigin/matrixone/pkg/txn/clock"
 	"github.com/matrixorigin/matrixone/pkg/txn/rpc"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 )
@@ -282,7 +283,8 @@ func newMockErrSession(t *testing.T, ctx context.Context, ctrl *gomock.Controlle
 	getPu("").TxnClient = txnClient
 	getPu("").StorageEngine = eng
 	ses.txnHandler.storage = eng
-
+	var c clock.Clock
+	_ = ses.GetTxnHandler().CreateTempStorage(c)
 	return ses
 }
 
@@ -314,6 +316,8 @@ func newMockErrSession2(t *testing.T, ctx context.Context, ctrl *gomock.Controll
 	getPu("").StorageEngine = eng
 	ses.txnHandler.storage = eng
 
+	var c clock.Clock
+	_ = ses.GetTxnHandler().CreateTempStorage(c)
 	return ses
 }
 
@@ -347,6 +351,8 @@ func newMockErrSession3(t *testing.T, ctx context.Context, ctrl *gomock.Controll
 	getPu("").StorageEngine = eng
 	ses.txnHandler.storage = eng
 
+	var c clock.Clock
+	_ = ses.GetTxnHandler().CreateTempStorage(c)
 	return ses
 }
 
@@ -367,7 +373,8 @@ func newMockErrSession4(t *testing.T, ctx context.Context, ctrl *gomock.Controll
 	getPu("").TxnClient = txnClient
 	getPu("").StorageEngine = eng
 	ses.txnHandler.storage = eng
-
+	var c clock.Clock
+	_ = ses.GetTxnHandler().CreateTempStorage(c)
 	return ses
 }
 

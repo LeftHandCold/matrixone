@@ -389,7 +389,7 @@ func (s *service) Close() error {
 	var err error
 	s.stopOnce.Do(func() {
 		s.stopper.Stop()
-		s.tableGroups.removeWithFilter(func(_ uint64, _ lockTable) bool { return true }, closeReasonServiceClose)
+		s.tableGroups.removeWithFilter(func(_ uint64, _ lockTable) bool { return true })
 		if err = s.remote.client.Close(); err != nil {
 			return
 		}
@@ -1005,13 +1005,13 @@ func (m *lockTableHolders) iter(fn func(uint64, lockTable) bool) {
 	}
 }
 
-func (m *lockTableHolders) removeWithFilter(filter func(uint64, lockTable) bool, reason closeReason) {
+func (m *lockTableHolders) removeWithFilter(filter func(uint64, lockTable) bool) {
 	m.RLock()
 	defer m.RUnlock()
 
 	removed := false
 	for _, h := range m.holders {
-		if h.removeWithFilter(filter, reason) {
+		if h.removeWithFilter(filter) {
 			removed = true
 		}
 	}
@@ -1055,12 +1055,12 @@ func (m *lockTableHolder) set(
 	oldBind := old.getBind()
 	newBind := new.getBind()
 	if oldBind.Changed(newBind) {
-		old.close(closeReasonBindChanged)
+		old.close()
 		m.tables[id] = new
 		logRemoteBindChanged(logger, m.service, oldBind, newBind)
 		return new
 	}
-	new.close(closeReasonBindChanged)
+	new.close()
 	return old
 }
 
@@ -1075,13 +1075,13 @@ func (m *lockTableHolder) iter(fn func(uint64, lockTable) bool) bool {
 	return true
 }
 
-func (m *lockTableHolder) removeWithFilter(filter func(uint64, lockTable) bool, reason closeReason) bool {
+func (m *lockTableHolder) removeWithFilter(filter func(uint64, lockTable) bool) bool {
 	m.Lock()
 	defer m.Unlock()
 	removed := false
 	for id, v := range m.tables {
 		if filter(id, v) {
-			v.close(reason)
+			v.close()
 			delete(m.tables, id)
 			removed = true
 		}

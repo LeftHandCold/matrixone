@@ -36,7 +36,7 @@ type container struct {
 
 type IndexJoin struct {
 	ctr                container
-	ResultCols         []int32
+	Result             []int32
 	RuntimeFilterSpecs []*plan.RuntimeFilterSpec
 
 	vm.OperatorBase

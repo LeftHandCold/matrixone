@@ -128,30 +128,30 @@ PRIMARY KEY (id)
 );
 load data infile 'stage://export_test_stage/test_default.csv' into table export_verify fields terminated by ',' ignore 1 lines;
 select * from export_verify order by id;
-➤ id[4,32,0]  ¦  name[12,-1,0]  ¦  age[4,32,0]  ¦  salary[3,10,2]  ¦  is_active[-7,1,0]  ¦  created_at[93,64,0]  𝄀
-1  ¦  Alice  ¦  30  ¦  50000.00  ¦  1  ¦  2023-01-15 10:30:00  𝄀
-2  ¦  Bob  ¦  25  ¦  45000.50  ¦  1  ¦  2023-02-20 14:45:00  𝄀
-3  ¦  Charlie  ¦  35  ¦  60000.75  ¦  0  ¦  2023-03-10 09:15:00  𝄀
-4  ¦  Diana  ¦  28  ¦  55000.25  ¦  1  ¦  2023-04-05 16:00:00  𝄀
-5  ¦  Eve  ¦  32  ¦  52000.00  ¦  0  ¦  2023-05-12 11:30:00
+➤ id[4,32,0]  ¦  name[12,-1,0]  ¦  age[4,32,0]  ¦  salary[3,10,2]  ¦  is_active[12,4,0]  ¦  created_at[93,64,0]  𝄀
+1  ¦  Alice  ¦  30  ¦  50000.00  ¦  true  ¦  2023-01-15 10:30:00  𝄀
+2  ¦  Bob  ¦  25  ¦  45000.50  ¦  true  ¦  2023-02-20 14:45:00  𝄀
+3  ¦  Charlie  ¦  35  ¦  60000.75  ¦  false  ¦  2023-03-10 09:15:00  𝄀
+4  ¦  Diana  ¦  28  ¦  55000.25  ¦  true  ¦  2023-04-05 16:00:00  𝄀
+5  ¦  Eve  ¦  32  ¦  52000.00  ¦  false  ¦  2023-05-12 11:30:00
 truncate table export_verify;
 load data infile 'stage://export_test_stage/test_csv_tab.csv' into table export_verify fields terminated by '\t' ignore 1 lines;
 select * from export_verify order by id;
-➤ id[4,32,0]  ¦  name[12,-1,0]  ¦  age[4,32,0]  ¦  salary[3,10,2]  ¦  is_active[-7,1,0]  ¦  created_at[93,64,0]  𝄀
-1  ¦  Alice  ¦  30  ¦  50000.00  ¦  1  ¦  2023-01-15 10:30:00  𝄀
-2  ¦  Bob  ¦  25  ¦  45000.50  ¦  1  ¦  2023-02-20 14:45:00  𝄀
-3  ¦  Charlie  ¦  35  ¦  60000.75  ¦  0  ¦  2023-03-10 09:15:00  𝄀
-4  ¦  Diana  ¦  28  ¦  55000.25  ¦  1  ¦  2023-04-05 16:00:00  𝄀
-5  ¦  Eve  ¦  32  ¦  52000.00  ¦  0  ¦  2023-05-12 11:30:00
+➤ id[4,32,0]  ¦  name[12,-1,0]  ¦  age[4,32,0]  ¦  salary[3,10,2]  ¦  is_active[12,4,0]  ¦  created_at[93,64,0]  𝄀
+1  ¦  Alice  ¦  30  ¦  50000.00  ¦  true  ¦  2023-01-15 10:30:00  𝄀
+2  ¦  Bob  ¦  25  ¦  45000.50  ¦  true  ¦  2023-02-20 14:45:00  𝄀
+3  ¦  Charlie  ¦  35  ¦  60000.75  ¦  false  ¦  2023-03-10 09:15:00  𝄀
+4  ¦  Diana  ¦  28  ¦  55000.25  ¦  true  ¦  2023-04-05 16:00:00  𝄀
+5  ¦  Eve  ¦  32  ¦  52000.00  ¦  false  ¦  2023-05-12 11:30:00
 truncate table export_verify;
 load data infile 'stage://export_test_stage/test_csv_no_header.csv' into table export_verify fields terminated by ',';
 select * from export_verify order by id;
-➤ id[4,32,0]  ¦  name[12,-1,0]  ¦  age[4,32,0]  ¦  salary[3,10,2]  ¦  is_active[-7,1,0]  ¦  created_at[93,64,0]  𝄀
-1  ¦  Alice  ¦  30  ¦  50000.00  ¦  1  ¦  2023-01-15 10:30:00  𝄀
-2  ¦  Bob  ¦  25  ¦  45000.50  ¦  1  ¦  2023-02-20 14:45:00  𝄀
-3  ¦  Charlie  ¦  35  ¦  60000.75  ¦  0  ¦  2023-03-10 09:15:00  𝄀
-4  ¦  Diana  ¦  28  ¦  55000.25  ¦  1  ¦  2023-04-05 16:00:00  𝄀
-5  ¦  Eve  ¦  32  ¦  52000.00  ¦  0  ¦  2023-05-12 11:30:00
+➤ id[4,32,0]  ¦  name[12,-1,0]  ¦  age[4,32,0]  ¦  salary[3,10,2]  ¦  is_active[12,4,0]  ¦  created_at[93,64,0]  𝄀
+1  ¦  Alice  ¦  30  ¦  50000.00  ¦  true  ¦  2023-01-15 10:30:00  𝄀
+2  ¦  Bob  ¦  25  ¦  45000.50  ¦  true  ¦  2023-02-20 14:45:00  𝄀
+3  ¦  Charlie  ¦  35  ¦  60000.75  ¦  false  ¦  2023-03-10 09:15:00  𝄀
+4  ¦  Diana  ¦  28  ¦  55000.25  ¦  true  ¦  2023-04-05 16:00:00  𝄀
+5  ¦  Eve  ¦  32  ¦  52000.00  ¦  false  ¦  2023-05-12 11:30:00
 select * from export_format_test into outfile 'stage://export_test_stage/test_invalid_xml.txt' format 'xml';
 SQL parser error: You have an error in your SQL syntax; check the manual that corresponds to your MatrixOne server version for the right syntax to use. invalid format, must be csv, jsonline or parquet at line 1 column 107 near " 'xml';";
 select * from export_format_test into outfile 'stage://export_test_stage/test_invalid_json.txt' format 'json';

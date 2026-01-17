@@ -144,7 +144,6 @@ type Source struct {
 	IndexReaderParam *plan.IndexReaderParam
 
 	RecvMsgList []plan.MsgHeader
-	BloomFilter []byte
 }
 
 // Col is the information of attribute

@@ -135,7 +135,6 @@ func (hr *ResHashRelated) Free0() {
 		hr.Hash.Free()
 		hr.Hash = nil
 	}
-	hr.mp = nil
 }
 
 // countNonZeroAndFindKth is a helper function to count the number of non-zero values
@@ -463,15 +462,16 @@ func (ctr *container) loadSpilledData(proc *process.Process, opAnalyzer process.
 			}
 		}
 
-		// free spill agg list after merging.
-		ctr.freeSpillAggList()
-
 		if ctr.needSpill(opAnalyzer) {
 			if err := ctr.spillDataToDisk(proc, bkt); err != nil {
 				return false, err
 			}
+
 		}
 	}
+
+	// free spill agg list,
+	ctr.freeSpillAggList()
 
 	// respilling happened, so we finish the last batch and recursive down
 	if ctr.isSpilling() {

@@ -89,7 +89,6 @@ func BackupData(
 	srcFs, dstFs fileservice.FileService,
 	dir string,
 	config *Config,
-	globalIndex *GlobalFileIndex,
 ) error {
 	v, ok := runtime.ServiceRuntime(sid).GetGlobalVariables(runtime.InternalSQLExecutor)
 	if !ok {
@@ -121,7 +120,7 @@ func BackupData(
 	defer protectionMgr.cleanup()
 
 	count := config.Parallelism
-	return execBackup(ctx, sid, srcFs, dstFs, fileName, int(count), config.BackupTs, config.BackupType, nil, protectionMgr, globalIndex)
+	return execBackup(ctx, sid, srcFs, dstFs, fileName, int(count), config.BackupTs, config.BackupType, nil, protectionMgr)
 }
 
 func getParallelCount(count int) int {
@@ -287,7 +286,6 @@ func execBackup(
 	typ string,
 	filesList *[]*taeFile,
 	protectionMgr *backupProtectionManager, // Optional: nil for tests, non-nil for production
-	globalIndex *GlobalFileIndex, // Optional: global file index for checking if file already backed up
 ) error {
 	backupTime := names[0]
 	trimString := names[1]
@@ -367,12 +365,7 @@ func execBackup(
 	startTime = time.Now()
 	for _, oName := range oNames {
 		objName := oName.Location.Name().String()
-		// Check if file already exists in current backup directory
 		if dstHave[objName] {
-			oName.NeedCopy = false
-		}
-		// Check if file exists in global index (already backed up in previous backups)
-		if globalIndex != nil && globalIndex.Has(objName) {
 			oName.NeedCopy = false
 		}
 		if files[objName] == nil {

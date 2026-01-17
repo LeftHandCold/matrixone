@@ -211,6 +211,7 @@ drop table customer_orders;
 
 
 -- window function rewrite
+-- @bvt:issue#22688
 drop table if exists employee_sales;
 create table employee_sales (
         emp_id int,
@@ -235,6 +236,9 @@ from dept_rankings
 where dept_rank <= 2
 order by department, dept_rank;
 drop table employee_sales;
+-- @bvt:issue
+
+
 
 -- subquery aggregation rewrite
 drop table if exists sales;
@@ -533,6 +537,7 @@ set enable_remap_hint = 1;
 drop database if exists acc01_test;
 create database acc01_test;
 use acc01_test;
+-- @bvt:issue#22688
 drop table if exists large_table;
 create table large_table (
     id int,
@@ -546,6 +551,9 @@ insert into large_table select result, 2 from generate_series(1, 1000000) g;
 } */
 select count(*) from large_table;
 select count(*) from large_table where id < 1000;
+drop database acc01_test;
+set enable_remap_hint = 0;
+-- @bvt:issue
 
 
 

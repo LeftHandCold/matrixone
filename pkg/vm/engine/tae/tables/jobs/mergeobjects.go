@@ -246,6 +246,8 @@ func (task *mergeObjectsTask) LoadNextBatch(
 		data = containers.ToTNBatch(reuseBatch, common.MergeAllocator)
 	}
 
+	// For the last block of an object, we need to close data to release vectors.
+	// For non-last blocks, we reuse the batch, so we only clean the data.
 	if task.nMergedBlk[objIdx] == task.blkCnt[objIdx]-1 {
 		releaseF = func() {
 			if data != nil {

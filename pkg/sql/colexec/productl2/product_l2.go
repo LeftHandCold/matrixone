@@ -139,20 +139,18 @@ func getIndex[T types.RealNumbers](ap *Productl2, proc *process.Process, analyze
 	buildCount := ctr.bat.RowCount()
 	centroidColPos := ap.OnExpr.GetF().GetArgs()[0].GetCol().GetColPos()
 
-	centroidVec := ctr.bat.Vecs[centroidColPos]
-
-	dim := centroidVec.GetType().Width
-	elemSize := uint(centroidVec.GetType().GetArrayElementSize())
+	dim := ctr.bat.Vecs[centroidColPos].GetType().Width
+	elemSize := uint(ctr.bat.Vecs[centroidColPos].GetType().GetArrayElementSize())
 	centers := make([][]T, buildCount)
 	nullvec := NewNullVector[T](dim)
 
 	for i := 0; i < buildCount; i++ {
-		if centroidVec.IsNull(uint64(i)) {
+		if ctr.bat.Vecs[centroidColPos].IsNull(uint64(i)) {
 			centers[i] = nullvec
 			continue
 		}
 
-		c := types.BytesToArray[T](centroidVec.GetBytesAt(i))
+		c := types.BytesToArray[T](ctr.bat.Vecs[centroidColPos].GetBytesAt(i))
 		centers[i] = c
 	}
 
@@ -191,9 +189,7 @@ func (productl2 *Productl2) build(proc *process.Process, analyzer process.Analyz
 	mp.Free()
 
 	centroidColPos := productl2.OnExpr.GetF().GetArgs()[0].GetCol().GetColPos()
-	centroidVec := ctr.bat.Vecs[centroidColPos]
-
-	switch centroidVec.GetType().Oid {
+	switch ctr.bat.Vecs[centroidColPos].GetType().Oid {
 	case types.T_array_float32:
 		ctr.brute_force, err = getIndex[float32](productl2, proc, analyzer)
 		if err != nil {
@@ -227,23 +223,21 @@ func (productl2 *Productl2) build(proc *process.Process, analyzer process.Analyz
 func newMat[T types.RealNumbers](ctr *container, ap *Productl2) ([][]T, error) {
 	probeCount := ctr.inBat.RowCount()
 	tblColPos := ap.OnExpr.GetF().GetArgs()[1].GetCol().GetColPos()
-	tblColVec := ctr.inBat.Vecs[tblColPos]
 
 	// dimension can only get from centroid column.  probe column input values can be null and dimension is 0.
 	centroidColPos := ap.OnExpr.GetF().GetArgs()[0].GetCol().GetColPos()
-	centroidVec := ctr.bat.Vecs[centroidColPos]
-	dim := centroidVec.GetType().Width
+	dim := ctr.bat.Vecs[centroidColPos].GetType().Width
 	nullvec := NewNullVector[T](dim)
 
 	// embedding mat
 	probes := make([][]T, probeCount)
 	for j := 0; j < probeCount; j++ {
 
-		if tblColVec.IsNull(uint64(j)) {
+		if ctr.inBat.Vecs[tblColPos].IsNull(uint64(j)) {
 			probes[j] = nullvec
 			continue
 		}
-		v := types.BytesToArray[T](tblColVec.GetBytesAt(j))
+		v := types.BytesToArray[T](ctr.inBat.Vecs[tblColPos].GetBytesAt(j))
 		probes[j] = v
 	}
 
@@ -271,7 +265,6 @@ func (ctr *container) release() {
 func probeRun[T types.RealNumbers](ctr *container, ap *Productl2, proc *process.Process, result *vm.CallResult) error {
 	probeCount := ctr.inBat.RowCount()
 	tblColPos := ap.OnExpr.GetF().GetArgs()[1].GetCol().GetColPos()
-	tblColVec := ctr.inBat.Vecs[tblColPos]
 
 	ncpu := runtime.NumCPU()
 	if probeCount < ncpu {
@@ -299,17 +292,13 @@ func probeRun[T types.RealNumbers](ctr *container, ap *Productl2, proc *process.
 	_ = distances
 
 	leastClusterIndex := anykeys.([]int64)
-	// BCE Hint
-	if len(leastClusterIndex) != probeCount {
-		return moerr.NewInternalErrorNoCtx("leastClusterIndex size != probeCount")
-	}
 
 	//os.Stderr.WriteString(fmt.Sprintf("keys %v\n", keys))
 	//os.Stderr.WriteString(fmt.Sprintf("distances %v\n", distances))
 
 	for j := 0; j < probeCount; j++ {
 
-		if tblColVec.IsNull(uint64(j)) {
+		if ctr.inBat.Vecs[tblColPos].IsNull(uint64(j)) {
 			leastClusterIndex[j] = 0
 		}
 		for k, rp := range ap.Result {

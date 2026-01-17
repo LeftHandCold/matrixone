@@ -960,8 +960,6 @@ var (
 		catalog.MO_BRANCH_METADATA:    0,
 
 		catalog.MO_TABLES_LOGICAL_ID_INDEX_TABLE_NAME: 0,
-		catalog.MO_FEATURE_LIMIT:                      0,
-		catalog.MO_FEATURE_REGISTRY:                   0,
 	}
 )
 

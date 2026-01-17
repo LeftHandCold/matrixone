@@ -718,16 +718,6 @@ var supportedOperators = []FuncNew{
 					return newOpOperatorStrIn().operatorIn
 				},
 			},
-			{
-				overloadId: 24,
-				args:       []types.T{types.T_year, types.T_year},
-				retType: func(parameters []types.Type) types.Type {
-					return types.T_bool.ToType()
-				},
-				newOp: func() executeLogicOfOverload {
-					return newOpOperatorFixedIn[types.MoYear]().operatorIn
-				},
-			},
 			// {
 			// 	overloadId: 24,
 			// 	args:       []types.T{types.T_uint8, types.T_tuple},
@@ -1259,16 +1249,6 @@ var supportedOperators = []FuncNew{
 					return newOpOperatorStrIn().operatorNotIn
 				},
 			},
-			{
-				overloadId: 24,
-				args:       []types.T{types.T_year, types.T_year},
-				retType: func(parameters []types.Type) types.Type {
-					return types.T_bool.ToType()
-				},
-				newOp: func() executeLogicOfOverload {
-					return newOpOperatorFixedIn[types.MoYear]().operatorNotIn
-				},
-			},
 
 			// {
 			// 	overloadId: 24,
@@ -1581,16 +1561,6 @@ var supportedOperators = []FuncNew{
 			{
 				overloadId: 0,
 				retType: func(parameters []types.Type) types.Type {
-					// After type conversion, both parameters may be decimal128
-					// Check both parameters to determine result type
-					if parameters[0].Oid == types.T_decimal128 || parameters[1].Oid == types.T_decimal128 {
-						scale1 := parameters[0].Scale
-						scale2 := parameters[1].Scale
-						if scale1 < scale2 {
-							scale1 = scale2
-						}
-						return types.New(types.T_decimal128, 38, scale1)
-					}
 					if parameters[0].Oid == types.T_decimal64 {
 						scale1 := parameters[0].Scale
 						scale2 := parameters[1].Scale
@@ -1598,6 +1568,14 @@ var supportedOperators = []FuncNew{
 							scale1 = scale2
 						}
 						return types.New(types.T_decimal64, 18, scale1)
+					}
+					if parameters[0].Oid == types.T_decimal128 {
+						scale1 := parameters[0].Scale
+						scale2 := parameters[1].Scale
+						if scale1 < scale2 {
+							scale1 = scale2
+						}
+						return types.New(types.T_decimal128, 38, scale1)
 					}
 					return parameters[0]
 				},
@@ -1666,7 +1644,7 @@ var supportedOperators = []FuncNew{
 						}
 						return types.New(types.T_decimal128, 38, scale1)
 					}
-					if parameters[0].Oid == types.T_date || parameters[0].Oid == types.T_datetime || parameters[0].Oid == types.T_year {
+					if parameters[0].Oid == types.T_date || parameters[0].Oid == types.T_datetime {
 						return types.T_int64.ToType()
 					}
 					return parameters[0]
@@ -1732,9 +1710,6 @@ var supportedOperators = []FuncNew{
 						}
 						return types.New(types.T_decimal128, 38, scale)
 					}
-					if parameters[0].Oid == types.T_year {
-						return types.T_int64.ToType()
-					}
 					return parameters[0]
 				},
 				newOp: func() executeLogicOfOverload {
@@ -1797,9 +1772,6 @@ var supportedOperators = []FuncNew{
 						}
 						return types.New(types.T_decimal128, 38, scale)
 					}
-					if parameters[0].Oid == types.T_year {
-						return types.T_float64.ToType()
-					}
 					return parameters[0]
 				},
 				newOp: func() executeLogicOfOverload {
@@ -1829,14 +1801,15 @@ var supportedOperators = []FuncNew{
 		layout:     BINARY_ARITHMETIC_OPERATOR,
 		checkFn: func(overloads []overload, inputs []types.Type) checkResult {
 			if len(inputs) == 2 {
-				// First check if types directly support DIV
-				if integerDivOperatorSupports(inputs[0], inputs[1]) {
-					return newCheckResultWithSuccess(0)
-				}
-				// Then check with type casting
 				has, t1, t2 := fixedTypeCastRule2(inputs[0], inputs[1])
-				if has && integerDivOperatorSupports(t1, t2) {
-					return newCheckResultWithCast(0, []types.Type{t1, t2})
+				if has {
+					if integerDivOperatorSupports(t1, t2) {
+						return newCheckResultWithCast(0, []types.Type{t1, t2})
+					}
+				} else {
+					if integerDivOperatorSupports(inputs[0], inputs[1]) {
+						return newCheckResultWithSuccess(0)
+					}
 				}
 			}
 			return newCheckResultWithFailure(failedFunctionParametersWrong)

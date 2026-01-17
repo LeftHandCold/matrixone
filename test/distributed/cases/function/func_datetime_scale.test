@@ -1,4 +1,3 @@
---- @metacmp(true)
 -- @suite
 -- @setup
 drop table if exists t_scale_storage;

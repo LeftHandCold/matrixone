@@ -35,12 +35,21 @@ const (
 	End
 )
 
+const (
+	LoopInner = iota
+	LoopAnti
+	LoopLeft
+	LoopMark
+	LoopSemi
+	LoopSingle
+)
+
 type container struct {
 	state    int
 	probeIdx int
 	batIdx   int
-	inBat    *batch.Batch
-	resBat   *batch.Batch
+	inbat    *batch.Batch
+	rbat     *batch.Batch
 	joinBat  *batch.Batch
 	expr     colexec.ExpressionExecutor
 	cfs      []func(*vector.Vector, *vector.Vector, int64, int) error
@@ -49,11 +58,11 @@ type container struct {
 
 type LoopJoin struct {
 	ctr        container
-	RightTypes []types.Type
-	NonEqCond  *plan.Expr
-	ResultCols []colexec.ResultPos
+	Typs       []types.Type
+	Cond       *plan.Expr
+	Result     []colexec.ResultPos
 	JoinMapTag int32
-	JoinType   plan.Node_JoinType
+	JoinType   int
 	MarkPos    int
 
 	vm.OperatorBase
@@ -93,17 +102,17 @@ func (loopJoin *LoopJoin) Release() {
 func (loopJoin *LoopJoin) Reset(proc *process.Process, pipelineFailed bool, err error) {
 	ctr := &loopJoin.ctr
 
-	ctr.resetNonEqCondExecutor()
+	ctr.resetExprExecutor()
 	ctr.cleanHashMap()
 	ctr.state = Build
-	ctr.inBat = nil
+	ctr.inbat = nil
 }
 
 func (loopJoin *LoopJoin) Free(proc *process.Process, pipelineFailed bool, err error) {
 	ctr := &loopJoin.ctr
 
 	ctr.cleanBatch(proc.Mp())
-	ctr.cleanNonEqCondExecutor()
+	ctr.cleanExprExecutor()
 
 }
 
@@ -112,9 +121,9 @@ func (loopJoin *LoopJoin) ExecProjection(proc *process.Process, input *batch.Bat
 }
 
 func (ctr *container) cleanBatch(mp *mpool.MPool) {
-	if ctr.resBat != nil {
-		ctr.resBat.Clean(mp)
-		ctr.resBat = nil
+	if ctr.rbat != nil {
+		ctr.rbat.Clean(mp)
+		ctr.rbat = nil
 	}
 	if ctr.joinBat != nil {
 		ctr.joinBat.Clean(mp)
@@ -122,13 +131,13 @@ func (ctr *container) cleanBatch(mp *mpool.MPool) {
 	}
 }
 
-func (ctr *container) resetNonEqCondExecutor() {
+func (ctr *container) resetExprExecutor() {
 	if ctr.expr != nil {
 		ctr.expr.ResetForNextQuery()
 	}
 }
 
-func (ctr *container) cleanNonEqCondExecutor() {
+func (ctr *container) cleanExprExecutor() {
 	if ctr.expr != nil {
 		ctr.expr.Free()
 		ctr.expr = nil

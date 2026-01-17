@@ -262,11 +262,6 @@ func (p *Packer) EncodeEnum(e Enum) {
 	p.EncodeUint16(uint16(e))
 }
 
-func (p *Packer) EncodeMoYear(e MoYear) {
-	p.putByte(yearCode)
-	p.encodeInt(int64(e))
-}
-
 func (p *Packer) EncodeDecimal64(e Decimal64) {
 	p.putByte(decimal64Code)
 	b := *(*[8]byte)(unsafe.Pointer(&e))

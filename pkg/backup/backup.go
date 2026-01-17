@@ -142,14 +142,7 @@ var backupTae = func(
 	config *Config,
 ) error {
 	fs := fileservice.SubPath(config.TaeDir, taeDir)
-	// Load global file index from backup root directory
-	// config.TaeDir points to the backup root (parent of tae/)
-	globalIndex, err := LoadGlobalFileIndex(ctx, config.TaeDir)
-	if err != nil {
-		logutil.Warnf("backup: failed to load global file index: %v", err)
-		// Continue without index - will use original dedup logic
-	}
-	return BackupData(ctx, sid, config.SharedFs, fs, "", config, globalIndex)
+	return BackupData(ctx, sid, config.SharedFs, fs, "", config)
 }
 
 func backupHakeeper(ctx context.Context, config *Config) error {

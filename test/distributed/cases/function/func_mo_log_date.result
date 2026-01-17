@@ -3,13 +3,13 @@ date
 2021-01-01
 SELECT mo_log_date('2021/01/01') between '2021-01-01' and '2021-01-02' as val;
 val
-1
+true
 SELECT mo_log_date('2021/01/01') > '2021-01-01' as val;
 val
-0
+false
 SELECT mo_log_date('2021/01/01') < '2021-01-02' as val;
 val
-1
+true
 SELECT mo_log_date('2021-01-01') as date;
 date
 null

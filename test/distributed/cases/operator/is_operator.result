@@ -359,52 +359,52 @@ null	not found
 null	not found
 select (null) is unknown;
 (null)
-1
+true
 select null is unknown;
 null
-1
+true
 select true is unknown;
-1
-0
+true
+false
 select false is unknown;
-0
-0
+false
+false
 drop table if exists t1;
 CREATE TABLE t1 (a bool);
 insert into t1 values (false), (null), (true), (null);
 select a is unknown from t1 order by a;
 a
-1
-1
-0
-0
+true
+true
+false
+false
 select null is false;
 null
-0
+false
 select null is true;
 null
-0
+false
 select null is not false;
 null
-1
+true
 select null is not true;
 null
-1
+true
 select 1 is true;
 1
-1
+true
 select 1 is false;
 1
-0
+false
 select 1 is not true;
 1
-0
+false
 select 1 is not false;
 1
-1
+true
 select a is true from t1 order by a;
 a
-0
-0
-0
-1
+false
+false
+false
+true

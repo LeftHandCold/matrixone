@@ -27,6 +27,12 @@ import (
 
 var debugInstructionNames = map[vm.OpType]string{
 	vm.Top:                     "top",
+	vm.Join:                    "join",
+	vm.Semi:                    "semi",
+	vm.RightSemi:               "right semi",
+	vm.RightAnti:               "right anti",
+	vm.Left:                    "left",
+	vm.Right:                   "right",
 	vm.Limit:                   "limit",
 	vm.Merge:                   "merge",
 	vm.Order:                   "order",
@@ -41,7 +47,9 @@ var debugInstructionNames = map[vm.OpType]string{
 	vm.ShuffleV2:               "shuffleV2",
 	vm.Connector:               "connect",
 	vm.Projection:              "projection",
-	vm.HashJoin:                "hash join",
+	vm.Anti:                    "anti",
+	vm.Single:                  "single",
+	vm.Mark:                    "mark",
 	vm.IndexJoin:               "index join",
 	vm.LoopJoin:                "loop join",
 	vm.MergeTop:                "merge top",

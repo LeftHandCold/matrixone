@@ -63,8 +63,8 @@ select avg(inner_product(vecf32_5,vecf32_5)) from vtab32;
 select count(inner_product(vecf32_5,vecf32_5)) from vtab32;
 select sin(inner_product(vecf64_3,vecf64_3)) from vtab64;
 select cos(inner_product(vecf64_5,vecf64_5)) from vtab64;
-select inner_product(normalize_l2(vecf32_3),normalize_l2(vecf32_3)), inner_product(normalize_l2(vecf32_5),normalize_l2(vecf32_5)),  inner_product(normalize_l2(vecf32_3),normalize_l2(vecf32_3)) - inner_product(normalize_l2(vecf32_5),normalize_l2(vecf32_5)) from vtab32;
-select inner_product(normalize_l2(vecf32_3),normalize_l2(vecf32_3)) * inner_product(normalize_l2(vecf32_5),normalize_l2(vecf32_5)) from vtab32;
+select inner_product(vecf32_3,vecf32_3) - inner_product(vecf32_5,vecf32_5) from vtab32;
+select inner_product(vecf32_3,vecf32_3) * inner_product(vecf32_5,vecf32_5) from vtab32;
 select inner_product(vecf64_3,vecf64_3) + inner_product(vecf64_5,vecf64_5) from vtab64;
 select inner_product(vecf64_3,vecf64_3) / inner_product(vecf64_5,vecf64_5) from vtab64;
 select * from (select inner_product(vecf32_3,vecf32_3),inner_product(vecf32_5,vecf32_5) from vtab32);
@@ -254,3 +254,8 @@ select subvector(c2,50,5),subvector(c2,50,5) + cast("[4.0,0.82,0.09,3.8,2.98]" a
 
 -- Vector & Scalar Arithemetic
 
+
+-- Test window function with cosine_similarity in ORDER BY clause (issue #23155)
+select id, dense_rank() over (order by cosine_similarity(vecf32_3, "[1,1,1]")) from vtab32;
+select id, rank() over (order by cosine_similarity(vecf32_3, "[1,1,1]")) from vtab32;
+select id, row_number() over (order by cosine_similarity(vecf32_3, "[1,1,1]")) from vtab32;

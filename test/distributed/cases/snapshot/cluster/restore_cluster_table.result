@@ -365,9 +365,9 @@ role_r2    2    2
 role_r3    2    2
 select role_name, privilege_id, with_grant_option from mo_catalog.mo_role_privs where role_name in ('role_r1','role_r2');
 role_name    privilege_id    with_grant_option
-role_r1    30    1
-role_r1    31    1
-role_r1    32    1
+role_r1    30    true
+role_r1    31    true
+role_r1    32    true
 select operation_role_id,operation_user_id from mo_catalog.mo_role_grant;
 operation_role_id    operation_user_id
 2    2
@@ -414,8 +414,6 @@ mo_columns
 mo_configurations
 mo_data_key
 mo_database
-mo_feature_limit
-mo_feature_registry
 mo_foreign_keys
 mo_index_update
 mo_indexes
@@ -528,8 +526,6 @@ mo_columns
 mo_configurations
 mo_data_key
 mo_database
-mo_feature_limit
-mo_feature_registry
 mo_foreign_keys
 mo_index_update
 mo_indexes

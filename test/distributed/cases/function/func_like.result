@@ -1,39 +1,39 @@
 select 'ab' like '__' as result;
 result
-1
+true
 select 'ab' like '_%' as result;
 result
-1
+true
 select 'ab' like '%' as result;
 result
-1
+true
 select 'ab' like 'a_' as result;
 result
-1
+true
 select 'ab' like '_b' as result;
 result
-1
+true
 select 'ab' like '%' as result;
 result
-1
+true
 select 'ab' like '*' as result;
 result
-0
+false
 select '*' like '*' as result;
 result
-1
+true
 select '**' like '**' as result;
 result
-1
+true
 select '**' like '*_' as result;
 result
-1
+true
 select '**' like '*^' as result;
 result
-0
+false
 select '(_a)' like '(_a)';
 result
-1
+true
 drop table if exists t1;
 create table t1(a int, b varchar(100));
 insert into t1 values(1 , "PowerSlave");
@@ -73,22 +73,22 @@ str1    str2
 %str1%    %str2%
 select json_extract('{"a":1}', '$.a') like '1' as result;
 result
-1
+true
 select json_extract('{"a":1}', '$.a') like 1 as result;
 result
-1
+true
 select json_extract('{"a":"1"}', '$.a') like '1' as result;
 result
-0
+false
 select json_extract('{"a":"1"}', '$.a') like 1 as result;
 result
-0
+false
 select json_extract('{"a":"1"}', '$.a') like '%1%' as result;
 result
-1
+true
 select json_unquote(json_extract('{"a":"1"}', '$.a')) like '1' as result;
 result
-1
+true
 select json_unquote(json_extract('{"a":"1"}', '$.a')) like 1 as result;
 result
-1
+true

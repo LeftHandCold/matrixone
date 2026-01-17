@@ -1214,7 +1214,13 @@ func (p *launchPad) gatherLnTasks(ctx context.Context,
 			continue
 		}
 		overlapTasks, err := GatherOverlapMergeTasks(ctx, p.leveledObjects[i], lnOpts, int8(i))
-		if err == nil {
+		if err != nil {
+			logutil.Warn(
+				"MergeExecutorEvent-GatherOverlapMergeTasksFailed",
+				zap.String("table", p.table.GetNameDesc()),
+				zap.Error(err),
+			)
+		} else {
 			p.revisedResults = append(p.revisedResults,
 				controlTaskMemInPlace(overlapTasks, rc, 2)...)
 		}

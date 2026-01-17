@@ -613,10 +613,9 @@ func buildDeletePlans(ctx CompilerContext, builder *QueryBuilder, bindCtx *BindC
 							}
 						}
 						lastNodeId = builder.appendNode(&plan.Node{
-							NodeType:    plan.Node_FILTER,
-							Children:    []int32{lastNodeId},
-							FilterList:  []*Expr{filterExpr},
-							ProjectList: getProjectionByLastNode(builder, lastNodeId),
+							NodeType:   plan.Node_FILTER,
+							Children:   []int32{lastNodeId},
+							FilterList: []*Expr{filterExpr},
 						}, bindCtx)
 					}
 
@@ -1068,10 +1067,9 @@ func makeOneDeletePlan(
 				return -1, err
 			}
 			filterNode := &Node{
-				NodeType:    plan.Node_FILTER,
-				Children:    []int32{lastNodeId},
-				FilterList:  []*plan.Expr{filterExpr},
-				ProjectList: getProjectionByLastNode(builder, lastNodeId),
+				NodeType:   plan.Node_FILTER,
+				Children:   []int32{lastNodeId},
+				FilterList: []*plan.Expr{filterExpr},
 			}
 			lastNodeId = builder.appendNode(filterNode, bindCtx)
 			// append lock
@@ -1502,6 +1500,12 @@ func appendJoinNodeForParentFkCheck(builder *QueryBuilder, bindCtx *BindContext,
 
 	//for stmt:  update c1 set ref_col = null where col > 0;
 	//we will skip foreign key constraint check when set null
+	projectProjection := getProjectionByLastNode(builder, baseNodeId)
+	baseNodeId = builder.appendNode(&Node{
+		NodeType:    plan.Node_PROJECT,
+		Children:    []int32{baseNodeId},
+		ProjectList: projectProjection,
+	}, bindCtx)
 
 	var filterConds []*Expr
 	for _, fk := range tableDef.Fkeys {
@@ -1527,10 +1531,10 @@ func appendJoinNodeForParentFkCheck(builder *QueryBuilder, bindCtx *BindContext,
 		}
 	}
 	baseNodeId = builder.appendNode(&Node{
-		NodeType:    plan.Node_FILTER,
-		Children:    []int32{baseNodeId},
-		FilterList:  filterConds,
-		ProjectList: getProjectionByLastNode(builder, baseNodeId),
+		NodeType:   plan.Node_FILTER,
+		Children:   []int32{baseNodeId},
+		FilterList: filterConds,
+		// ProjectList: projectProjection,
 	}, bindCtx)
 
 	lastNodeId := baseNodeId
@@ -2455,12 +2459,13 @@ func appendDeleteIndexTablePlan(
 		While secondary indexes don't store NULL values, they DO need RIGHT JOIN to handle
 		new inserts that don't yet exist in the index table.
 	*/
+	joinType := plan.Node_RIGHT
+
 	sid := builder.compCtx.GetProcess().GetService()
 	lastNodeId = builder.appendNode(&plan.Node{
 		NodeType:               plan.Node_JOIN,
 		Children:               []int32{leftId, lastNodeId},
-		JoinType:               plan.Node_RIGHT,
-		IsRightJoin:            true,
+		JoinType:               joinType,
 		OnList:                 joinConds,
 		ProjectList:            projectList,
 		RuntimeFilterBuildList: []*plan.RuntimeFilterSpec{MakeRuntimeFilter(rfTag, false, GetInFilterCardLimitOnPK(sid, builder.qry.Nodes[leftId].Stats.TableCnt), buildExpr, false)},
@@ -2913,11 +2918,12 @@ func makePreUpdateDeletePlan(
 		if err != nil {
 			return -1, err
 		}
+		filterProjection := getProjectionByLastNode(builder, lastNodeId)
 		filterNode := &Node{
 			NodeType:    plan.Node_FILTER,
 			Children:    []int32{lastNodeId},
 			FilterList:  []*Expr{nullCheckExpr},
-			ProjectList: getProjectionByLastNode(builder, lastNodeId),
+			ProjectList: filterProjection,
 		}
 		lastNodeId = builder.appendNode(filterNode, bindCtx)
 	}

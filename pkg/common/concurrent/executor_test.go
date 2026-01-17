@@ -16,7 +16,6 @@ package concurrent
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -57,33 +56,4 @@ func TestExecutor(t *testing.T) {
 	}
 
 	require.Equal(t, sum, answer)
-}
-
-func TestExecutorDistribution(t *testing.T) {
-	ctx := context.Background()
-	nitems := 10
-	nthreads := 9
-
-	e := NewThreadPoolExecutor(nthreads)
-
-	activeThreads := make([]bool, nthreads)
-	var mu sync.Mutex // Note: sync needs to be imported if not already, but wait, looking at imports...
-
-	err := e.Execute(ctx, nitems, func(ctx context.Context, thread_id int, start, end int) error {
-		mu.Lock()
-		activeThreads[thread_id] = true
-		mu.Unlock()
-		return nil
-	})
-
-	require.NoError(t, err)
-
-	count := 0
-	for _, active := range activeThreads {
-		if active {
-			count++
-		}
-	}
-
-	require.Equal(t, 9, count)
 }

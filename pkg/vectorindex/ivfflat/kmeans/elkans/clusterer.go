@@ -277,12 +277,10 @@ func (km *ElkanClusterer[T]) initBounds(ctx context.Context) (err error) {
 		ctx,
 		len(km.vectorList),
 		func(ctx context.Context, thread_id int, start, end int) (err2 error) {
-			subvec := km.vectorList[start:end:end]
-			submetas := km.vectorMetas[start:end:end]
-			subassigns := km.assignments[start:end:end]
+			subvec := km.vectorList[start:end]
+			submetas := km.vectorMetas[start:end]
+			subassigns := km.assignments[start:end]
 
-			// BCE Hint local variable
-			km_centroids := km.centroids
 			for x := range subvec {
 
 				if x%100 == 0 && ctx.Err() != nil {
@@ -291,8 +289,8 @@ func (km *ElkanClusterer[T]) initBounds(ctx context.Context) (err error) {
 
 				minDist := metric.MaxFloat[T]()
 				closestCenter := 0
-				for c := range km_centroids {
-					dist, err2 := km.distFn(subvec[x], km_centroids[c])
+				for c := range km.centroids {
+					dist, err2 := km.distFn(subvec[x], km.centroids[c])
 					if err2 != nil {
 						return err2
 					}
@@ -329,7 +327,7 @@ func (km *ElkanClusterer[T]) computeCentroidDistances(ctx context.Context) error
 		ctx,
 		km.clusterCnt,
 		func(ctx context.Context, thread_id int, start, end int) error {
-			subcentroids := km.centroids[start:end:end]
+			subcentroids := km.centroids[start:end]
 
 			for x := range subcentroids {
 
@@ -386,9 +384,9 @@ func (km *ElkanClusterer[T]) assignData(ctx context.Context) (int, error) {
 		ctx,
 		len(km.vectorList),
 		func(ctx context.Context, thread_id int, start, end int) (err2 error) {
-			subvec := km.vectorList[start:end:end]
-			submetas := km.vectorMetas[start:end:end]
-			subassigns := km.assignments[start:end:end]
+			subvec := km.vectorList[start:end]
+			submetas := km.vectorMetas[start:end]
+			subassigns := km.assignments[start:end]
 
 			for currVector := range subvec {
 

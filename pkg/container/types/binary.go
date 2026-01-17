@@ -28,24 +28,22 @@ func BitAnd(result, v1, v2 []byte) error {
 	return nil
 }
 
-func BitOr(result, v1, v2 []byte) error {
+func BitOr(result, v1, v2 []byte) {
 	if len(v1) != len(v2) {
-		return moerr.NewInternalErrorNoCtx("Binary operands of bitwise operators must be of equal length")
+		panic(moerr.NewInternalErrorNoCtx("Binary operands of bitwise operators must be of equal length"))
 	}
 
 	for i := range v1 {
 		result[i] = v1[i] | v2[i]
 	}
-	return nil
 }
 
-func BitXor(result, v1, v2 []byte) error {
+func BitXor(result, v1, v2 []byte) {
 	if len(v1) != len(v2) {
-		return moerr.NewInternalErrorNoCtx("Binary operands of bitwise operators must be of equal length")
+		panic(moerr.NewInternalErrorNoCtx("Binary operands of bitwise operators must be of equal length"))
 	}
 
 	for i := range v1 {
 		result[i] = v1[i] ^ v2[i]
 	}
-	return nil
 }

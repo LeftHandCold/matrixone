@@ -56,11 +56,7 @@ func Cot(v float64) (float64, error) {
 }
 
 func Exp(v float64) (float64, error) {
-	r := math.Exp(v)
-	if math.IsInf(r, 0) {
-		return 0, moerr.NewOutOfRangeNoCtxf("float64", "DOUBLE value is out of range in 'exp(%v)'", v)
-	}
-	return r, nil
+	return math.Exp(v), nil
 }
 
 func Sqrt(v float64) (float64, error) {

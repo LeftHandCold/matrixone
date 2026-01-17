@@ -23,6 +23,7 @@ import (
 	"github.com/mohae/deepcopy"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -35,6 +36,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	plan2 "github.com/matrixorigin/matrixone/pkg/sql/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/util"
+	"github.com/matrixorigin/matrixone/pkg/txn/storage/memorystorage"
 	util2 "github.com/matrixorigin/matrixone/pkg/util"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"github.com/matrixorigin/matrixone/pkg/util/trace/impl/motrace/statistic"
@@ -70,8 +72,7 @@ func InitTxnComputationWrapper(
 	stmt tree.Statement,
 	proc *process.Process,
 ) *TxnComputationWrapper {
-	u, _ := util2.FastUuid()
-	uuid := uuid.UUID(u)
+	uuid, _ := uuid.NewV7()
 	return &TxnComputationWrapper{
 		stmt: stmt,
 		proc: proc,
@@ -199,6 +200,9 @@ func (cwft *TxnComputationWrapper) Compile(any any, fill func(*batch.Batch, *per
 	defer span.End(trace.WithStatementExtra(cwft.ses.GetTxnId(), cwft.ses.GetStmtId(), cwft.ses.GetSqlOfStmt()))
 
 	defer RecordStatementTxnID(execCtx.reqCtx, cwft.ses)
+	if cwft.ses.GetTxnHandler().HasTempEngine() {
+		updateTempStorageInCtx(execCtx, cwft.proc, cwft.ses.GetTxnHandler().GetTempStorage())
+	}
 	stats := statistic.StatsInfoFromContext(execCtx.reqCtx)
 
 	cacheHit := cwft.plan != nil
@@ -306,6 +310,13 @@ func (cwft *TxnComputationWrapper) Compile(any any, fill func(*batch.Batch, *per
 	}
 
 	return cwft.compile, err
+}
+
+func updateTempStorageInCtx(execCtx *ExecCtx, proc *process.Process, tempStorage *memorystorage.Storage) {
+	if execCtx != nil && execCtx.reqCtx != nil {
+		execCtx.reqCtx = attachValue(execCtx.reqCtx, defines.TemporaryTN{}, tempStorage)
+		proc.ReplaceTopCtx(execCtx.reqCtx)
+	}
 }
 
 func (cwft *TxnComputationWrapper) RecordExecPlan(ctx context.Context, phyPlan *models.PhyPlan) error {
@@ -584,6 +595,31 @@ func createCompile(
 	err = retCompile.Compile(execCtx.reqCtx, plan, fill)
 	if err != nil {
 		return
+	}
+	// check if it is necessary to initialize the temporary engine
+	if !ses.GetTxnHandler().HasTempEngine() && retCompile.NeedInitTempEngine() {
+		// 0. init memory-non-dist storage
+		err = ses.GetTxnHandler().CreateTempStorage(runtime.ServiceRuntime(ses.GetService()).Clock())
+		if err != nil {
+			return
+		}
+
+		// temporary storage is passed through Ctx
+		updateTempStorageInCtx(execCtx, proc, ses.GetTxnHandler().GetTempStorage())
+
+		// 1. init memory-non-dist engine
+		ses.GetTxnHandler().CreateTempEngine()
+		tempEngine := ses.GetTxnHandler().GetTempEngine()
+
+		// 2. bind the temporary engine to the session and txnHandler
+		retCompile.SetTempEngine(tempEngine, ses.GetTxnHandler().GetTempStorage())
+
+		// 3. init temp-db to store temporary relations
+		txnOp2 := ses.GetTxnHandler().GetTxn()
+		err = tempEngine.Create(execCtx.reqCtx, defines.TEMPORARY_DBNAME, txnOp2)
+		if err != nil {
+			return
+		}
 	}
 	retCompile.SetOriginSQL(originSQL)
 	return

@@ -112,7 +112,6 @@ var (
 		"mo_stages":                   0,
 		catalog.MO_PUBS:               1,
 		catalog.MO_SUBS:               1,
-		catalog.MO_ISCP_LOG:           1,
 
 		"mo_sessions":       1,
 		"mo_configurations": 1,
@@ -202,12 +201,6 @@ func doCreateSnapshot(ctx context.Context, ses *Session, stmt *tree.CreateSnapSh
 	tenantInfo := ses.GetTenantInfo()
 	currentAccount := tenantInfo.GetTenant()
 	snapshotLevel = stmt.Object.SLevel.Level
-
-	if snapshotLevel != tree.SNAPSHOTLEVELCLUSTER {
-		if err = checkSnapshotQuota(ctx, ses, bh, 1, snapshotLevel.String()); err != nil {
-			return err
-		}
-	}
 
 	// 1.check create snapshot priv
 	err = doCheckCreateSnapshotPriv(ctx, ses, stmt)
@@ -2328,8 +2321,7 @@ func dropExistsAccount(
 		return b.err
 	}
 
-	// Pass inTransaction=true since we're already in doRestoreSnapshot's transaction
-	err = doDropAccount(ctx, bh, ses, drop, true)
+	err = doDropAccount(ctx, bh, ses, drop)
 	if err != nil {
 		return
 	}

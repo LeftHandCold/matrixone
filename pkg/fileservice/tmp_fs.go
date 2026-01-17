@@ -145,14 +145,10 @@ func (fs *TmpFileService) gc(ctx context.Context) {
 		gcedFiles := make([]string, 0)
 		for entry, err := range entries {
 			if err != nil {
-				entryName := ""
-				if entry != nil {
-					entryName = entry.Name
-				}
 				logutil.Warn(
 					"fs.tmp.gc.failed",
 					zap.String("app", appConfig.Name),
-					zap.String("file", path.Join(appPath, entryName)),
+					zap.String("file", path.Join(appPath, entry.Name)),
 					zap.Error(err),
 				)
 				continue

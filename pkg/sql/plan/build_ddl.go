@@ -750,7 +750,6 @@ func buildCreateTable(
 		if len(tableDef.DbName) == 0 {
 			tableDef.DbName = ctx.DefaultDatabase()
 		}
-		tableDef.IsTemporary = stmt.Temporary
 
 		_, newStmt, err := ConstructCreateTableSQL(ctx, tableDef, snapshot, true, cloneStmt)
 		if err != nil {
@@ -987,10 +986,6 @@ func buildCreateTable(
 		}
 	}
 
-	if stmt.Temporary {
-		createTable.TableDef.TableType = catalog.SystemTemporaryTable
-	}
-
 	return &Plan{
 		Plan: &plan.Plan_Ddl{
 			Ddl: &plan.DataDefinition{
@@ -1218,7 +1213,7 @@ func buildTableDefs(stmt *tree.CreateTable, ctx CompilerContext, createTable *pl
 			}
 		case *tree.ForeignKey:
 			if createTable.Temporary {
-				return moerr.NewNotSupported(ctx.GetContext(), "add foreign key for temporary table")
+				return moerr.NewNYI(ctx.GetContext(), "add foreign key for temporary table")
 			}
 			if len(asSelectCols) != 0 {
 				return moerr.NewNYI(ctx.GetContext(), "add foreign key in create table ... as select statement")
@@ -3212,7 +3207,9 @@ func buildDropView(stmt *tree.DropView, ctx CompilerContext) (*Plan, error) {
 }
 
 func buildCreateDatabase(stmt *tree.CreateDatabase, ctx CompilerContext) (*Plan, error) {
-
+	if string(stmt.Name) == defines.TEMPORARY_DBNAME {
+		return nil, moerr.NewInternalError(ctx.GetContext(), "this database name is used by mo temporary engine")
+	}
 	createDB := &plan.CreateDatabase{
 		IfNotExists: stmt.IfNotExists,
 		Database:    string(stmt.Name),
@@ -4492,7 +4489,7 @@ func getForeignKeyData(ctx CompilerContext, dbName string, tableDef *TableDef, d
 	}
 
 	if parentTableDef.IsTemporary {
-		return nil, moerr.NewNotSupported(ctx.GetContext(), "add foreign key for temporary table")
+		return nil, moerr.NewNYI(ctx.GetContext(), "add foreign key for temporary table")
 	}
 
 	fkData.Def.ForeignTbl = parentTableDef.TblId

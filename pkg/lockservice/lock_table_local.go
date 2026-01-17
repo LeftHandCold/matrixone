@@ -358,7 +358,7 @@ func (l *localLockTable) getBind() pb.LockTable {
 	return l.bind
 }
 
-func (l *localLockTable) close(reason closeReason) {
+func (l *localLockTable) close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.mu.closed = true
@@ -373,7 +373,7 @@ func (l *localLockTable) close(reason closeReason) {
 		return true
 	})
 	l.mu.store.Clear()
-	logLockTableClosed(l.logger, l.bind, false, reason)
+	logLockTableClosed(l.logger, l.bind, false)
 }
 
 func (l *localLockTable) doAcquireLock(c *lockContext) error {

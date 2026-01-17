@@ -208,10 +208,6 @@ func (node *AlterStage) StmtKind() StmtKind {
 	return frontendStatusTyp
 }
 
-func (node *RemoveStageFiles) StmtKind() StmtKind {
-	return frontendStatusTyp
-}
-
 func (node *CreateAccount) StmtKind() StmtKind {
 	return frontendStatusTyp
 }

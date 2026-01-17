@@ -65,7 +65,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/explain"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	txnTrace "github.com/matrixorigin/matrixone/pkg/txn/trace"
-	"github.com/matrixorigin/matrixone/pkg/util"
 	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"github.com/matrixorigin/matrixone/pkg/util/metric"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
@@ -168,8 +167,7 @@ var RecordStatement = func(ctx context.Context, ses *Session, proc *process.Proc
 			text = commonutil.Abbreviate(envStmt, int(getPu(ses.GetService()).SV.LengthOfQueryPrinted))
 		}
 	} else {
-		u, _ := util.FastUuid()
-		stmID = uuid.UUID(u)
+		stmID, _ = uuid.NewV7()
 		text = commonutil.Abbreviate(envStmt, int(getPu(ses.GetService()).SV.LengthOfQueryPrinted))
 	}
 	ses.SetStmtId(stmID)
@@ -1263,10 +1261,6 @@ func handleAlterStage(ses FeSession, execCtx *ExecCtx, as *tree.AlterStage) erro
 
 func handleDropStage(ses FeSession, execCtx *ExecCtx, ds *tree.DropStage) error {
 	return doDropStage(execCtx.reqCtx, ses.(*Session), ds)
-}
-
-func handleRemoveStageFiles(ses FeSession, execCtx *ExecCtx, rs *tree.RemoveStageFiles) error {
-	return doRemoveStageFiles(execCtx.reqCtx, ses.(*Session), rs)
 }
 
 func handleCreateSnapshot(ses *Session, execCtx *ExecCtx, ct *tree.CreateSnapShot) error {
@@ -3597,8 +3591,6 @@ func convertEngineTypeToMysqlType(ctx context.Context, engineType types.T, col *
 		col.SetColumnType(defines.MYSQL_TYPE_TIME)
 	case types.T_timestamp:
 		col.SetColumnType(defines.MYSQL_TYPE_TIMESTAMP)
-	case types.T_year:
-		col.SetColumnType(defines.MYSQL_TYPE_YEAR)
 	case types.T_decimal64:
 		col.SetColumnType(defines.MYSQL_TYPE_DECIMAL)
 	case types.T_decimal128:

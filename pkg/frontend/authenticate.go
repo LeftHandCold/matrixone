@@ -935,8 +935,6 @@ var (
 		catalog.MO_ISCP_LOG:           0,
 		catalog.MO_INDEX_UPDATE:       0,
 		catalog.MO_BRANCH_METADATA:    0,
-		catalog.MO_FEATURE_LIMIT:      0,
-		catalog.MO_FEATURE_REGISTRY:   0,
 	}
 	sysAccountTables = map[string]struct{}{
 		catalog.MOVersionTable:       {},
@@ -984,8 +982,6 @@ var (
 		catalog.MO_ISCP_LOG:           0,
 		catalog.MO_INDEX_UPDATE:       0,
 		catalog.MO_BRANCH_METADATA:    0,
-		catalog.MO_FEATURE_LIMIT:      0,
-		catalog.MO_FEATURE_REGISTRY:   0,
 	}
 	createDbInformationSchemaSql = "create database information_schema;"
 	createAutoTableSql           = MoCatalogMoAutoIncrTableDDL
@@ -1029,9 +1025,6 @@ var (
 		MoCatalogMoISCPLogDDL,
 		MoCatalogMoIndexUpdateDDL,
 		MoCatalogBranchMetadataDDL,
-		MoCatalogFeatureLimitDDL,
-		MoCatalogFeatureRegistryDDL,
-		MoCatalogFeatureRegistryInitData,
 	}
 
 	//drop tables for the tenant
@@ -3774,32 +3767,13 @@ func doDropStage(ctx context.Context, ses *Session, ds *tree.DropStage) (err err
 	return err
 }
 
-func doRemoveStageFiles(ctx context.Context, ses *Session, rs *tree.RemoveStageFiles) error {
-	if err := doCheckRole(ctx, ses); err != nil {
-		return err
-	}
-
-	if !strings.HasPrefix(rs.Path, stage.STAGE_PROTOCOL+"://") {
-		return moerr.NewBadConfig(ctx, "URL protocol only supports stage://")
-	}
-
-	_, err := stageutil.DeleteStageFiles(ctx, ses.proc, rs.Path, rs.IfExists)
-	return err
-}
-
 type dropAccount struct {
 	IfExists bool
 	Name     string
 }
 
 // doDropAccount accomplishes the DropAccount statement
-func doDropAccount(ctx context.Context, bh BackgroundExec, ses *Session, da *dropAccount, inTransaction ...bool) (err error) {
-	// Check if already in a transaction (for restore scenarios to avoid breaking outer transaction)
-	inTxn := false
-	if len(inTransaction) > 0 {
-		inTxn = inTransaction[0]
-	}
-
+func doDropAccount(ctx context.Context, bh BackgroundExec, ses *Session, da *dropAccount) (err error) {
 	//set backgroundHandler's default schema
 	if handler, ok := bh.(*backExec); ok {
 		handler.backSes.txnCompileCtx.dbName = catalog.MO_CATALOG
@@ -3854,15 +3828,12 @@ func doDropAccount(ctx context.Context, bh BackgroundExec, ses *Session, da *dro
 	}
 
 	dropAccountFunc := func() (rtnErr error) {
-		// If already in a transaction (e.g., restore scenario), don't create a new one
-		if !inTxn {
-			rtnErr = bh.Exec(ctx, "begin;")
-			if rtnErr != nil {
-				return rtnErr
-			}
-			defer func() {
-				rtnErr = finishTxn(ctx, bh, rtnErr)
-			}()
+		rtnErr = bh.Exec(ctx, "begin;")
+		defer func() {
+			rtnErr = finishTxn(ctx, bh, rtnErr)
+		}()
+		if rtnErr != nil {
+			return rtnErr
 		}
 
 		//step 0: lock account name first
@@ -5969,7 +5940,7 @@ func determinePrivilegeSetOfStatement(stmt tree.Statement) *privilege {
 	case *tree.SetConnectionID:
 		objType = objectTypeNone
 		kind = privilegeKindNone
-	case *tree.CreateStage, *tree.AlterStage, *tree.DropStage, *tree.RemoveStageFiles:
+	case *tree.CreateStage, *tree.AlterStage, *tree.DropStage:
 		objType = objectTypeNone
 		kind = privilegeKindNone
 	case *tree.BackupStart:
@@ -8052,14 +8023,6 @@ func createTablesInMoCatalogOfGeneralTenant2(bh BackgroundExec, ca *createAccoun
 			return true
 		}
 		if strings.HasPrefix(sql, fmt.Sprintf("create table mo_catalog.%s", catalog.MO_BRANCH_METADATA)) {
-			return true
-		}
-
-		if strings.HasPrefix(sql, fmt.Sprintf("create table mo_catalog.%s", catalog.MO_FEATURE_LIMIT)) {
-			return true
-		}
-
-		if strings.Contains(sql, fmt.Sprintf("mo_catalog.%s", catalog.MO_FEATURE_REGISTRY)) {
 			return true
 		}
 

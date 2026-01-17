@@ -228,17 +228,16 @@ func (b *ProjectionBinder) BindWinFunc(funcName string, astExpr *tree.FuncExpr, 
 	case tree.Rows:
 		typ = &plan.Type{Id: int32(types.T_uint64)}
 	case tree.Range:
-		if len(w.OrderBy) != 1 && isNRange(ws.Frame) {
-			return nil, moerr.NewParseError(b.GetContext(), "Window '<unnamed window>' with RANGE N PRECEDING/FOLLOWING frame requires exactly one ORDER BY expression, of numeric or temporal type")
-		}
-		if len(w.OrderBy) == 0 {
-			// not N range
-			break
-		}
-		typ = &w.OrderBy[0].Expr.Typ
-		t := types.Type{Oid: types.T(typ.Id)}
-		if !t.IsNumericOrTemporal() {
-			return nil, moerr.NewParseError(b.GetContext(), "Window '<unnamed window>' with RANGE N PRECEDING/FOLLOWING frame requires exactly one ORDER BY expression, of numeric or temporal type")
+		// Only check ORDER BY expression type when using N PRECEDING/FOLLOWING
+		if isNRange(ws.Frame) {
+			if len(w.OrderBy) != 1 {
+				return nil, moerr.NewParseError(b.GetContext(), "Window '<unnamed window>' with RANGE N PRECEDING/FOLLOWING frame requires exactly one ORDER BY expression, of numeric or temporal type")
+			}
+			typ = &w.OrderBy[0].Expr.Typ
+			t := types.Type{Oid: types.T(typ.Id)}
+			if !t.IsNumericOrTemporal() {
+				return nil, moerr.NewParseError(b.GetContext(), "Window '<unnamed window>' with RANGE N PRECEDING/FOLLOWING frame requires exactly one ORDER BY expression, of numeric or temporal type")
+			}
 		}
 	case tree.Groups:
 		return nil, moerr.NewNYI(b.GetContext(), "GROUPS in WINDOW FUNCTION condition")
