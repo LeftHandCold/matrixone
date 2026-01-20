@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/common"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -25,6 +26,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/aggexec"
@@ -32,6 +34,14 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/util/list"
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
+)
+
+// Debug counters for tracking MPool lifecycle
+var (
+	groupMPoolResetCreated  atomic.Int64 // MPool created in reset()
+	groupMPoolResetDeleted  atomic.Int64 // MPool deleted in reset()
+	groupMPoolFreeDeleted   atomic.Int64 // MPool deleted in free()
+	groupMPoolPrepareCreated atomic.Int64 // MPool created in Prepare()
 )
 
 const (
@@ -197,6 +207,15 @@ func (ctr *container) free() {
 	ctr.freeSpillAggList()
 	ctr.freeSpillBkts()
 
+	if ctr.mp != nil {
+		groupMPoolFreeDeleted.Add(1)
+		logutil.Infof("GROUP_MPOOL_DEBUG: free() deleting MPool, total: resetCreated=%d, resetDeleted=%d, freeDeleted=%d, prepareCreated=%d, leaked=%d",
+			groupMPoolResetCreated.Load(),
+			groupMPoolResetDeleted.Load(),
+			groupMPoolFreeDeleted.Load(),
+			groupMPoolPrepareCreated.Load(),
+			groupMPoolResetCreated.Load()+groupMPoolPrepareCreated.Load()-groupMPoolResetDeleted.Load()-groupMPoolFreeDeleted.Load())
+	}
 	mpool.DeleteMPool(ctr.mp)
 	ctr.mp = nil
 }
@@ -211,8 +230,20 @@ func (ctr *container) reset() {
 	ctr.resetForSpill()
 	ctr.freeSpillBkts()
 
+	if ctr.mp != nil {
+		groupMPoolResetDeleted.Add(1)
+	}
 	mpool.DeleteMPool(ctr.mp)
-	ctr.mp = nil
+	
+	// LEAK: Creating new MPool here, but if isPrepare=true, Free() won't be called!
+	ctr.mp = mpool.MustNew("group_mpool")
+	groupMPoolResetCreated.Add(1)
+	logutil.Infof("GROUP_MPOOL_DEBUG: reset() created new MPool, total: resetCreated=%d, resetDeleted=%d, freeDeleted=%d, prepareCreated=%d, leaked=%d",
+		groupMPoolResetCreated.Load(),
+		groupMPoolResetDeleted.Load(),
+		groupMPoolFreeDeleted.Load(),
+		groupMPoolPrepareCreated.Load(),
+		groupMPoolResetCreated.Load()+groupMPoolPrepareCreated.Load()-groupMPoolResetDeleted.Load()-groupMPoolFreeDeleted.Load())
 }
 
 func (ctr *container) resetForSpill() {

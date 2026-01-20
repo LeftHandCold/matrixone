@@ -24,6 +24,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/aggexec"
 	"github.com/matrixorigin/matrixone/pkg/vm"
@@ -46,6 +47,13 @@ const (
 func (group *Group) Prepare(proc *process.Process) (err error) {
 	group.ctr.state = vm.Build
 	group.ctr.mp = mpool.MustNewNoLock("group_mpool")
+	groupMPoolPrepareCreated.Add(1)
+	logutil.Infof("GROUP_MPOOL_DEBUG: Prepare() created MPool, total: resetCreated=%d, resetDeleted=%d, freeDeleted=%d, prepareCreated=%d, leaked=%d",
+		groupMPoolResetCreated.Load(),
+		groupMPoolResetDeleted.Load(),
+		groupMPoolFreeDeleted.Load(),
+		groupMPoolPrepareCreated.Load(),
+		groupMPoolResetCreated.Load()+groupMPoolPrepareCreated.Load()-groupMPoolResetDeleted.Load()-groupMPoolFreeDeleted.Load())
 
 	// debug,
 	// group.ctr.mp.EnableDetailRecording()
