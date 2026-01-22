@@ -29,7 +29,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	commonutil "github.com/matrixorigin/matrixone/pkg/common/util"
 	"github.com/matrixorigin/matrixone/pkg/defines"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	pbpipeline "github.com/matrixorigin/matrixone/pkg/pb/pipeline"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
@@ -885,13 +884,6 @@ func receiveMsgAndForward(sender *messageSenderOnClient, forwardCh chan process.
 	}
 }
 
-// maxDeleteBatchValues is the maximum number of values in a single DELETE IN clause.
-// Splitting large IN clauses into smaller batches improves performance by:
-// 1. Reducing SQL parsing overhead
-// 2. Allowing more efficient index lookups
-// 3. Reducing memory pressure during query execution
-const maxDeleteBatchValues = 5000
-
 func (s *Scope) replace(c *Compile) error {
 	dbName := s.Plan.GetQuery().Nodes[0].ReplaceCtx.TableDef.DbName
 	tblName := s.Plan.GetQuery().Nodes[0].ReplaceCtx.TableDef.Name
@@ -900,12 +892,12 @@ func (s *Scope) replace(c *Compile) error {
 
 	delAffectedRows := uint64(0)
 	if deleteCond != "" {
-		// Execute DELETE in batches to improve performance for large IN clauses
-		affectedRows, err := s.executeBatchedDelete(c, dbName, tblName, deleteCond)
+		deleteSQL := fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s", dbName, tblName, deleteCond)
+		result, err := c.runSqlWithResult(deleteSQL, NoAccountId)
 		if err != nil {
 			return err
 		}
-		delAffectedRows = affectedRows
+		delAffectedRows = result.AffectedRows
 	}
 	var sql string
 	if rewriteFromOnDuplicateKey {
@@ -921,186 +913,6 @@ func (s *Scope) replace(c *Compile) error {
 	}
 	c.addAffectedRows(result.AffectedRows + delAffectedRows)
 	return nil
-}
-
-// executeBatchedDelete splits a large DELETE with IN clause into smaller batches.
-// This improves performance by reducing the overhead of parsing and executing
-// very large SQL statements.
-func (s *Scope) executeBatchedDelete(c *Compile, dbName, tblName, deleteCond string) (uint64, error) {
-	// Try to parse and split the IN clause
-	batches := splitDeleteCondition(deleteCond, maxDeleteBatchValues)
-	if len(batches) == 0 {
-		// Fallback: execute as single DELETE if parsing fails
-		deleteSQL := fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s", dbName, tblName, deleteCond)
-		result, err := c.runSqlWithResult(deleteSQL, NoAccountId)
-		if err != nil {
-			return 0, err
-		}
-		return result.AffectedRows, nil
-	}
-
-	var totalAffectedRows uint64
-	for i, batchCond := range batches {
-		deleteSQL := fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s", dbName, tblName, batchCond)
-		logutil.Infof("scope.replace: executing DELETE batch %d/%d, sqlLen=%d", i+1, len(batches), len(deleteSQL))
-		result, err := c.runSqlWithResult(deleteSQL, NoAccountId)
-		if err != nil {
-			return totalAffectedRows, err
-		}
-		totalAffectedRows += result.AffectedRows
-	}
-	logutil.Infof("scope.replace: DELETE completed, totalBatches=%d, totalAffectedRows=%d", len(batches), totalAffectedRows)
-	return totalAffectedRows, nil
-}
-
-// splitDeleteCondition splits a DELETE condition with large IN clause into smaller batches.
-// It handles both single column IN: "col IN (v1, v2, ...)"
-// and composite key IN: "(col1, col2) IN ((v1, v2), (v3, v4), ...)"
-// Returns nil if the condition cannot be parsed or doesn't need splitting.
-func splitDeleteCondition(deleteCond string, maxValues int) []string {
-	// Handle multiple OR conditions (e.g., "col1 IN (...) or col2 IN (...)")
-	// For simplicity, we only optimize single IN clause conditions
-	lowerCond := strings.ToLower(deleteCond)
-	if strings.Contains(lowerCond, " or ") {
-		// Multiple conditions joined by OR - don't split, execute as-is
-		return nil
-	}
-
-	// Find the IN clause
-	inIdx := strings.Index(lowerCond, " in ")
-	if inIdx == -1 {
-		return nil
-	}
-
-	// Extract column part (before IN)
-	colPart := strings.TrimSpace(deleteCond[:inIdx])
-
-	// Extract values part (after IN)
-	valuesPart := strings.TrimSpace(deleteCond[inIdx+4:]) // skip " in "
-	if !strings.HasPrefix(valuesPart, "(") || !strings.HasSuffix(valuesPart, ")") {
-		return nil
-	}
-	// Remove outer parentheses
-	valuesPart = valuesPart[1 : len(valuesPart)-1]
-
-	// Check if it's a composite key IN clause: (col1, col2) IN ((v1, v2), ...)
-	isComposite := strings.HasPrefix(colPart, "(")
-
-	var values []string
-	if isComposite {
-		// Parse composite values: ((v1, v2), (v3, v4), ...)
-		values = parseCompositeValues(valuesPart)
-	} else {
-		// Parse simple values: v1, v2, v3, ...
-		values = parseSimpleValues(valuesPart)
-	}
-
-	if len(values) <= maxValues {
-		// No need to split
-		return nil
-	}
-
-	// Split into batches
-	var batches []string
-	for i := 0; i < len(values); i += maxValues {
-		end := i + maxValues
-		if end > len(values) {
-			end = len(values)
-		}
-		batchValues := values[i:end]
-		batchCond := fmt.Sprintf("%s IN (%s)", colPart, strings.Join(batchValues, ", "))
-		batches = append(batches, batchCond)
-	}
-	return batches
-}
-
-// parseSimpleValues parses comma-separated values: v1, v2, v3, ...
-func parseSimpleValues(s string) []string {
-	var values []string
-	var current strings.Builder
-	inQuote := false
-	quoteChar := byte(0)
-
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if inQuote {
-			current.WriteByte(ch)
-			if ch == quoteChar {
-				// Check for escaped quote
-				if i+1 < len(s) && s[i+1] == quoteChar {
-					current.WriteByte(s[i+1])
-					i++
-				} else {
-					inQuote = false
-				}
-			}
-		} else if ch == '\'' || ch == '"' {
-			inQuote = true
-			quoteChar = ch
-			current.WriteByte(ch)
-		} else if ch == ',' {
-			val := strings.TrimSpace(current.String())
-			if val != "" {
-				values = append(values, val)
-			}
-			current.Reset()
-		} else {
-			current.WriteByte(ch)
-		}
-	}
-	// Don't forget the last value
-	val := strings.TrimSpace(current.String())
-	if val != "" {
-		values = append(values, val)
-	}
-	return values
-}
-
-// parseCompositeValues parses composite tuple values: (v1, v2), (v3, v4), ...
-func parseCompositeValues(s string) []string {
-	var values []string
-	var current strings.Builder
-	depth := 0
-	inQuote := false
-	quoteChar := byte(0)
-
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if inQuote {
-			current.WriteByte(ch)
-			if ch == quoteChar {
-				if i+1 < len(s) && s[i+1] == quoteChar {
-					current.WriteByte(s[i+1])
-					i++
-				} else {
-					inQuote = false
-				}
-			}
-		} else if ch == '\'' || ch == '"' {
-			inQuote = true
-			quoteChar = ch
-			current.WriteByte(ch)
-		} else if ch == '(' {
-			depth++
-			current.WriteByte(ch)
-		} else if ch == ')' {
-			current.WriteByte(ch)
-			depth--
-			if depth == 0 {
-				val := strings.TrimSpace(current.String())
-				if val != "" {
-					values = append(values, val)
-				}
-				current.Reset()
-			}
-		} else if ch == ',' && depth == 0 {
-			// Skip comma between tuples
-			continue
-		} else {
-			current.WriteByte(ch)
-		}
-	}
-	return values
 }
 
 func removeStringBetween(s, start, end string) string {

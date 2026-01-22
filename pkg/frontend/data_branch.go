@@ -78,7 +78,11 @@ const (
 )
 
 const (
-	maxSqlBatchCnt  = objectio.BlockMaxRows * 10
+	// maxSqlBatchCnt controls the maximum number of rows per REPLACE INTO statement
+	// in data branch diff output. Smaller batches improve REPLACE INTO performance
+	// because each DELETE operation scans less data.
+	// Original value was objectio.BlockMaxRows * 10 (81920), reduced to improve performance.
+	maxSqlBatchCnt  = objectio.BlockMaxRows // 8192 rows per batch
 	maxSqlBatchSize = mpool.MB * 48
 )
 
