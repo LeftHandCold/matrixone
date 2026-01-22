@@ -25,7 +25,21 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sql/util"
 )
 
+// replaceRowThreshold is the threshold for switching from bindReplace (JOIN-based) to buildReplace (DELETE+INSERT).
+// When the number of rows in REPLACE INTO exceeds this threshold, we use the simpler DELETE+INSERT approach
+// which performs better for large batch operations because it avoids expensive JOIN operations.
+const replaceRowThreshold = 1000
+
 func (builder *QueryBuilder) bindReplace(stmt *tree.Replace, bindCtx *BindContext) (int32, error) {
+	// Check if we should use the simpler buildReplace path for large batch operations.
+	// The JOIN-based approach in bindReplace becomes expensive when replacing many rows
+	// because it needs to scan the entire table for each batch.
+	if valuesClause, ok := stmt.Rows.Select.(*tree.ValuesClause); ok {
+		if len(valuesClause.Rows) > replaceRowThreshold {
+			return 0, moerr.NewUnsupportedDML(builder.GetContext(), "large batch replace (use DELETE+INSERT path)")
+		}
+	}
+
 	dmlCtx := NewDMLContext()
 	err := dmlCtx.ResolveTables(builder.compCtx, tree.TableExprs{stmt.Table}, nil, nil, true)
 	if err != nil {
