@@ -29,6 +29,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	commonutil "github.com/matrixorigin/matrixone/pkg/common/util"
 	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	pbpipeline "github.com/matrixorigin/matrixone/pkg/pb/pipeline"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
@@ -890,13 +891,18 @@ func (s *Scope) replace(c *Compile) error {
 	deleteCond := s.Plan.GetQuery().Nodes[0].ReplaceCtx.DeleteCond
 	rewriteFromOnDuplicateKey := s.Plan.GetQuery().Nodes[0].ReplaceCtx.RewriteFromOnDuplicateKey
 
+	logutil.Infof("scope.replace: using buildReplace path (DELETE+INSERT), dbName=%s, tblName=%s, deleteCondLen=%d", dbName, tblName, len(deleteCond))
+
 	delAffectedRows := uint64(0)
 	if deleteCond != "" {
-		result, err := c.runSqlWithResult(fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s", dbName, tblName, deleteCond), NoAccountId)
+		deleteSQL := fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s", dbName, tblName, deleteCond)
+		logutil.Infof("scope.replace: executing DELETE, sqlLen=%d", len(deleteSQL))
+		result, err := c.runSqlWithResult(deleteSQL, NoAccountId)
 		if err != nil {
 			return err
 		}
 		delAffectedRows = result.AffectedRows
+		logutil.Infof("scope.replace: DELETE completed, affectedRows=%d", delAffectedRows)
 	}
 	var sql string
 	if rewriteFromOnDuplicateKey {

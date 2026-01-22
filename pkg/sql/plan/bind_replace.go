@@ -20,6 +20,7 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/sql/util"
@@ -35,7 +36,10 @@ func (builder *QueryBuilder) bindReplace(stmt *tree.Replace, bindCtx *BindContex
 	// The JOIN-based approach in bindReplace becomes expensive when replacing many rows
 	// because it needs to scan the entire table for each batch.
 	if valuesClause, ok := stmt.Rows.Select.(*tree.ValuesClause); ok {
-		if len(valuesClause.Rows) > replaceRowThreshold {
+		rowCount := len(valuesClause.Rows)
+		logutil.Infof("bindReplace: rowCount=%d, threshold=%d", rowCount, replaceRowThreshold)
+		if rowCount > replaceRowThreshold {
+			logutil.Infof("bindReplace: switching to buildReplace path due to large batch")
 			return 0, moerr.NewUnsupportedDML(builder.GetContext(), "large batch replace (use DELETE+INSERT path)")
 		}
 	}
