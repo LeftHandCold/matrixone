@@ -58,6 +58,7 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 
 	selectNode := builder.qry.Nodes[lastNodeID]
 	selectTag := selectNode.BindingTags[0]
+	sid := builder.compCtx.GetProcess().GetService()
 
 	fullProjTag := builder.genNewBindTag()
 	fullProjList := make([]*plan.Expr, 0, len(selectNode.ProjectList)+len(tableDef.Cols))
@@ -84,12 +85,29 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 
 		builder.addNameByColRef(oldScanTag, tableDef)
 
+		// Create runtime filter for optimizing the table scan
+		rfTag := builder.genNewMsgTag()
+		pkPos := tableDef.Name2ColIndex[pkName]
+		pkTyp := tableDef.Cols[pkPos].Typ
+
+		// Probe expression for runtime filter (on the scan side)
+		probeExpr := &plan.Expr{
+			Typ: pkTyp,
+			Expr: &plan.Expr_Col{
+				Col: &plan.ColRef{
+					RelPos: oldScanTag,
+					ColPos: pkPos,
+				},
+			},
+		}
+
 		oldScanNodeID := builder.appendNode(&plan.Node{
-			NodeType:     plan.Node_TABLE_SCAN,
-			TableDef:     tableDef,
-			ObjRef:       objRef,
-			BindingTags:  []int32{oldScanTag},
-			ScanSnapshot: bindCtx.snapshot,
+			NodeType:               plan.Node_TABLE_SCAN,
+			TableDef:               tableDef,
+			ObjRef:                 objRef,
+			BindingTags:            []int32{oldScanTag},
+			ScanSnapshot:           bindCtx.snapshot,
+			RuntimeFilterProbeList: []*plan.RuntimeFilterSpec{MakeRuntimeFilter(rfTag, false, 0, probeExpr, false)},
 		}, bindCtx)
 
 		for i, col := range tableDef.Cols {
@@ -143,8 +161,6 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 			}
 		}
 
-		pkPos := tableDef.Name2ColIndex[pkName]
-		pkTyp := tableDef.Cols[pkPos].Typ
 		leftExpr := &plan.Expr{
 			Typ: pkTyp,
 			Expr: &plan.Expr_Col{
@@ -169,12 +185,27 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 			rightExpr,
 		})
 
+		// Build expression for runtime filter (on the build side - selectNode)
+		buildExpr := &plan.Expr{
+			Typ: pkTyp,
+			Expr: &plan.Expr_Col{
+				Col: &plan.ColRef{
+					RelPos: selectTag,
+					ColPos: colName2Idx[tableDef.Name+"."+pkName],
+				},
+			},
+		}
+
 		lastNodeID = builder.appendNode(&plan.Node{
-			NodeType: plan.Node_JOIN,
-			Children: []int32{lastNodeID, oldScanNodeID},
-			JoinType: plan.Node_LEFT,
-			OnList:   []*plan.Expr{joinCond},
+			NodeType:               plan.Node_JOIN,
+			Children:               []int32{lastNodeID, oldScanNodeID},
+			JoinType:               plan.Node_LEFT,
+			OnList:                 []*plan.Expr{joinCond},
+			RuntimeFilterBuildList: []*plan.RuntimeFilterSpec{MakeRuntimeFilter(rfTag, false, GetInFilterCardLimitOnPK(sid, selectNode.Stats.Outcnt), buildExpr, false)},
 		}, bindCtx)
+
+		// Recalculate stats based on runtime filter
+		recalcStatsByRuntimeFilter(builder.qry.Nodes[oldScanNodeID], builder.qry.Nodes[lastNodeID], builder)
 
 		lastNodeID = builder.appendNode(&plan.Node{
 			NodeType:    plan.Node_PROJECT,
@@ -191,16 +222,31 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 		// handle primary/unique key confliction
 		builder.addNameByColRef(scanTag, tableDef)
 
-		scanNodeID := builder.appendNode(&plan.Node{
-			NodeType:     plan.Node_TABLE_SCAN,
-			TableDef:     tableDef,
-			ObjRef:       objRef,
-			BindingTags:  []int32{scanTag},
-			ScanSnapshot: bindCtx.snapshot,
-		}, bindCtx)
-
+		// Create runtime filter for optimizing the table scan
+		rfTag2 := builder.genNewMsgTag()
 		pkPos := tableDef.Name2ColIndex[pkName]
 		pkTyp := tableDef.Cols[pkPos].Typ
+
+		// Probe expression for runtime filter (on the scan side)
+		probeExpr := &plan.Expr{
+			Typ: pkTyp,
+			Expr: &plan.Expr_Col{
+				Col: &plan.ColRef{
+					RelPos: scanTag,
+					ColPos: pkPos,
+				},
+			},
+		}
+
+		scanNodeID := builder.appendNode(&plan.Node{
+			NodeType:               plan.Node_TABLE_SCAN,
+			TableDef:               tableDef,
+			ObjRef:                 objRef,
+			BindingTags:            []int32{scanTag},
+			ScanSnapshot:           bindCtx.snapshot,
+			RuntimeFilterProbeList: []*plan.RuntimeFilterSpec{MakeRuntimeFilter(rfTag2, false, 0, probeExpr, false)},
+		}, bindCtx)
+
 		leftExpr := &plan.Expr{
 			Typ: pkTyp,
 			Expr: &plan.Expr_Col{
@@ -241,6 +287,17 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 
 		oldPkPos := oldColName2Idx[tableDef.Name+"."+pkName]
 
+		// Build expression for runtime filter
+		buildExpr := &plan.Expr{
+			Typ: pkTyp,
+			Expr: &plan.Expr_Col{
+				Col: &plan.ColRef{
+					RelPos: fullProjTag,
+					ColPos: colName2Idx[tableDef.Name+"."+pkName],
+				},
+			},
+		}
+
 		dedupJoinNode := &plan.Node{
 			NodeType:          plan.Node_JOIN,
 			Children:          []int32{scanNodeID, lastNodeID},
@@ -257,9 +314,13 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 					},
 				},
 			},
+			RuntimeFilterBuildList: []*plan.RuntimeFilterSpec{MakeRuntimeFilter(rfTag2, false, GetInFilterCardLimitOnPK(sid, selectNode.Stats.Outcnt), buildExpr, false)},
 		}
 
 		lastNodeID = builder.appendNode(dedupJoinNode, bindCtx)
+
+		// Recalculate stats based on runtime filter
+		recalcStatsByRuntimeFilter(builder.qry.Nodes[scanNodeID], dedupJoinNode, builder)
 	}
 
 	// detect unique key confliction

@@ -16,6 +16,7 @@ package plan
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,11 +51,12 @@ func buildReplace(stmt *tree.Replace, ctx CompilerContext, isPrepareStmt bool, r
 			row := stmt.Rows.Select.(*tree.ValuesClause).Rows[0]
 			keyToRow := getKeyToRowMatch(stmt.Columns)
 			keepKeys := filterKeys(keys, stmt.Columns)
-			disjunction := make([]string, 0, len(keepKeys))
+			// Use IN clause for better performance
+			inClauses := make([]string, 0, len(keepKeys))
 			for _, key := range keepKeys {
-				disjunction = append(disjunction, buildConjunction(key, row, keyToRow))
+				inClauses = append(inClauses, buildInClause(key, []tree.Exprs{row}, keyToRow))
 			}
-			deleteCond = strings.Join(disjunction, " or ")
+			deleteCond = strings.Join(inClauses, " or ")
 		} else {
 			// replace into table values (...);
 			keyToRow := make(map[string]int, len(tableDef.Cols))
@@ -63,13 +65,12 @@ func buildReplace(stmt *tree.Replace, ctx CompilerContext, isPrepareStmt bool, r
 			}
 
 			rows := stmt.Rows.Select.(*tree.ValuesClause).Rows
-			disjunction := make([]string, 0, len(rows)*len(keys))
-			for _, row := range rows {
-				for _, key := range keys {
-					disjunction = append(disjunction, buildConjunction(key, row, keyToRow))
-				}
+			// Use IN clause for better performance instead of OR conditions
+			inClauses := make([]string, 0, len(keys))
+			for _, key := range keys {
+				inClauses = append(inClauses, buildInClause(key, rows, keyToRow))
 			}
-			deleteCond = strings.Join(disjunction, " or ")
+			deleteCond = strings.Join(inClauses, " or ")
 		}
 	}
 
@@ -167,4 +168,43 @@ func buildConjunction(key map[string]struct{}, row tree.Exprs, keyToRow map[stri
 		conjunctions = append(conjunctions, fmt.Sprintf("%s = %s", k, fmtctx.String()))
 	}
 	return "(" + strings.Join(conjunctions, " and ") + ")"
+}
+
+// buildInClause builds an IN clause for the given key columns and rows.
+// For single column key: col IN (val1, val2, ...)
+// For composite key: (col1, col2) IN ((val1_1, val1_2), (val2_1, val2_2), ...)
+// This is more efficient than OR conditions for large number of rows.
+func buildInClause(key map[string]struct{}, rows []tree.Exprs, keyToRow map[string]int) string {
+	// Get sorted key column names for consistent ordering
+	keyNames := make([]string, 0, len(key))
+	for k := range key {
+		keyNames = append(keyNames, k)
+	}
+	// Sort for consistent ordering
+	sort.Strings(keyNames)
+
+	if len(keyNames) == 1 {
+		// Single column key: col IN (val1, val2, ...)
+		colName := keyNames[0]
+		values := make([]string, 0, len(rows))
+		for _, row := range rows {
+			fmtctx := tree.NewFmtCtx(dialect.MYSQL, tree.WithQuoteString(true))
+			row[keyToRow[colName]].Format(fmtctx)
+			values = append(values, fmtctx.String())
+		}
+		return fmt.Sprintf("%s IN (%s)", colName, strings.Join(values, ", "))
+	}
+
+	// Composite key: (col1, col2) IN ((val1_1, val1_2), (val2_1, val2_2), ...)
+	tuples := make([]string, 0, len(rows))
+	for _, row := range rows {
+		values := make([]string, 0, len(keyNames))
+		for _, colName := range keyNames {
+			fmtctx := tree.NewFmtCtx(dialect.MYSQL, tree.WithQuoteString(true))
+			row[keyToRow[colName]].Format(fmtctx)
+			values = append(values, fmtctx.String())
+		}
+		tuples = append(tuples, "("+strings.Join(values, ", ")+")")
+	}
+	return fmt.Sprintf("(%s) IN (%s)", strings.Join(keyNames, ", "), strings.Join(tuples, ", "))
 }
