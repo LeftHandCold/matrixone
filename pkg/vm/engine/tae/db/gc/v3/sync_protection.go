@@ -22,12 +22,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
-	"github.com/matrixorigin/matrixone/pkg/container/types"
-	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 	"go.uber.org/zap"
 )
 
@@ -42,11 +40,11 @@ const (
 
 // SyncProtection represents a single sync protection entry
 type SyncProtection struct {
-	JobID      string                   // Sync job ID
-	BF         *bloomfilter.BloomFilter // BloomFilter for protected objects
-	ValidTS    int64                    // Valid timestamp (nanoseconds), needs to be renewed
-	SoftDelete bool                     // Whether soft deleted
-	CreateTime time.Time                // Creation time for logging
+	JobID      string            // Sync job ID
+	BF         index.BloomFilter // BloomFilter for protected objects (using xorfilter, deterministic)
+	ValidTS    int64             // Valid timestamp (nanoseconds), needs to be renewed
+	SoftDelete bool              // Whether soft deleted
+	CreateTime time.Time         // Creation time for logging
 }
 
 // SyncProtectionManager manages sync protection entries
@@ -85,14 +83,12 @@ func (m *SyncProtectionManager) IsGCRunning() bool {
 }
 
 // RegisterSyncProtection registers a new sync protection with BloomFilter
-// bfData is base64 encoded BloomFilter bytes
-// testObject is an optional object name for testing (debugging)
+// bfData is base64 encoded BloomFilter bytes (using index.BloomFilter/xorfilter format)
 // Returns error if GC is running or job already exists
 func (m *SyncProtectionManager) RegisterSyncProtection(
 	jobID string,
 	bfData string,
 	validTS int64,
-	testObject string,
 ) error {
 	m.Lock()
 	defer m.Unlock()
@@ -163,81 +159,34 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 		zap.String("bf-bytes-prefix", fmt.Sprintf("%v", bfBytes[:min(64, len(bfBytes))])),
 	)
 
-	// Unmarshal BloomFilter
-	bf := &bloomfilter.BloomFilter{}
-	if err := bf.Unmarshal(bfBytes); err != nil {
+	// Unmarshal BloomFilter (using index.BloomFilter which is based on xorfilter - deterministic)
+	// Use recover to handle panic from invalid data
+	var bf index.BloomFilter
+	var unmarshalErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				unmarshalErr = moerr.NewInternalErrorNoCtx(fmt.Sprintf("failed to unmarshal bloom filter (panic): %v", r))
+			}
+		}()
+		unmarshalErr = bf.Unmarshal(bfBytes)
+	}()
+	if unmarshalErr != nil {
 		logutil.Error(
 			"GC-Sync-Protection-Register-Unmarshal-Error",
 			zap.String("job-id", jobID),
 			zap.Int("bf-bytes-len", len(bfBytes)),
-			zap.Error(err),
+			zap.Error(unmarshalErr),
 		)
-		return moerr.NewInternalErrorNoCtx(fmt.Sprintf("failed to unmarshal bloom filter: %v", err))
+		return moerr.NewInternalErrorNoCtx(fmt.Sprintf("failed to unmarshal bloom filter: %v", unmarshalErr))
 	}
 
-	// Debug: verify BloomFilter is valid and test a sample
+	// Debug: print BloomFilter info
 	logutil.Info(
-		"GC-Sync-Protection-Register-BF-Valid",
+		"GC-Sync-Protection-Register-BF-Unmarshaled",
 		zap.String("job-id", jobID),
-		zap.Bool("bf-valid", bf.Valid()),
+		zap.String("bf-info", bf.String()),
 	)
-
-	// Debug: print BloomFilter internal state FIRST
-	logutil.Info(
-		"GC-Sync-Protection-Register-BF-Internal-State",
-		zap.String("job-id", jobID),
-		zap.Int64("bitmap-len", bf.GetBitmapLen()),
-		zap.Int("seed-count", bf.GetSeedCount()),
-		zap.Uint64("first-seed", bf.GetFirstSeed()),
-		zap.Uint64s("all-seeds", bf.GetAllSeeds()),
-		zap.Int("bitmap-count", bf.GetBitmapCount()),
-	)
-
-	// Debug: try to test a simple string to verify BF works
-	testVec := vector.NewVec(types.T_varchar.ToType())
-	testStr := "test-string-12345"
-	if err := vector.AppendBytes(testVec, []byte(testStr), false, m.mp); err == nil {
-		// This should return false since we didn't add this string
-		result := bf.TestRow(testVec, 0)
-		logutil.Info(
-			"GC-Sync-Protection-Register-BF-Test-Random",
-			zap.String("job-id", jobID),
-			zap.String("test-str", testStr),
-			zap.Bool("result", result),
-		)
-	}
-	testVec.Free(m.mp)
-
-	// Debug: test with the provided test object (should return true if BF works correctly)
-	if testObject != "" {
-		testVec2 := vector.NewVec(types.T_varchar.ToType())
-		if err := vector.AppendBytes(testVec2, []byte(testObject), false, m.mp); err == nil {
-			result, encodedKey, hashVals := bf.TestRowDebug(testVec2, 0)
-			logutil.Info(
-				"GC-Sync-Protection-Register-BF-Test-Known-Object",
-				zap.String("job-id", jobID),
-				zap.String("test-object", testObject),
-				zap.Int("test-object-len", len(testObject)),
-				zap.String("test-object-bytes", fmt.Sprintf("%v", []byte(testObject))),
-				zap.Bool("result", result),
-				zap.Bool("expected", true),
-				zap.Int("encoded-key-len", len(encodedKey)),
-				zap.String("encoded-key", fmt.Sprintf("%v", encodedKey)),
-				zap.Uint64s("hash-vals", hashVals),
-			)
-			if !result {
-				logutil.Error(
-					"GC-Sync-Protection-Register-BF-Test-Known-Object-FAILED",
-					zap.String("job-id", jobID),
-					zap.String("test-object", testObject),
-					zap.String("message", "BloomFilter should contain this object but TestRow returned false!"),
-					zap.String("encoded-key", fmt.Sprintf("%v", encodedKey)),
-					zap.Uint64s("hash-vals", hashVals),
-				)
-			}
-		}
-		testVec2.Free(m.mp)
-	}
 
 	m.protections[jobID] = &SyncProtection{
 		JobID:      jobID,
@@ -327,9 +276,6 @@ func (m *SyncProtectionManager) CleanupSoftDeleted(checkpointWatermark int64) {
 	for jobID, p := range m.protections {
 		// Condition: soft delete state AND checkpoint watermark > validTS
 		if p.SoftDelete && checkpointWatermark > p.ValidTS {
-			if p.BF != nil {
-				p.BF.Free()
-			}
 			delete(m.protections, jobID)
 			logutil.Info(
 				"GC-Sync-Protection-Cleaned-Soft-Deleted",
@@ -353,9 +299,6 @@ func (m *SyncProtectionManager) CleanupExpired() {
 
 		// Non soft delete state, but TTL exceeded without renewal
 		if !p.SoftDelete && now.Sub(validTime) > m.ttl {
-			if p.BF != nil {
-				p.BF.Free()
-			}
 			delete(m.protections, jobID)
 			logutil.Warn(
 				"GC-Sync-Protection-Force-Cleaned-Expired",
@@ -407,19 +350,9 @@ func (m *SyncProtectionManager) IsProtected(objectName string) bool {
 		return false
 	}
 
-	// Create a vector with single string for testing
-	vec := vector.NewVec(types.T_varchar.ToType())
-	defer vec.Free(m.mp)
-	if err := vector.AppendBytes(vec, []byte(objectName), false, m.mp); err != nil {
-		return false
-	}
-
 	for _, p := range m.protections {
-		if p.BF == nil || !p.BF.Valid() {
-			continue
-		}
-		// Use TestRow for single element test
-		if p.BF.TestRow(vec, 0) {
+		// Use MayContainsKey for single element test
+		if result, err := p.BF.MayContainsKey([]byte(objectName)); err == nil && result {
 			return true
 		}
 	}
@@ -441,28 +374,20 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 		return files
 	}
 
-	// Collect all valid BloomFilters
-	var bfs []*bloomfilter.BloomFilter
-	var jobIDs []string
+	// Collect all BloomFilters
+	type bfEntry struct {
+		jobID string
+		bf    *index.BloomFilter
+	}
+	var bfs []bfEntry
 	for jobID, p := range m.protections {
-		if p.BF != nil && p.BF.Valid() {
-			bfs = append(bfs, p.BF)
-			jobIDs = append(jobIDs, jobID)
-			logutil.Info(
-				"GC-Sync-Protection-Filter-BF-Found",
-				zap.String("job-id", jobID),
-				zap.Bool("soft-delete", p.SoftDelete),
-				zap.Int64("bitmap-len", p.BF.GetBitmapLen()),
-				zap.Int("seed-count", p.BF.GetSeedCount()),
-				zap.Int("bitmap-count", p.BF.GetBitmapCount()),
-			)
-		} else {
-			logutil.Warn(
-				"GC-Sync-Protection-Filter-BF-Invalid",
-				zap.String("job-id", jobID),
-				zap.Bool("bf-nil", p.BF == nil),
-			)
-		}
+		bfs = append(bfs, bfEntry{jobID: jobID, bf: &p.BF})
+		logutil.Info(
+			"GC-Sync-Protection-Filter-BF-Found",
+			zap.String("job-id", jobID),
+			zap.Bool("soft-delete", p.SoftDelete),
+			zap.String("bf-info", p.BF.String()),
+		)
 	}
 
 	if len(bfs) == 0 {
@@ -477,7 +402,6 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 		"GC-Sync-Protection-Filter-Start",
 		zap.Int("files-to-check", len(files)),
 		zap.Int("bf-count", len(bfs)),
-		zap.Strings("job-ids", jobIDs),
 	)
 
 	// Print sample files to check
@@ -494,78 +418,36 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 		)
 	}
 
-	// Build a vector with all file names first
-	vec := vector.NewVec(types.T_varchar.ToType())
-	defer vec.Free(m.mp)
+	// Build result: files that are NOT protected
+	result := make([]string, 0, len(files))
+	protectedFiles := make([]string, 0)
 
 	for _, f := range files {
-		if err := vector.AppendBytes(vec, []byte(f), false, m.mp); err != nil {
-			logutil.Error(
-				"GC-Sync-Protection-Filter-Vector-Append-Error",
-				zap.String("file", f),
-				zap.Error(err),
-			)
-			// On error building vector, return original files (safe approach)
-			return files
-		}
-	}
+		protected := false
+		var protectedBy string
 
-	logutil.Info(
-		"GC-Sync-Protection-Filter-Vector-Built",
-		zap.Int("vector-len", vec.Length()),
-	)
-
-	// Debug: Test the first file manually to see what's happening
-	if vec.Length() > 0 && len(bfs) > 0 {
-		// Create a single-element vector for the first file
-		testVec := vector.NewVec(types.T_varchar.ToType())
-		if err := vector.AppendBytes(testVec, []byte(files[0]), false, m.mp); err == nil {
-			result := bfs[0].TestRow(testVec, 0)
-			logutil.Info(
-				"GC-Sync-Protection-Filter-Debug-First-File-TestRow",
-				zap.String("file", files[0]),
-				zap.Int("file-len", len(files[0])),
-				zap.String("file-bytes", fmt.Sprintf("%v", []byte(files[0]))),
-				zap.Bool("result", result),
-			)
-		}
-		testVec.Free(m.mp)
-	}
-
-	// Track which files are protected (by any BloomFilter)
-	protectedSet := make(map[int]string) // index -> jobID that protects it
-
-	// Test against each BloomFilter using batch Test method
-	for bfIdx, bf := range bfs {
-		bf.Test(vec, func(exists bool, i int) {
-			if exists {
-				// File at index i is protected by this BloomFilter
-				if _, already := protectedSet[i]; !already {
-					protectedSet[i] = jobIDs[bfIdx]
-				}
+		// Check against each BloomFilter
+		for _, entry := range bfs {
+			if contains, err := entry.bf.MayContainsKey([]byte(f)); err == nil && contains {
+				protected = true
+				protectedBy = entry.jobID
+				break
 			}
-		})
-	}
+		}
 
-	// Build result: files that are NOT protected
-	result := make([]string, 0, len(files)-len(protectedSet))
-	protectedFiles := make([]string, 0, len(protectedSet))
-
-	for i, f := range files {
-		if jobID, protected := protectedSet[i]; protected {
+		if protected {
 			protectedFiles = append(protectedFiles, f)
 			if len(protectedFiles) <= 10 {
 				logutil.Info(
 					"GC-Sync-Protection-Filter-File-Protected-By-BF",
 					zap.String("file", f),
-					zap.String("job-id", jobID),
-					zap.Int("index", i),
+					zap.String("job-id", protectedBy),
 				)
 			}
 		} else {
 			result = append(result, f)
 			// Log first few unprotected files for debugging
-			if i < 5 {
+			if len(result) <= 5 {
 				logutil.Info(
 					"GC-Sync-Protection-Filter-File-NOT-Protected",
 					zap.String("file", f),
@@ -616,39 +498,14 @@ func (m *SyncProtectionManager) DebugTestFile(fileName string) bool {
 		return false
 	}
 
-	vec := vector.NewVec(types.T_varchar.ToType())
-	defer vec.Free(m.mp)
-
-	if err := vector.AppendBytes(vec, []byte(fileName), false, m.mp); err != nil {
-		logutil.Error(
-			"GC-Sync-Protection-Debug-Vector-Error",
-			zap.Error(err),
-		)
-		return false
-	}
-
 	for jobID, p := range m.protections {
-		if p.BF == nil {
-			logutil.Info(
-				"GC-Sync-Protection-Debug-BF-Nil",
-				zap.String("job-id", jobID),
-			)
-			continue
-		}
-		if !p.BF.Valid() {
-			logutil.Info(
-				"GC-Sync-Protection-Debug-BF-Invalid",
-				zap.String("job-id", jobID),
-			)
-			continue
-		}
-
-		result := p.BF.TestRow(vec, 0)
+		result, err := p.BF.MayContainsKey([]byte(fileName))
 		logutil.Info(
 			"GC-Sync-Protection-Debug-Test-Result",
 			zap.String("job-id", jobID),
 			zap.String("file", fileName),
 			zap.Bool("protected", result),
+			zap.Error(err),
 		)
 		if result {
 			return true

@@ -27,17 +27,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
-	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/spf13/cobra"
 )
 
 const (
-	// BloomFilter parameters
+	// BloomFilter parameters - not used anymore since we use xorfilter
 	bfEstimateRows = 100000  // Estimated number of objects
 	bfProbability  = 0.001   // False positive rate 0.1%
 )
@@ -59,7 +59,6 @@ type SyncProtectionTester struct {
 	sampleCount    int
 	verbose        bool
 	waitTime       int
-	mp             *mpool.MPool
 }
 
 func NewSyncProtectionTester(dsn, dataDir string, sampleCount int, verbose bool, waitTime int) (*SyncProtectionTester, error) {
@@ -72,11 +71,6 @@ func NewSyncProtectionTester(dsn, dataDir string, sampleCount int, verbose bool,
 		return nil, fmt.Errorf("ping 数据库失败: %w", err)
 	}
 
-	mp, err := mpool.NewMPool("sync_protection_test", 0, mpool.NoFixed)
-	if err != nil {
-		return nil, fmt.Errorf("创建内存池失败: %w", err)
-	}
-
 	return &SyncProtectionTester{
 		db:          db,
 		dataDir:     dataDir,
@@ -84,7 +78,6 @@ func NewSyncProtectionTester(dsn, dataDir string, sampleCount int, verbose bool,
 		sampleCount: sampleCount,
 		verbose:     verbose,
 		waitTime:    waitTime,
-		mp:          mp,
 	}, nil
 }
 
@@ -141,11 +134,10 @@ func (t *SyncProtectionTester) SelectRandomObjects(objects []string, count int) 
 	return copied[:count]
 }
 
-// BuildBloomFilter 构建 BloomFilter
+// BuildBloomFilter 构建 BloomFilter (使用 xorfilter，确定性 hash)
 func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error) {
-	fmt.Println("[DEBUG-BF] ========== 开始构建 BloomFilter ==========")
+	fmt.Println("[DEBUG-BF] ========== 开始构建 BloomFilter (xorfilter) ==========")
 	fmt.Printf("[DEBUG-BF] 对象数量: %d\n", len(objects))
-	fmt.Printf("[DEBUG-BF] 估计行数: %d, 误报率: %f\n", len(objects)+1000, bfProbability)
 	
 	// 打印所有要保护的对象
 	fmt.Println("[DEBUG-BF] 要保护的对象列表:")
@@ -153,42 +145,36 @@ func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error
 		fmt.Printf("[DEBUG-BF]   [%d] %s (len=%d, bytes=%v)\n", i, obj, len(obj), []byte(obj)[:min(20, len(obj))])
 	}
 	
-	// Create BloomFilter
-	bf := bloomfilter.New(int64(len(objects)+1000), bfProbability)
-	defer bf.Free()
-
-	// Create vector and add objects
-	vec := vector.NewVec(types.T_varchar.ToType())
-	defer vec.Free(t.mp)
-
+	// Create a containers.Vector with all object names
+	vec := containers.MakeVector(types.T_varchar.ToType(), mpool.MustNewZero())
+	defer vec.Close()
+	
 	fmt.Println("[DEBUG-BF] 添加对象到 vector...")
 	for i, obj := range objects {
-		if err := vector.AppendBytes(vec, []byte(obj), false, t.mp); err != nil {
-			return "", fmt.Errorf("添加对象到 vector 失败: %w", err)
-		}
+		vec.Append([]byte(obj), false)
 		if i < 3 {
 			fmt.Printf("[DEBUG-BF]   添加: %s\n", obj)
 		}
 	}
 	fmt.Printf("[DEBUG-BF] Vector 长度: %d\n", vec.Length())
 
-	// Add to BloomFilter
-	fmt.Println("[DEBUG-BF] 调用 bf.Add(vec)...")
-	bf.Add(vec)
+	// Create BloomFilter using index.NewBloomFilter (xorfilter based)
+	fmt.Println("[DEBUG-BF] 调用 index.NewBloomFilter...")
+	bf, err := index.NewBloomFilter(vec)
+	if err != nil {
+		return "", fmt.Errorf("创建 BloomFilter 失败: %w", err)
+	}
 
 	// Verify BloomFilter works correctly before serialization
 	fmt.Println("[DEBUG-BF] ========== 验证 BloomFilter (序列化前) ==========")
-	testVec := vector.NewVec(types.T_varchar.ToType())
-	defer testVec.Free(t.mp)
-	
 	preSerializeFailCount := 0
 	for i, obj := range objects {
-		testVec.Reset(types.T_varchar.ToType())
-		if err := vector.AppendBytes(testVec, []byte(obj), false, t.mp); err != nil {
-			fmt.Printf("[DEBUG-BF] ✗ 创建测试 vector 失败: %v\n", err)
+		result, err := bf.MayContainsKey([]byte(obj))
+		if err != nil {
+			fmt.Printf("[DEBUG-BF] ✗ [%d] 测试失败: %v\n", i, err)
+			preSerializeFailCount++
 			continue
 		}
-		result := bf.TestRow(testVec, 0)
 		if result {
 			if i < 5 || t.verbose {
 				fmt.Printf("[DEBUG-BF] ✓ [%d] BloomFilter 包含: %s\n", i, obj)
@@ -219,23 +205,19 @@ func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error
 
 	// Verify BloomFilter works correctly after deserialization
 	fmt.Println("[DEBUG-BF] ========== 验证 BloomFilter (反序列化后) ==========")
-	bf2 := &bloomfilter.BloomFilter{}
+	var bf2 index.BloomFilter
 	if err := bf2.Unmarshal(data); err != nil {
 		return "", fmt.Errorf("反序列化 BloomFilter 失败: %w", err)
 	}
-	defer bf2.Free()
-	
-	testVec2 := vector.NewVec(types.T_varchar.ToType())
-	defer testVec2.Free(t.mp)
 	
 	postDeserializeFailCount := 0
 	for i, obj := range objects {
-		testVec2.Reset(types.T_varchar.ToType())
-		if err := vector.AppendBytes(testVec2, []byte(obj), false, t.mp); err != nil {
-			fmt.Printf("[DEBUG-BF] ✗ 创建测试 vector 失败: %v\n", err)
+		result, err := bf2.MayContainsKey([]byte(obj))
+		if err != nil {
+			fmt.Printf("[DEBUG-BF] ✗ [%d] 测试失败: %v\n", i, err)
+			postDeserializeFailCount++
 			continue
 		}
-		result := bf2.TestRow(testVec2, 0)
 		if result {
 			if i < 5 || t.verbose {
 				fmt.Printf("[DEBUG-BF] ✓ [%d] 反序列化后 BloomFilter 包含: %s\n", i, obj)
@@ -274,23 +256,19 @@ func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error
 	
 	// 再次验证解码后的 BloomFilter
 	fmt.Println("[DEBUG-BF] ========== 验证 Base64 解码后的 BloomFilter ==========")
-	bf3 := &bloomfilter.BloomFilter{}
+	var bf3 index.BloomFilter
 	if err := bf3.Unmarshal(decodedData); err != nil {
 		return "", fmt.Errorf("Base64 解码后反序列化 BloomFilter 失败: %w", err)
 	}
-	defer bf3.Free()
-	
-	testVec3 := vector.NewVec(types.T_varchar.ToType())
-	defer testVec3.Free(t.mp)
 	
 	base64FailCount := 0
 	for i, obj := range objects {
-		testVec3.Reset(types.T_varchar.ToType())
-		if err := vector.AppendBytes(testVec3, []byte(obj), false, t.mp); err != nil {
-			fmt.Printf("[DEBUG-BF] ✗ 创建测试 vector 失败: %v\n", err)
+		result, err := bf3.MayContainsKey([]byte(obj))
+		if err != nil {
+			fmt.Printf("[DEBUG-BF] ✗ [%d] 测试失败: %v\n", i, err)
+			base64FailCount++
 			continue
 		}
-		result := bf3.TestRow(testVec3, 0)
 		if result {
 			if i < 5 || t.verbose {
 				fmt.Printf("[DEBUG-BF] ✓ [%d] Base64解码后 BloomFilter 包含: %s\n", i, obj)
@@ -307,14 +285,7 @@ func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error
 	
 	fmt.Println("[DEBUG-BF] ========== BloomFilter 构建完成 ==========")
 	fmt.Printf("[DEBUG-BF] 最终 Base64 数据 SHA256: %s\n", rawHashStr)
-	
-	// Print BloomFilter internal state for comparison with MO server
-	fmt.Println("[DEBUG-BF] ========== BloomFilter 内部状态 (用于与 MO 服务器对比) ==========")
-	fmt.Printf("[DEBUG-BF] bitmap-len: %d\n", bf3.GetBitmapLen())
-	fmt.Printf("[DEBUG-BF] seed-count: %d\n", bf3.GetSeedCount())
-	fmt.Printf("[DEBUG-BF] first-seed: %d\n", bf3.GetFirstSeed())
-	fmt.Printf("[DEBUG-BF] all-seeds: %v\n", bf3.GetAllSeeds())
-	fmt.Printf("[DEBUG-BF] bitmap-count: %d\n", bf3.GetBitmapCount())
+	fmt.Printf("[DEBUG-BF] BloomFilter 信息: %s\n", bf3.String())
 	
 	return base64Data, nil
 }
@@ -408,27 +379,17 @@ func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
 		
 		// 重新解码 bfData 并测试
 		decodedBF, _ := base64.StdEncoding.DecodeString(bfData)
-		testBF := &bloomfilter.BloomFilter{}
+		var testBF index.BloomFilter
 		if err := testBF.Unmarshal(decodedBF); err != nil {
 			fmt.Printf("[DEBUG-REG] ✗ 重新反序列化失败: %v\n", err)
 		} else {
-			testVec := vector.NewVec(types.T_varchar.ToType())
-			if err := vector.AppendBytes(testVec, []byte(firstObj), false, t.mp); err != nil {
-				fmt.Printf("[DEBUG-REG] ✗ 创建测试 vector 失败: %v\n", err)
+			result, err := testBF.MayContainsKey([]byte(firstObj))
+			fmt.Printf("[DEBUG-REG] 测试结果: %v (应该为 true), err: %v\n", result, err)
+			if !result {
+				fmt.Println("[DEBUG-REG] ✗ 警告：BloomFilter 无法找到第一个对象！")
 			} else {
-				result, encodedKey, hashVals := testBF.TestRowDebug(testVec, 0)
-				fmt.Printf("[DEBUG-REG] 测试结果: %v (应该为 true)\n", result)
-				fmt.Printf("[DEBUG-REG] encoded-key-len: %d\n", len(encodedKey))
-				fmt.Printf("[DEBUG-REG] encoded-key: %v\n", encodedKey)
-				fmt.Printf("[DEBUG-REG] hash-vals: %v\n", hashVals)
-				if !result {
-					fmt.Println("[DEBUG-REG] ✗ 警告：BloomFilter 无法找到第一个对象！")
-				} else {
-					fmt.Println("[DEBUG-REG] ✓ BloomFilter 正确找到第一个对象")
-				}
+				fmt.Println("[DEBUG-REG] ✓ BloomFilter 正确找到第一个对象")
 			}
-			testVec.Free(t.mp)
-			testBF.Free()
 		}
 	}
 

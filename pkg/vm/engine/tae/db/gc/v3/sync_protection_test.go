@@ -19,32 +19,28 @@ import (
 	"testing"
 	"time"
 
-	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
-	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
-	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // buildTestBF creates a BloomFilter from object names and returns base64 encoded data
+// Uses index.BloomFilter (xorfilter based) which is deterministic across processes
 func buildTestBF(t *testing.T, objects []string) string {
-	mp, err := mpool.NewMPool("test", 0, mpool.NoFixed)
-	require.NoError(t, err)
-	defer mp.Free(nil)
-
-	bf := bloomfilter.New(int64(len(objects)+100), 0.001)
-	defer bf.Free()
-
-	vec := vector.NewVec(types.T_varchar.ToType())
-	defer vec.Free(mp)
+	// Create a containers.Vector with all object names
+	vec := containers.MakeVector(types.T_varchar.ToType(), common.DefaultAllocator)
+	defer vec.Close()
 
 	for _, obj := range objects {
-		err := vector.AppendBytes(vec, []byte(obj), false, mp)
-		require.NoError(t, err)
+		vec.Append([]byte(obj), false)
 	}
 
-	bf.Add(vec)
+	// Create BloomFilter using index.NewBloomFilter (xorfilter based)
+	bf, err := index.NewBloomFilter(vec)
+	require.NoError(t, err)
 
 	data, err := bf.Marshal()
 	require.NoError(t, err)
