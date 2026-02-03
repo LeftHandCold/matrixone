@@ -185,7 +185,7 @@ func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
 		return fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	query := fmt.Sprintf("SELECT mo_ctl('dn', 'disk_cleaner', 'register_sync_protection.%s')", string(jsonData))
+	query := fmt.Sprintf("SELECT mo_ctl('dn', 'diskcleaner', 'register_sync_protection.%s')", string(jsonData))
 
 	if t.verbose {
 		fmt.Printf("[DEBUG] SQL: %s\n", query[:min(len(query), 200)]+"...")
@@ -223,7 +223,7 @@ func (t *SyncProtectionTester) RenewProtection() error {
 		return fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	query := fmt.Sprintf("SELECT mo_ctl('dn', 'disk_cleaner', 'renew_sync_protection.%s')", string(jsonData))
+	query := fmt.Sprintf("SELECT mo_ctl('dn', 'diskcleaner', 'renew_sync_protection.%s')", string(jsonData))
 
 	if t.verbose {
 		fmt.Printf("[DEBUG] SQL: %s\n", query)
@@ -253,7 +253,7 @@ func (t *SyncProtectionTester) UnregisterProtection() error {
 		return fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	query := fmt.Sprintf("SELECT mo_ctl('dn', 'disk_cleaner', 'unregister_sync_protection.%s')", string(jsonData))
+	query := fmt.Sprintf("SELECT mo_ctl('dn', 'diskcleaner', 'unregister_sync_protection.%s')", string(jsonData))
 
 	if t.verbose {
 		fmt.Printf("[DEBUG] SQL: %s\n", query)
@@ -274,7 +274,7 @@ func (t *SyncProtectionTester) UnregisterProtection() error {
 
 // TriggerGC 触发 GC
 func (t *SyncProtectionTester) TriggerGC() error {
-	query := "SELECT mo_ctl('dn', 'disk_cleaner', 'force_gc')"
+	query := "SELECT mo_ctl('dn', 'diskcleaner', 'force_gc')"
 
 	if t.verbose {
 		fmt.Printf("[DEBUG] SQL: %s\n", query)
