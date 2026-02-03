@@ -44,9 +44,10 @@ const (
 
 // SyncProtectionRequest 同步保护请求
 type SyncProtectionRequest struct {
-	JobID   string `json:"job_id"`
-	BF      string `json:"bf"`       // Base64 encoded BloomFilter
-	ValidTS int64  `json:"valid_ts"`
+	JobID      string `json:"job_id"`
+	BF         string `json:"bf"`          // Base64 encoded BloomFilter
+	ValidTS    int64  `json:"valid_ts"`
+	TestObject string `json:"test_object"` // 用于测试的对象名（调试用）
 }
 
 // SyncProtectionTester 同步保护测试器
@@ -334,10 +335,17 @@ func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
 	fmt.Printf("[DEBUG-REG] 发送的 Base64 数据 SHA256: %s\n", sendHashStr)
 	fmt.Printf("[DEBUG-REG] 发送的 Base64 数据长度: %d\n", len(bfData))
 
+	// 发送第一个被保护的对象名用于测试
+	testObject := ""
+	if len(objects) > 0 {
+		testObject = objects[0]
+	}
+
 	req := SyncProtectionRequest{
-		JobID:   t.jobID,
-		BF:      bfData,
-		ValidTS: time.Now().UnixNano(),
+		JobID:      t.jobID,
+		BF:         bfData,
+		ValidTS:    time.Now().UnixNano(),
+		TestObject: testObject,
 	}
 
 	jsonData, err := json.Marshal(req)

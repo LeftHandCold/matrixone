@@ -829,10 +829,11 @@ func (h *Handle) HandleDiskCleaner(
 			zap.String("job-id", req.JobID),
 			zap.Int("bf-len", len(req.BF)),
 			zap.Int64("valid-ts", req.ValidTS),
+			zap.String("test-object", req.TestObject),
 		)
 		
 		syncMgr := h.db.DiskCleaner.GetCleaner().GetSyncProtectionManager()
-		if err = syncMgr.RegisterSyncProtection(req.JobID, req.BF, req.ValidTS); err != nil {
+		if err = syncMgr.RegisterSyncProtection(req.JobID, req.BF, req.ValidTS, req.TestObject); err != nil {
 			return nil, err
 		}
 		resp.ReturnStr = `{"status": "ok"}`

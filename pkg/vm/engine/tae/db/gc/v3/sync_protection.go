@@ -86,11 +86,13 @@ func (m *SyncProtectionManager) IsGCRunning() bool {
 
 // RegisterSyncProtection registers a new sync protection with BloomFilter
 // bfData is base64 encoded BloomFilter bytes
+// testObject is an optional object name for testing (debugging)
 // Returns error if GC is running or job already exists
 func (m *SyncProtectionManager) RegisterSyncProtection(
 	jobID string,
 	bfData string,
 	validTS int64,
+	testObject string,
 ) error {
 	m.Lock()
 	defer m.Unlock()
@@ -205,6 +207,32 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 		)
 	}
 	testVec.Free(m.mp)
+
+	// Debug: test with the provided test object (should return true if BF works correctly)
+	if testObject != "" {
+		testVec2 := vector.NewVec(types.T_varchar.ToType())
+		if err := vector.AppendBytes(testVec2, []byte(testObject), false, m.mp); err == nil {
+			result := bf.TestRow(testVec2, 0)
+			logutil.Info(
+				"GC-Sync-Protection-Register-BF-Test-Known-Object",
+				zap.String("job-id", jobID),
+				zap.String("test-object", testObject),
+				zap.Int("test-object-len", len(testObject)),
+				zap.String("test-object-bytes", fmt.Sprintf("%v", []byte(testObject))),
+				zap.Bool("result", result),
+				zap.Bool("expected", true),
+			)
+			if !result {
+				logutil.Error(
+					"GC-Sync-Protection-Register-BF-Test-Known-Object-FAILED",
+					zap.String("job-id", jobID),
+					zap.String("test-object", testObject),
+					zap.String("message", "BloomFilter should contain this object but TestRow returned false!"),
+				)
+			}
+		}
+		testVec2.Free(m.mp)
+	}
 
 	m.protections[jobID] = &SyncProtection{
 		JobID:      jobID,
@@ -481,6 +509,23 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 		"GC-Sync-Protection-Filter-Vector-Built",
 		zap.Int("vector-len", vec.Length()),
 	)
+
+	// Debug: Test the first file manually to see what's happening
+	if vec.Length() > 0 && len(bfs) > 0 {
+		// Create a single-element vector for the first file
+		testVec := vector.NewVec(types.T_varchar.ToType())
+		if err := vector.AppendBytes(testVec, []byte(files[0]), false, m.mp); err == nil {
+			result := bfs[0].TestRow(testVec, 0)
+			logutil.Info(
+				"GC-Sync-Protection-Filter-Debug-First-File-TestRow",
+				zap.String("file", files[0]),
+				zap.Int("file-len", len(files[0])),
+				zap.String("file-bytes", fmt.Sprintf("%v", []byte(files[0]))),
+				zap.Bool("result", result),
+			)
+		}
+		testVec.Free(m.mp)
+	}
 
 	// Track which files are protected (by any BloomFilter)
 	protectedSet := make(map[int]string) // index -> jobID that protects it
