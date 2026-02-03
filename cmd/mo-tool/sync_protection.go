@@ -16,6 +16,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -24,15 +25,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
+	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
+
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/spf13/cobra"
 )
 
+const (
+	// BloomFilter parameters
+	bfEstimateRows = 100000  // Estimated number of objects
+	bfProbability  = 0.001   // False positive rate 0.1%
+)
+
 // SyncProtectionRequest 同步保护请求
 type SyncProtectionRequest struct {
-	JobID   string   `json:"job_id"`
-	Objects []string `json:"objects"`
-	ValidTS int64    `json:"valid_ts"`
+	JobID   string `json:"job_id"`
+	BF      string `json:"bf"`       // Base64 encoded BloomFilter
+	ValidTS int64  `json:"valid_ts"`
 }
 
 // SyncProtectionTester 同步保护测试器
@@ -44,6 +56,7 @@ type SyncProtectionTester struct {
 	sampleCount    int
 	verbose        bool
 	waitTime       int
+	mp             *mpool.MPool
 }
 
 func NewSyncProtectionTester(dsn, dataDir string, sampleCount int, verbose bool, waitTime int) (*SyncProtectionTester, error) {
@@ -56,6 +69,11 @@ func NewSyncProtectionTester(dsn, dataDir string, sampleCount int, verbose bool,
 		return nil, fmt.Errorf("ping 数据库失败: %w", err)
 	}
 
+	mp, err := mpool.NewMPool("sync_protection_test", 0, mpool.NoFixed)
+	if err != nil {
+		return nil, fmt.Errorf("创建内存池失败: %w", err)
+	}
+
 	return &SyncProtectionTester{
 		db:          db,
 		dataDir:     dataDir,
@@ -63,6 +81,7 @@ func NewSyncProtectionTester(dsn, dataDir string, sampleCount int, verbose bool,
 		sampleCount: sampleCount,
 		verbose:     verbose,
 		waitTime:    waitTime,
+		mp:          mp,
 	}, nil
 }
 
@@ -88,8 +107,7 @@ func (t *SyncProtectionTester) ScanObjectFiles() ([]string, error) {
 		name := info.Name()
 		// MatrixOne object 文件通常是 UUID 格式，包含下划线
 		if len(name) > 20 && strings.Contains(name, "_") {
-			relPath, _ := filepath.Rel(t.dataDir, path)
-			objects = append(objects, relPath)
+			objects = append(objects, name)
 		}
 		return nil
 	})
@@ -119,11 +137,46 @@ func (t *SyncProtectionTester) SelectRandomObjects(objects []string, count int) 
 	return copied[:count]
 }
 
+// BuildBloomFilter 构建 BloomFilter
+func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error) {
+	// Create BloomFilter
+	bf := bloomfilter.New(int64(len(objects)+1000), bfProbability)
+	defer bf.Free()
+
+	// Create vector and add objects
+	vec := vector.NewVec(types.T_varchar.ToType())
+	defer vec.Free(t.mp)
+
+	for _, obj := range objects {
+		if err := vector.AppendBytes(vec, []byte(obj), false, t.mp); err != nil {
+			return "", fmt.Errorf("添加对象到 vector 失败: %w", err)
+		}
+	}
+
+	// Add to BloomFilter
+	bf.Add(vec)
+
+	// Marshal BloomFilter
+	data, err := bf.Marshal()
+	if err != nil {
+		return "", fmt.Errorf("序列化 BloomFilter 失败: %w", err)
+	}
+
+	// Base64 encode
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
 // RegisterProtection 注册保护
 func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
+	// Build BloomFilter
+	bfData, err := t.BuildBloomFilter(objects)
+	if err != nil {
+		return fmt.Errorf("构建 BloomFilter 失败: %w", err)
+	}
+
 	req := SyncProtectionRequest{
 		JobID:   t.jobID,
-		Objects: objects,
+		BF:      bfData,
 		ValidTS: time.Now().UnixNano(),
 	}
 
@@ -135,7 +188,8 @@ func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
 	query := fmt.Sprintf("SELECT mo_ctl('dn', 'disk_cleaner', 'register_sync_protection.%s')", string(jsonData))
 
 	if t.verbose {
-		fmt.Printf("[DEBUG] SQL: %s\n", query)
+		fmt.Printf("[DEBUG] SQL: %s\n", query[:min(len(query), 200)]+"...")
+		fmt.Printf("[DEBUG] BloomFilter size: %d bytes\n", len(bfData))
 	}
 
 	var result string
@@ -242,11 +296,22 @@ func (t *SyncProtectionTester) TriggerGC() error {
 // CheckFilesExist 检查文件是否存在
 func (t *SyncProtectionTester) CheckFilesExist() (existing, deleted []string) {
 	for _, file := range t.protectedFiles {
-		fullPath := filepath.Join(t.dataDir, file)
-		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-			deleted = append(deleted, file)
-		} else {
+		// Search for file in data directory
+		found := false
+		filepath.Walk(t.dataDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			if info.Name() == file {
+				found = true
+				return filepath.SkipAll
+			}
+			return nil
+		})
+		if found {
 			existing = append(existing, file)
+		} else {
+			deleted = append(deleted, file)
 		}
 	}
 	return
@@ -255,7 +320,7 @@ func (t *SyncProtectionTester) CheckFilesExist() (existing, deleted []string) {
 // RunTest 运行测试
 func (t *SyncProtectionTester) RunTest() error {
 	fmt.Println("========================================")
-	fmt.Println("同步保护机制测试")
+	fmt.Println("同步保护机制测试 (BloomFilter)")
 	fmt.Println("========================================")
 	fmt.Printf("Job ID: %s\n", t.jobID)
 	fmt.Printf("数据目录: %s\n", t.dataDir)
@@ -288,8 +353,8 @@ func (t *SyncProtectionTester) RunTest() error {
 		}
 	}
 
-	// Step 3: 注册保护
-	fmt.Println("[Step 3] 注册同步保护...")
+	// Step 3: 构建 BloomFilter 并注册保护
+	fmt.Println("[Step 3] 构建 BloomFilter 并注册同步保护...")
 	if err := t.RegisterProtection(selected); err != nil {
 		return fmt.Errorf("注册保护失败: %w", err)
 	}
@@ -395,9 +460,10 @@ func PrepareSyncProtectionCommand() *cobra.Command {
 
 该命令会：
 1. 扫描指定目录获取 object 文件
-2. 随机选择一些 object 注册保护
-3. 触发 GC 并验证被保护的文件是否被删除
-4. 测试续租和取消注册功能`,
+2. 随机选择一些 object 构建 BloomFilter
+3. 注册 BloomFilter 保护
+4. 触发 GC 并验证被保护的文件是否被删除
+5. 测试续租和取消注册功能`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			tester, err := NewSyncProtectionTester(dsn, dataDir, sampleCount, verbose, waitTime)
 			if err != nil {

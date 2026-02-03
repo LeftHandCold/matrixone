@@ -15,12 +15,17 @@
 package gc
 
 import (
+	"encoding/base64"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"go.uber.org/zap"
 )
@@ -36,11 +41,11 @@ const (
 
 // SyncProtection represents a single sync protection entry
 type SyncProtection struct {
-	JobID      string            // Sync job ID
-	Objects    map[string]struct{} // Protected object names
-	ValidTS    int64             // Valid timestamp (nanoseconds), needs to be renewed
-	SoftDelete bool              // Whether soft deleted
-	CreateTime time.Time         // Creation time for logging
+	JobID      string                  // Sync job ID
+	BF         *bloomfilter.BloomFilter // BloomFilter for protected objects
+	ValidTS    int64                   // Valid timestamp (nanoseconds), needs to be renewed
+	SoftDelete bool                    // Whether soft deleted
+	CreateTime time.Time               // Creation time for logging
 }
 
 // SyncProtectionManager manages sync protection entries
@@ -50,14 +55,17 @@ type SyncProtectionManager struct {
 	gcRunning   atomic.Bool                // Whether GC is running
 	ttl         time.Duration              // TTL for non-soft-deleted protections
 	maxCount    int                        // Maximum number of protections
+	mp          *mpool.MPool               // Memory pool for vector operations
 }
 
 // NewSyncProtectionManager creates a new SyncProtectionManager
 func NewSyncProtectionManager() *SyncProtectionManager {
+	mp, _ := mpool.NewMPool("sync_protection", 0, mpool.NoFixed)
 	return &SyncProtectionManager{
 		protections: make(map[string]*SyncProtection),
 		ttl:         DefaultSyncProtectionTTL,
 		maxCount:    DefaultMaxSyncProtections,
+		mp:          mp,
 	}
 }
 
@@ -75,11 +83,12 @@ func (m *SyncProtectionManager) IsGCRunning() bool {
 	return m.gcRunning.Load()
 }
 
-// RegisterSyncProtection registers a new sync protection
+// RegisterSyncProtection registers a new sync protection with BloomFilter
+// bfData is base64 encoded BloomFilter bytes
 // Returns error if GC is running or job already exists
 func (m *SyncProtectionManager) RegisterSyncProtection(
 	jobID string,
-	objects []string,
+	bfData string,
 	validTS int64,
 ) error {
 	m.Lock()
@@ -114,15 +123,31 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 		return moerr.NewInternalErrorNoCtx(fmt.Sprintf("sync protection max count reached: %d", m.maxCount))
 	}
 
-	// Build object set
-	objectSet := make(map[string]struct{}, len(objects))
-	for _, obj := range objects {
-		objectSet[obj] = struct{}{}
+	// Decode base64 BloomFilter data
+	bfBytes, err := base64.StdEncoding.DecodeString(bfData)
+	if err != nil {
+		logutil.Error(
+			"GC-Sync-Protection-Register-Decode-Error",
+			zap.String("job-id", jobID),
+			zap.Error(err),
+		)
+		return moerr.NewInternalErrorNoCtx(fmt.Sprintf("failed to decode bloom filter: %v", err))
+	}
+
+	// Unmarshal BloomFilter
+	bf := &bloomfilter.BloomFilter{}
+	if err := bf.Unmarshal(bfBytes); err != nil {
+		logutil.Error(
+			"GC-Sync-Protection-Register-Unmarshal-Error",
+			zap.String("job-id", jobID),
+			zap.Error(err),
+		)
+		return moerr.NewInternalErrorNoCtx(fmt.Sprintf("failed to unmarshal bloom filter: %v", err))
 	}
 
 	m.protections[jobID] = &SyncProtection{
 		JobID:      jobID,
-		Objects:    objectSet,
+		BF:         bf,
 		ValidTS:    validTS,
 		SoftDelete: false,
 		CreateTime: time.Now(),
@@ -132,12 +157,11 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 		"GC-Sync-Protection-Registered",
 		zap.String("job-id", jobID),
 		zap.Int64("valid-ts", validTS),
-		zap.Int("object-count", len(objects)),
+		zap.Int("bf-size", len(bfBytes)),
 		zap.Int("total-protections", len(m.protections)),
 	)
 	return nil
 }
-
 
 // RenewSyncProtection renews the valid timestamp of a sync protection
 func (m *SyncProtectionManager) RenewSyncProtection(jobID string, validTS int64) error {
@@ -207,6 +231,9 @@ func (m *SyncProtectionManager) CleanupSoftDeleted(checkpointWatermark int64) {
 	for jobID, p := range m.protections {
 		// Condition: soft delete state AND checkpoint watermark > validTS
 		if p.SoftDelete && checkpointWatermark > p.ValidTS {
+			if p.BF != nil {
+				p.BF.Free()
+			}
 			delete(m.protections, jobID)
 			logutil.Info(
 				"GC-Sync-Protection-Cleaned-Soft-Deleted",
@@ -230,6 +257,9 @@ func (m *SyncProtectionManager) CleanupExpired() {
 
 		// Non soft delete state, but TTL exceeded without renewal
 		if !p.SoftDelete && now.Sub(validTime) > m.ttl {
+			if p.BF != nil {
+				p.BF.Free()
+			}
 			delete(m.protections, jobID)
 			logutil.Warn(
 				"GC-Sync-Protection-Force-Cleaned-Expired",
@@ -272,13 +302,28 @@ func (m *SyncProtectionManager) HasProtection(jobID string) bool {
 	return ok
 }
 
-// IsProtected checks if an object name is protected by any protection
+// IsProtected checks if an object name is protected by any BloomFilter
 func (m *SyncProtectionManager) IsProtected(objectName string) bool {
 	m.RLock()
 	defer m.RUnlock()
 
+	if len(m.protections) == 0 {
+		return false
+	}
+
+	// Create a vector with single string for testing
+	vec := vector.NewVec(types.T_varchar.ToType())
+	defer vec.Free(m.mp)
+	if err := vector.AppendBytes(vec, []byte(objectName), false, m.mp); err != nil {
+		return false
+	}
+
 	for _, p := range m.protections {
-		if _, ok := p.Objects[objectName]; ok {
+		if p.BF == nil || !p.BF.Valid() {
+			continue
+		}
+		// Use TestRow for single element test
+		if p.BF.TestRow(vec, 0) {
 			return true
 		}
 	}
@@ -291,22 +336,46 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 	m.RLock()
 	defer m.RUnlock()
 
-	if len(m.protections) == 0 {
+	if len(m.protections) == 0 || len(files) == 0 {
 		return files
 	}
 
-	// Build merged set of all protected objects
-	protectedSet := make(map[string]struct{})
+	// Collect all valid BloomFilters
+	var bfs []*bloomfilter.BloomFilter
 	for _, p := range m.protections {
-		for obj := range p.Objects {
-			protectedSet[obj] = struct{}{}
+		if p.BF != nil && p.BF.Valid() {
+			bfs = append(bfs, p.BF)
 		}
+	}
+
+	if len(bfs) == 0 {
+		return files
 	}
 
 	result := make([]string, 0, len(files))
 	skipped := 0
+
+	// Create a vector for batch testing
+	vec := vector.NewVec(types.T_varchar.ToType())
+	defer vec.Free(m.mp)
+
 	for _, f := range files {
-		if _, protected := protectedSet[f]; !protected {
+		vec.Reset(types.T_varchar.ToType())
+		if err := vector.AppendBytes(vec, []byte(f), false, m.mp); err != nil {
+			// On error, keep the file (don't delete)
+			skipped++
+			continue
+		}
+
+		protected := false
+		for _, bf := range bfs {
+			if bf.TestRow(vec, 0) {
+				protected = true
+				break
+			}
+		}
+
+		if !protected {
 			result = append(result, f)
 		} else {
 			skipped++
@@ -322,16 +391,4 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 		)
 	}
 	return result
-}
-
-// GetProtectedObjectCount returns the total number of protected objects
-func (m *SyncProtectionManager) GetProtectedObjectCount() int {
-	m.RLock()
-	defer m.RUnlock()
-
-	count := 0
-	for _, p := range m.protections {
-		count += len(p.Objects)
-	}
-	return count
 }

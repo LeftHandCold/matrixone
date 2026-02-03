@@ -796,7 +796,7 @@ func (h *Handle) HandleDiskCleaner(
 		return
 	case cmd_util.RegisterSyncProtection:
 		// Register sync protection for cross-cluster sync
-		// value format: JSON {"job_id": "xxx", "objects": ["obj1", "obj2"], "valid_ts": 1234567890}
+		// value format: JSON {"job_id": "xxx", "bf": "base64_encoded_bloomfilter", "valid_ts": 1234567890}
 		if value == "" {
 			return nil, moerr.NewInvalidArgNoCtx(op, "empty value")
 		}
@@ -810,7 +810,7 @@ func (h *Handle) HandleDiskCleaner(
 			return nil, moerr.NewInvalidArgNoCtx(op, value)
 		}
 		syncMgr := h.db.DiskCleaner.GetCleaner().GetSyncProtectionManager()
-		if err = syncMgr.RegisterSyncProtection(req.JobID, req.Objects, req.ValidTS); err != nil {
+		if err = syncMgr.RegisterSyncProtection(req.JobID, req.BF, req.ValidTS); err != nil {
 			return nil, err
 		}
 		resp.ReturnStr = `{"status": "ok"}`
