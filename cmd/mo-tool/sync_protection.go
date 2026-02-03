@@ -15,8 +15,10 @@
 package main
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -140,6 +142,16 @@ func (t *SyncProtectionTester) SelectRandomObjects(objects []string, count int) 
 
 // BuildBloomFilter 构建 BloomFilter
 func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error) {
+	fmt.Println("[DEBUG-BF] ========== 开始构建 BloomFilter ==========")
+	fmt.Printf("[DEBUG-BF] 对象数量: %d\n", len(objects))
+	fmt.Printf("[DEBUG-BF] 估计行数: %d, 误报率: %f\n", len(objects)+1000, bfProbability)
+	
+	// 打印所有要保护的对象
+	fmt.Println("[DEBUG-BF] 要保护的对象列表:")
+	for i, obj := range objects {
+		fmt.Printf("[DEBUG-BF]   [%d] %s (len=%d, bytes=%v)\n", i, obj, len(obj), []byte(obj)[:min(20, len(obj))])
+	}
+	
 	// Create BloomFilter
 	bf := bloomfilter.New(int64(len(objects)+1000), bfProbability)
 	defer bf.Free()
@@ -148,88 +160,171 @@ func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error
 	vec := vector.NewVec(types.T_varchar.ToType())
 	defer vec.Free(t.mp)
 
-	for _, obj := range objects {
+	fmt.Println("[DEBUG-BF] 添加对象到 vector...")
+	for i, obj := range objects {
 		if err := vector.AppendBytes(vec, []byte(obj), false, t.mp); err != nil {
 			return "", fmt.Errorf("添加对象到 vector 失败: %w", err)
 		}
+		if i < 3 {
+			fmt.Printf("[DEBUG-BF]   添加: %s\n", obj)
+		}
 	}
+	fmt.Printf("[DEBUG-BF] Vector 长度: %d\n", vec.Length())
 
 	// Add to BloomFilter
+	fmt.Println("[DEBUG-BF] 调用 bf.Add(vec)...")
 	bf.Add(vec)
 
 	// Verify BloomFilter works correctly before serialization
-	if t.verbose {
-		fmt.Println("[DEBUG] 验证 BloomFilter (序列化前)...")
-		testVec := vector.NewVec(types.T_varchar.ToType())
-		defer testVec.Free(t.mp)
-		
-		for i, obj := range objects {
-			testVec.Reset(types.T_varchar.ToType())
-			if err := vector.AppendBytes(testVec, []byte(obj), false, t.mp); err != nil {
-				fmt.Printf("[DEBUG] 创建测试 vector 失败: %v\n", err)
-				continue
+	fmt.Println("[DEBUG-BF] ========== 验证 BloomFilter (序列化前) ==========")
+	testVec := vector.NewVec(types.T_varchar.ToType())
+	defer testVec.Free(t.mp)
+	
+	preSerializeFailCount := 0
+	for i, obj := range objects {
+		testVec.Reset(types.T_varchar.ToType())
+		if err := vector.AppendBytes(testVec, []byte(obj), false, t.mp); err != nil {
+			fmt.Printf("[DEBUG-BF] ✗ 创建测试 vector 失败: %v\n", err)
+			continue
+		}
+		result := bf.TestRow(testVec, 0)
+		if result {
+			if i < 5 || t.verbose {
+				fmt.Printf("[DEBUG-BF] ✓ [%d] BloomFilter 包含: %s\n", i, obj)
 			}
-			if bf.TestRow(testVec, 0) {
-				if i < 3 {
-					fmt.Printf("[DEBUG] ✓ BloomFilter 包含: %s\n", obj)
-				}
-			} else {
-				fmt.Printf("[DEBUG] ✗ BloomFilter 不包含: %s (这是个问题!)\n", obj)
-			}
+		} else {
+			fmt.Printf("[DEBUG-BF] ✗ [%d] BloomFilter 不包含: %s (这是个问题!)\n", i, obj)
+			preSerializeFailCount++
 		}
 	}
+	if preSerializeFailCount > 0 {
+		return "", fmt.Errorf("BloomFilter 序列化前验证失败: %d 个对象未找到", preSerializeFailCount)
+	}
+	fmt.Printf("[DEBUG-BF] ✓ 序列化前验证通过: 所有 %d 个对象都能找到\n", len(objects))
 
 	// Marshal BloomFilter
+	fmt.Println("[DEBUG-BF] ========== 序列化 BloomFilter ==========")
 	data, err := bf.Marshal()
 	if err != nil {
 		return "", fmt.Errorf("序列化 BloomFilter 失败: %w", err)
 	}
+	
+	// 计算原始数据的 hash
+	rawHash := sha256.Sum256(data)
+	rawHashStr := hex.EncodeToString(rawHash[:])
+	fmt.Printf("[DEBUG-BF] 原始数据长度: %d bytes\n", len(data))
+	fmt.Printf("[DEBUG-BF] 原始数据 SHA256: %s\n", rawHashStr)
+	fmt.Printf("[DEBUG-BF] 原始数据前64字节: %v\n", data[:min(64, len(data))])
 
 	// Verify BloomFilter works correctly after deserialization
-	if t.verbose {
-		fmt.Println("[DEBUG] 验证 BloomFilter (反序列化后)...")
-		bf2 := &bloomfilter.BloomFilter{}
-		if err := bf2.Unmarshal(data); err != nil {
-			return "", fmt.Errorf("反序列化 BloomFilter 失败: %w", err)
-		}
-		defer bf2.Free()
-		
-		testVec := vector.NewVec(types.T_varchar.ToType())
-		defer testVec.Free(t.mp)
-		
-		failCount := 0
-		for i, obj := range objects {
-			testVec.Reset(types.T_varchar.ToType())
-			if err := vector.AppendBytes(testVec, []byte(obj), false, t.mp); err != nil {
-				fmt.Printf("[DEBUG] 创建测试 vector 失败: %v\n", err)
-				continue
-			}
-			if bf2.TestRow(testVec, 0) {
-				if i < 3 {
-					fmt.Printf("[DEBUG] ✓ 反序列化后 BloomFilter 包含: %s\n", obj)
-				}
-			} else {
-				fmt.Printf("[DEBUG] ✗ 反序列化后 BloomFilter 不包含: %s (这是个问题!)\n", obj)
-				failCount++
-			}
-		}
-		if failCount > 0 {
-			return "", fmt.Errorf("BloomFilter 反序列化后验证失败: %d 个对象未找到", failCount)
-		}
-		fmt.Printf("[DEBUG] ✓ 所有 %d 个对象在反序列化后都能找到\n", len(objects))
+	fmt.Println("[DEBUG-BF] ========== 验证 BloomFilter (反序列化后) ==========")
+	bf2 := &bloomfilter.BloomFilter{}
+	if err := bf2.Unmarshal(data); err != nil {
+		return "", fmt.Errorf("反序列化 BloomFilter 失败: %w", err)
 	}
+	defer bf2.Free()
+	
+	testVec2 := vector.NewVec(types.T_varchar.ToType())
+	defer testVec2.Free(t.mp)
+	
+	postDeserializeFailCount := 0
+	for i, obj := range objects {
+		testVec2.Reset(types.T_varchar.ToType())
+		if err := vector.AppendBytes(testVec2, []byte(obj), false, t.mp); err != nil {
+			fmt.Printf("[DEBUG-BF] ✗ 创建测试 vector 失败: %v\n", err)
+			continue
+		}
+		result := bf2.TestRow(testVec2, 0)
+		if result {
+			if i < 5 || t.verbose {
+				fmt.Printf("[DEBUG-BF] ✓ [%d] 反序列化后 BloomFilter 包含: %s\n", i, obj)
+			}
+		} else {
+			fmt.Printf("[DEBUG-BF] ✗ [%d] 反序列化后 BloomFilter 不包含: %s (这是个问题!)\n", i, obj)
+			postDeserializeFailCount++
+		}
+	}
+	if postDeserializeFailCount > 0 {
+		return "", fmt.Errorf("BloomFilter 反序列化后验证失败: %d 个对象未找到", postDeserializeFailCount)
+	}
+	fmt.Printf("[DEBUG-BF] ✓ 反序列化后验证通过: 所有 %d 个对象都能找到\n", len(objects))
 
 	// Base64 encode
-	return base64.StdEncoding.EncodeToString(data), nil
+	fmt.Println("[DEBUG-BF] ========== Base64 编码 ==========")
+	base64Data := base64.StdEncoding.EncodeToString(data)
+	fmt.Printf("[DEBUG-BF] Base64 编码后长度: %d\n", len(base64Data))
+	fmt.Printf("[DEBUG-BF] Base64 前100字符: %s\n", base64Data[:min(100, len(base64Data))])
+	
+	// 验证 Base64 解码后数据一致性
+	fmt.Println("[DEBUG-BF] ========== 验证 Base64 解码一致性 ==========")
+	decodedData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return "", fmt.Errorf("Base64 解码失败: %w", err)
+	}
+	decodedHash := sha256.Sum256(decodedData)
+	decodedHashStr := hex.EncodeToString(decodedHash[:])
+	fmt.Printf("[DEBUG-BF] 解码后数据长度: %d bytes\n", len(decodedData))
+	fmt.Printf("[DEBUG-BF] 解码后数据 SHA256: %s\n", decodedHashStr)
+	
+	if rawHashStr != decodedHashStr {
+		return "", fmt.Errorf("Base64 编解码数据不一致! 原始: %s, 解码后: %s", rawHashStr, decodedHashStr)
+	}
+	fmt.Println("[DEBUG-BF] ✓ Base64 编解码数据一致")
+	
+	// 再次验证解码后的 BloomFilter
+	fmt.Println("[DEBUG-BF] ========== 验证 Base64 解码后的 BloomFilter ==========")
+	bf3 := &bloomfilter.BloomFilter{}
+	if err := bf3.Unmarshal(decodedData); err != nil {
+		return "", fmt.Errorf("Base64 解码后反序列化 BloomFilter 失败: %w", err)
+	}
+	defer bf3.Free()
+	
+	testVec3 := vector.NewVec(types.T_varchar.ToType())
+	defer testVec3.Free(t.mp)
+	
+	base64FailCount := 0
+	for i, obj := range objects {
+		testVec3.Reset(types.T_varchar.ToType())
+		if err := vector.AppendBytes(testVec3, []byte(obj), false, t.mp); err != nil {
+			fmt.Printf("[DEBUG-BF] ✗ 创建测试 vector 失败: %v\n", err)
+			continue
+		}
+		result := bf3.TestRow(testVec3, 0)
+		if result {
+			if i < 5 || t.verbose {
+				fmt.Printf("[DEBUG-BF] ✓ [%d] Base64解码后 BloomFilter 包含: %s\n", i, obj)
+			}
+		} else {
+			fmt.Printf("[DEBUG-BF] ✗ [%d] Base64解码后 BloomFilter 不包含: %s (这是个问题!)\n", i, obj)
+			base64FailCount++
+		}
+	}
+	if base64FailCount > 0 {
+		return "", fmt.Errorf("Base64 解码后 BloomFilter 验证失败: %d 个对象未找到", base64FailCount)
+	}
+	fmt.Printf("[DEBUG-BF] ✓ Base64 解码后验证通过: 所有 %d 个对象都能找到\n", len(objects))
+	
+	fmt.Println("[DEBUG-BF] ========== BloomFilter 构建完成 ==========")
+	fmt.Printf("[DEBUG-BF] 最终 Base64 数据 SHA256: %s\n", rawHashStr)
+	
+	return base64Data, nil
 }
 
 // RegisterProtection 注册保护
 func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
+	fmt.Println("[DEBUG-REG] ========== 开始注册保护 ==========")
+	
 	// Build BloomFilter
 	bfData, err := t.BuildBloomFilter(objects)
 	if err != nil {
 		return fmt.Errorf("构建 BloomFilter 失败: %w", err)
 	}
+
+	// 计算发送前的 hash
+	sendHash := sha256.Sum256([]byte(bfData))
+	sendHashStr := hex.EncodeToString(sendHash[:])
+	fmt.Printf("[DEBUG-REG] 发送的 Base64 数据 SHA256: %s\n", sendHashStr)
+	fmt.Printf("[DEBUG-REG] 发送的 Base64 数据长度: %d\n", len(bfData))
 
 	req := SyncProtectionRequest{
 		JobID:   t.jobID,
@@ -242,18 +337,27 @@ func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
 		return fmt.Errorf("序列化请求失败: %w", err)
 	}
 
+	fmt.Printf("[DEBUG-REG] Job ID: %s\n", t.jobID)
+	fmt.Printf("[DEBUG-REG] Valid TS: %d\n", req.ValidTS)
+	fmt.Printf("[DEBUG-REG] JSON 数据长度: %d\n", len(jsonData))
+	
+	// 验证 JSON 中的 bf 字段
+	var checkReq SyncProtectionRequest
+	if err := json.Unmarshal(jsonData, &checkReq); err != nil {
+		return fmt.Errorf("JSON 反序列化验证失败: %w", err)
+	}
+	checkHash := sha256.Sum256([]byte(checkReq.BF))
+	checkHashStr := hex.EncodeToString(checkHash[:])
+	fmt.Printf("[DEBUG-REG] JSON 中 BF 字段 SHA256: %s\n", checkHashStr)
+	if sendHashStr != checkHashStr {
+		return fmt.Errorf("JSON 序列化导致 BF 数据变化! 原始: %s, JSON中: %s", sendHashStr, checkHashStr)
+	}
+	fmt.Println("[DEBUG-REG] ✓ JSON 序列化后 BF 数据一致")
+
 	query := fmt.Sprintf("SELECT mo_ctl('dn', 'diskcleaner', 'register_sync_protection.%s')", string(jsonData))
 
-	if t.verbose {
-		fmt.Printf("[DEBUG] SQL 长度: %d\n", len(query))
-		fmt.Printf("[DEBUG] JSON 长度: %d\n", len(jsonData))
-		fmt.Printf("[DEBUG] BloomFilter base64 长度: %d\n", len(bfData))
-		fmt.Printf("[DEBUG] BloomFilter base64 前100字符: %s...\n", bfData[:min(100, len(bfData))])
-		
-		// 解码验证
-		decoded, _ := base64.StdEncoding.DecodeString(bfData)
-		fmt.Printf("[DEBUG] BloomFilter 解码后长度: %d bytes\n", len(decoded))
-	}
+	fmt.Printf("[DEBUG-REG] SQL 总长度: %d\n", len(query))
+	fmt.Printf("[DEBUG-REG] SQL 前200字符: %s...\n", query[:min(200, len(query))])
 
 	var result string
 	err = t.db.QueryRow(query).Scan(&result)
@@ -261,13 +365,22 @@ func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
 		return fmt.Errorf("注册保护失败: %w", err)
 	}
 
-	if t.verbose {
-		fmt.Printf("[DEBUG] 结果: %s\n", result)
-	}
+	fmt.Printf("[DEBUG-REG] MO 返回结果: %s\n", result)
 
 	// 检查是否成功
 	if strings.Contains(strings.ToLower(result), "error") {
 		return fmt.Errorf("注册保护返回错误: %s", result)
+	}
+
+	fmt.Println("[DEBUG-REG] ========== 注册保护完成 ==========")
+	fmt.Printf("[DEBUG-REG] 请在 MO 日志中搜索以下关键信息进行对比:\n")
+	fmt.Printf("[DEBUG-REG]   - Job ID: %s\n", t.jobID)
+	fmt.Printf("[DEBUG-REG]   - BF Base64 SHA256: %s\n", sendHashStr)
+	fmt.Printf("[DEBUG-REG]   - BF Base64 长度: %d\n", len(bfData))
+	fmt.Printf("[DEBUG-REG]   - 被保护对象数量: %d\n", len(objects))
+	fmt.Println("[DEBUG-REG] 被保护的对象列表 (用于与 GC 删除列表对比):")
+	for i, obj := range objects {
+		fmt.Printf("[DEBUG-REG]   [%d] %s\n", i, obj)
 	}
 
 	t.protectedFiles = objects

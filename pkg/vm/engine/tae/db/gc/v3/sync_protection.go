@@ -15,6 +15,7 @@
 package gc
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"sync"
@@ -94,11 +95,13 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 	m.Lock()
 	defer m.Unlock()
 
-	// Debug: print received data info
+	// Debug: print received data info with hash
+	bfDataHash := fmt.Sprintf("%x", sha256.Sum256([]byte(bfData)))
 	logutil.Info(
 		"GC-Sync-Protection-Register-Received",
 		zap.String("job-id", jobID),
 		zap.Int("bf-data-len", len(bfData)),
+		zap.String("bf-data-sha256", bfDataHash),
 		zap.String("bf-data-prefix", func() string {
 			if len(bfData) > 100 {
 				return bfData[:100] + "..."
@@ -148,10 +151,14 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 		return moerr.NewInternalErrorNoCtx(fmt.Sprintf("failed to decode bloom filter: %v", err))
 	}
 
+	// Calculate hash of decoded bytes
+	decodedHash := fmt.Sprintf("%x", sha256.Sum256(bfBytes))
 	logutil.Info(
 		"GC-Sync-Protection-Register-Decoded",
 		zap.String("job-id", jobID),
 		zap.Int("bf-bytes-len", len(bfBytes)),
+		zap.String("bf-bytes-sha256", decodedHash),
+		zap.String("bf-bytes-prefix", fmt.Sprintf("%v", bfBytes[:min(64, len(bfBytes))])),
 	)
 
 	// Unmarshal BloomFilter
@@ -201,6 +208,8 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 		zap.String("job-id", jobID),
 		zap.Int64("valid-ts", validTS),
 		zap.Int("bf-size", len(bfBytes)),
+		zap.String("bf-base64-sha256", bfDataHash),
+		zap.String("bf-bytes-sha256", decodedHash),
 		zap.Int("total-protections", len(m.protections)),
 	)
 	return nil
@@ -426,19 +435,21 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 
 	// Print sample files to check
 	if len(files) > 0 {
-		sampleCount := 3
+		sampleCount := 5
 		if len(files) < sampleCount {
 			sampleCount = len(files)
 		}
 		logutil.Info(
-			"GC-Sync-Protection-Filter-Sample-Files",
+			"GC-Sync-Protection-Filter-Sample-Files-To-Delete",
 			zap.Strings("sample-files", files[:sampleCount]),
 			zap.Int("file-0-len", len(files[0])),
+			zap.String("file-0-bytes", fmt.Sprintf("%v", []byte(files[0]))),
 		)
 	}
 
 	result := make([]string, 0, len(files))
 	skipped := 0
+	protectedFiles := make([]string, 0)
 
 	// Create a vector for batch testing
 	vec := vector.NewVec(types.T_varchar.ToType())
@@ -458,35 +469,48 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 		}
 
 		protected := false
-		for _, bf := range bfs {
+		for bfIdx, bf := range bfs {
 			if bf.TestRow(vec, 0) {
 				protected = true
+				if len(protectedFiles) < 10 {
+					logutil.Info(
+						"GC-Sync-Protection-Filter-File-Protected-By-BF",
+						zap.String("file", f),
+						zap.String("job-id", jobIDs[bfIdx]),
+					)
+				}
 				break
 			}
 		}
 
 		if !protected {
 			result = append(result, f)
-		} else {
-			skipped++
-			// Log first few protected files
-			if skipped <= 5 {
+			// Log first few unprotected files for debugging
+			if i < 5 {
 				logutil.Info(
-					"GC-Sync-Protection-Filter-File-Protected",
+					"GC-Sync-Protection-Filter-File-NOT-Protected",
 					zap.String("file", f),
 					zap.Int("file-len", len(f)),
+					zap.String("file-bytes", fmt.Sprintf("%v", []byte(f))),
 				)
 			}
+		} else {
+			skipped++
+			protectedFiles = append(protectedFiles, f)
 		}
+	}
 
-		// Log first few unprotected files for debugging
-		if !protected && i < 5 {
-			logutil.Info(
-				"GC-Sync-Protection-Filter-File-NOT-Protected",
-				zap.String("file", f),
-				zap.Int("file-len", len(f)),
-			)
+	// Log protected files summary
+	if len(protectedFiles) > 0 {
+		sampleProtected := protectedFiles
+		if len(sampleProtected) > 10 {
+			sampleProtected = sampleProtected[:10]
 		}
+		logutil.Info(
+			"GC-Sync-Protection-Filter-Protected-Files-Summary",
+			zap.Int("protected-count", len(protectedFiles)),
+			zap.Strings("sample-protected", sampleProtected),
+		)
 	}
 
 	logutil.Info(
@@ -494,6 +518,7 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 		zap.Int("total", len(files)),
 		zap.Int("skipped", skipped),
 		zap.Int("can-delete", len(result)),
+		zap.Int("protected", len(protectedFiles)),
 	)
 
 	return result
