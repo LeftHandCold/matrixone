@@ -273,6 +273,46 @@ func (bf *BloomFilter) Unmarshal(data []byte) error {
 	return nil
 }
 
+// GetBitmapLen returns the length of the bitmap for debugging
+func (bf *BloomFilter) GetBitmapLen() int64 {
+	if bf == nil || bf.shared == nil {
+		return 0
+	}
+	return bf.shared.bitmap.Len()
+}
+
+// GetSeedCount returns the number of hash seeds for debugging
+func (bf *BloomFilter) GetSeedCount() int {
+	if bf == nil || bf.shared == nil {
+		return 0
+	}
+	return len(bf.shared.hashSeed)
+}
+
+// GetFirstSeed returns the first hash seed for debugging
+func (bf *BloomFilter) GetFirstSeed() uint64 {
+	if bf == nil || bf.shared == nil || len(bf.shared.hashSeed) == 0 {
+		return 0
+	}
+	return bf.shared.hashSeed[0]
+}
+
+// GetAllSeeds returns all hash seeds for debugging
+func (bf *BloomFilter) GetAllSeeds() []uint64 {
+	if bf == nil || bf.shared == nil {
+		return nil
+	}
+	return bf.shared.hashSeed
+}
+
+// GetBitmapCount returns the number of bits set in the bitmap for debugging
+func (bf *BloomFilter) GetBitmapCount() int {
+	if bf == nil || bf.shared == nil {
+		return 0
+	}
+	return bf.shared.bitmap.Count()
+}
+
 // handle computes the hash value of each element and executes the callback.
 func (bf *BloomFilter) handle(v *vector.Vector, callBack func(int, int)) {
 	length := v.Length()

@@ -180,6 +180,17 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 		zap.Bool("bf-valid", bf.Valid()),
 	)
 
+	// Debug: print BloomFilter internal state FIRST
+	logutil.Info(
+		"GC-Sync-Protection-Register-BF-Internal-State",
+		zap.String("job-id", jobID),
+		zap.Int64("bitmap-len", bf.GetBitmapLen()),
+		zap.Int("seed-count", bf.GetSeedCount()),
+		zap.Uint64("first-seed", bf.GetFirstSeed()),
+		zap.Uint64s("all-seeds", bf.GetAllSeeds()),
+		zap.Int("bitmap-count", bf.GetBitmapCount()),
+	)
+
 	// Debug: try to test a simple string to verify BF works
 	testVec := vector.NewVec(types.T_varchar.ToType())
 	testStr := "test-string-12345"
@@ -194,22 +205,6 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 		)
 	}
 	testVec.Free(m.mp)
-
-	// Debug: test with a sample object name format to verify BF works with real data
-	sampleObjectName := "019c2296-5e73-79fc-986f-7a3f4584d960_00000"
-	testVec2 := vector.NewVec(types.T_varchar.ToType())
-	if err := vector.AppendBytes(testVec2, []byte(sampleObjectName), false, m.mp); err == nil {
-		result := bf.TestRow(testVec2, 0)
-		logutil.Info(
-			"GC-Sync-Protection-Register-BF-Test-Sample-Object",
-			zap.String("job-id", jobID),
-			zap.String("sample-object", sampleObjectName),
-			zap.Int("sample-object-len", len(sampleObjectName)),
-			zap.String("sample-object-bytes", fmt.Sprintf("%v", []byte(sampleObjectName))),
-			zap.Bool("result", result),
-		)
-	}
-	testVec2.Free(m.mp)
 
 	m.protections[jobID] = &SyncProtection{
 		JobID:      jobID,
@@ -424,6 +419,9 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 				"GC-Sync-Protection-Filter-BF-Found",
 				zap.String("job-id", jobID),
 				zap.Bool("soft-delete", p.SoftDelete),
+				zap.Int64("bitmap-len", p.BF.GetBitmapLen()),
+				zap.Int("seed-count", p.BF.GetSeedCount()),
+				zap.Int("bitmap-count", p.BF.GetBitmapCount()),
 			)
 		} else {
 			logutil.Warn(
@@ -463,43 +461,58 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 		)
 	}
 
-	result := make([]string, 0, len(files))
-	skipped := 0
-	protectedFiles := make([]string, 0)
-
-	// Create a vector for batch testing
+	// Build a vector with all file names first
 	vec := vector.NewVec(types.T_varchar.ToType())
 	defer vec.Free(m.mp)
 
-	for i, f := range files {
-		vec.Reset(types.T_varchar.ToType())
+	for _, f := range files {
 		if err := vector.AppendBytes(vec, []byte(f), false, m.mp); err != nil {
-			// On error, keep the file (don't delete)
 			logutil.Error(
-				"GC-Sync-Protection-Filter-Vector-Error",
+				"GC-Sync-Protection-Filter-Vector-Append-Error",
 				zap.String("file", f),
 				zap.Error(err),
 			)
-			skipped++
-			continue
+			// On error building vector, return original files (safe approach)
+			return files
 		}
+	}
 
-		protected := false
-		for bfIdx, bf := range bfs {
-			if bf.TestRow(vec, 0) {
-				protected = true
-				if len(protectedFiles) < 10 {
-					logutil.Info(
-						"GC-Sync-Protection-Filter-File-Protected-By-BF",
-						zap.String("file", f),
-						zap.String("job-id", jobIDs[bfIdx]),
-					)
+	logutil.Info(
+		"GC-Sync-Protection-Filter-Vector-Built",
+		zap.Int("vector-len", vec.Length()),
+	)
+
+	// Track which files are protected (by any BloomFilter)
+	protectedSet := make(map[int]string) // index -> jobID that protects it
+
+	// Test against each BloomFilter using batch Test method
+	for bfIdx, bf := range bfs {
+		bf.Test(vec, func(exists bool, i int) {
+			if exists {
+				// File at index i is protected by this BloomFilter
+				if _, already := protectedSet[i]; !already {
+					protectedSet[i] = jobIDs[bfIdx]
 				}
-				break
 			}
-		}
+		})
+	}
 
-		if !protected {
+	// Build result: files that are NOT protected
+	result := make([]string, 0, len(files)-len(protectedSet))
+	protectedFiles := make([]string, 0, len(protectedSet))
+
+	for i, f := range files {
+		if jobID, protected := protectedSet[i]; protected {
+			protectedFiles = append(protectedFiles, f)
+			if len(protectedFiles) <= 10 {
+				logutil.Info(
+					"GC-Sync-Protection-Filter-File-Protected-By-BF",
+					zap.String("file", f),
+					zap.String("job-id", jobID),
+					zap.Int("index", i),
+				)
+			}
+		} else {
 			result = append(result, f)
 			// Log first few unprotected files for debugging
 			if i < 5 {
@@ -510,9 +523,6 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 					zap.String("file-bytes", fmt.Sprintf("%v", []byte(f))),
 				)
 			}
-		} else {
-			skipped++
-			protectedFiles = append(protectedFiles, f)
 		}
 	}
 
@@ -532,7 +542,6 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 	logutil.Info(
 		"GC-Sync-Protection-Filtered-Files-Result",
 		zap.Int("total", len(files)),
-		zap.Int("skipped", skipped),
 		zap.Int("can-delete", len(result)),
 		zap.Int("protected", len(protectedFiles)),
 	)

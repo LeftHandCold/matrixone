@@ -307,6 +307,14 @@ func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error
 	fmt.Println("[DEBUG-BF] ========== BloomFilter 构建完成 ==========")
 	fmt.Printf("[DEBUG-BF] 最终 Base64 数据 SHA256: %s\n", rawHashStr)
 	
+	// Print BloomFilter internal state for comparison with MO server
+	fmt.Println("[DEBUG-BF] ========== BloomFilter 内部状态 (用于与 MO 服务器对比) ==========")
+	fmt.Printf("[DEBUG-BF] bitmap-len: %d\n", bf3.GetBitmapLen())
+	fmt.Printf("[DEBUG-BF] seed-count: %d\n", bf3.GetSeedCount())
+	fmt.Printf("[DEBUG-BF] first-seed: %d\n", bf3.GetFirstSeed())
+	fmt.Printf("[DEBUG-BF] all-seeds: %v\n", bf3.GetAllSeeds())
+	fmt.Printf("[DEBUG-BF] bitmap-count: %d\n", bf3.GetBitmapCount())
+	
 	return base64Data, nil
 }
 
