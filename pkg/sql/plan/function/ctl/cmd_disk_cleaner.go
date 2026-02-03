@@ -52,6 +52,18 @@ func IsValidArg(parameter string, proc *process.Process) (*cmd_util.DiskCleaner,
 			Op:  op,
 			Key: cmd_util.GCVerify,
 		}, nil
+	case cmd_util.RegisterSyncProtection, cmd_util.RenewSyncProtection, cmd_util.UnregisterSyncProtection:
+		// Sync protection operations expect JSON value in the second parameter
+		// Format: register_sync_protection.{"job_id":"xxx","objects":["obj1"],"valid_ts":123}
+		value := ""
+		if len(parameters) > 1 {
+			// Join remaining parts as JSON value (in case JSON contains dots)
+			value = strings.Join(parameters[1:], ".")
+		}
+		return &cmd_util.DiskCleaner{
+			Op:    op,
+			Value: value,
+		}, nil
 	default:
 		return nil, moerr.NewInternalError(proc.Ctx, "handleDiskCleaner: invalid operation!")
 	}
