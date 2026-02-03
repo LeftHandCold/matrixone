@@ -212,7 +212,7 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 	if testObject != "" {
 		testVec2 := vector.NewVec(types.T_varchar.ToType())
 		if err := vector.AppendBytes(testVec2, []byte(testObject), false, m.mp); err == nil {
-			result := bf.TestRow(testVec2, 0)
+			result, encodedKey, hashVals := bf.TestRowDebug(testVec2, 0)
 			logutil.Info(
 				"GC-Sync-Protection-Register-BF-Test-Known-Object",
 				zap.String("job-id", jobID),
@@ -221,6 +221,9 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 				zap.String("test-object-bytes", fmt.Sprintf("%v", []byte(testObject))),
 				zap.Bool("result", result),
 				zap.Bool("expected", true),
+				zap.Int("encoded-key-len", len(encodedKey)),
+				zap.String("encoded-key", fmt.Sprintf("%v", encodedKey)),
+				zap.Uint64s("hash-vals", hashVals),
 			)
 			if !result {
 				logutil.Error(
@@ -228,6 +231,8 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 					zap.String("job-id", jobID),
 					zap.String("test-object", testObject),
 					zap.String("message", "BloomFilter should contain this object but TestRow returned false!"),
+					zap.String("encoded-key", fmt.Sprintf("%v", encodedKey)),
+					zap.Uint64s("hash-vals", hashVals),
 				)
 			}
 		}

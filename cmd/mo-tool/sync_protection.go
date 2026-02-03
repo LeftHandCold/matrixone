@@ -416,8 +416,11 @@ func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
 			if err := vector.AppendBytes(testVec, []byte(firstObj), false, t.mp); err != nil {
 				fmt.Printf("[DEBUG-REG] ✗ 创建测试 vector 失败: %v\n", err)
 			} else {
-				result := testBF.TestRow(testVec, 0)
+				result, encodedKey, hashVals := testBF.TestRowDebug(testVec, 0)
 				fmt.Printf("[DEBUG-REG] 测试结果: %v (应该为 true)\n", result)
+				fmt.Printf("[DEBUG-REG] encoded-key-len: %d\n", len(encodedKey))
+				fmt.Printf("[DEBUG-REG] encoded-key: %v\n", encodedKey)
+				fmt.Printf("[DEBUG-REG] hash-vals: %v\n", hashVals)
 				if !result {
 					fmt.Println("[DEBUG-REG] ✗ 警告：BloomFilter 无法找到第一个对象！")
 				} else {
