@@ -382,6 +382,36 @@ func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
 	for i, obj := range objects {
 		fmt.Printf("[DEBUG-REG]   [%d] %s\n", i, obj)
 	}
+	
+	// 额外验证：用第一个对象测试 BloomFilter
+	if len(objects) > 0 {
+		fmt.Println("[DEBUG-REG] ========== 额外验证：测试第一个对象 ==========")
+		firstObj := objects[0]
+		fmt.Printf("[DEBUG-REG] 第一个对象: %s\n", firstObj)
+		fmt.Printf("[DEBUG-REG] 第一个对象字节: %v\n", []byte(firstObj))
+		
+		// 重新解码 bfData 并测试
+		decodedBF, _ := base64.StdEncoding.DecodeString(bfData)
+		testBF := &bloomfilter.BloomFilter{}
+		if err := testBF.Unmarshal(decodedBF); err != nil {
+			fmt.Printf("[DEBUG-REG] ✗ 重新反序列化失败: %v\n", err)
+		} else {
+			testVec := vector.NewVec(types.T_varchar.ToType())
+			if err := vector.AppendBytes(testVec, []byte(firstObj), false, t.mp); err != nil {
+				fmt.Printf("[DEBUG-REG] ✗ 创建测试 vector 失败: %v\n", err)
+			} else {
+				result := testBF.TestRow(testVec, 0)
+				fmt.Printf("[DEBUG-REG] 测试结果: %v (应该为 true)\n", result)
+				if !result {
+					fmt.Println("[DEBUG-REG] ✗ 警告：BloomFilter 无法找到第一个对象！")
+				} else {
+					fmt.Println("[DEBUG-REG] ✓ BloomFilter 正确找到第一个对象")
+				}
+			}
+			testVec.Free(t.mp)
+			testBF.Free()
+		}
+	}
 
 	t.protectedFiles = objects
 	return nil

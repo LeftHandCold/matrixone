@@ -195,6 +195,22 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 	}
 	testVec.Free(m.mp)
 
+	// Debug: test with a sample object name format to verify BF works with real data
+	sampleObjectName := "019c2296-5e73-79fc-986f-7a3f4584d960_00000"
+	testVec2 := vector.NewVec(types.T_varchar.ToType())
+	if err := vector.AppendBytes(testVec2, []byte(sampleObjectName), false, m.mp); err == nil {
+		result := bf.TestRow(testVec2, 0)
+		logutil.Info(
+			"GC-Sync-Protection-Register-BF-Test-Sample-Object",
+			zap.String("job-id", jobID),
+			zap.String("sample-object", sampleObjectName),
+			zap.Int("sample-object-len", len(sampleObjectName)),
+			zap.String("sample-object-bytes", fmt.Sprintf("%v", []byte(sampleObjectName))),
+			zap.Bool("result", result),
+		)
+	}
+	testVec2.Free(m.mp)
+
 	m.protections[jobID] = &SyncProtection{
 		JobID:      jobID,
 		BF:         bf,
