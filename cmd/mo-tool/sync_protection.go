@@ -106,7 +106,8 @@ func (t *SyncProtectionTester) ScanObjectFiles() ([]string, error) {
 		// 匹配 object 文件名模式
 		name := info.Name()
 		// MatrixOne object 文件通常是 UUID 格式，包含下划线
-		if len(name) > 20 && strings.Contains(name, "_") {
+		// 格式: 019c226d-9e98-7ecc-9662-712ff0edcbfb_00000 (42 字符)
+		if len(name) == 42 && strings.Contains(name, "_") && strings.Count(name, "-") == 4 {
 			objects = append(objects, name)
 		}
 		return nil
@@ -156,9 +157,9 @@ func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error
 	// Add to BloomFilter
 	bf.Add(vec)
 
-	// Verify BloomFilter works correctly
+	// Verify BloomFilter works correctly before serialization
 	if t.verbose {
-		fmt.Println("[DEBUG] 验证 BloomFilter...")
+		fmt.Println("[DEBUG] 验证 BloomFilter (序列化前)...")
 		testVec := vector.NewVec(types.T_varchar.ToType())
 		defer testVec.Free(t.mp)
 		
@@ -182,6 +183,40 @@ func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error
 	data, err := bf.Marshal()
 	if err != nil {
 		return "", fmt.Errorf("序列化 BloomFilter 失败: %w", err)
+	}
+
+	// Verify BloomFilter works correctly after deserialization
+	if t.verbose {
+		fmt.Println("[DEBUG] 验证 BloomFilter (反序列化后)...")
+		bf2 := &bloomfilter.BloomFilter{}
+		if err := bf2.Unmarshal(data); err != nil {
+			return "", fmt.Errorf("反序列化 BloomFilter 失败: %w", err)
+		}
+		defer bf2.Free()
+		
+		testVec := vector.NewVec(types.T_varchar.ToType())
+		defer testVec.Free(t.mp)
+		
+		failCount := 0
+		for i, obj := range objects {
+			testVec.Reset(types.T_varchar.ToType())
+			if err := vector.AppendBytes(testVec, []byte(obj), false, t.mp); err != nil {
+				fmt.Printf("[DEBUG] 创建测试 vector 失败: %v\n", err)
+				continue
+			}
+			if bf2.TestRow(testVec, 0) {
+				if i < 3 {
+					fmt.Printf("[DEBUG] ✓ 反序列化后 BloomFilter 包含: %s\n", obj)
+				}
+			} else {
+				fmt.Printf("[DEBUG] ✗ 反序列化后 BloomFilter 不包含: %s (这是个问题!)\n", obj)
+				failCount++
+			}
+		}
+		if failCount > 0 {
+			return "", fmt.Errorf("BloomFilter 反序列化后验证失败: %d 个对象未找到", failCount)
+		}
+		fmt.Printf("[DEBUG] ✓ 所有 %d 个对象在反序列化后都能找到\n", len(objects))
 	}
 
 	// Base64 encode
@@ -210,8 +245,14 @@ func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
 	query := fmt.Sprintf("SELECT mo_ctl('dn', 'diskcleaner', 'register_sync_protection.%s')", string(jsonData))
 
 	if t.verbose {
-		fmt.Printf("[DEBUG] SQL: %s\n", query[:min(len(query), 200)]+"...")
-		fmt.Printf("[DEBUG] BloomFilter size: %d bytes\n", len(bfData))
+		fmt.Printf("[DEBUG] SQL 长度: %d\n", len(query))
+		fmt.Printf("[DEBUG] JSON 长度: %d\n", len(jsonData))
+		fmt.Printf("[DEBUG] BloomFilter base64 长度: %d\n", len(bfData))
+		fmt.Printf("[DEBUG] BloomFilter base64 前100字符: %s...\n", bfData[:min(100, len(bfData))])
+		
+		// 解码验证
+		decoded, _ := base64.StdEncoding.DecodeString(bfData)
+		fmt.Printf("[DEBUG] BloomFilter 解码后长度: %d bytes\n", len(decoded))
 	}
 
 	var result string

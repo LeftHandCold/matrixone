@@ -41,11 +41,11 @@ const (
 
 // SyncProtection represents a single sync protection entry
 type SyncProtection struct {
-	JobID      string                  // Sync job ID
+	JobID      string                   // Sync job ID
 	BF         *bloomfilter.BloomFilter // BloomFilter for protected objects
-	ValidTS    int64                   // Valid timestamp (nanoseconds), needs to be renewed
-	SoftDelete bool                    // Whether soft deleted
-	CreateTime time.Time               // Creation time for logging
+	ValidTS    int64                    // Valid timestamp (nanoseconds), needs to be renewed
+	SoftDelete bool                     // Whether soft deleted
+	CreateTime time.Time                // Creation time for logging
 }
 
 // SyncProtectionManager manages sync protection entries
@@ -94,6 +94,19 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 	m.Lock()
 	defer m.Unlock()
 
+	// Debug: print received data info
+	logutil.Info(
+		"GC-Sync-Protection-Register-Received",
+		zap.String("job-id", jobID),
+		zap.Int("bf-data-len", len(bfData)),
+		zap.String("bf-data-prefix", func() string {
+			if len(bfData) > 100 {
+				return bfData[:100] + "..."
+			}
+			return bfData
+		}()),
+	)
+
 	// Check if GC is running
 	if m.gcRunning.Load() {
 		logutil.Info(
@@ -129,10 +142,17 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 		logutil.Error(
 			"GC-Sync-Protection-Register-Decode-Error",
 			zap.String("job-id", jobID),
+			zap.Int("bf-data-len", len(bfData)),
 			zap.Error(err),
 		)
 		return moerr.NewInternalErrorNoCtx(fmt.Sprintf("failed to decode bloom filter: %v", err))
 	}
+
+	logutil.Info(
+		"GC-Sync-Protection-Register-Decoded",
+		zap.String("job-id", jobID),
+		zap.Int("bf-bytes-len", len(bfBytes)),
+	)
 
 	// Unmarshal BloomFilter
 	bf := &bloomfilter.BloomFilter{}
@@ -140,10 +160,33 @@ func (m *SyncProtectionManager) RegisterSyncProtection(
 		logutil.Error(
 			"GC-Sync-Protection-Register-Unmarshal-Error",
 			zap.String("job-id", jobID),
+			zap.Int("bf-bytes-len", len(bfBytes)),
 			zap.Error(err),
 		)
 		return moerr.NewInternalErrorNoCtx(fmt.Sprintf("failed to unmarshal bloom filter: %v", err))
 	}
+
+	// Debug: verify BloomFilter is valid and test a sample
+	logutil.Info(
+		"GC-Sync-Protection-Register-BF-Valid",
+		zap.String("job-id", jobID),
+		zap.Bool("bf-valid", bf.Valid()),
+	)
+
+	// Debug: try to test a simple string to verify BF works
+	testVec := vector.NewVec(types.T_varchar.ToType())
+	testStr := "test-string-12345"
+	if err := vector.AppendBytes(testVec, []byte(testStr), false, m.mp); err == nil {
+		// This should return false since we didn't add this string
+		result := bf.TestRow(testVec, 0)
+		logutil.Info(
+			"GC-Sync-Protection-Register-BF-Test-Random",
+			zap.String("job-id", jobID),
+			zap.String("test-str", testStr),
+			zap.Bool("result", result),
+		)
+	}
+	testVec.Free(m.mp)
 
 	m.protections[jobID] = &SyncProtection{
 		JobID:      jobID,
@@ -427,7 +470,7 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 		} else {
 			skipped++
 			// Log first few protected files
-			if skipped <= 3 {
+			if skipped <= 5 {
 				logutil.Info(
 					"GC-Sync-Protection-Filter-File-Protected",
 					zap.String("file", f),
@@ -437,7 +480,7 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 		}
 
 		// Log first few unprotected files for debugging
-		if !protected && i < 3 {
+		if !protected && i < 5 {
 			logutil.Info(
 				"GC-Sync-Protection-Filter-File-NOT-Protected",
 				zap.String("file", f),
@@ -454,4 +497,63 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 	)
 
 	return result
+}
+
+// DebugTestFile tests if a single file is protected and logs detailed info
+func (m *SyncProtectionManager) DebugTestFile(fileName string) bool {
+	m.RLock()
+	defer m.RUnlock()
+
+	logutil.Info(
+		"GC-Sync-Protection-Debug-Test-File",
+		zap.String("file", fileName),
+		zap.Int("file-len", len(fileName)),
+		zap.Int("protections", len(m.protections)),
+	)
+
+	if len(m.protections) == 0 {
+		logutil.Info("GC-Sync-Protection-Debug-No-Protections")
+		return false
+	}
+
+	vec := vector.NewVec(types.T_varchar.ToType())
+	defer vec.Free(m.mp)
+
+	if err := vector.AppendBytes(vec, []byte(fileName), false, m.mp); err != nil {
+		logutil.Error(
+			"GC-Sync-Protection-Debug-Vector-Error",
+			zap.Error(err),
+		)
+		return false
+	}
+
+	for jobID, p := range m.protections {
+		if p.BF == nil {
+			logutil.Info(
+				"GC-Sync-Protection-Debug-BF-Nil",
+				zap.String("job-id", jobID),
+			)
+			continue
+		}
+		if !p.BF.Valid() {
+			logutil.Info(
+				"GC-Sync-Protection-Debug-BF-Invalid",
+				zap.String("job-id", jobID),
+			)
+			continue
+		}
+
+		result := p.BF.TestRow(vec, 0)
+		logutil.Info(
+			"GC-Sync-Protection-Debug-Test-Result",
+			zap.String("job-id", jobID),
+			zap.String("file", fileName),
+			zap.Bool("protected", result),
+		)
+		if result {
+			return true
+		}
+	}
+
+	return false
 }
