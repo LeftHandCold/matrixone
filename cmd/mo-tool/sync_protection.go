@@ -156,6 +156,28 @@ func (t *SyncProtectionTester) BuildBloomFilter(objects []string) (string, error
 	// Add to BloomFilter
 	bf.Add(vec)
 
+	// Verify BloomFilter works correctly
+	if t.verbose {
+		fmt.Println("[DEBUG] 验证 BloomFilter...")
+		testVec := vector.NewVec(types.T_varchar.ToType())
+		defer testVec.Free(t.mp)
+		
+		for i, obj := range objects {
+			testVec.Reset(types.T_varchar.ToType())
+			if err := vector.AppendBytes(testVec, []byte(obj), false, t.mp); err != nil {
+				fmt.Printf("[DEBUG] 创建测试 vector 失败: %v\n", err)
+				continue
+			}
+			if bf.TestRow(testVec, 0) {
+				if i < 3 {
+					fmt.Printf("[DEBUG] ✓ BloomFilter 包含: %s\n", obj)
+				}
+			} else {
+				fmt.Printf("[DEBUG] ✗ BloomFilter 不包含: %s (这是个问题!)\n", obj)
+			}
+		}
+	}
+
 	// Marshal BloomFilter
 	data, err := bf.Marshal()
 	if err != nil {
@@ -398,6 +420,8 @@ func (t *SyncProtectionTester) RunTest() error {
 				fmt.Printf("    - 被删除: %s\n", f)
 			}
 		}
+		// 校验失败，停止测试
+		return fmt.Errorf("保护机制验证失败：有 %d 个被保护的文件被删除", newlyDeleted)
 	} else {
 		fmt.Println("  ✓ [成功] 所有被保护的文件都没有被删除!")
 	}

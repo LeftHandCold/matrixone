@@ -337,19 +337,61 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 	defer m.RUnlock()
 
 	if len(m.protections) == 0 || len(files) == 0 {
+		logutil.Info(
+			"GC-Sync-Protection-Filter-Skip",
+			zap.Int("protections", len(m.protections)),
+			zap.Int("files", len(files)),
+		)
 		return files
 	}
 
 	// Collect all valid BloomFilters
 	var bfs []*bloomfilter.BloomFilter
-	for _, p := range m.protections {
+	var jobIDs []string
+	for jobID, p := range m.protections {
 		if p.BF != nil && p.BF.Valid() {
 			bfs = append(bfs, p.BF)
+			jobIDs = append(jobIDs, jobID)
+			logutil.Info(
+				"GC-Sync-Protection-Filter-BF-Found",
+				zap.String("job-id", jobID),
+				zap.Bool("soft-delete", p.SoftDelete),
+			)
+		} else {
+			logutil.Warn(
+				"GC-Sync-Protection-Filter-BF-Invalid",
+				zap.String("job-id", jobID),
+				zap.Bool("bf-nil", p.BF == nil),
+			)
 		}
 	}
 
 	if len(bfs) == 0 {
+		logutil.Warn(
+			"GC-Sync-Protection-Filter-No-Valid-BF",
+			zap.Int("protections", len(m.protections)),
+		)
 		return files
+	}
+
+	logutil.Info(
+		"GC-Sync-Protection-Filter-Start",
+		zap.Int("files-to-check", len(files)),
+		zap.Int("bf-count", len(bfs)),
+		zap.Strings("job-ids", jobIDs),
+	)
+
+	// Print sample files to check
+	if len(files) > 0 {
+		sampleCount := 3
+		if len(files) < sampleCount {
+			sampleCount = len(files)
+		}
+		logutil.Info(
+			"GC-Sync-Protection-Filter-Sample-Files",
+			zap.Strings("sample-files", files[:sampleCount]),
+			zap.Int("file-0-len", len(files[0])),
+		)
 	}
 
 	result := make([]string, 0, len(files))
@@ -359,10 +401,15 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 	vec := vector.NewVec(types.T_varchar.ToType())
 	defer vec.Free(m.mp)
 
-	for _, f := range files {
+	for i, f := range files {
 		vec.Reset(types.T_varchar.ToType())
 		if err := vector.AppendBytes(vec, []byte(f), false, m.mp); err != nil {
 			// On error, keep the file (don't delete)
+			logutil.Error(
+				"GC-Sync-Protection-Filter-Vector-Error",
+				zap.String("file", f),
+				zap.Error(err),
+			)
 			skipped++
 			continue
 		}
@@ -379,16 +426,32 @@ func (m *SyncProtectionManager) FilterProtectedFiles(files []string) []string {
 			result = append(result, f)
 		} else {
 			skipped++
+			// Log first few protected files
+			if skipped <= 3 {
+				logutil.Info(
+					"GC-Sync-Protection-Filter-File-Protected",
+					zap.String("file", f),
+					zap.Int("file-len", len(f)),
+				)
+			}
+		}
+
+		// Log first few unprotected files for debugging
+		if !protected && i < 3 {
+			logutil.Info(
+				"GC-Sync-Protection-Filter-File-NOT-Protected",
+				zap.String("file", f),
+				zap.Int("file-len", len(f)),
+			)
 		}
 	}
 
-	if skipped > 0 {
-		logutil.Info(
-			"GC-Sync-Protection-Filtered-Files",
-			zap.Int("total", len(files)),
-			zap.Int("skipped", skipped),
-			zap.Int("can-delete", len(result)),
-		)
-	}
+	logutil.Info(
+		"GC-Sync-Protection-Filtered-Files-Result",
+		zap.Int("total", len(files)),
+		zap.Int("skipped", skipped),
+		zap.Int("can-delete", len(result)),
+	)
+
 	return result
 }
