@@ -1,0 +1,419 @@
+// Copyright 2021 Matrix Origin
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/spf13/cobra"
+)
+
+// SyncProtectionRequest 同步保护请求
+type SyncProtectionRequest struct {
+	JobID   string   `json:"job_id"`
+	Objects []string `json:"objects"`
+	ValidTS int64    `json:"valid_ts"`
+}
+
+// SyncProtectionTester 同步保护测试器
+type SyncProtectionTester struct {
+	db             *sql.DB
+	dataDir        string
+	jobID          string
+	protectedFiles []string
+	sampleCount    int
+	verbose        bool
+	waitTime       int
+}
+
+func NewSyncProtectionTester(dsn, dataDir string, sampleCount int, verbose bool, waitTime int) (*SyncProtectionTester, error) {
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("连接数据库失败: %w", err)
+	}
+
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("ping 数据库失败: %w", err)
+	}
+
+	return &SyncProtectionTester{
+		db:          db,
+		dataDir:     dataDir,
+		jobID:       fmt.Sprintf("sync-test-%d", time.Now().UnixNano()),
+		sampleCount: sampleCount,
+		verbose:     verbose,
+		waitTime:    waitTime,
+	}, nil
+}
+
+func (t *SyncProtectionTester) Close() {
+	if t.db != nil {
+		t.db.Close()
+	}
+}
+
+// ScanObjectFiles 扫描目录获取 object 文件
+func (t *SyncProtectionTester) ScanObjectFiles() ([]string, error) {
+	var objects []string
+
+	err := filepath.Walk(t.dataDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		// 匹配 object 文件名模式
+		name := info.Name()
+		// MatrixOne object 文件通常是 UUID 格式，包含下划线
+		if len(name) > 20 && strings.Contains(name, "_") {
+			relPath, _ := filepath.Rel(t.dataDir, path)
+			objects = append(objects, relPath)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("扫描目录失败: %w", err)
+	}
+
+	return objects, nil
+}
+
+// SelectRandomObjects 随机选择 object
+func (t *SyncProtectionTester) SelectRandomObjects(objects []string, count int) []string {
+	if len(objects) <= count {
+		return objects
+	}
+
+	// 复制切片避免修改原数据
+	copied := make([]string, len(objects))
+	copy(copied, objects)
+
+	// 随机打乱
+	rand.Shuffle(len(copied), func(i, j int) {
+		copied[i], copied[j] = copied[j], copied[i]
+	})
+
+	return copied[:count]
+}
+
+// RegisterProtection 注册保护
+func (t *SyncProtectionTester) RegisterProtection(objects []string) error {
+	req := SyncProtectionRequest{
+		JobID:   t.jobID,
+		Objects: objects,
+		ValidTS: time.Now().UnixNano(),
+	}
+
+	jsonData, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	query := fmt.Sprintf("SELECT mo_ctl('dn', 'disk_cleaner', 'register_sync_protection.%s')", string(jsonData))
+
+	if t.verbose {
+		fmt.Printf("[DEBUG] SQL: %s\n", query)
+	}
+
+	var result string
+	err = t.db.QueryRow(query).Scan(&result)
+	if err != nil {
+		return fmt.Errorf("注册保护失败: %w", err)
+	}
+
+	if t.verbose {
+		fmt.Printf("[DEBUG] 结果: %s\n", result)
+	}
+
+	// 检查是否成功
+	if strings.Contains(strings.ToLower(result), "error") {
+		return fmt.Errorf("注册保护返回错误: %s", result)
+	}
+
+	t.protectedFiles = objects
+	return nil
+}
+
+// RenewProtection 续租保护
+func (t *SyncProtectionTester) RenewProtection() error {
+	req := SyncProtectionRequest{
+		JobID:   t.jobID,
+		ValidTS: time.Now().UnixNano(),
+	}
+
+	jsonData, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	query := fmt.Sprintf("SELECT mo_ctl('dn', 'disk_cleaner', 'renew_sync_protection.%s')", string(jsonData))
+
+	if t.verbose {
+		fmt.Printf("[DEBUG] SQL: %s\n", query)
+	}
+
+	var result string
+	err = t.db.QueryRow(query).Scan(&result)
+	if err != nil {
+		return fmt.Errorf("续租保护失败: %w", err)
+	}
+
+	if t.verbose {
+		fmt.Printf("[DEBUG] 结果: %s\n", result)
+	}
+
+	return nil
+}
+
+// UnregisterProtection 取消注册保护
+func (t *SyncProtectionTester) UnregisterProtection() error {
+	req := SyncProtectionRequest{
+		JobID: t.jobID,
+	}
+
+	jsonData, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	query := fmt.Sprintf("SELECT mo_ctl('dn', 'disk_cleaner', 'unregister_sync_protection.%s')", string(jsonData))
+
+	if t.verbose {
+		fmt.Printf("[DEBUG] SQL: %s\n", query)
+	}
+
+	var result string
+	err = t.db.QueryRow(query).Scan(&result)
+	if err != nil {
+		return fmt.Errorf("取消注册保护失败: %w", err)
+	}
+
+	if t.verbose {
+		fmt.Printf("[DEBUG] 结果: %s\n", result)
+	}
+
+	return nil
+}
+
+// TriggerGC 触发 GC
+func (t *SyncProtectionTester) TriggerGC() error {
+	query := "SELECT mo_ctl('dn', 'disk_cleaner', 'force_gc')"
+
+	if t.verbose {
+		fmt.Printf("[DEBUG] SQL: %s\n", query)
+	}
+
+	var result string
+	err := t.db.QueryRow(query).Scan(&result)
+	if err != nil {
+		return fmt.Errorf("触发 GC 失败: %w", err)
+	}
+
+	if t.verbose {
+		fmt.Printf("[DEBUG] 结果: %s\n", result)
+	}
+
+	return nil
+}
+
+// CheckFilesExist 检查文件是否存在
+func (t *SyncProtectionTester) CheckFilesExist() (existing, deleted []string) {
+	for _, file := range t.protectedFiles {
+		fullPath := filepath.Join(t.dataDir, file)
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			deleted = append(deleted, file)
+		} else {
+			existing = append(existing, file)
+		}
+	}
+	return
+}
+
+// RunTest 运行测试
+func (t *SyncProtectionTester) RunTest() error {
+	fmt.Println("========================================")
+	fmt.Println("同步保护机制测试")
+	fmt.Println("========================================")
+	fmt.Printf("Job ID: %s\n", t.jobID)
+	fmt.Printf("数据目录: %s\n", t.dataDir)
+	fmt.Printf("采样数量: %d\n", t.sampleCount)
+	fmt.Printf("等待时间: %d 秒\n", t.waitTime)
+	fmt.Println()
+
+	// Step 1: 扫描 object 文件
+	fmt.Println("[Step 1] 扫描 object 文件...")
+	objects, err := t.ScanObjectFiles()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  找到 %d 个 object 文件\n", len(objects))
+
+	if len(objects) == 0 {
+		return fmt.Errorf("没有找到任何 object 文件，请检查数据目录: %s", t.dataDir)
+	}
+
+	// Step 2: 随机选择 object
+	fmt.Println("[Step 2] 随机选择 object...")
+	selected := t.SelectRandomObjects(objects, t.sampleCount)
+	fmt.Printf("  选择了 %d 个 object:\n", len(selected))
+	for i, obj := range selected {
+		if i < 5 {
+			fmt.Printf("    - %s\n", obj)
+		} else if i == 5 {
+			fmt.Printf("    - ... (还有 %d 个)\n", len(selected)-5)
+			break
+		}
+	}
+
+	// Step 3: 注册保护
+	fmt.Println("[Step 3] 注册同步保护...")
+	if err := t.RegisterProtection(selected); err != nil {
+		return fmt.Errorf("注册保护失败: %w", err)
+	}
+	fmt.Println("  ✓ 注册成功!")
+
+	// Step 4: 检查文件初始状态
+	fmt.Println("[Step 4] 检查文件初始状态...")
+	existingBefore, deletedBefore := t.CheckFilesExist()
+	fmt.Printf("  存在: %d, 已删除: %d\n", len(existingBefore), len(deletedBefore))
+
+	// Step 5: 触发 GC
+	fmt.Println("[Step 5] 触发 GC...")
+	if err := t.TriggerGC(); err != nil {
+		fmt.Printf("  ⚠ 警告: 触发 GC 失败: %v\n", err)
+	} else {
+		fmt.Println("  ✓ GC 触发成功!")
+	}
+
+	// 等待 GC 完成
+	fmt.Printf("[Step 6] 等待 GC 完成 (%d秒)...\n", t.waitTime)
+	time.Sleep(time.Duration(t.waitTime) * time.Second)
+
+	// Step 7: 检查文件是否被保护
+	fmt.Println("[Step 7] 检查文件保护状态...")
+	existingAfter, deletedAfter := t.CheckFilesExist()
+	fmt.Printf("  存在: %d, 已删除: %d\n", len(existingAfter), len(deletedAfter))
+
+	// 比较结果
+	newlyDeleted := len(deletedAfter) - len(deletedBefore)
+	if newlyDeleted > 0 {
+		fmt.Printf("  ✗ [失败] 有 %d 个被保护的文件被删除了!\n", newlyDeleted)
+		for _, f := range deletedAfter {
+			found := false
+			for _, bf := range deletedBefore {
+				if f == bf {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fmt.Printf("    - 被删除: %s\n", f)
+			}
+		}
+	} else {
+		fmt.Println("  ✓ [成功] 所有被保护的文件都没有被删除!")
+	}
+
+	// Step 8: 续租测试
+	fmt.Println("[Step 8] 测试续租功能...")
+	if err := t.RenewProtection(); err != nil {
+		fmt.Printf("  ⚠ 警告: 续租失败: %v\n", err)
+	} else {
+		fmt.Println("  ✓ 续租成功!")
+	}
+
+	// Step 9: 取消注册保护
+	fmt.Println("[Step 9] 取消注册保护 (soft delete)...")
+	if err := t.UnregisterProtection(); err != nil {
+		fmt.Printf("  ⚠ 警告: 取消注册失败: %v\n", err)
+	} else {
+		fmt.Println("  ✓ 取消注册成功!")
+	}
+
+	// Step 10: 再次触发 GC
+	fmt.Println("[Step 10] 再次触发 GC...")
+	if err := t.TriggerGC(); err != nil {
+		fmt.Printf("  ⚠ 警告: 触发 GC 失败: %v\n", err)
+	} else {
+		fmt.Println("  ✓ GC 触发成功!")
+	}
+
+	// 等待 GC 完成
+	fmt.Printf("[Step 11] 等待 GC 完成 (%d秒)...\n", t.waitTime)
+	time.Sleep(time.Duration(t.waitTime) * time.Second)
+
+	// Step 12: 最终检查
+	fmt.Println("[Step 12] 最终检查...")
+	existingFinal, deletedFinal := t.CheckFilesExist()
+	fmt.Printf("  存在: %d, 已删除: %d\n", len(existingFinal), len(deletedFinal))
+
+	fmt.Println()
+	fmt.Println("========================================")
+	fmt.Println("测试完成!")
+	fmt.Println("========================================")
+
+	return nil
+}
+
+// PrepareSyncProtectionCommand 准备同步保护测试命令
+func PrepareSyncProtectionCommand() *cobra.Command {
+	var (
+		dsn         string
+		dataDir     string
+		sampleCount int
+		verbose     bool
+		waitTime    int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "sync-protection",
+		Short: "测试同步保护机制",
+		Long: `测试跨集群同步保护机制。
+
+该命令会：
+1. 扫描指定目录获取 object 文件
+2. 随机选择一些 object 注册保护
+3. 触发 GC 并验证被保护的文件是否被删除
+4. 测试续租和取消注册功能`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tester, err := NewSyncProtectionTester(dsn, dataDir, sampleCount, verbose, waitTime)
+			if err != nil {
+				return err
+			}
+			defer tester.Close()
+
+			return tester.RunTest()
+		},
+	}
+
+	cmd.Flags().StringVar(&dsn, "dsn", "root:111@tcp(127.0.0.1:6001)/", "数据库连接字符串")
+	cmd.Flags().StringVar(&dataDir, "data-dir", "./mo-data/shared", "数据目录路径")
+	cmd.Flags().IntVar(&sampleCount, "sample", 10, "随机采样的 object 数量")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "显示详细输出")
+	cmd.Flags().IntVar(&waitTime, "wait", 30, "等待 GC 完成的时间（秒）")
+
+	return cmd
+}
