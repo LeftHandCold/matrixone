@@ -1213,7 +1213,7 @@ func (c *checkpointCleaner) tryGCAgainstGCKPLocked(
 	// Filter out files protected by sync protection before deletion
 	// This ensures cross-cluster sync operations don't lose their referenced objects
 	originalCount := len(filesToGC)
-	
+
 	// Debug: print first few files to be deleted
 	if originalCount > 0 {
 		logutil.Info(
@@ -1227,7 +1227,7 @@ func (c *checkpointCleaner) tryGCAgainstGCKPLocked(
 			}()),
 		)
 	}
-	
+
 	filesToGC = c.syncProtection.FilterProtectedFiles(filesToGC)
 	if originalCount != len(filesToGC) {
 		logutil.Info(
@@ -1356,6 +1356,7 @@ func (c *checkpointCleaner) doGCAgainstGlobalCheckpointLocked(
 		c.mutation.snapshotMeta,
 		iscp,
 		c.checkpointCli,
+		c.syncProtection,
 		memoryBuffer,
 		c.config.canGCCacheSize,
 		c.config.estimateRows,
@@ -1531,6 +1532,7 @@ func (c *checkpointCleaner) DoCheck(ctx context.Context) error {
 		c.mutation.snapshotMeta,
 		iscp,
 		c.checkpointCli,
+		c.syncProtection,
 		buffer,
 		c.config.canGCCacheSize,
 		c.config.estimateRows,
@@ -1555,6 +1557,7 @@ func (c *checkpointCleaner) DoCheck(ctx context.Context) error {
 		c.mutation.snapshotMeta,
 		iscp,
 		c.checkpointCli,
+		c.syncProtection,
 		buffer,
 		c.config.canGCCacheSize,
 		c.config.estimateRows,
