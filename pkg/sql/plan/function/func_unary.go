@@ -3333,11 +3333,13 @@ func LastQueryIDWithoutParam(_ []*vector.Vector, result vector.FunctionResultWra
 
 	for i := uint64(0); i < uint64(length); i++ {
 		cnt := int64(len(proc.GetSessionInfo().QueryId))
+		logutil.Infof("DEBUG LastQueryIDWithoutParam: cnt=%d, QueryId=%v", cnt, proc.GetSessionInfo().QueryId)
 		// The current query's ID has already been pushed to the session before execution,
 		// so we need to exclude it (cnt - 1) to get the "last" query's ID.
 		// See: pkg/frontend/mysql_cmd_executor.go pushQueryId is called before SQL execution.
 		if cnt <= 1 {
 			// No previous query result available
+			logutil.Infof("DEBUG LastQueryIDWithoutParam: cnt<=1, return null")
 			if err = rs.AppendBytes(nil, true); err != nil {
 				return err
 			}
@@ -3349,6 +3351,7 @@ func LastQueryIDWithoutParam(_ []*vector.Vector, result vector.FunctionResultWra
 		if err != nil {
 			return err
 		}
+		logutil.Infof("DEBUG LastQueryIDWithoutParam: idx=%d, returning QueryId[%d]=%s", idx, idx, proc.GetSessionInfo().QueryId[idx])
 
 		if err = rs.AppendBytes(functionUtil.QuickStrToBytes(proc.GetSessionInfo().QueryId[idx]), false); err != nil {
 			return err
