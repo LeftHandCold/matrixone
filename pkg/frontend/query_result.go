@@ -33,7 +33,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/frontend/constant"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
@@ -54,30 +53,23 @@ func getPathOfQueryResultFile(fileName string) string {
 
 func canSaveQueryResult(ctx context.Context, ses *Session) bool {
 	if ses.ast == nil {
-		logutil.Infof("DEBUG canSaveQueryResult: ses.ast is nil, return false")
 		return false
 	}
 
 	stmtProfile := ses.GetStmtProfile()
-	logutil.Infof("DEBUG canSaveQueryResult: stmtType=%s, sqlSourceType=%s", 
-		stmtProfile.GetStmtType(), stmtProfile.GetSqlSourceType())
-	
 	if stmtProfile.GetSqlSourceType() == constant.InternalSql {
-		logutil.Infof("DEBUG canSaveQueryResult: InternalSql, return false")
 		return false
 	}
 
 	// Check if save_query_result is enabled
 	val, err := ses.GetSessionSysVar("save_query_result")
 	if err != nil {
-		logutil.Infof("DEBUG canSaveQueryResult: GetSessionSysVar error=%v, return false", err)
 		return false
 	}
 	saveQueryResultEnabled := false
 	if v, _ := val.(int8); v > 0 {
 		saveQueryResultEnabled = true
 	}
-	logutil.Infof("DEBUG canSaveQueryResult: saveQueryResultEnabled=%v", saveQueryResultEnabled)
 
 	// For SELECT statements:
 	// - If save_query_result is ON, save results for all SELECT statements (ExternSql and CloudUserSql)
@@ -86,7 +78,6 @@ func canSaveQueryResult(ctx context.Context, ses *Session) bool {
 	// because regular SELECT statements weren't saving their results even with save_query_result=on
 	if stmtProfile.GetStmtType() == "Select" {
 		if !saveQueryResultEnabled && stmtProfile.GetSqlSourceType() != constant.CloudUserSql {
-			logutil.Infof("DEBUG canSaveQueryResult: Select but not CloudUserSql and save_query_result=off, return false")
 			return false
 		}
 	}
@@ -94,14 +85,11 @@ func canSaveQueryResult(ctx context.Context, ses *Session) bool {
 	if saveQueryResultEnabled {
 		if ses.blockIdx == 0 {
 			if err = initQueryResulConfig(ctx, ses); err != nil {
-				logutil.Infof("DEBUG canSaveQueryResult: initQueryResulConfig error=%v, return false", err)
 				return false
 			}
 		}
-		logutil.Infof("DEBUG canSaveQueryResult: return true")
 		return true
 	}
-	logutil.Infof("DEBUG canSaveQueryResult: saveQueryResultEnabled=false, return false")
 	return false
 }
 
@@ -184,8 +172,6 @@ func saveBatches(ctx context.Context, ses *Session, data []*batch.Batch) error {
 }
 
 func saveMeta(ctx context.Context, ses *Session) error {
-	stmtId := uuid.UUID(ses.GetStmtId()).String()
-	logutil.Infof("DEBUG saveMeta: called, stmtId=%s", stmtId)
 	defer func() {
 		ses.ResetBlockIdx()
 		ses.p = nil
@@ -255,7 +241,6 @@ func saveMeta(ctx context.Context, ses *Session) error {
 		return err
 	}
 	metaPath := catalog.BuildQueryResultMetaPath(ses.GetTenantInfo().GetTenant(), uuid.UUID(ses.GetStmtId()).String())
-	logutil.Infof("DEBUG saveMeta: metaPath=%s", metaPath)
 	metaWriter, err := objectio.NewObjectWriterSpecial(objectio.WriterQueryResult, metaPath, fs)
 	if err != nil {
 		return err
@@ -299,37 +284,27 @@ func saveQueryResult(ctx context.Context, ses *Session,
 // saveQueryResult2 saves the data from the engine.
 func saveQueryResult2(execCtx *ExecCtx, crs *perfcounter.CounterSet, bat *batch.Batch) error {
 	ses := execCtx.ses.(*Session)
-	logutil.Infof("DEBUG saveQueryResult2: called, bat=%v", bat != nil)
 	if canSaveQueryResult(execCtx.reqCtx, ses) {
 		newCtx := perfcounter.AttachS3RequestKey(execCtx.reqCtx, crs)
 		if bat == nil {
-			logutil.Infof("DEBUG saveQueryResult2: bat is nil, calling saveMeta")
 			if err := saveMeta(newCtx, ses); err != nil {
-				logutil.Infof("DEBUG saveQueryResult2: saveMeta error=%v", err)
 				return err
 			}
-			logutil.Infof("DEBUG saveQueryResult2: saveMeta success")
 		} else {
-			logutil.Infof("DEBUG saveQueryResult2: bat is not nil, calling saveBatch")
 			if err := saveBatch(newCtx, ses, bat); err != nil {
-				logutil.Infof("DEBUG saveQueryResult2: saveBatch error=%v", err)
 				return err
 			}
-			logutil.Infof("DEBUG saveQueryResult2: saveBatch success")
 		}
 	}
 	return nil
 }
 
 func trySaveQueryResult(ctx context.Context, ses *Session, mrs *MysqlResultSet) (err error) {
-	logutil.Infof("DEBUG trySaveQueryResult: called")
 	if canSaveQueryResult(ctx, ses) {
-		logutil.Infof("DEBUG trySaveQueryResult: canSaveQueryResult=true, saving result")
 		var data *batch.Batch
 		data, ses.rs, err = convertRowsIntoBatch(ses.GetMemPool(), mrs.Columns, mrs.Data)
 		defer cleanBatch(ses.GetMemPool(), data)
 		if err != nil {
-			logutil.Infof("DEBUG trySaveQueryResult: convertRowsIntoBatch error=%v", err)
 			return err
 		}
 		err = saveQueryResult(ctx, ses, func() ([]*batch.Batch, error) {
@@ -338,10 +313,8 @@ func trySaveQueryResult(ctx context.Context, ses *Session, mrs *MysqlResultSet) 
 			nil,
 		)
 		if err != nil {
-			logutil.Infof("DEBUG trySaveQueryResult: saveQueryResult error=%v", err)
 			return err
 		}
-		logutil.Infof("DEBUG trySaveQueryResult: saveQueryResult success")
 	}
 	return
 }
