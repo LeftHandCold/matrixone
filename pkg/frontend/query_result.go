@@ -296,27 +296,37 @@ func saveQueryResult(ctx context.Context, ses *Session,
 // saveQueryResult2 saves the data from the engine.
 func saveQueryResult2(execCtx *ExecCtx, crs *perfcounter.CounterSet, bat *batch.Batch) error {
 	ses := execCtx.ses.(*Session)
+	logutil.Infof("DEBUG saveQueryResult2: called, bat=%v", bat != nil)
 	if canSaveQueryResult(execCtx.reqCtx, ses) {
 		newCtx := perfcounter.AttachS3RequestKey(execCtx.reqCtx, crs)
 		if bat == nil {
+			logutil.Infof("DEBUG saveQueryResult2: bat is nil, calling saveMeta")
 			if err := saveMeta(newCtx, ses); err != nil {
+				logutil.Infof("DEBUG saveQueryResult2: saveMeta error=%v", err)
 				return err
 			}
+			logutil.Infof("DEBUG saveQueryResult2: saveMeta success")
 		} else {
+			logutil.Infof("DEBUG saveQueryResult2: bat is not nil, calling saveBatch")
 			if err := saveBatch(newCtx, ses, bat); err != nil {
+				logutil.Infof("DEBUG saveQueryResult2: saveBatch error=%v", err)
 				return err
 			}
+			logutil.Infof("DEBUG saveQueryResult2: saveBatch success")
 		}
 	}
 	return nil
 }
 
 func trySaveQueryResult(ctx context.Context, ses *Session, mrs *MysqlResultSet) (err error) {
+	logutil.Infof("DEBUG trySaveQueryResult: called")
 	if canSaveQueryResult(ctx, ses) {
+		logutil.Infof("DEBUG trySaveQueryResult: canSaveQueryResult=true, saving result")
 		var data *batch.Batch
 		data, ses.rs, err = convertRowsIntoBatch(ses.GetMemPool(), mrs.Columns, mrs.Data)
 		defer cleanBatch(ses.GetMemPool(), data)
 		if err != nil {
+			logutil.Infof("DEBUG trySaveQueryResult: convertRowsIntoBatch error=%v", err)
 			return err
 		}
 		err = saveQueryResult(ctx, ses, func() ([]*batch.Batch, error) {
@@ -325,8 +335,10 @@ func trySaveQueryResult(ctx context.Context, ses *Session, mrs *MysqlResultSet) 
 			nil,
 		)
 		if err != nil {
+			logutil.Infof("DEBUG trySaveQueryResult: saveQueryResult error=%v", err)
 			return err
 		}
+		logutil.Infof("DEBUG trySaveQueryResult: saveQueryResult success")
 	}
 	return
 }
