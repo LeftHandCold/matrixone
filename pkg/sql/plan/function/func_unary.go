@@ -3333,14 +3333,19 @@ func LastQueryIDWithoutParam(_ []*vector.Vector, result vector.FunctionResultWra
 
 	for i := uint64(0); i < uint64(length); i++ {
 		cnt := int64(len(proc.GetSessionInfo().QueryId))
-		if cnt == 0 {
+		// The current query's ID has already been pushed to the session before execution,
+		// so we need to exclude it (cnt - 1) to get the "last" query's ID.
+		// See: pkg/frontend/mysql_cmd_executor.go pushQueryId is called before SQL execution.
+		if cnt <= 1 {
+			// No previous query result available
 			if err = rs.AppendBytes(nil, true); err != nil {
 				return err
 			}
 			continue
 		}
+		// Use cnt-1 to exclude the current query's ID
 		var idx int
-		idx, err = makeQueryIdIdx(-1, cnt, proc)
+		idx, err = makeQueryIdIdx(-1, cnt-1, proc)
 		if err != nil {
 			return err
 		}
@@ -3378,13 +3383,20 @@ func LastQueryID(ivecs []*vector.Vector, result vector.FunctionResultWrapper, pr
 	loc, _ := ivec.GetValue(0)
 	for i := uint64(0); i < uint64(length); i++ {
 		cnt := int64(len(proc.GetSessionInfo().QueryId))
-		if cnt == 0 {
+		// The current query's ID has already been pushed to the session before execution,
+		// so we need to exclude it (cnt - 1) to get the correct "last" query's ID.
+		// See: pkg/frontend/mysql_cmd_executor.go pushQueryId is called before SQL execution.
+		// Fix for issue #23676: result_scan(last_query_id()) reports "file not found"
+		if cnt <= 1 {
+			// No previous query result available (only current query's ID in the list)
 			if err = rs.AppendBytes(nil, true); err != nil {
 				return err
 			}
+			continue
 		}
+		// Use cnt-1 to exclude the current query's ID when calculating the index
 		var idx int
-		idx, err = makeQueryIdIdx(loc, cnt, proc)
+		idx, err = makeQueryIdIdx(loc, cnt-1, proc)
 		if err != nil {
 			return err
 		}
