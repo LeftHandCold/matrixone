@@ -35,6 +35,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
@@ -1122,6 +1123,10 @@ func (ses *Session) SetSessionSysVar(ctx context.Context, name string, val inter
 	// ensure session system variables container exists in embed/basic cluster
 	if ses.sesSysVars == nil {
 		ses.sesSysVars = &SystemVariables{mp: make(map[string]interface{})}
+	}
+
+	if name == "save_query_result" {
+		logutil.Infof("DEBUG SetSessionSysVar: setting save_query_result to %v", val)
 	}
 
 	if def.UpdateSessVar != nil {
