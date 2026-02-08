@@ -184,6 +184,8 @@ func saveBatches(ctx context.Context, ses *Session, data []*batch.Batch) error {
 }
 
 func saveMeta(ctx context.Context, ses *Session) error {
+	stmtId := uuid.UUID(ses.GetStmtId()).String()
+	logutil.Infof("DEBUG saveMeta: called, stmtId=%s", stmtId)
 	defer func() {
 		ses.ResetBlockIdx()
 		ses.p = nil
@@ -253,6 +255,7 @@ func saveMeta(ctx context.Context, ses *Session) error {
 		return err
 	}
 	metaPath := catalog.BuildQueryResultMetaPath(ses.GetTenantInfo().GetTenant(), uuid.UUID(ses.GetStmtId()).String())
+	logutil.Infof("DEBUG saveMeta: metaPath=%s", metaPath)
 	metaWriter, err := objectio.NewObjectWriterSpecial(objectio.WriterQueryResult, metaPath, fs)
 	if err != nil {
 		return err
