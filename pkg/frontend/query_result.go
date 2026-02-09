@@ -257,7 +257,13 @@ func saveMeta(ctx context.Context, ses *Session) error {
 	if err != nil {
 		return err
 	}
-	return err
+
+	// Push query ID after successfully saving the result meta.
+	// This ensures last_query_id() only returns IDs of queries that actually saved results.
+	// Fix for issue #23676.
+	ses.pushQueryId(uuid.UUID(ses.GetStmtId()).String())
+
+	return nil
 }
 
 // saveQueryResult saves the data composited by hand

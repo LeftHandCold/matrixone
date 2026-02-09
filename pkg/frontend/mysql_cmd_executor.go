@@ -182,12 +182,9 @@ var RecordStatement = func(ctx context.Context, ses *Session, proc *process.Proc
 	ses.SetSqlSourceType(sqlType)
 	ses.SetSqlOfStmt(text)
 
-	//note: txn id here may be empty
-	// add by #9907, set the result of last_query_id(), this will pass those isCmdFieldListSql() from client.
-	// fixme: this op leads all internal/background executor got NULL result if call last_query_id().
-	if sqlType != constant.InternalSql {
-		ses.pushQueryId(types.Uuid(stmID).String())
-	}
+	// Note: pushQueryId is now called in saveMeta() after query results are saved.
+	// This ensures last_query_id() only returns IDs of queries that actually saved results.
+	// Fix for issue #23676.
 
 	// -------------------------------------
 	// Gen StatementInfo
