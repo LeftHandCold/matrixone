@@ -450,7 +450,7 @@ var errorMsgRefer = map[uint16]moErrorMsgItem{
 	ErrFKNoReferencedRow2:                       {ER_NO_REFERENCED_ROW_2, []string{"23000"}, "Cannot add or update a child row: a foreign key constraint fails"},
 	ErrBlobCantHaveDefault:                      {ER_BLOB_CANT_HAVE_DEFAULT, []string{MySQLDefaultSqlState}, "BLOB, TEXT, GEOMETRY or JSON column '%-.192s' can't have a default value"},
 	ErrTableMustHaveAVisibleColumn:              {ER_TABLE_MUST_HAVE_A_VISIBLE_COLUMN, []string{MySQLDefaultSqlState}, "A table must have at least one visible column."},
-	ErrQueryResultNotFound:                      {ER_UNKNOWN_ERROR, []string{MySQLDefaultSqlState}, "query result not found for query_id '%s'. The query may not have saved its result. Only SELECT statements save results when save_query_result is enabled"},
+	ErrQueryResultNotFound:                      {ER_UNKNOWN_ERROR, []string{MySQLDefaultSqlState}, "last_query_id() returned NULL, no previous query available in this session"},
 
 	// Group 5: rpc errors
 	ErrRPCTimeout:   {ER_UNKNOWN_ERROR, []string{MySQLDefaultSqlState}, "rpc timeout"},
@@ -968,8 +968,8 @@ func NewResultFileNotFound(ctx context.Context, f string) *Error {
 	return newError(ctx, ErrResultFileNotFound, f)
 }
 
-func NewQueryResultNotFound(ctx context.Context, queryId string) *Error {
-	return newError(ctx, ErrQueryResultNotFound, queryId)
+func NewQueryResultNotFound(ctx context.Context) *Error {
+	return newError(ctx, ErrQueryResultNotFound)
 }
 
 func NewNoConfig(ctx context.Context, f string) *Error {

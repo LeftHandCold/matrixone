@@ -70,7 +70,7 @@ func (builder *QueryBuilder) buildResultScan(tbl *tree.TableFunction, ctx *BindC
 	// This can happen when last_query_id() returns NULL because there's no previous query
 	// in the session. Fix for issue #23676.
 	if vec.IsConstNull() || (vec.Length() > 0 && vec.GetNulls().Contains(0)) {
-		return 0, moerr.NewInvalidInputf(builder.GetContext(), "last_query_id() returned NULL, no previous query available in this session")
+		return 0, moerr.NewQueryResultNotFound(builder.GetContext())
 	}
 
 	uuid := vector.MustFixedColWithTypeCheck[types.Uuid](vec)[0]
