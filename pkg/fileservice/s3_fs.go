@@ -948,22 +948,25 @@ func (s *S3FS) read(ctx context.Context, vector *IOVector) (err error) {
 		vector.Entries[i] = entry
 	}
 
-	// write to disk cache
+	// write to disk cache asynchronously to avoid blocking IO merger waiters
 	if readFullObject &&
 		contentErr == nil &&
 		len(contentBytes) > 0 &&
 		s.diskCache != nil &&
 		!vector.Policy.Any(SkipDiskCacheWrites) {
-		t0 := time.Now()
-		LogEvent(ctx, str_disk_cache_setfile_begin)
-		err := s.diskCache.SetFile(ctx, vector.FilePath, func(context.Context) (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(contentBytes)), nil
-		})
-		LogEvent(ctx, str_disk_cache_setfile_end)
-		metric.FSReadDurationSetCachedData.Observe(time.Since(t0).Seconds())
-		if err != nil {
-			return err
-		}
+		// capture variables for async goroutine
+		contentBytesCopy := make([]byte, len(contentBytes))
+		copy(contentBytesCopy, contentBytes)
+		filePath := vector.FilePath
+		diskCache := s.diskCache
+		go func() {
+			t0 := time.Now()
+			// use background context since the original context may be cancelled
+			_ = diskCache.SetFile(context.Background(), filePath, func(context.Context) (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(contentBytesCopy)), nil
+			})
+			metric.FSReadDurationSetCachedData.Observe(time.Since(t0).Seconds())
+		}()
 	}
 
 	return nil

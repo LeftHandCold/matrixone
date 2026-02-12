@@ -190,7 +190,7 @@ var (
 
 	CNPrimaryCheck atomic.Bool
 
-	defaultCreateTxnOpTimeout = 3 * time.Minute
+	defaultCreateTxnOpTimeout = time.Minute
 
 	defaultConnectTimeout = time.Minute
 )
