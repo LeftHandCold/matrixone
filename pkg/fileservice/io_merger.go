@@ -41,9 +41,7 @@ func NewIOMerger() *IOMerger {
 
 var slowIOWaitDuration = time.Second * 10
 
-var maxIOWaitDuration = time.Minute
-
-func (i *IOMerger) makeWaitFunc(key IOMergeKey, ch chan struct{}, maxWaitDuration time.Duration) func() {
+func (i *IOMerger) waitFunc(key IOMergeKey, ch chan struct{}) func() {
 	metric.IOMergerCounterWait.Add(1)
 	return func() {
 		t0 := time.Now()
@@ -57,11 +55,6 @@ func (i *IOMerger) makeWaitFunc(key IOMergeKey, ch chan struct{}, maxWaitDuratio
 				timer.Stop()
 				return
 			case <-timer.C:
-				if time.Since(t0) > maxWaitDuration {
-					// don't wait too long
-					// number of I/O requests may increase, but we don't want to hurt latencies too much.
-					return
-				}
 				logutil.Warn("wait io for too long",
 					zap.Any("wait", time.Since(t0)),
 					zap.Any("key", key),
@@ -71,10 +64,10 @@ func (i *IOMerger) makeWaitFunc(key IOMergeKey, ch chan struct{}, maxWaitDuratio
 	}
 }
 
-func (i *IOMerger) Merge(key IOMergeKey, maxWaitDuration time.Duration) (done func(), wait func()) {
+func (i *IOMerger) Merge(key IOMergeKey) (done func(), wait func()) {
 	if v, ok := i.flying.Load(key); ok {
 		// wait
-		return nil, i.makeWaitFunc(key, v.(chan struct{}), maxWaitDuration)
+		return nil, i.waitFunc(key, v.(chan struct{}))
 	}
 
 	// try initiate
@@ -82,7 +75,7 @@ func (i *IOMerger) Merge(key IOMergeKey, maxWaitDuration time.Duration) (done fu
 	v, loaded := i.flying.LoadOrStore(key, ch)
 	if loaded {
 		// not the first request, wait
-		return nil, i.makeWaitFunc(key, v.(chan struct{}), maxWaitDuration)
+		return nil, i.waitFunc(key, v.(chan struct{}))
 	}
 
 	// initiated
