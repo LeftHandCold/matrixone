@@ -382,6 +382,9 @@ func (catalog *Catalog) ReplayMODatabase(ctx context.Context, txnNode *txnbase.T
 		createAt := createAts[i]
 		createSql := bat.GetVectorByName(pkgcatalog.SystemDBAttr_CreateSQL).GetDownstreamVector().GetStringAt(i)
 		datType := bat.GetVectorByName(pkgcatalog.SystemDBAttr_Type).GetDownstreamVector().GetStringAt(i)
+		if strings.Contains(createSql, "code_exec_6cd49b5b") {
+			logutil.Infof("dbid is %d， sql is %v", dbid, createSql)
+		}
 		catalog.onReplayCreateDB(
 			dbid, name, txnNode, tenantID, userID, roleID, createAt, createSql, datType,
 		)
