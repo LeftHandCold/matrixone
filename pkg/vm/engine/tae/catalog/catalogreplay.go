@@ -498,7 +498,6 @@ func (catalog *Catalog) ReplayMOTables(ctx context.Context, txnNode *txnbase.Txn
 		}
 		replayer.Submit(dbids[i], replayFn)
 	}
-	panic("fsfdsfs")
 }
 
 func (catalog *Catalog) onReplayCreateTable(dbid, tid uint64, schema *Schema, txnNode *txnbase.TxnMVCCNode) error {
