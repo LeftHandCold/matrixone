@@ -23,11 +23,12 @@ import (
 )
 
 var (
-	targetDBID  uint64
-	targetTID   uint64
-	keyword     string
-	showAll     bool
-	showObjects bool
+	targetDBID    uint64
+	targetTID     uint64
+	keyword       string
+	showAll       bool
+	showObjects   bool
+	scanTombstone bool
 )
 
 type objInfo struct {
@@ -39,6 +40,19 @@ type objInfo struct {
 	DBID     uint64
 }
 
+// rowLocation records where a matching row lives in a data object
+type rowLocation struct {
+	ObjName  string
+	BlockIdx uint32
+	RowIdx   uint32
+	Rowid    types.Rowid
+	TID      uint64
+	DBID     uint64
+	RelName  string
+	ObjCreateTS types.TS
+	ObjDeleteTS types.TS
+}
+
 func main() {
 	dir := flag.String("dir", "", "shared dir path")
 	flag.Uint64Var(&targetDBID, "dbid", 0, "database ID")
@@ -46,6 +60,7 @@ func main() {
 	flag.StringVar(&keyword, "keyword", "", "keyword in name/SQL")
 	flag.BoolVar(&showAll, "all", false, "show all records")
 	flag.BoolVar(&showObjects, "objects", false, "show object list")
+	flag.BoolVar(&scanTombstone, "scan-tombstone", false, "scan tombstones for target tid")
 	metaName := flag.String("meta", "", "checkpoint meta file name")
 	flag.Parse()
 
@@ -54,8 +69,8 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-	if targetDBID == 0 && targetTID == 0 && keyword == "" && !showAll && !showObjects {
-		fmt.Println("please specify -dbid, -tid, -keyword, -all or -objects")
+	if targetDBID == 0 && targetTID == 0 && keyword == "" && !showAll && !showObjects && !scanTombstone {
+		fmt.Println("please specify -dbid, -tid, -keyword, -all, -objects or -scan-tombstone")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -95,10 +110,177 @@ func main() {
 		printObjects("mo_tables", tblObjects)
 	}
 
+	if scanTombstone && targetTID != 0 {
+		scanTombstoneForTID(ctx, fs, tblObjects)
+		return
+	}
+
 	fmt.Println("========== mo_database rows ==========")
 	readMODatabaseRows(ctx, fs, dbObjects)
 	fmt.Println("\n========== mo_tables rows ==========")
 	readMOTablesRows(ctx, fs, tblObjects)
+}
+
+func scanTombstoneForTID(ctx context.Context, fs fileservice.FileService, tblObjects []objInfo) {
+	fmt.Printf("========== Scanning mo_tables for tid=%d ==========\n\n", targetTID)
+
+	// Step 1: deduplicate objects - same objectName, keep the one with latest state
+	// If an object appears with and without deleteTS, the one with deleteTS is the final state
+	type objState struct {
+		info    objInfo
+		deleted bool
+	}
+	objMap := make(map[string]*objState)
+	for _, obj := range tblObjects {
+		key := obj.Stats.ObjectName().String()
+		typeName := "data"
+		if obj.ObjType == ioutil.ObjectType_Tombstone {
+			typeName = "tombstone"
+		}
+		mapKey := fmt.Sprintf("%s_%s", typeName, key)
+		existing, ok := objMap[mapKey]
+		if !ok {
+			objMap[mapKey] = &objState{info: obj, deleted: !obj.DeleteTS.IsEmpty()}
+		} else {
+			// if this version has deleteTS, mark as deleted
+			if !obj.DeleteTS.IsEmpty() {
+				existing.deleted = true
+				existing.info = obj // keep the version with deleteTS for info
+			}
+		}
+	}
+
+	// Step 2: scan ALL data objects (including deleted ones) for tid=targetTID
+	// mo_tables columns: rel_id(0), relname(1), reldatabase(2), reldatabase_id(3)
+	cols := []uint16{0, 1, 2, 3}
+	var matchedRows []rowLocation
+
+	fmt.Println("--- Scanning ALL data objects (including deleted) for target tid ---")
+	for mapKey, state := range objMap {
+		if !strings.HasPrefix(mapKey, "data_") {
+			continue
+		}
+		obj := state.info
+		objName := obj.Stats.ObjectName()
+		batches, err := readObjectBlocks(ctx, fs, obj.Stats, cols)
+		if err != nil {
+			fmt.Printf("  [ERROR] read obj %s failed: %v\n", objName.String(), err)
+			continue
+		}
+		for blkIdx, bat := range batches {
+			if bat == nil {
+				continue
+			}
+			tids := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[0])
+			for rowIdx := 0; rowIdx < bat.RowCount(); rowIdx++ {
+				if tids[rowIdx] == targetTID {
+					// construct rowid: objectID + blockOffset + rowOffset
+					rowid := types.NewRowIDWithObjectIDBlkNumAndRowID(
+						*objName.ObjectId(), uint16(blkIdx), uint32(rowIdx))
+
+					relname := bat.Vecs[1].GetStringAt(rowIdx)
+					dbname := bat.Vecs[2].GetStringAt(rowIdx)
+					dbids := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[3])
+
+					loc := rowLocation{
+						ObjName:     objName.String(),
+						BlockIdx:    uint32(blkIdx),
+						RowIdx:      uint32(rowIdx),
+						Rowid:       rowid,
+						TID:         targetTID,
+						DBID:        dbids[rowIdx],
+						RelName:     relname,
+						ObjCreateTS: obj.CreateTS,
+						ObjDeleteTS: obj.DeleteTS,
+					}
+					matchedRows = append(matchedRows, loc)
+
+					deletedStr := ""
+					if state.deleted {
+						deletedStr = fmt.Sprintf(" [OBJ-DELETED deleteTS=%s]", obj.DeleteTS.ToString())
+					}
+					fmt.Printf("  FOUND tid=%d name=%q db=%q dbid=%d obj=%s blk=%d row=%d rowid=%s%s\n",
+						targetTID, relname, dbname, dbids[rowIdx],
+						objName.String(), blkIdx, rowIdx,
+						rowid.String(), deletedStr)
+				}
+			}
+			bat.Clean(nil)
+		}
+	}
+
+	if len(matchedRows) == 0 {
+		fmt.Println("  No rows found for target tid")
+		return
+	}
+	fmt.Printf("\n  Total %d row(s) found for tid=%d\n\n", len(matchedRows), targetTID)
+
+	// Step 3: scan ALL tombstone objects, check if any rowid matches
+	fmt.Println("--- Scanning ALL tombstone objects for matching rowids ---")
+	tombstoneCols := []uint16{0} // column 0 is rowid
+
+	// build a set of target rowids for fast lookup
+	targetRowids := make(map[types.Rowid]rowLocation)
+	for _, loc := range matchedRows {
+		targetRowids[loc.Rowid] = loc
+	}
+	// also build a set of target objectIDs (from data objects containing the target tid)
+	targetObjIDs := make(map[objectio.ObjectId]bool)
+	for _, loc := range matchedRows {
+		objID := loc.Rowid.BorrowObjectID()
+		targetObjIDs[*objID] = true
+	}
+
+	foundTombstones := 0
+	for mapKey, state := range objMap {
+		if !strings.HasPrefix(mapKey, "tombstone_") {
+			continue
+		}
+		obj := state.info
+		objName := obj.Stats.ObjectName()
+
+		// check zonemap prefix to skip irrelevant tombstones
+		batches, err := readObjectBlocks(ctx, fs, obj.Stats, tombstoneCols)
+		if err != nil {
+			fmt.Printf("  [ERROR] read tombstone obj %s failed: %v\n", objName.String(), err)
+			continue
+		}
+		for blkIdx, bat := range batches {
+			if bat == nil {
+				continue
+			}
+			rowids := vector.MustFixedColNoTypeCheck[types.Rowid](bat.Vecs[0])
+			for rowIdx := 0; rowIdx < bat.RowCount(); rowIdx++ {
+				rid := rowids[rowIdx]
+				if loc, ok := targetRowids[rid]; ok {
+					deletedStr := ""
+					if state.deleted {
+						deletedStr = fmt.Sprintf(" [TOMBSTONE-OBJ-DELETED deleteTS=%s]", obj.DeleteTS.ToString())
+					}
+					fmt.Printf("  MATCH! tombstone obj=%s blk=%d row=%d -> deletes rowid=%s (obj=%s blk=%d row=%d tid=%d) createTS=%s%s\n",
+						objName.String(), blkIdx, rowIdx,
+						rid.String(), loc.ObjName, loc.BlockIdx, loc.RowIdx, loc.TID,
+						obj.CreateTS.ToString(), deletedStr)
+					foundTombstones++
+				}
+			}
+			bat.Clean(nil)
+		}
+	}
+
+	fmt.Printf("\n========== Summary ==========\n")
+	fmt.Printf("  Target tid=%d found in %d data object row(s)\n", targetTID, len(matchedRows))
+	fmt.Printf("  Matching tombstone entries: %d\n", foundTombstones)
+	if foundTombstones < len(matchedRows) {
+		fmt.Printf("  WARNING: %d row(s) have NO tombstone coverage!\n", len(matchedRows)-foundTombstones)
+		for _, loc := range matchedRows {
+			if _, ok := targetRowids[loc.Rowid]; ok {
+				fmt.Printf("    UNCOVERED: obj=%s blk=%d row=%d rowid=%s objCreateTS=%s objDeleteTS=%s\n",
+					loc.ObjName, loc.BlockIdx, loc.RowIdx, loc.Rowid.String(),
+					loc.ObjCreateTS.ToString(), loc.ObjDeleteTS.ToString())
+			}
+		}
+	}
 }
 
 func findLatestMeta(ctx context.Context, fs fileservice.FileService) (string, error) {
