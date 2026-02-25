@@ -271,7 +271,6 @@ func traceDBAndTID(ctx context.Context, fs fileservice.FileService, dbObjects, t
 			dbTargetRowids[dbRowLocs[i].Rowid] = &dbRowLocs[i]
 		}
 		dbCoveredRowids = make(map[types.Rowid]bool)
-		tombstoneCols := []uint16{0} // rowid
 		scannedDB := 0
 		for mapKey, state := range dbObjMap {
 			if !strings.HasPrefix(mapKey, "Tombstone_") {
@@ -280,11 +279,13 @@ func traceDBAndTID(ctx context.Context, fs fileservice.FileService, dbObjects, t
 			obj := state.info
 			objName := obj.Stats.ObjectName()
 			scannedDB++
-			batches, err := readObjectBlocks(ctx, fs, obj.Stats, tombstoneCols)
+			tombCols := tombstoneColsForObj(obj)
+			batches, err := readObjectBlocks(ctx, fs, obj.Stats, tombCols)
 			if err != nil {
 				fmt.Printf("  [ERROR] read tombstone obj %s: %v\n", objName.String(), err)
 				continue
 			}
+			commitTSIdx := tombstoneCommitTSIdx(obj, tombCols)
 			for blkIdx, bat := range batches {
 				if bat == nil {
 					continue
@@ -293,16 +294,17 @@ func traceDBAndTID(ctx context.Context, fs fileservice.FileService, dbObjects, t
 				for rowIdx := 0; rowIdx < bat.RowCount(); rowIdx++ {
 					rid := rowids[rowIdx]
 					if loc, ok := dbTargetRowids[rid]; ok {
+						deleteTime := readTombstoneCommitTS(bat, commitTSIdx, rowIdx)
 						deletedStr := ""
 						if state.deleted {
 							deletedStr = fmt.Sprintf(" [TOMBSTONE-OBJ-DELETED deleteTS=%s]", obj.DeleteTS.ToString())
 						}
-						fmt.Printf("  MATCH! tombstone deletes dbid=%d rowid=%s\n"+
+						fmt.Printf("  MATCH! tombstone deletes dbid=%d rowid=%s deleteTime=%s\n"+
 							"    tombstone obj=%s kind=%s appendable=%v sorted=%v cnCreated=%v\n"+
-							"    tombstone blk=%d row=%d createTS=%s%s\n"+
+							"    tombstone blk=%d row=%d objCreateTS=%s%s\n"+
 							"    target data obj=%s blk=%d row=%d\n"+
 							"    from: %s\n",
-							targetDBID, rid.String(),
+							targetDBID, rid.String(), deleteTime,
 							objName.String(), obj.ObjKind(), obj.Appendable, obj.Sorted, obj.CNCreated,
 							blkIdx, rowIdx, obj.CreateTS.ToString(), deletedStr,
 							loc.ObjName, loc.BlockIdx, loc.RowIdx,
@@ -410,7 +412,6 @@ func traceDBAndTID(ctx context.Context, fs fileservice.FileService, dbObjects, t
 		tblTargetRowids[tblRowLocs[i].Rowid] = &tblRowLocs[i]
 	}
 	tblCoveredRowids := make(map[types.Rowid]bool)
-	tombstoneCols2 := []uint16{0}
 	scannedTbl := 0
 	for mapKey, state := range tblObjMap {
 		if !strings.HasPrefix(mapKey, "Tombstone_") {
@@ -419,11 +420,13 @@ func traceDBAndTID(ctx context.Context, fs fileservice.FileService, dbObjects, t
 		obj := state.info
 		objName := obj.Stats.ObjectName()
 		scannedTbl++
-		batches, err := readObjectBlocks(ctx, fs, obj.Stats, tombstoneCols2)
+		tombCols := tombstoneColsForObj(obj)
+		batches, err := readObjectBlocks(ctx, fs, obj.Stats, tombCols)
 		if err != nil {
 			fmt.Printf("  [ERROR] read tombstone obj %s: %v\n", objName.String(), err)
 			continue
 		}
+		commitTSIdx := tombstoneCommitTSIdx(obj, tombCols)
 		for blkIdx, bat := range batches {
 			if bat == nil {
 				continue
@@ -432,16 +435,17 @@ func traceDBAndTID(ctx context.Context, fs fileservice.FileService, dbObjects, t
 			for rowIdx := 0; rowIdx < bat.RowCount(); rowIdx++ {
 				rid := rowids[rowIdx]
 				if loc, ok := tblTargetRowids[rid]; ok {
+					deleteTime := readTombstoneCommitTS(bat, commitTSIdx, rowIdx)
 					deletedStr := ""
 					if state.deleted {
 						deletedStr = fmt.Sprintf(" [TOMBSTONE-OBJ-DELETED deleteTS=%s]", obj.DeleteTS.ToString())
 					}
-					fmt.Printf("  MATCH! tombstone deletes tid=%d rowid=%s\n"+
+					fmt.Printf("  MATCH! tombstone deletes tid=%d rowid=%s deleteTime=%s\n"+
 						"    tombstone obj=%s kind=%s appendable=%v sorted=%v cnCreated=%v\n"+
-						"    tombstone blk=%d row=%d createTS=%s%s\n"+
+						"    tombstone blk=%d row=%d objCreateTS=%s%s\n"+
 						"    target data obj=%s blk=%d row=%d\n"+
 						"    from: %s\n",
-						loc.TID, rid.String(),
+						loc.TID, rid.String(), deleteTime,
 						objName.String(), obj.ObjKind(), obj.Appendable, obj.Sorted, obj.CNCreated,
 						blkIdx, rowIdx, obj.CreateTS.ToString(), deletedStr,
 						loc.ObjName, loc.BlockIdx, loc.RowIdx,
@@ -594,7 +598,6 @@ func scanTombstoneForTID(ctx context.Context, fs fileservice.FileService, tblObj
 
 	// Step 3: scan ALL tombstone objects
 	fmt.Println("--- Scanning ALL tombstone objects for matching rowids ---")
-	tombstoneCols := []uint16{0} // column 0 is rowid
 
 	targetRowids := make(map[types.Rowid]*rowLocation)
 	for i := range matchedRows {
@@ -616,11 +619,13 @@ func scanTombstoneForTID(ctx context.Context, fs fileservice.FileService, tblObj
 		objName := obj.Stats.ObjectName()
 		scannedTombstones++
 
-		batches, err := readObjectBlocks(ctx, fs, obj.Stats, tombstoneCols)
+		tombCols := tombstoneColsForObj(obj)
+		batches, err := readObjectBlocks(ctx, fs, obj.Stats, tombCols)
 		if err != nil {
 			fmt.Printf("  [ERROR] read tombstone obj %s failed: %v\n", objName.String(), err)
 			continue
 		}
+		commitTSIdx := tombstoneCommitTSIdx(obj, tombCols)
 		for blkIdx, bat := range batches {
 			if bat == nil {
 				continue
@@ -629,16 +634,17 @@ func scanTombstoneForTID(ctx context.Context, fs fileservice.FileService, tblObj
 			for rowIdx := 0; rowIdx < bat.RowCount(); rowIdx++ {
 				rid := rowids[rowIdx]
 				if loc, ok := targetRowids[rid]; ok {
+					deleteTime := readTombstoneCommitTS(bat, commitTSIdx, rowIdx)
 					deletedStr := ""
 					if state.deleted {
 						deletedStr = fmt.Sprintf(" [TOMBSTONE-OBJ-DELETED deleteTS=%s]", obj.DeleteTS.ToString())
 					}
-					fmt.Printf("  MATCH! tombstone -> deletes rowid=%s\n"+
+					fmt.Printf("  MATCH! tombstone -> deletes rowid=%s deleteTime=%s\n"+
 						"    tombstone obj=%s kind=%s appendable=%v sorted=%v cnCreated=%v\n"+
-						"    tombstone blk=%d row=%d createTS=%s%s\n"+
+						"    tombstone blk=%d row=%d objCreateTS=%s%s\n"+
 						"    target data obj=%s blk=%d row=%d tid=%d\n"+
 						"    from: %s\n",
-						rid.String(),
+						rid.String(), deleteTime,
 						objName.String(), obj.ObjKind(), obj.Appendable, obj.Sorted, obj.CNCreated,
 						blkIdx, rowIdx, obj.CreateTS.ToString(), deletedStr,
 						loc.ObjName, loc.BlockIdx, loc.RowIdx, loc.TID,
@@ -910,4 +916,40 @@ func trunc(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// tombstoneColsForObj returns columns to read from a tombstone object.
+// col 0 = rowid, col 1 = PK, col 2 = commitTS (nobj) or col 3 = commitTS (aobj)
+func tombstoneColsForObj(obj objInfo) []uint16 {
+	if obj.CNCreated {
+		// CN-created tombstone: only rowid + PK, no commitTS column
+		return []uint16{0, 1}
+	}
+	if obj.Appendable {
+		// aobj: rowid(0), PK(1), phyAddr(2), commitTS(3)
+		return []uint16{0, 1, 2, 3}
+	}
+	// nobj TN-created: rowid(0), PK(1), commitTS(2)
+	return []uint16{0, 1, 2}
+}
+
+// tombstoneCommitTSIdx returns the index in the read batch that holds commitTS.
+// Returns -1 if no commitTS available (CN-created).
+func tombstoneCommitTSIdx(obj objInfo, cols []uint16) int {
+	if obj.CNCreated {
+		return -1
+	}
+	if obj.Appendable {
+		return 3 // batch index 3
+	}
+	return 2 // batch index 2
+}
+
+// readTombstoneCommitTS reads the commitTS from a tombstone batch at the given row.
+func readTombstoneCommitTS(bat *batch.Batch, colIdx int, rowIdx int) string {
+	if colIdx < 0 || colIdx >= len(bat.Vecs) {
+		return "N/A(cn-created)"
+	}
+	tss := vector.MustFixedColNoTypeCheck[types.TS](bat.Vecs[colIdx])
+	return tss[rowIdx].ToString()
 }
