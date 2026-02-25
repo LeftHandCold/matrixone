@@ -489,7 +489,7 @@ func (catalog *Catalog) ReplayMOTables(ctx context.Context, txnNode *txnbase.Txn
 				panic(err)
 			}
 			if strings.Contains(schema.Createsql, "code_exec_6cd49b5b") {
-				logutil.Infof("dbid is %d, tid is %d， sql is %v", dbid, tid, schema.Createsql)
+				logutil.Infof("dbid is %d, tid is %d， sql is %v, schema.AcInfo.CreateAt is %v", dbid, tid, schema.Createsql, schema.AcInfo.CreateAt.String())
 			}
 			if err == nil {
 				err1 := catalog.onReplayCreateTable(dbid, tid, schema, txnNode)
