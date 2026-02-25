@@ -110,7 +110,7 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return moerr.NewErrDropNonExistsDB(c.proc.Ctx, dbName)
 	}
 
-	if err = lockMoDatabase(c, dbName, lock.LockMode_Exclusive); err != nil {
+	if err = lockMoDatabaseAndRefreshSnapshot(c, dbName); err != nil {
 		return err
 	}
 
@@ -3855,6 +3855,39 @@ var lockMoDatabase = func(c *Compile, dbName string, lockMode lock.LockMode) err
 	defer bat.GetVector(0).Free(c.proc.Mp())
 	if err := lockRows(c.e, c.proc, dbRel, bat, 0, lockMode, lock.Sharding_None, accountID); err != nil {
 		return err
+	}
+	return nil
+}
+
+// lockMoDatabaseAndRefreshSnapshot acquires an exclusive lock on mo_database
+// and then refreshes the transaction's snapshot to the latest commit timestamp.
+//
+// This is necessary because the lock service only checks mo_database rows to
+// decide whether to advance the snapshot. Concurrent operations that only modify
+// mo_tables (e.g., CREATE TABLE, CLONE) will not trigger a snapshot advance in
+// the lock service. Without an explicit refresh, subsequent reads (e.g.,
+// Relations()) may use a stale snapshot and miss recently committed tables.
+//
+// Use this function instead of lockMoDatabase(Exclusive) whenever the caller
+// needs to read a complete, up-to-date view of the database's tables after
+// acquiring the lock.
+var lockMoDatabaseAndRefreshSnapshot = func(c *Compile, dbName string) error {
+	if err := lockMoDatabase(c, dbName, lock.LockMode_Exclusive); err != nil {
+		return err
+	}
+
+	txnOp := c.proc.GetTxnOperator()
+	if txnOp.Txn().IsPessimistic() && txnOp.Txn().IsRCIsolation() {
+		latestCommitTS := c.proc.Base.TxnClient.GetLatestCommitTS()
+		if txnOp.Txn().SnapshotTS.Less(latestCommitTS) {
+			newTS, err := c.proc.Base.TxnClient.WaitLogTailAppliedAt(c.proc.Ctx, latestCommitTS)
+			if err != nil {
+				return err
+			}
+			if err := txnOp.UpdateSnapshot(c.proc.Ctx, newTS); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
