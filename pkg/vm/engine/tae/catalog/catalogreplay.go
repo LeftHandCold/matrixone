@@ -491,6 +491,7 @@ func (catalog *Catalog) ReplayMOTables(ctx context.Context, txnNode *txnbase.Txn
 
 func (catalog *Catalog) onReplayCreateTable(dbid, tid uint64, schema *Schema, txnNode *txnbase.TxnMVCCNode) {
 	catalog.OnReplayTableID(tid)
+	logutil.Infof("dbid is %d, tid is %d", dbid, tid)
 	db, err := catalog.GetDatabaseByID(dbid)
 	if err != nil {
 		panic(err)
