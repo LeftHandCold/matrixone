@@ -497,7 +497,6 @@ func (db *txnDatabase) createWithID(
 	var packer *types.Packer
 	put := db.getEng().packerPool.Get(&packer)
 	defer put.Put()
-
 	{ // 3. Write create table batch, update tbl.rowiod
 
 		db := tbl.db
