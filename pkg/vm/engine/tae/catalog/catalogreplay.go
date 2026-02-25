@@ -16,6 +16,7 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	pkgcatalog "github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -444,6 +445,7 @@ func (catalog *Catalog) ReplayMOTables(ctx context.Context, txnNode *txnbase.Txn
 	seqNums := vector.MustFixedColNoTypeCheck[uint16](colBat.GetVectorByName(pkgcatalog.SystemColAttr_Seqnum).GetDownstreamVector())
 
 	schemaOffset := 0
+	var err error
 	for i := 0; i < tblBat.Length(); i++ {
 		startOffset := schemaOffset
 		tid := tids[i]
@@ -483,18 +485,27 @@ func (catalog *Catalog) ReplayMOTables(ctx context.Context, txnNode *txnbase.Txn
 			if err := schema.Finalize(true); err != nil {
 				panic(err)
 			}
-			catalog.onReplayCreateTable(dbid, tid, schema, txnNode)
+			if strings.Contains(schema.Createsql, "code_exec_6cd49b5b") {
+				logutil.Infof("dbid is %d, tid is %d， sql is %v", dbid, tid, schema.Createsql)
+			}
+			if err == nil {
+				err1 := catalog.onReplayCreateTable(dbid, tid, schema, txnNode)
+				if err1 != nil {
+					err = err1
+				}
+			}
+
 		}
-		replayer.Submit(dbids[i], replayFn)
+		//replayer.Submit(dbids[i], replayFn)
 	}
 }
 
-func (catalog *Catalog) onReplayCreateTable(dbid, tid uint64, schema *Schema, txnNode *txnbase.TxnMVCCNode) {
+func (catalog *Catalog) onReplayCreateTable(dbid, tid uint64, schema *Schema, txnNode *txnbase.TxnMVCCNode) error {
 	catalog.OnReplayTableID(tid)
 	db, err := catalog.GetDatabaseByID(dbid)
 	if err != nil {
 		logutil.Infof("dbid is %d, tid is %d， sql is %v", dbid, tid, schema.Createsql)
-		panic(err)
+		return err
 	}
 	tbl, _ := db.GetTableEntryByID(tid)
 	if tbl != nil {
@@ -523,11 +534,11 @@ func (catalog *Catalog) onReplayCreateTable(dbid, tid uint64, schema *Schema, tx
 			err := tbl.db.RenameTableInTxn(schema.Extra.OldName, schema.Name, tbl.ID, schema.AcInfo.TenantID, un.GetTxn(), true)
 			if err != nil {
 				logutil.Warn(schema.String())
-				panic(err)
+				return err
 			}
 		}
 
-		return
+		return err
 	}
 	tbl = NewReplayTableEntry()
 	tbl.TableNode = &TableNode{}
@@ -547,6 +558,7 @@ func (catalog *Catalog) onReplayCreateTable(dbid, tid uint64, schema *Schema, tx
 		},
 	}
 	tbl.InsertLocked(un)
+	return nil
 }
 func (catalog *Catalog) OnReplayObjectBatch_V2(
 	dbid, tid uint64,
