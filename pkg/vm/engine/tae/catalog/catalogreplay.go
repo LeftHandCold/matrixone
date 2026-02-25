@@ -77,6 +77,10 @@ func (catalog *Catalog) onReplayUpdateDatabase(cmd *EntryCommand[*EmptyMVCCNode,
 	catalog.OnReplayDBID(cmd.ID.DbID)
 	var err error
 	un := cmd.mvccNode
+	if cmd.ID.DbID == 347771 {
+		logutil.Infof("[WAL-REPLAY-DB] dbid=%d deletedAt=%s createdAt=%s name=%s",
+			cmd.ID.DbID, un.DeletedAt.ToString(), un.CreatedAt.ToString(), cmd.node.name)
+	}
 
 	db, err := catalog.GetDatabaseByID(cmd.ID.DbID)
 	if err != nil {
@@ -133,13 +137,17 @@ func (catalog *Catalog) onReplayUpdateTable(cmd *EntryCommand[*TableMVCCNode, *T
 	// 	}
 	// 	return
 	// }
+	un := cmd.mvccNode
+	if cmd.ID.TableID == 347779 || cmd.ID.DbID == 347771 {
+		logutil.Infof("[WAL-REPLAY-TABLE] dbid=%d tid=%d deletedAt=%s createdAt=%s",
+			cmd.ID.DbID, cmd.ID.TableID, un.DeletedAt.ToString(), un.CreatedAt.ToString())
+	}
 	db, err := catalog.GetDatabaseByID(cmd.ID.DbID)
 	if err != nil {
 		panic(err)
 	}
 	tbl, err := db.GetTableEntryByID(cmd.ID.TableID)
 
-	un := cmd.mvccNode
 	if err != nil {
 		db.Lock()
 		defer db.Unlock()
@@ -494,8 +502,12 @@ func (catalog *Catalog) ReplayMOTables(ctx context.Context, txnNode *txnbase.Txn
 			if err == nil {
 				err1 := catalog.onReplayCreateTable(dbid, tid, schema, txnNode)
 				if err1 != nil {
-					err = err1
-					panic(err)
+					if moerr.IsMoErrCode(err1, moerr.OkExpectedEOB) {
+						logutil.Infof("[REPLAY-SKIP] skip table tid=%d in db dbid=%d: db not found in catalog (EOB), sql=%v", tid, dbid, schema.Createsql)
+					} else {
+						err = err1
+						panic(err)
+					}
 				}
 			}
 
