@@ -497,6 +497,40 @@ func (db *txnDatabase) createWithID(
 	var packer *types.Packer
 	put := db.getEng().packerPool.Get(&packer)
 	defer put.Put()
+
+	// Check if the database still exists before writing to mo_tables.
+	// This prevents a race condition where DROP DATABASE commits between
+	// a CLONE's snapshot read and its CREATE TABLE commit, leaving an
+	// orphan table record in mo_tables with no tombstone coverage.
+	//
+	// We use types.MaxTs() as the lookup timestamp so that GetDatabase
+	// starts iterating from the newest catalog entry. Without this, the
+	// btree Ascend would begin at the txn's (stale) snapshot timestamp
+	// and never see a newer "deleted" entry inserted by the DROP's
+	// logtail, causing the check to incorrectly pass.
+	//
+	// Skip this check when the database was created within the current
+	// transaction (e.g. bootstrap "create database mo_task" followed by
+	// "create table mo_task.sys_async_task" in the same txn), because
+	// uncommitted databases are not yet visible in the catalog cache.
+	{
+		dbKey := genDatabaseKey(accountId, db.databaseName)
+		if txn.databaseOps.existAndActive(dbKey) == nil {
+			latestCatalog := db.getEng().GetLatestCatalogCache()
+			dbItem := &cache.DatabaseItem{
+				Name:      db.databaseName,
+				AccountId: accountId,
+				Ts:        types.MaxTs().ToTimestamp(),
+			}
+			if !latestCatalog.GetDatabase(dbItem) {
+				return moerr.NewBadDBNoCtx(db.databaseName)
+			}
+			if dbItem.Id != db.databaseId {
+				return moerr.NewBadDBNoCtx(db.databaseName)
+			}
+		}
+	}
+
 	{ // 3. Write create table batch, update tbl.rowiod
 
 		db := tbl.db
