@@ -495,6 +495,7 @@ func (catalog *Catalog) ReplayMOTables(ctx context.Context, txnNode *txnbase.Txn
 				err1 := catalog.onReplayCreateTable(dbid, tid, schema, txnNode)
 				if err1 != nil {
 					err = err1
+					panic(err)
 				}
 			}
 
