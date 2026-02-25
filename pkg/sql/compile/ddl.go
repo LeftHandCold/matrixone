@@ -114,6 +114,11 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return err
 	}
 
+	logutil.Info("[CLONE-CHECK] DropDatabase lockMoDatabase(Exclusive) ok",
+		zap.String("db", dbName),
+		zap.String("snapshotTS", fmt.Sprintf("%v", c.proc.GetTxnOperator().Txn().SnapshotTS)),
+	)
+
 	// handle sub
 	if db.IsSubscription(c.proc.Ctx) {
 		if err = dropSubscription(c.proc.Ctx, c, dbName); err != nil {
@@ -953,8 +958,19 @@ func (s *Scope) CreateTable(c *Compile) error {
 	tblName := qry.GetTableDef().GetName()
 
 	if err := lockMoDatabase(c, dbName, lock.LockMode_Shared); err != nil {
+		logutil.Info("[CLONE-CHECK] lockMoDatabase(Shared) failed",
+			zap.String("db", dbName),
+			zap.String("table", tblName),
+			zap.Error(err),
+		)
 		return err
 	}
+
+	logutil.Info("[CLONE-CHECK] lockMoDatabase(Shared) ok, snapshotTS after lock",
+		zap.String("db", dbName),
+		zap.String("table", tblName),
+		zap.String("snapshotTS", fmt.Sprintf("%v", c.proc.GetTxnOperator().Txn().SnapshotTS)),
+	)
 
 	dbSource, err := c.e.Database(c.proc.Ctx, dbName, c.proc.GetTxnOperator())
 	if err != nil {

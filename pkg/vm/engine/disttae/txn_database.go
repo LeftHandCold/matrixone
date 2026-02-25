@@ -522,7 +522,17 @@ func (db *txnDatabase) createWithID(
 				AccountId: accountId,
 				Ts:        types.MaxTs().ToTimestamp(),
 			}
-			if !latestCatalog.GetDatabase(dbItem) {
+			found := latestCatalog.GetDatabase(dbItem)
+			logutil.Info("[CLONE-CHECK] createWithID catalog check",
+				zap.String("db", db.databaseName),
+				zap.Uint64("dbId", db.databaseId),
+				zap.String("table", name),
+				zap.Uint64("tableId", tableId),
+				zap.Bool("found", found),
+				zap.Uint64("foundId", dbItem.Id),
+				zap.String("snapshotTS", fmt.Sprintf("%v", txn.op.SnapshotTS())),
+			)
+			if !found {
 				return moerr.NewBadDBNoCtx(db.databaseName)
 			}
 			if dbItem.Id != db.databaseId {
