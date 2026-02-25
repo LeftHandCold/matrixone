@@ -493,7 +493,7 @@ func (catalog *Catalog) onReplayCreateTable(dbid, tid uint64, schema *Schema, tx
 	catalog.OnReplayTableID(tid)
 	db, err := catalog.GetDatabaseByID(dbid)
 	if err != nil {
-		logutil.Infof("dbid is %d, tid is %d", dbid, tid)
+		logutil.Infof("dbid is %d, tid is %d， sql is %v", dbid, tid, schema.Createsql)
 		panic(err)
 	}
 	tbl, _ := db.GetTableEntryByID(tid)
