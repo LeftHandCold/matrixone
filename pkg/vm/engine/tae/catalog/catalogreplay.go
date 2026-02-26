@@ -16,6 +16,7 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"os"
 
 	pkgcatalog "github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -30,6 +31,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logstore/wal"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnbase"
+	"go.uber.org/zap"
 )
 
 const (
@@ -493,6 +495,23 @@ func (catalog *Catalog) onReplayCreateTable(dbid, tid uint64, schema *Schema, tx
 	catalog.OnReplayTableID(tid)
 	db, err := catalog.GetDatabaseByID(dbid)
 	if err != nil {
+		// If the database does not exist (OkExpectedEOB), this table record
+		// is an orphan — typically caused by a race condition between
+		// concurrent CLONE (CREATE TABLE) and DROP DATABASE.
+		//
+		// Set MO_REPLAY_SKIP_ORPHAN_TABLE=1 to skip orphan records instead
+		// of panicking, allowing the node to start up successfully.
+		// The orphan records are harmless once skipped — they reference a
+		// non-existent database and will never be accessed.
+		if moerr.IsMoErrCode(err, moerr.OkExpectedEOB) &&
+			os.Getenv("MO_REPLAY_SKIP_ORPHAN_TABLE") == "1" {
+			logutil.Warn("onReplayCreateTable: skipping orphan table record (database not found)",
+				zap.Uint64("dbid", dbid),
+				zap.Uint64("tid", tid),
+				zap.String("table", schema.Name),
+			)
+			return
+		}
 		panic(err)
 	}
 	tbl, _ := db.GetTableEntryByID(tid)
