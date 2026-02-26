@@ -148,9 +148,11 @@ func (fs *TmpFileService) gc(ctx context.Context) {
 				logutil.Warn(
 					"fs.tmp.gc.failed",
 					zap.String("app", appConfig.Name),
-					zap.String("file", path.Join(appPath, entry.Name)),
 					zap.Error(err),
 				)
+				continue
+			}
+			if entry == nil {
 				continue
 			}
 			needGC, err := appFS.appConfig.GCFn(entry.Name, appFS)
