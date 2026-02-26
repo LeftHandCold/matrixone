@@ -678,9 +678,17 @@ read_disk_cache:
 		} else {
 			LogEvent(ctx, str_ioMerger_Merge_wait)
 			wait()
-			metric.FSReadDurationIOMerger.Observe(time.Since(startLock).Seconds())
-			stats.AddS3FSReadIOMergerTimeConsumption(time.Since(startLock))
+			waitDuration := time.Since(startLock)
+			metric.FSReadDurationIOMerger.Observe(waitDuration.Seconds())
+			stats.AddS3FSReadIOMergerTimeConsumption(waitDuration)
 			LogEvent(ctx, str_ioMerger_Merge_end)
+			if waitDuration > slowIOWaitDuration {
+				logutil.Warn("io merger waiter finished, retrying cache",
+					zap.Any("waited", waitDuration),
+					zap.Any("key", vector.ioMergeKey()),
+					zap.Bool("allDone", vector.allDone()),
+				)
+			}
 			if mayReadMemoryCache {
 				goto read_memory_cache
 			} else {
@@ -706,14 +714,29 @@ read_disk_cache:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	metric.FSReadSemaphoreWaitDuration.Observe(time.Since(t0Sem).Seconds())
+	semWait := time.Since(t0Sem)
+	metric.FSReadSemaphoreWaitDuration.Observe(semWait.Seconds())
+	if semWait > time.Second {
+		logutil.Warn("read semaphore wait slow",
+			zap.Any("waited", semWait),
+			zap.Any("path", vector.FilePath),
+		)
+	}
 	defer func() { <-s.readSemaphore }()
 
 	t0S3Read := time.Now()
 	if err := s.read(ctx, vector); err != nil {
 		return err
 	}
-	metric.FSReadDurationS3Read.Observe(time.Since(t0S3Read).Seconds())
+	s3ReadDuration := time.Since(t0S3Read)
+	metric.FSReadDurationS3Read.Observe(s3ReadDuration.Seconds())
+	if s3ReadDuration > slowIOWaitDuration {
+		logutil.Warn("s3 read slow",
+			zap.Any("duration", s3ReadDuration),
+			zap.Any("path", vector.FilePath),
+			zap.Int64("bytes", s3ReadBytes),
+		)
+	}
 	// Record S3 read size (all bytes read from S3)
 	if s3ReadBytes > 0 {
 		perfcounter.Update(ctx, func(counter *perfcounter.CounterSet) {

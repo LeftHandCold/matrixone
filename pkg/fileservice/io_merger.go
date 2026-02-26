@@ -61,6 +61,11 @@ func (i *IOMerger) makeWaitFunc(key IOMergeKey, ch chan struct{}, maxWaitDuratio
 					// don't wait too long
 					// number of I/O requests may increase, but we don't want to hurt latencies too much.
 					metric.IOMergerCounterTimeout.Add(1)
+					logutil.Warn("io merger wait timeout, giving up",
+						zap.Any("waited", time.Since(t0)),
+						zap.Any("maxWaitDuration", maxWaitDuration),
+						zap.Any("key", key),
+					)
 					return
 				}
 				logutil.Warn("wait io for too long",
@@ -91,7 +96,14 @@ func (i *IOMerger) Merge(key IOMergeKey, maxWaitDuration time.Duration) (done fu
 	t0 := time.Now()
 	return func() {
 		defer func() {
-			metric.IOMergerDurationInitiate.Observe(time.Since(t0).Seconds())
+			d := time.Since(t0)
+			metric.IOMergerDurationInitiate.Observe(d.Seconds())
+			if d > slowIOWaitDuration {
+				logutil.Warn("io merger initiator done, slow",
+					zap.Any("duration", d),
+					zap.Any("key", key),
+				)
+			}
 		}()
 		i.flying.Delete(key)
 		close(ch)
