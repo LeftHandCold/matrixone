@@ -1,22 +1,21 @@
 // reproduce.go — 复现 CLONE + DROP DATABASE 竞态条件
 //
-// 配合 MO 代码中的两个 hack 使用（必须同时启用）：
-//   1. pkg/vm/engine/disttae/logtail.go: MO_DELAY_CONSUME_MO_TABLES_MS
-//      延迟 mo_tables 的 consumeEntry → 延迟 PartitionState 更新和 latestTS 更新
-//   2. pkg/txn/client/client.go: MO_DELAY_UPDATE_COMMIT_TS_MS
-//      延迟 updateLastCommitTS → 延迟 latestCommitTS 更新
+// 核心发现：lock service 的 bug 导致 Exclusive lock 实际上没有排他性。
+// 当 Exclusive waiter 通过 canHold (holders==0 && first waiter) 获取锁时，
+// 锁的模式仍然是 Shared（由最初的 Shared holder 创建）。后续的 Shared 请求
+// 通过 isLockModeAllowed 检查直接获取锁，绕过 Exclusive waiter。
 //
-// 为什么需要两个 hack：
-//   snapshotTS 来自 latestTS.Next()（timestampWaiter），而 latestTS 在 PartitionState
-//   更新之后才更新。所以 snapshotTS 和 PartitionState 是同步的——只延迟一个不够。
-//   必须同时延迟两条路径，让 DROP 事务创建时的 snapshotTS 和 PartitionState 都停留在
-//   DE44 提交之前的状态。
+// 这意味着 DROP (Exclusive) 和 CLONE 子事务 (Shared) 可以同时持有锁。
+// DROP 的 Relations() 在 CLONE 子事务提交之前执行，漏掉新创建的表。
+//
+// 复现方法：
+//   在 DropDatabase 的 lockMoDatabase(Exclusive) 之后注入延迟，
+//   让 CLONE 子事务有时间获取 Shared lock 并创建表。
 //
 // 使用步骤：
-//   1. 编译 MO（包含两个 hack）
+//   1. 编译 MO（包含 ddl.go 中的 MO_DELAY_AFTER_LOCK_MO_DATABASE_MS hack）
 //   2. 启动 MO 时设置环境变量：
-//      export MO_DELAY_CONSUME_MO_TABLES_MS=200
-//      export MO_DELAY_UPDATE_COMMIT_TS_MS=200
+//      export MO_DELAY_AFTER_LOCK_MO_DATABASE_MS=200
 //   3. 运行本工具：go run reproduce.go -host 127.0.0.1 -port 6001
 
 package main
@@ -214,9 +213,11 @@ func main() {
 
 	log.Println("=== CLONE + DROP DATABASE 竞态条件复现工具 ===")
 	log.Printf("目标: %s:%d, 轮次=%d, 表数=%d", *host, *port, *rounds, *numTables)
-	log.Println("请确保 MO 启动时同时设置了两个环境变量：")
-	log.Println("  export MO_DELAY_CONSUME_MO_TABLES_MS=200")
-	log.Println("  export MO_DELAY_UPDATE_COMMIT_TS_MS=200")
+	log.Println("请确保 MO 启动时设置了环境变量：")
+	log.Println("  export MO_DELAY_AFTER_LOCK_MO_DATABASE_MS=200")
+	log.Println("")
+	log.Println("原理：lock service bug 导致 Exclusive lock 获取后锁模式仍为 Shared，")
+	log.Println("CLONE 子事务可以绕过 Exclusive lock 继续创建表。延迟扩大了这个窗口。")
 	log.Println("")
 
 	pool, err := sql.Open("mysql", dsn())
@@ -248,6 +249,6 @@ func main() {
 	if total > 0 {
 		log.Printf("BUG 已复现！%d 轮出现孤儿表", total)
 	} else {
-		log.Println("未复现。尝试增大延迟值（如 500）或增加表数量。")
+		log.Println("未复现。尝试增大延迟值（如 500）或增加表数量（-tables 30）。")
 	}
 }

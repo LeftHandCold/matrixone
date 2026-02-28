@@ -18,6 +18,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,6 +117,19 @@ func (s *Scope) DropDatabase(c *Compile) error {
 
 	if err = lockMoDatabase(c, dbName, lock.LockMode_Exclusive); err != nil {
 		return err
+	}
+
+	// HACK: inject delay after acquiring Exclusive lock but before Relations().
+	// Due to a lock service bug, the lock mode stays Shared even after an Exclusive
+	// waiter acquires it via canHold (holders==0 && first waiter). This means
+	// concurrent CLONE sub-transactions can still acquire Shared locks and create
+	// tables while DROP holds the "Exclusive" lock. This delay widens that window.
+	// Set MO_DELAY_AFTER_LOCK_MO_DATABASE_MS=200 to enable.
+	if v := os.Getenv("MO_DELAY_AFTER_LOCK_MO_DATABASE_MS"); v != "" {
+		if ms, _ := strconv.Atoi(v); ms > 0 {
+			logutil.Infof("DROP DATABASE %s: HACK sleeping %dms after lock", dbName, ms)
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
 	}
 
 	// BUG(v1): This refresh is ineffective in most cases.
