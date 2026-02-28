@@ -20,7 +20,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
+	"os"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -424,6 +426,17 @@ func (client *txnClient) getTxnMode() txn.TxnMode {
 func (client *txnClient) updateLastCommitTS(event TxnEvent) {
 	if event.Txn.CommitTS.IsEmpty() {
 		return
+	}
+
+	// HACK: delay updateLastCommitTS to widen the defer LIFO window.
+	// After unlock() releases the Shared lock, updateLastCommitTS hasn't run yet.
+	// DROP grabs the Exclusive lock in this window, sees stale latestCommitTS.
+	// Combined with MO_DELAY_CONSUME_MO_TABLES_MS (which delays latestTS update),
+	// this ensures both snapshotTS and PartitionState are stale when Relations() runs.
+	if v := os.Getenv("MO_DELAY_UPDATE_COMMIT_TS_MS"); v != "" {
+		if ms, _ := strconv.Atoi(v); ms > 0 {
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
 	}
 
 	var old *timestamp.Timestamp

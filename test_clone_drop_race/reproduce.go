@@ -1,32 +1,23 @@
 // reproduce.go — 复现 CLONE + DROP DATABASE 竞态条件
 //
-// 配合 MO 代码中的 hack 使用：
-//   在 pkg/vm/engine/disttae/logtail.go 的 consumeEntry 中注入了环境变量控制的 sleep，
-//   延迟 mo_tables 的 logtail apply，扩大 Relations() 查询时 PartitionState 尚未更新的窗口。
+// 配合 MO 代码中的两个 hack 使用（必须同时启用）：
+//   1. pkg/vm/engine/disttae/logtail.go: MO_DELAY_CONSUME_MO_TABLES_MS
+//      延迟 mo_tables 的 consumeEntry → 延迟 PartitionState 更新和 latestTS 更新
+//   2. pkg/txn/client/client.go: MO_DELAY_UPDATE_COMMIT_TS_MS
+//      延迟 updateLastCommitTS → 延迟 latestCommitTS 更新
+//
+// 为什么需要两个 hack：
+//   snapshotTS 来自 latestTS.Next()（timestampWaiter），而 latestTS 在 PartitionState
+//   更新之后才更新。所以 snapshotTS 和 PartitionState 是同步的——只延迟一个不够。
+//   必须同时延迟两条路径，让 DROP 事务创建时的 snapshotTS 和 PartitionState 都停留在
+//   DE44 提交之前的状态。
 //
 // 使用步骤：
-//   1. 编译 MO（包含 hack）
-//   2. 启动 MO 时设置环境变量：export MO_DELAY_CONSUME_MO_TABLES_MS=100
+//   1. 编译 MO（包含两个 hack）
+//   2. 启动 MO 时设置环境变量：
+//      export MO_DELAY_CONSUME_MO_TABLES_MS=200
+//      export MO_DELAY_UPDATE_COMMIT_TS_MS=200
 //   3. 运行本工具：go run reproduce.go -host 127.0.0.1 -port 6001
-//
-// 原理：
-//   DropDatabase 的执行流程：
-//     1. lockMoDatabase(Exclusive) → 获取排他锁
-//     2. WaitLogTailAppliedAt(now) → 等待 logtail 追上（修复后）
-//     3. Relations() → 查 mo_tables PartitionState → 确定要删除的表列表
-//     4. 逐个 drop table → drop database
-//
-//   修复前（v1）的问题：
-//     snapshot 刷新依赖 GetLatestCommitTS()，但 DROP 的 snapshotTS（来自 clock.Now()）
-//     通常 > latestCommitTS，导致条件 snapshotTS.Less(latestCommitTS) 为 false，
-//     WaitLogTailAppliedAt 根本不被调用。
-//
-//   核心问题不是 snapshotTS 不够新，而是 PartitionState 里没有数据：
-//     - mo_tables 是系统表，读取走 PartitionState（CN 本地 logtail 缓存）
-//     - snapshotTS 只是过滤条件，不能凭空创造数据
-//     - 如果 logtail 还没 apply 到 PartitionState，即使 snapshotTS 够新也查不到
-//
-//   注入的 sleep 延迟了 consumeEntry → PartitionState 更新被延迟 → Relations() 漏表
 
 package main
 
@@ -223,8 +214,9 @@ func main() {
 
 	log.Println("=== CLONE + DROP DATABASE 竞态条件复现工具 ===")
 	log.Printf("目标: %s:%d, 轮次=%d, 表数=%d", *host, *port, *rounds, *numTables)
-	log.Println("请确保 MO 启动时设置了 MO_DELAY_CONSUME_MO_TABLES_MS=100（测试修复前的行为）")
-	log.Println("修复后（clock.Now() + WaitLogTailAppliedAt），即使有延迟也不应复现")
+	log.Println("请确保 MO 启动时同时设置了两个环境变量：")
+	log.Println("  export MO_DELAY_CONSUME_MO_TABLES_MS=200")
+	log.Println("  export MO_DELAY_UPDATE_COMMIT_TS_MS=200")
 	log.Println("")
 
 	pool, err := sql.Open("mysql", dsn())
@@ -256,6 +248,6 @@ func main() {
 	if total > 0 {
 		log.Printf("BUG 已复现！%d 轮出现孤儿表", total)
 	} else {
-		log.Println("未复现。尝试增大 MO_DELAY_CONSUME_MO_TABLES_MS 值（如 200）或增加表数量。")
+		log.Println("未复现。尝试增大延迟值（如 500）或增加表数量。")
 	}
 }
