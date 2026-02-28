@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -183,7 +184,8 @@ func readObjectBlocks(ctx context.Context, fs fileservice.FileService,
 	if err != nil {
 		return nil, fmt.Errorf("ReadObjectMeta(%s): %w", name, err)
 	}
-ls	blkCnt := dataMeta.BlockCount()
+	dataMeta := meta.MustGetMeta(objectio.SchemaData)
+	blkCnt := dataMeta.BlockCount()
 	result := make([]*batch.Batch, 0, blkCnt)
 	for blk := uint32(0); blk < blkCnt; blk++ {
 		bat, err := objectio.ReadOneBlockAllColumns(ctx, &dataMeta, name, blk, cols,
@@ -258,7 +260,7 @@ func matchDB(dbid uint64, name, sql string) bool {
 // relpersistence(4), relkind(5), rel_comment(6), rel_createsql(7),
 // created_time(8), creator(9), owner(10), account_id(11), ...
 func readMOTablesRows(ctx context.Context, fs fileservice.FileService, objects []objInfo) {
-	cols := []uint16{0, 1, 2, 3, 7, 11}
+	cols := []uint16{0, 1, 2, 3, 7, 8, 11}
 	found := false
 	for _, obj := range objects {
 		if obj.ObjType != ckputil.ObjectType_Data || !obj.DeleteTS.IsEmpty() {
@@ -275,18 +277,20 @@ func readMOTablesRows(ctx context.Context, fs fileservice.FileService, objects [
 			}
 			tids := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[0])
 			dbids := vector.MustFixedColNoTypeCheck[uint64](bat.Vecs[3])
-			accids := vector.MustFixedColNoTypeCheck[uint32](bat.Vecs[5])
+			createdTimes := vector.MustFixedColNoTypeCheck[types.Timestamp](bat.Vecs[5])
+			accids := vector.MustFixedColNoTypeCheck[uint32](bat.Vecs[6])
 			for i := 0; i < bat.RowCount(); i++ {
 				tid := tids[i]
 				relname := bat.Vecs[1].GetStringAt(i)
 				dbname := bat.Vecs[2].GetStringAt(i)
 				dbid := dbids[i]
 				sql := bat.Vecs[4].GetStringAt(i)
+				createdTime := createdTimes[i].String2(time.Local, 0)
 				accid := accids[i]
 				if matchTbl(tid, dbid, relname, dbname, sql) {
 					found = true
-					fmt.Printf("  tid=%d name=%q db=%q dbid=%d account=%d sql=%q obj=%s\n",
-						tid, relname, dbname, dbid, accid, trunc(sql, 120),
+					fmt.Printf("  tid=%d name=%q db=%q dbid=%d account=%d created=%s sql=%q obj=%s\n",
+						tid, relname, dbname, dbid, accid, createdTime, trunc(sql, 120),
 						obj.Stats.ObjectName().String())
 				}
 			}
@@ -324,5 +328,6 @@ func matchTbl(tid, dbid uint64, relname, dbname, sql string) bool {
 func trunc(s string, n int) string {
 	if len(s) <= n {
 		return s
-ls	return s[:n] + "..."
+	}
+	return s[:n] + "..."
 }
