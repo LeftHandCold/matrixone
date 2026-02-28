@@ -18,8 +18,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -114,18 +112,6 @@ func (s *Scope) DropDatabase(c *Compile) error {
 
 	if err = lockMoDatabase(c, dbName, lock.LockMode_Exclusive); err != nil {
 		return err
-	}
-
-	// HACK: inject delay to reproduce CLONE+DROP race condition.
-	// After acquiring the exclusive lock but BEFORE refreshing the snapshot,
-	// sleep to give concurrent CLONE sub-transactions time to commit new tables.
-	// The snapshot will NOT cover these new commits, so Relations() will miss them.
-	// Set environment variable MO_DROP_DB_DELAY_MS to enable (e.g. "200" for 200ms).
-	if delayStr := os.Getenv("MO_DROP_DB_DELAY_MS"); delayStr != "" {
-		if delayMs, parseErr := strconv.Atoi(delayStr); parseErr == nil && delayMs > 0 {
-			logutil.Infof("HACK: DropDatabase sleeping %dms after lock for db %s", delayMs, dbName)
-			time.Sleep(time.Duration(delayMs) * time.Millisecond)
-		}
 	}
 
 	// After acquiring the exclusive lock on mo_database, refresh the
