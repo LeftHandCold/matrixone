@@ -1,21 +1,15 @@
-// reproduce.go — 复现 CLONE + DROP DATABASE 竞态条件
+// reproduce.go — 复现 CREATE TABLE + DROP DATABASE 竞态条件
 //
-// 核心发现：lock service 的 bug 导致 Exclusive lock 实际上没有排他性。
-// 当 Exclusive waiter 通过 canHold (holders==0 && first waiter) 获取锁时，
-// 锁的模式仍然是 Shared（由最初的 Shared holder 创建）。后续的 Shared 请求
-// 通过 isLockModeAllowed 检查直接获取锁，绕过 Exclusive waiter。
+// 场景：应用程序创建数据库后逐个创建表（如 data branch），同时另一个连接 DROP 该数据库。
+// 由于 lock service bug（Exclusive lock 获取后锁模式仍为 Shared），CREATE TABLE 的
+// lockMoDatabase(Shared) 可以绕过 DROP 的 Exclusive lock。
 //
-// 这意味着 DROP (Exclusive) 和 CLONE 子事务 (Shared) 可以同时持有锁。
-// DROP 的 Relations() 在 CLONE 子事务提交之前执行，漏掉新创建的表。
-//
-// 复现方法：
-//   在 DropDatabase 的 lockMoDatabase(Exclusive) 之后注入延迟，
-//   让 CLONE 子事务有时间获取 Shared lock 并创建表。
+// DROP 的 Relations() 用旧的 snapshotTS 查询，漏掉并发创建的表，导致孤儿记录。
 //
 // 使用步骤：
-//   1. 编译 MO（包含 ddl.go 中的 MO_DELAY_AFTER_LOCK_MO_DATABASE_MS hack）
+//   1. 编译 MO（包含 ddl.go 中的 MO_DELAY_AFTER_LOCK_MO_DATABASE_MS hack，v1 fix 已移除）
 //   2. 启动 MO 时设置环境变量：
-//      export MO_DELAY_AFTER_LOCK_MO_DATABASE_MS=200
+//      export MO_DELAY_AFTER_LOCK_MO_DATABASE_MS=500
 //   3. 运行本工具：go run reproduce.go -host 127.0.0.1 -port 6001
 
 package main
@@ -25,26 +19,25 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math/rand"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 )
 
 var (
-	host      = flag.String("host", "127.0.0.1", "MO host")
-	port      = flag.Int("port", 6001, "MO port")
-	user      = flag.String("user", "root", "MO user")
-	pass      = flag.String("pass", "111", "MO password")
-	rounds    = flag.Int("rounds", 100, "number of test rounds")
-	numTables = flag.Int("tables", 15, "number of tables in source db")
-	srcDB     = flag.String("srcdb", "clone_race_src", "source database name")
+	host   = flag.String("host", "127.0.0.1", "MO host")
+	port   = flag.Int("port", 6001, "MO port")
+	user   = flag.String("user", "root", "MO user")
+	pass   = flag.String("pass", "111", "MO password")
+	rounds = flag.Int("rounds", 200, "number of test rounds")
+	tables = flag.Int("tables", 20, "number of tables to create concurrently")
+	delay = flag.Int("delay", 500, "suggested MO_DELAY_AFTER_LOCK_MO_DATABASE_MS value (ms)")
 )
 
 func dsn() string {
-	return fmt.Sprintf("%s:%s@tcp(%s:%d)/?timeout=60s&readTimeout=120s&writeTimeout=120s&interpolateParams=true",
+	return fmt.Sprintf("%s:%s@tcp(%s:%d)/?timeout=30s&readTimeout=60s&writeTimeout=60s&interpolateParams=true",
 		*user, *pass, *host, *port)
 }
 
@@ -54,108 +47,89 @@ func mustExec(db *sql.DB, q string) {
 	}
 }
 
-func mustExecFatal(db *sql.DB, q string) {
-	if _, err := db.Exec(q); err != nil {
-		log.Fatalf("FATAL: %s — %v", q, err)
-	}
-}
-
-func setupSourceDB(db *sql.DB) {
-	log.Printf("创建源数据库 %s，%d 张表...", *srcDB, *numTables)
-	mustExec(db, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", *srcDB))
-	mustExecFatal(db, fmt.Sprintf("CREATE DATABASE `%s`", *srcDB))
-
-	for i := 0; i < *numTables; i++ {
-		tbl := fmt.Sprintf("tbl_%03d", i)
-		ddl := fmt.Sprintf(`CREATE TABLE %s.%s (
-			id BIGINT PRIMARY KEY AUTO_INCREMENT,
-			key_name VARCHAR(255) NOT NULL,
-			scope_type VARCHAR(64) NOT NULL,
-			scope_user_id VARCHAR(128) DEFAULT '',
-			category VARCHAR(128) DEFAULT '',
-			content TEXT,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE KEY uk_%s (key_name, scope_type, scope_user_id),
-			KEY idx_%s_cat (category),
-			KEY idx_%s_created (created_at),
-			KEY idx_%s_updated (updated_at)
-		)`, *srcDB, tbl, tbl, tbl, tbl, tbl)
-		mustExecFatal(db, ddl)
-
-		var vals []string
-		for j := 0; j < 10; j++ {
-			vals = append(vals, fmt.Sprintf(
-				"('key_%d_%d','type_%d','user_%d','cat_%d','%s')",
-				i, j, j%5, j%10, j%3, strings.Repeat("x", 50)))
-		}
-		mustExecFatal(db, fmt.Sprintf(
-			"INSERT INTO %s.%s (key_name,scope_type,scope_user_id,category,content) VALUES %s",
-			*srcDB, tbl, strings.Join(vals, ",")))
-	}
-	log.Printf("源数据库就绪：%d 张表", *numTables)
-}
-
-func checkOrphans(dstDBName string) (dbExists bool, orphans []string, err error) {
-	conn, err := sql.Open("mysql", dsn())
-	if err != nil {
-		return false, nil, err
-	}
-	defer conn.Close()
-	conn.SetMaxOpenConns(1)
-
-	var dbCount int
+// checkOrphans 检查 database 是否已删除但 mo_tables 中仍有残留记录
+func checkOrphans(conn *sql.DB, dbName string) (dbExists bool, orphans []string, err error) {
+	var cnt int
 	if err = conn.QueryRow(
 		"SELECT COUNT(*) FROM mo_catalog.mo_database WHERE datname=? AND account_id=0",
-		dstDBName).Scan(&dbCount); err != nil {
-		return false, nil, err
+		dbName).Scan(&cnt); err != nil {
+		return
 	}
-	dbExists = dbCount > 0
+	dbExists = cnt > 0
 
 	rows, err := conn.Query(
-		"SELECT reldatabase,relname,rel_id FROM mo_catalog.mo_tables WHERE reldatabase=? AND account_id=0",
-		dstDBName)
+		"SELECT relname, rel_id FROM mo_catalog.mo_tables WHERE reldatabase=? AND account_id=0",
+		dbName)
 	if err != nil {
-		return dbExists, nil, err
+		return
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var db, tbl string
+		var name string
 		var id uint64
-		if err := rows.Scan(&db, &tbl, &id); err != nil {
-			return dbExists, nil, err
+		if err = rows.Scan(&name, &id); err != nil {
+			return
 		}
-		orphans = append(orphans, fmt.Sprintf("%s.%s(id=%d)", db, tbl, id))
+		orphans = append(orphans, fmt.Sprintf("%s(id=%d)", name, id))
 	}
-	return dbExists, orphans, rows.Err()
+	err = rows.Err()
+	return
 }
 
 func runOneRound(roundID int, pool *sql.DB) (found bool, msg string) {
-	dst := fmt.Sprintf("clone_race_%d", roundID)
-	mustExec(pool, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", dst))
-	time.Sleep(20 * time.Millisecond)
+	dbName := fmt.Sprintf("race_test_%d", roundID)
+
+	// 清理
+	mustExec(pool, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", dbName))
+	time.Sleep(10 * time.Millisecond)
+
+	// 先创建数据库
+	if _, err := pool.Exec(fmt.Sprintf("CREATE DATABASE `%s`", dbName)); err != nil {
+		return false, fmt.Sprintf("create db err: %v", err)
+	}
 
 	var wg sync.WaitGroup
-	var cloneErr, dropErr error
+	var createDone atomic.Int32
+	var dropErr error
 
-	// CLONE: create database dst clone src
+	// 并发创建多张表（模拟 data branch 的 create table 操作）
+	for i := 0; i < *tables; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			c, err := sql.Open("mysql", dsn())
+			if err != nil {
+				return
+			}
+			defer c.Close()
+			c.SetMaxOpenConns(1)
+
+			tbl := fmt.Sprintf("tbl_%03d", idx)
+			ddl := fmt.Sprintf(
+				"CREATE TABLE `%s`.`%s` (id BIGINT PRIMARY KEY, name VARCHAR(255), "+
+					"val TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "+
+					"KEY idx_%s_name (name), KEY idx_%s_created (created_at))",
+				dbName, tbl, tbl, tbl)
+			_, err = c.Exec(ddl)
+			if err != nil {
+				// 可能因为 db 已被 drop 而失败，正常
+				return
+			}
+			createDone.Add(1)
+		}(i)
+	}
+
+	// DROP：等几张表创建成功后立即 drop
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c, err := sql.Open("mysql", dsn())
-		if err != nil {
-			cloneErr = err
-			return
+		// 等至少 2 张表创建成功，确保有 Shared lock 活动
+		for i := 0; i < 2000; i++ {
+			if createDone.Load() >= 2 {
+				break
+			}
+			time.Sleep(1 * time.Millisecond)
 		}
-		defer c.Close()
-		c.SetMaxOpenConns(1)
-		_, cloneErr = c.Exec(fmt.Sprintf("CREATE DATABASE `%s` CLONE `%s`", dst, *srcDB))
-	}()
-
-	// DROP: 等 database 出现后立即 drop
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
 		c, err := sql.Open("mysql", dsn())
 		if err != nil {
 			dropErr = err
@@ -163,61 +137,48 @@ func runOneRound(roundID int, pool *sql.DB) (found bool, msg string) {
 		}
 		defer c.Close()
 		c.SetMaxOpenConns(1)
-
-		// 轮询等 database 出现
-		for i := 0; i < 3000; i++ {
-			var n int
-			if err := c.QueryRow(
-				"SELECT COUNT(*) FROM mo_catalog.mo_database WHERE datname=? AND account_id=0",
-				dst).Scan(&n); err == nil && n > 0 {
-				break
-			}
-			time.Sleep(1 * time.Millisecond)
-		}
-		_, dropErr = c.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", dst))
+		_, dropErr = c.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", dbName))
 	}()
 
 	wg.Wait()
 
-	if cloneErr != nil {
-		log.Printf("    clone err (可能正常): %v", cloneErr)
-	}
 	if dropErr != nil {
-		log.Printf("    drop err (可能正常): %v", dropErr)
+		// drop 失败，清理
+		mustExec(pool, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", dbName))
+		return false, ""
 	}
 
 	// 等 logtail 追上
 	time.Sleep(500 * time.Millisecond)
 
-	dbExists, orphans, err := checkOrphans(dst)
+	dbExists, orphans, err := checkOrphans(pool, dbName)
 	if err != nil {
-		mustExec(pool, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", dst))
+		mustExec(pool, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", dbName))
 		return false, fmt.Sprintf("check err: %v", err)
 	}
 
 	if dbExists {
-		mustExec(pool, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", dst))
+		// db 还在说明 drop 没成功或还没生效
+		mustExec(pool, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", dbName))
 		return false, ""
 	}
 
 	if len(orphans) > 0 {
-		return true, fmt.Sprintf("孤儿表！db %s 已删除但 mo_tables 残留 %d 条: %v",
-			dst, len(orphans), orphans)
+		return true, fmt.Sprintf("孤儿表! db=%s 已删除但 mo_tables 残留 %d 条: %v",
+			dbName, len(orphans), orphans)
 	}
 	return false, ""
 }
 
 func main() {
 	flag.Parse()
-	rand.Seed(time.Now().UnixNano())
 
-	log.Println("=== CLONE + DROP DATABASE 竞态条件复现工具 ===")
-	log.Printf("目标: %s:%d, 轮次=%d, 表数=%d", *host, *port, *rounds, *numTables)
-	log.Println("请确保 MO 启动时设置了环境变量：")
-	log.Println("  export MO_DELAY_AFTER_LOCK_MO_DATABASE_MS=200")
+	log.Println("=== CREATE TABLE + DROP DATABASE 竞态条件复现工具 ===")
+	log.Printf("目标: %s:%d, 轮次=%d, 每轮表数=%d", *host, *port, *rounds, *tables)
 	log.Println("")
-	log.Println("原理：lock service bug 导致 Exclusive lock 获取后锁模式仍为 Shared，")
-	log.Println("CLONE 子事务可以绕过 Exclusive lock 继续创建表。延迟扩大了这个窗口。")
+	log.Println("请确保:")
+	log.Printf("  1. MO 编译时包含 ddl.go 中的 delay hack（v1 fix 已移除）")
+	log.Printf("  2. 启动 MO 时设置: export MO_DELAY_AFTER_LOCK_MO_DATABASE_MS=%d", *delay)
 	log.Println("")
 
 	pool, err := sql.Open("mysql", dsn())
@@ -230,8 +191,6 @@ func main() {
 		log.Fatalf("Ping 失败: %v", err)
 	}
 
-	setupSourceDB(pool)
-
 	total := 0
 	for i := 1; i <= *rounds; i++ {
 		found, msg := runOneRound(i, pool)
@@ -243,12 +202,10 @@ func main() {
 		}
 	}
 
-	log.Printf("=== 完成: %d/%d 轮发现孤儿表 ===", total, *rounds)
-	mustExec(pool, fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", *srcDB))
-
+	log.Printf("\n=== 完成: %d/%d 轮发现孤儿表 ===", total, *rounds)
 	if total > 0 {
-		log.Printf("BUG 已复现！%d 轮出现孤儿表", total)
+		log.Printf("BUG 已复现! %d 轮出现孤儿表", total)
 	} else {
-		log.Println("未复现。尝试增大延迟值（如 500）或增加表数量（-tables 30）。")
+		log.Println("未复现。尝试增大 delay 或 tables 数量。")
 	}
 }

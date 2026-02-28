@@ -132,30 +132,12 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		}
 	}
 
-	// BUG(v1): This refresh is ineffective in most cases.
-	{
-		txnOp := c.proc.GetTxnOperator()
-		if txnOp.Txn().IsPessimistic() && txnOp.Txn().IsRCIsolation() {
-			snapshotAfterLock := txnOp.Txn().SnapshotTS
-			latestCommitTS := c.proc.Base.TxnClient.GetLatestCommitTS()
-			logutil.Infof("DROP DATABASE %s: after lock: snapshotTS=%s (lock may have pushed it), latestCommitTS=%s, willWait=%v",
-				dbName,
-				snapshotAfterLock.DebugString(),
-				latestCommitTS.DebugString(),
-				snapshotAfterLock.Less(latestCommitTS))
-			if snapshotAfterLock.Less(latestCommitTS) {
-				newTS, err := c.proc.Base.TxnClient.WaitLogTailAppliedAt(c.proc.Ctx, latestCommitTS)
-				if err != nil {
-					return err
-				}
-				if err := txnOp.UpdateSnapshot(c.proc.Ctx, newTS); err != nil {
-					return err
-				}
-				logutil.Infof("DROP DATABASE %s: snapshot refreshed to %s",
-					dbName, txnOp.Txn().SnapshotTS.DebugString())
-			}
-		}
-	}
+	// v1 fix REMOVED for reproduction. The v1 fix (checking latestCommitTS) was
+	// accidentally effective when MO_DELAY_AFTER_LOCK_MO_DATABASE_MS was set,
+	// because the delay gave CLONE sub-txns time to commit and update latestCommitTS.
+	// Without v1 fix, the delay hack can properly reproduce the bug.
+	logutil.Infof("DROP DATABASE %s: after lock: snapshotTS=%s (v1 fix removed for repro)",
+		dbName, c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString())
 
 	// handle sub
 	if db.IsSubscription(c.proc.Ctx) {
