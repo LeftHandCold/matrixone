@@ -110,26 +110,25 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return moerr.NewErrDropNonExistsDB(c.proc.Ctx, dbName)
 	}
 
+	logutil.Infof("DROP DATABASE %s: before lock: snapshotTS=%s",
+		dbName, c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString())
+
 	if err = lockMoDatabase(c, dbName, lock.LockMode_Exclusive); err != nil {
 		return err
 	}
 
-	// BUG(v1): This refresh is ineffective. DROP's snapshotTS comes from clock.Now(),
-	// which is typically > GetLatestCommitTS(), so the condition snapshotTS.Less(latestCommitTS)
-	// is almost always false, and WaitLogTailAppliedAt is never called.
-	// The real problem is not that snapshotTS is too old, but that PartitionState
-	// hasn't received the logtail data yet. snapshotTS is just a filter — it can't
-	// make data appear that hasn't been applied to PartitionState.
+	// BUG(v1): This refresh is ineffective in most cases.
 	{
 		txnOp := c.proc.GetTxnOperator()
 		if txnOp.Txn().IsPessimistic() && txnOp.Txn().IsRCIsolation() {
+			snapshotAfterLock := txnOp.Txn().SnapshotTS
 			latestCommitTS := c.proc.Base.TxnClient.GetLatestCommitTS()
-			logutil.Infof("DROP DATABASE %s: snapshotTS=%s, latestCommitTS=%s, willWait=%v",
+			logutil.Infof("DROP DATABASE %s: after lock: snapshotTS=%s (lock may have pushed it), latestCommitTS=%s, willWait=%v",
 				dbName,
-				txnOp.Txn().SnapshotTS.DebugString(),
+				snapshotAfterLock.DebugString(),
 				latestCommitTS.DebugString(),
-				txnOp.Txn().SnapshotTS.Less(latestCommitTS))
-			if txnOp.Txn().SnapshotTS.Less(latestCommitTS) {
+				snapshotAfterLock.Less(latestCommitTS))
+			if snapshotAfterLock.Less(latestCommitTS) {
 				newTS, err := c.proc.Base.TxnClient.WaitLogTailAppliedAt(c.proc.Ctx, latestCommitTS)
 				if err != nil {
 					return err
