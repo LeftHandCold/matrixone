@@ -114,12 +114,21 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return err
 	}
 
-	// After acquiring the exclusive lock on mo_database, refresh the
-	// transaction's snapshot to the latest applied logtail timestamp.
+	// BUG(v1): This refresh is ineffective. DROP's snapshotTS comes from clock.Now(),
+	// which is typically > GetLatestCommitTS(), so the condition snapshotTS.Less(latestCommitTS)
+	// is almost always false, and WaitLogTailAppliedAt is never called.
+	// The real problem is not that snapshotTS is too old, but that PartitionState
+	// hasn't received the logtail data yet. snapshotTS is just a filter — it can't
+	// make data appear that hasn't been applied to PartitionState.
 	{
 		txnOp := c.proc.GetTxnOperator()
 		if txnOp.Txn().IsPessimistic() && txnOp.Txn().IsRCIsolation() {
 			latestCommitTS := c.proc.Base.TxnClient.GetLatestCommitTS()
+			logutil.Infof("DROP DATABASE %s: snapshotTS=%s, latestCommitTS=%s, willWait=%v",
+				dbName,
+				txnOp.Txn().SnapshotTS.DebugString(),
+				latestCommitTS.DebugString(),
+				txnOp.Txn().SnapshotTS.Less(latestCommitTS))
 			if txnOp.Txn().SnapshotTS.Less(latestCommitTS) {
 				newTS, err := c.proc.Base.TxnClient.WaitLogTailAppliedAt(c.proc.Ctx, latestCommitTS)
 				if err != nil {
@@ -128,6 +137,8 @@ func (s *Scope) DropDatabase(c *Compile) error {
 				if err := txnOp.UpdateSnapshot(c.proc.Ctx, newTS); err != nil {
 					return err
 				}
+				logutil.Infof("DROP DATABASE %s: snapshot refreshed to %s",
+					dbName, txnOp.Txn().SnapshotTS.DebugString())
 			}
 		}
 	}
@@ -153,6 +164,9 @@ func (s *Scope) DropDatabase(c *Compile) error {
 	if err != nil {
 		return err
 	}
+	logutil.Infof("DROP DATABASE %s: Relations() returned %d tables: %v, snapshotTS=%s",
+		dbName, len(relations), relations,
+		c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString())
 	var ignoreTables []string
 	for _, r := range relations {
 		t, err := database.Relation(c.proc.Ctx, r, nil)

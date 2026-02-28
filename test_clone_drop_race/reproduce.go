@@ -2,7 +2,7 @@
 //
 // 配合 MO 代码中的 hack 使用：
 //   在 pkg/vm/engine/disttae/logtail.go 的 consumeEntry 中注入了环境变量控制的 sleep，
-//   延迟 mo_tables 的 logtail apply，扩大 Relations() 查询时 logtail 尚未追上的窗口。
+//   延迟 mo_tables 的 logtail apply，扩大 Relations() 查询时 PartitionState 尚未更新的窗口。
 //
 // 使用步骤：
 //   1. 编译 MO（包含 hack）
@@ -11,19 +11,22 @@
 //
 // 原理：
 //   DropDatabase 的执行流程：
-//     1. lockMoDatabaseAndRefreshSnapshot → 获取排他锁 + 刷新 snapshot
-//     2. Relations() → 用 snapshotTS 查 mo_tables → 确定要删除的表列表
-//     3. 逐个 drop table → drop database
+//     1. lockMoDatabase(Exclusive) → 获取排他锁
+//     2. WaitLogTailAppliedAt(now) → 等待 logtail 追上（修复后）
+//     3. Relations() → 查 mo_tables PartitionState → 确定要删除的表列表
+//     4. 逐个 drop table → drop database
 //
-//   snapshot 刷新依赖 GetLatestCommitTS() 或 WaitLogTailAppliedAt(zero)，
-//   这两个值都来自 logtail consumer 的 updateTimestamp/NotifyLatestCommitTS。
+//   修复前（v1）的问题：
+//     snapshot 刷新依赖 GetLatestCommitTS()，但 DROP 的 snapshotTS（来自 clock.Now()）
+//     通常 > latestCommitTS，导致条件 snapshotTS.Less(latestCommitTS) 为 false，
+//     WaitLogTailAppliedAt 根本不被调用。
 //
-//   注入的 sleep 延迟了 mo_tables 的 logtail apply（consumeEntry），
-//   导致 updateTimestamp 也被延迟（它在所有 entries 处理完后才调用），
-//   从而使 latestTS 落后于 CLONE 子事务的 commitTS。
+//   核心问题不是 snapshotTS 不够新，而是 PartitionState 里没有数据：
+//     - mo_tables 是系统表，读取走 PartitionState（CN 本地 logtail 缓存）
+//     - snapshotTS 只是过滤条件，不能凭空创造数据
+//     - 如果 logtail 还没 apply 到 PartitionState，即使 snapshotTS 够新也查不到
 //
-//   DROP 在 CLONE 子事务提交后拿到排他锁，但 latestTS 还没追上，
-//   snapshot 刷新不充分，Relations() 用过时快照查询，漏掉新表 → 孤儿表。
+//   注入的 sleep 延迟了 consumeEntry → PartitionState 更新被延迟 → Relations() 漏表
 
 package main
 
@@ -220,7 +223,8 @@ func main() {
 
 	log.Println("=== CLONE + DROP DATABASE 竞态条件复现工具 ===")
 	log.Printf("目标: %s:%d, 轮次=%d, 表数=%d", *host, *port, *rounds, *numTables)
-	log.Println("请确保 MO 启动时设置了 MO_DELAY_CONSUME_MO_TABLES_MS=100")
+	log.Println("请确保 MO 启动时设置了 MO_DELAY_CONSUME_MO_TABLES_MS=100（测试修复前的行为）")
+	log.Println("修复后（clock.Now() + WaitLogTailAppliedAt），即使有延迟也不应复现")
 	log.Println("")
 
 	pool, err := sql.Open("mysql", dsn())
