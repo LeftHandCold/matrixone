@@ -18,6 +18,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,25 +116,20 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return err
 	}
 
+	// HACK: inject delay to reproduce CLONE+DROP race condition.
+	// After acquiring the exclusive lock but BEFORE refreshing the snapshot,
+	// sleep to give concurrent CLONE sub-transactions time to commit new tables.
+	// The snapshot will NOT cover these new commits, so Relations() will miss them.
+	// Set environment variable MO_DROP_DB_DELAY_MS to enable (e.g. "200" for 200ms).
+	if delayStr := os.Getenv("MO_DROP_DB_DELAY_MS"); delayStr != "" {
+		if delayMs, parseErr := strconv.Atoi(delayStr); parseErr == nil && delayMs > 0 {
+			logutil.Infof("HACK: DropDatabase sleeping %dms after lock for db %s", delayMs, dbName)
+			time.Sleep(time.Duration(delayMs) * time.Millisecond)
+		}
+	}
+
 	// After acquiring the exclusive lock on mo_database, refresh the
 	// transaction's snapshot to the latest applied logtail timestamp.
-	//
-	// This fixes a race condition between concurrent CLONE (CREATE TABLE)
-	// and DROP DATABASE:
-	//   1. CLONE acquires Shared lock on mo_database, creates table in
-	//      mo_tables, commits, releases Shared lock.
-	//   2. DROP acquires Exclusive lock on mo_database. The lock service
-	//      runs hasNewVersionInRange on mo_database rows, but CLONE did
-	//      NOT modify mo_database (only mo_tables), so changed=false and
-	//      the snapshot is NOT advanced past CLONE's commit timestamp.
-	//   3. DROP calls Relations() with the stale snapshot, misses the
-	//      newly created table, and drops the database without deleting
-	//      the table — leaving an orphan record in mo_tables that causes
-	//      an OkExpectedEOB panic during checkpoint replay.
-	//
-	// By explicitly advancing the snapshot to the latest commit timestamp
-	// after acquiring the exclusive lock, we ensure Relations() sees all
-	// tables committed before the lock was granted.
 	{
 		txnOp := c.proc.GetTxnOperator()
 		if txnOp.Txn().IsPessimistic() && txnOp.Txn().IsRCIsolation() {
