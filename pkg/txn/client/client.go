@@ -20,9 +20,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
-	"os"
 	"runtime/debug"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -426,17 +424,6 @@ func (client *txnClient) getTxnMode() txn.TxnMode {
 func (client *txnClient) updateLastCommitTS(event TxnEvent) {
 	if event.Txn.CommitTS.IsEmpty() {
 		return
-	}
-
-	// HACK: inject delay to reproduce CLONE+DROP race condition.
-	// This widens the window between unlock() (which releases the lock in
-	// lock service) and latestCommitTS update. DROP can acquire the exclusive
-	// lock during this window and read a stale GetLatestCommitTS().
-	// Set MO_DELAY_UPDATE_COMMIT_TS_MS=50 to enable.
-	if v := os.Getenv("MO_DELAY_UPDATE_COMMIT_TS_MS"); v != "" {
-		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
-			time.Sleep(time.Duration(ms) * time.Millisecond)
-		}
 	}
 
 	var old *timestamp.Timestamp

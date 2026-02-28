@@ -16,6 +16,8 @@ package disttae
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"time"
 
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
@@ -41,6 +43,21 @@ func consumeEntry(
 	if engine.skipConsume {
 		return nil
 	}
+
+	// HACK: inject delay on mo_tables INSERT entries to reproduce CLONE+DROP race.
+	// This delays logtail application for mo_tables, widening the window where
+	// Relations() can miss newly created tables. The delay happens BEFORE the
+	// PartitionState and CatalogCache are updated, so both the data and the
+	// timestamp (updateTimestamp is called after all entries are consumed) are delayed.
+	// Set MO_DELAY_CONSUME_MO_TABLES_MS=100 to enable.
+	if e.TableId == catalog.MO_TABLES_ID && e.EntryType == api.Entry_Insert && !isSub {
+		if v := os.Getenv("MO_DELAY_CONSUME_MO_TABLES_MS"); v != "" {
+			if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+				time.Sleep(time.Duration(ms) * time.Millisecond)
+			}
+		}
+	}
+
 	start := time.Now()
 	defer func() {
 		v2.LogtailUpdatePartitonConsumeLogtailOneEntryDurationHistogram.Observe(time.Since(start).Seconds())

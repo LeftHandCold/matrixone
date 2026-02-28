@@ -1,21 +1,29 @@
 // reproduce.go — 复现 CLONE + DROP DATABASE 竞态条件
 //
 // 配合 MO 代码中的 hack 使用：
-//   在 pkg/txn/client/client.go 的 updateLastCommitTS 中注入了环境变量控制的 sleep，
-//   扩大 unlock()（释放锁）和 latestCommitTS 更新之间的时间窗口。
+//   在 pkg/vm/engine/disttae/logtail.go 的 consumeEntry 中注入了环境变量控制的 sleep，
+//   延迟 mo_tables 的 logtail apply，扩大 Relations() 查询时 logtail 尚未追上的窗口。
 //
 // 使用步骤：
 //   1. 编译 MO（包含 hack）
-//   2. 启动 MO 时设置环境变量：export MO_DELAY_UPDATE_COMMIT_TS_MS=50
+//   2. 启动 MO 时设置环境变量：export MO_DELAY_CONSUME_MO_TABLES_MS=100
 //   3. 运行本工具：go run reproduce.go -host 127.0.0.1 -port 6001
 //
 // 原理：
-//   txnOperator.doWrite 的 commit 路径中，Go defer LIFO 导致：
-//     1. unlock() → 释放 mo_database 的 Shared lock
-//     2. closeLocked() → updateLastCommitTS() → 更新 latestCommitTS
-//   注入的 sleep 扩大了步骤1和步骤2之间的窗口。
-//   DROP 在这个窗口内拿到 Exclusive lock，GetLatestCommitTS() 拿到旧值，
-//   Relations() 用过时快照查询，漏掉新表 → 孤儿表。
+//   DropDatabase 的执行流程：
+//     1. lockMoDatabaseAndRefreshSnapshot → 获取排他锁 + 刷新 snapshot
+//     2. Relations() → 用 snapshotTS 查 mo_tables → 确定要删除的表列表
+//     3. 逐个 drop table → drop database
+//
+//   snapshot 刷新依赖 GetLatestCommitTS() 或 WaitLogTailAppliedAt(zero)，
+//   这两个值都来自 logtail consumer 的 updateTimestamp/NotifyLatestCommitTS。
+//
+//   注入的 sleep 延迟了 mo_tables 的 logtail apply（consumeEntry），
+//   导致 updateTimestamp 也被延迟（它在所有 entries 处理完后才调用），
+//   从而使 latestTS 落后于 CLONE 子事务的 commitTS。
+//
+//   DROP 在 CLONE 子事务提交后拿到排他锁，但 latestTS 还没追上，
+//   snapshot 刷新不充分，Relations() 用过时快照查询，漏掉新表 → 孤儿表。
 
 package main
 
@@ -37,7 +45,7 @@ var (
 	port      = flag.Int("port", 6001, "MO port")
 	user      = flag.String("user", "root", "MO user")
 	pass      = flag.String("pass", "111", "MO password")
-	rounds    = flag.Int("rounds", 50, "number of test rounds")
+	rounds    = flag.Int("rounds", 100, "number of test rounds")
 	numTables = flag.Int("tables", 15, "number of tables in source db")
 	srcDB     = flag.String("srcdb", "clone_race_src", "source database name")
 )
@@ -186,7 +194,7 @@ func runOneRound(roundID int, pool *sql.DB) (found bool, msg string) {
 	}
 
 	// 等 logtail 追上
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	dbExists, orphans, err := checkOrphans(dst)
 	if err != nil {
@@ -212,7 +220,7 @@ func main() {
 
 	log.Println("=== CLONE + DROP DATABASE 竞态条件复现工具 ===")
 	log.Printf("目标: %s:%d, 轮次=%d, 表数=%d", *host, *port, *rounds, *numTables)
-	log.Println("请确保 MO 启动时设置了 MO_DELAY_UPDATE_COMMIT_TS_MS=50")
+	log.Println("请确保 MO 启动时设置了 MO_DELAY_CONSUME_MO_TABLES_MS=100")
 	log.Println("")
 
 	pool, err := sql.Open("mysql", dsn())
@@ -244,6 +252,6 @@ func main() {
 	if total > 0 {
 		log.Printf("BUG 已复现！%d 轮出现孤儿表", total)
 	} else {
-		log.Println("未复现。检查 MO 是否设置了 MO_DELAY_UPDATE_COMMIT_TS_MS 环境变量。")
+		log.Println("未复现。尝试增大 MO_DELAY_CONSUME_MO_TABLES_MS 值（如 200）或增加表数量。")
 	}
 }
