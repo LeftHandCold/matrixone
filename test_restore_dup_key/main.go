@@ -4,11 +4,10 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"strings"
 
-	"github.com/go-sql-driver/mysql"
+	_ "github.com/go-sql-driver/mysql"
 )
 
 // 复现 refreshSnapshotAfterLock 导致 restore cluster 报 Duplicate entry 的问题
@@ -246,16 +245,12 @@ func verifyAccount(host, accName, dbName, query, expected string) bool {
 	return true
 }
 
-// buildAccountDSN 用 mysql.Config 构建 DSN，避免用户名里的冒号被错误解析
+// buildAccountDSN 构建 account 连接的 DSN
+// MO 支持 tenant#user 格式，用 # 分隔可以避免与 DSN 里的冒号冲突
 func buildAccountDSN(host, accName, dbName string) string {
-	h, p, _ := net.SplitHostPort(host)
-	cfg := mysql.NewConfig()
-	cfg.User = accName + ":test_account"
-	cfg.Passwd = "111"
-	cfg.Net = "tcp"
-	cfg.Addr = net.JoinHostPort(h, p)
-	cfg.DBName = dbName
-	return cfg.FormatDSN()
+	// 用户名格式：account#user，密码单独传
+	user := accName + "#test_account"
+	return fmt.Sprintf("%s:111@tcp(%s)/%s", user, host, dbName)
 }
 
 func mustOpenAccount(host, accName, dbName string) *sql.DB {
