@@ -115,6 +115,12 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return err
 	}
 
+	// Lock a sentinel key on mo_tables to prevent concurrent CREATE TABLE / DDL
+	// from committing new table records while we are dropping the database.
+	if err = lockMoTableSentinel(c, dbName, lock.LockMode_Exclusive); err != nil {
+		return err
+	}
+
 	txnID := hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)
 	c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase lockMoDatabase acquired",
 		zap.String("db", dbName),
@@ -347,6 +353,10 @@ func (s *Scope) AlterView(c *Compile) error {
 		return err
 	}
 
+	if err := lockMoTableSentinel(c, dbName, lock.LockMode_Shared); err != nil {
+		return err
+	}
+
 	if err := lockMoTable(c, dbName, tblName, lock.LockMode_Exclusive); err != nil {
 		return err
 	}
@@ -430,6 +440,11 @@ func (s *Scope) AlterTableInplace(c *Compile) error {
 		var retryErr error
 		// 0. lock origin database metadata in catalog
 		if err = lockMoDatabase(c, dbName, lock.LockMode_Shared); err != nil {
+			return err
+		}
+
+		// 0.5. lock sentinel key on mo_tables
+		if err = lockMoTableSentinel(c, dbName, lock.LockMode_Shared); err != nil {
 			return err
 		}
 
@@ -1033,6 +1048,10 @@ func (s *Scope) CreateTable(c *Compile) error {
 				return moerr.NewTableAlreadyExists(c.proc.Ctx, fmt.Sprintf("temporary '%s'", tblName))
 			}
 		}
+	}
+
+	if err = lockMoTableSentinel(c, dbName, lock.LockMode_Shared); err != nil {
+		return err
 	}
 
 	if err = lockMoTable(c, dbName, tblName, lock.LockMode_Exclusive); err != nil {
@@ -1677,6 +1696,10 @@ func (s *Scope) CreateView(c *Compile) error {
 				return moerr.NewTableAlreadyExists(c.proc.Ctx, fmt.Sprintf("temporary '%s'", viewName))
 			}
 		}
+	}
+
+	if err = lockMoTableSentinel(c, dbName, lock.LockMode_Shared); err != nil {
+		return err
 	}
 
 	if err = lockMoTable(c, dbName, viewName, lock.LockMode_Exclusive); err != nil {
@@ -2432,6 +2455,13 @@ func (s *Scope) TruncateTable(c *Compile) error {
 
 	if !isTemp && c.proc.GetTxnOperator().Txn().IsPessimistic() {
 		var err error
+		if e := lockMoTableSentinel(c, dbName, lock.LockMode_Shared); e != nil {
+			if !moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetry) &&
+				!moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetryWithDefChanged) {
+				return e
+			}
+			err = e
+		}
 		if e := lockMoTable(c, dbName, tblName, lock.LockMode_Exclusive); e != nil {
 			if !moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetry) &&
 				!moerr.IsMoErrCode(err, moerr.ErrTxnNeedRetryWithDefChanged) {
@@ -2685,6 +2715,13 @@ func (s *Scope) DropTable(c *Compile) error {
 
 	if !isTemp && !isView && !isSource && c.proc.GetTxnOperator().Txn().IsPessimistic() {
 		var err error
+		if e := lockMoTableSentinel(c, dbName, lock.LockMode_Shared); e != nil {
+			if !moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetry) &&
+				!moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetryWithDefChanged) {
+				return e
+			}
+			err = e
+		}
 		if e := lockMoTable(c, dbName, tblName, lock.LockMode_Exclusive); e != nil {
 			if !moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetry) &&
 				!moerr.IsMoErrCode(err, moerr.ErrTxnNeedRetryWithDefChanged) {

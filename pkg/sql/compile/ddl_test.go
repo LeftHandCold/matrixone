@@ -868,6 +868,11 @@ func TestDropDatabase_ListRelationsAtLatestSnapshot(t *testing.T) {
 		})
 		defer lockMoDb.Reset()
 
+		lockSentinel := gostub.Stub(&lockMoTableSentinel, func(_ *Compile, _ string, _ lock.LockMode) error {
+			return nil
+		})
+		defer lockSentinel.Reset()
+
 		// Stub listRelationsAtLatestSnapshot to return a table list.
 		// Return empty lists to avoid triggering runSql (which needs more mocking).
 		// The key assertion is that UpdateSnapshot is NOT called.
@@ -930,6 +935,11 @@ func TestDropDatabase_ListRelationsAtLatestSnapshot(t *testing.T) {
 			return nil
 		})
 		defer lockMoDb.Reset()
+
+		lockSentinel2 := gostub.Stub(&lockMoTableSentinel, func(_ *Compile, _ string, _ lock.LockMode) error {
+			return nil
+		})
+		defer lockSentinel2.Reset()
 
 		// Stub listRelationsAtLatestSnapshot to return an error.
 		expectedErr := moerr.NewInternalErrorNoCtx("logtail wait failed")
