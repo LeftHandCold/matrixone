@@ -143,6 +143,15 @@ func (s *Scope) DropDatabase(c *Compile) error {
 	}
 	_ = ignoreTables
 
+	c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase listRelationsAtLatestSnapshot",
+		zap.String("db", dbName),
+		zap.Int("deleteTables", len(deleteTables)),
+		zap.Int("ignoreTables", len(ignoreTables)),
+		zap.Strings("delete", deleteTables),
+		zap.Strings("ignore", ignoreTables),
+		zap.String("txn-snapshot", c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString()),
+	)
+
 	for _, t := range deleteTables {
 		dropSql := fmt.Sprintf(dropTableBeforeDropDatabase, dbName, t)
 		err = c.runSql(dropSql)
