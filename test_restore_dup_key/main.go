@@ -4,10 +4,11 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 // 复现 refreshSnapshotAfterLock 导致 restore cluster 报 Duplicate entry 的问题
@@ -180,10 +181,9 @@ func mustExec(db *sql.DB, query string) {
 }
 
 func setupAccount(host, accName string, sqls []string) {
-	dsn := fmt.Sprintf("test_account:111@tcp(%s)/", host)
-	// MO 的 account 连接方式：user#account
-	dsn = fmt.Sprintf("test_account#%s:111@tcp(%s)/", accName, host)
-	db := mustOpen(dsn)
+	// MO account 连接方式：用户名格式为 account_name:user_name
+	// 用户名里有冒号，必须用 mysql.Config 构建 DSN，否则 go-sql-driver 解析错误
+	db := mustOpenAccount(host, accName, "")
 	defer db.Close()
 	for _, s := range sqls {
 		mustExec(db, s)
@@ -226,8 +226,7 @@ func verify(db *sql.DB, dbName, query, expected string) bool {
 }
 
 func verifyAccount(host, accName, dbName, query, expected string) bool {
-	dsn := fmt.Sprintf("test_account#%s:111@tcp(%s)/%s", accName, host, dbName)
-	db, err := sql.Open("mysql", dsn)
+	db, err := sql.Open("mysql", buildAccountDSN(host, accName, dbName))
 	if err != nil {
 		log.Printf("验证失败 连接 %s: %v", accName, err)
 		return false
@@ -245,4 +244,21 @@ func verifyAccount(host, accName, dbName, query, expected string) bool {
 	}
 	log.Printf("验证通过 [%s/%s]: %s = %s", accName, dbName, query, result)
 	return true
+}
+
+// buildAccountDSN 用 mysql.Config 构建 DSN，避免用户名里的冒号被错误解析
+func buildAccountDSN(host, accName, dbName string) string {
+	h, p, _ := net.SplitHostPort(host)
+	cfg := mysql.NewConfig()
+	cfg.User = accName + ":test_account"
+	cfg.Passwd = "111"
+	cfg.Net = "tcp"
+	cfg.Addr = net.JoinHostPort(h, p)
+	cfg.DBName = dbName
+	return cfg.FormatDSN()
+}
+
+func mustOpenAccount(host, accName, dbName string) *sql.DB {
+	dsn := buildAccountDSN(host, accName, dbName)
+	return mustOpen(dsn)
 }
