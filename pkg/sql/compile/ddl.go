@@ -16,6 +16,7 @@ package compile
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
@@ -114,6 +115,13 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return err
 	}
 
+	txnID := hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)
+	c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase lockMoDatabase acquired",
+		zap.String("db", dbName),
+		zap.String("txnID", txnID),
+		zap.String("txn-snapshot", c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString()),
+	)
+
 	// handle sub
 	if db.IsSubscription(c.proc.Ctx) {
 		if err = dropSubscription(c.proc.Ctx, c, dbName); err != nil {
@@ -145,6 +153,7 @@ func (s *Scope) DropDatabase(c *Compile) error {
 
 	c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase listRelationsAtLatestSnapshot",
 		zap.String("db", dbName),
+		zap.String("txnID", txnID),
 		zap.Int("deleteTables", len(deleteTables)),
 		zap.Int("ignoreTables", len(ignoreTables)),
 		zap.Strings("delete", deleteTables),
@@ -154,10 +163,26 @@ func (s *Scope) DropDatabase(c *Compile) error {
 
 	for _, t := range deleteTables {
 		dropSql := fmt.Sprintf(dropTableBeforeDropDatabase, dbName, t)
+		c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase dropping table",
+			zap.String("db", dbName),
+			zap.String("table", t),
+			zap.String("txnID", txnID),
+		)
 		err = c.runSql(dropSql)
 		if err != nil {
+			c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase drop table failed",
+				zap.String("db", dbName),
+				zap.String("table", t),
+				zap.String("txnID", txnID),
+				zap.Error(err),
+			)
 			return err
 		}
+		c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase drop table done",
+			zap.String("db", dbName),
+			zap.String("table", t),
+			zap.String("txnID", txnID),
+		)
 	}
 
 	sql := s.Plan.GetDdl().GetDropDatabase().GetCheckFKSql()
@@ -167,10 +192,23 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		}
 	}
 
+	c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase deleting database",
+		zap.String("db", dbName),
+		zap.String("txnID", txnID),
+	)
 	err = c.e.Delete(c.proc.Ctx, dbName, c.proc.GetTxnOperator())
 	if err != nil {
+		c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase delete database failed",
+			zap.String("db", dbName),
+			zap.String("txnID", txnID),
+			zap.Error(err),
+		)
 		return err
 	}
+	c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase delete database done",
+		zap.String("db", dbName),
+		zap.String("txnID", txnID),
+	)
 
 	// 1.delete all index object record under the database from mo_catalog.mo_indexes
 	deleteSql := fmt.Sprintf(deleteMoIndexesWithDatabaseIdFormat, s.Plan.GetDdl().GetDropDatabase().GetDatabaseId())
@@ -938,6 +976,13 @@ func (s *Scope) CreateTable(c *Compile) error {
 		return err
 	}
 
+	c.proc.Info(c.proc.Ctx, "[DEBUG] CreateTable lockMoDatabase(Shared) acquired",
+		zap.String("db", dbName),
+		zap.String("table", tblName),
+		zap.String("txnID", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
+		zap.String("txn-snapshot", c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString()),
+	)
+
 	dbSource, err := c.e.Database(c.proc.Ctx, dbName, c.proc.GetTxnOperator())
 	if err != nil {
 		if dbName == "" {
@@ -999,6 +1044,13 @@ func (s *Scope) CreateTable(c *Compile) error {
 		return err
 	}
 
+	c.proc.Info(c.proc.Ctx, "[DEBUG] CreateTable lockMoTable(Exclusive) acquired",
+		zap.String("db", dbName),
+		zap.String("table", tblName),
+		zap.String("txnID", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
+		zap.String("txn-snapshot", c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString()),
+	)
+
 	if len(qry.IndexTables) > 0 {
 		for _, def := range qry.IndexTables {
 			id, err := c.e.AllocateIDByKey(c.proc.Ctx, "")
@@ -1010,6 +1062,11 @@ func (s *Scope) CreateTable(c *Compile) error {
 		}
 	}
 
+	c.proc.Info(c.proc.Ctx, "[DEBUG] CreateTable dbSource.Create starting",
+		zap.String("db", dbName),
+		zap.String("table", tblName),
+		zap.String("txnID", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
+	)
 	if err = dbSource.Create(
 		context.WithValue(c.proc.Ctx,
 			defines.SqlKey{}, c.sql), tblName,
@@ -1022,6 +1079,11 @@ func (s *Scope) CreateTable(c *Compile) error {
 		)
 		return err
 	}
+	c.proc.Info(c.proc.Ctx, "[DEBUG] CreateTable dbSource.Create done",
+		zap.String("db", dbName),
+		zap.String("table", tblName),
+		zap.String("txnID", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
+	)
 
 	//update mo_foreign_keys
 	for _, sql := range qry.UpdateFkSqls {
@@ -3831,6 +3893,32 @@ var lockMoDatabase = func(c *Compile, dbName string, lockMode lock.LockMode) err
 		return err
 	}
 	bat, err := getLockBatch(c.proc, accountID, []string{dbName})
+	if err != nil {
+		return err
+	}
+	defer bat.GetVector(0).Free(c.proc.Mp())
+	if err := lockRows(c.e, c.proc, dbRel, bat, 0, lockMode, lock.Sharding_None, accountID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// lockMoTableSentinel locks a sentinel key (accountId, dbName, "") on mo_tables
+// to synchronize DropDatabase (Exclusive) with concurrent DDL operations like
+// CreateTable, CreateView, etc. (Shared). This prevents a concurrent CREATE TABLE
+// from committing a new table record while DropDatabase is executing, which would
+// leave orphan records in mo_tables.
+var lockMoTableSentinel = func(c *Compile, dbName string, lockMode lock.LockMode) error {
+	dbRel, err := getRelFromMoCatalog(c, catalog.MO_TABLES)
+	if err != nil {
+		return err
+	}
+	accountID, err := defines.GetAccountId(c.proc.Ctx)
+	if err != nil {
+		return err
+	}
+	// Use empty string as table name to form a sentinel key: Serial(accountId, dbName, "")
+	bat, err := getLockBatch(c.proc, accountID, []string{dbName, ""})
 	if err != nil {
 		return err
 	}
