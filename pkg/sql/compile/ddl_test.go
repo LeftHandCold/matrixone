@@ -854,9 +854,14 @@ func TestDropDatabase_ListRelationsAtLatestSnapshot(t *testing.T) {
 
 		mockDb := mock_frontend.NewMockDatabase(ctrl)
 		mockDb.EXPECT().IsSubscription(gomock.Any()).Return(false).AnyTimes()
+		mockDb.EXPECT().Relations(gomock.Any()).Return(nil, nil).AnyTimes()
 
 		eng := mock_frontend.NewMockEngine(ctrl)
 		eng.EXPECT().Database(gomock.Any(), "test_db", gomock.Any()).Return(mockDb, nil).AnyTimes()
+		// Return an error from Delete to stop DropDatabase before it tries runSql
+		// (which needs a full SQL executor setup). The key assertions have already
+		// been validated by this point.
+		eng.EXPECT().Delete(gomock.Any(), "test_db", gomock.Any()).Return(moerr.NewInternalErrorNoCtx("stop here")).AnyTimes()
 
 		lockMoDb := gostub.Stub(&lockMoDatabase, func(_ *Compile, _ string, _ lock.LockMode) error {
 			return nil
@@ -864,18 +869,22 @@ func TestDropDatabase_ListRelationsAtLatestSnapshot(t *testing.T) {
 		defer lockMoDb.Reset()
 
 		// Stub listRelationsAtLatestSnapshot to return a table list.
+		// Return empty lists to avoid triggering runSql (which needs more mocking).
+		// The key assertion is that UpdateSnapshot is NOT called.
+		called := false
 		listStub := gostub.Stub(&listRelationsAtLatestSnapshot, func(c *Compile, dbName string) ([]string, []string, error) {
 			assert.Equal(t, "test_db", dbName)
-			return []string{"t1", "t2"}, nil, nil
+			called = true
+			return nil, nil, nil
 		})
 		defer listStub.Reset()
 
 		c := NewCompile("test", "test", "drop database test_db", "", "", eng, proc, nil, false, nil, time.Now())
-		err := s.DropDatabase(c)
-		// Will error later (e.g. runSql for drop table), but the key assertion is
-		// that UpdateSnapshot was NOT called (enforced by Times(0) on the mock).
-		// We just verify it doesn't panic and listRelationsAtLatestSnapshot was used.
-		_ = err
+		c.pn = cplan
+		_ = s.DropDatabase(c)
+		// The key assertion is that UpdateSnapshot was NOT called (enforced by
+		// Times(0) on the mock) and listRelationsAtLatestSnapshot was invoked.
+		assert.True(t, called, "listRelationsAtLatestSnapshot should have been called")
 	})
 
 	// Test: listRelationsAtLatestSnapshot error is propagated.
@@ -910,8 +919,12 @@ func TestDropDatabase_ListRelationsAtLatestSnapshot(t *testing.T) {
 		proc.Base.TxnClient = txnCli
 		proc.Base.TxnOperator = txnOp
 
+		mockDb2 := mock_frontend.NewMockDatabase(ctrl)
+		mockDb2.EXPECT().IsSubscription(gomock.Any()).Return(false).AnyTimes()
+		mockDb2.EXPECT().Relations(gomock.Any()).Return(nil, nil).AnyTimes()
+
 		eng := mock_frontend.NewMockEngine(ctrl)
-		eng.EXPECT().Database(gomock.Any(), "test_db", gomock.Any()).Return(mock_frontend.NewMockDatabase(ctrl), nil).AnyTimes()
+		eng.EXPECT().Database(gomock.Any(), "test_db", gomock.Any()).Return(mockDb2, nil).AnyTimes()
 
 		lockMoDb := gostub.Stub(&lockMoDatabase, func(_ *Compile, _ string, _ lock.LockMode) error {
 			return nil

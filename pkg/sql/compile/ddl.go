@@ -16,7 +16,6 @@ package compile
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
@@ -25,7 +24,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
-	moruntime "github.com/matrixorigin/matrixone/pkg/common/runtime"
 	commonutil "github.com/matrixorigin/matrixone/pkg/common/util"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -116,16 +114,6 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return err
 	}
 
-	// After acquiring the Exclusive lock, refresh the snapshot to the latest
-	// timestamp so that Relations() can see all tables committed before this
-	// point. This covers the edge case where a concurrent "data branch create
-	// table" transaction committed and released its Shared lock before DROP
-	// started locking (Mode B situation 1), in which case the lock service
-	// returns no conflict and doLock does not advance the snapshot.
-	if err = refreshSnapshotAfterLock(c); err != nil {
-		return err
-	}
-
 	// handle sub
 	if db.IsSubscription(c.proc.Ctx) {
 		if err = dropSubscription(c.proc.Ctx, c, dbName); err != nil {
@@ -139,48 +127,21 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return err
 	}
 
-	database, err := c.e.Database(c.proc.Ctx, dbName, c.proc.GetTxnOperator())
+	// Use a separate read-only transaction at the latest snapshot to list all
+	// relations. This covers the race condition where a concurrent "data branch
+	// create table" committed after our transaction started but before we
+	// acquired the exclusive lock on mo_database. Because the lock conflict
+	// detection (doLock/hasNewVersionInRange) only checks the locked table
+	// (mo_database), it cannot detect modifications to mo_tables, so the
+	// current transaction's snapshot may be stale. Reading with a fresh
+	// snapshot in a separate transaction avoids advancing the current
+	// transaction's SnapshotTS, which would bypass the workspace tombstone
+	// transfer mechanism and cause duplicate-key errors on commit.
+	deleteTables, ignoreTables, err := listRelationsAtLatestSnapshot(c, dbName)
 	if err != nil {
 		return err
 	}
-	relations, err := database.Relations(c.proc.Ctx)
-	if err != nil {
-		return err
-	}
-	var ignoreTables []string
-	for _, r := range relations {
-		t, err := database.Relation(c.proc.Ctx, r, nil)
-		if err != nil {
-			return err
-		}
-		defs, err := t.TableDefs(c.proc.Ctx)
-		if err != nil {
-			return err
-		}
-
-		constrain := GetConstraintDefFromTableDefs(defs)
-		for _, ct := range constrain.Cts {
-			if ds, ok := ct.(*engine.IndexDef); ok {
-				for _, d := range ds.Indexes {
-					ignoreTables = append(ignoreTables, d.IndexTableName)
-				}
-			}
-		}
-	}
-
-	deleteTables := make([]string, 0, len(relations)-len(ignoreTables))
-	for _, r := range relations {
-		isIndexTable := false
-		for _, d := range ignoreTables {
-			if d == r {
-				isIndexTable = true
-				break
-			}
-		}
-		if !isIndexTable {
-			deleteTables = append(deleteTables, r)
-		}
-	}
+	_ = ignoreTables
 
 	for _, t := range deleteTables {
 		dropSql := fmt.Sprintf(dropTableBeforeDropDatabase, dbName, t)
@@ -226,7 +187,7 @@ func (s *Scope) DropDatabase(c *Compile) error {
 			catalog.MO_PITR_ACCOUNT_ID, accountId,
 			catalog.MO_PITR_DB_NAME, dbName,
 			catalog.MO_PITR_STATUS, 1,
-			catalog.MO_PITR_OBJECT_ID, database.GetDatabaseId(c.proc.Ctx),
+			catalog.MO_PITR_OBJECT_ID, db.GetDatabaseId(c.proc.Ctx),
 		)
 
 		err = c.runSqlWithSystemTenant(updatePitrSql)
@@ -3871,54 +3832,53 @@ var lockMoDatabase = func(c *Compile, dbName string, lockMode lock.LockMode) err
 	return nil
 }
 
-// refreshSnapshotAfterLock advances the transaction's snapshot to the current
-// HLC timestamp. This ensures that subsequent reads (e.g. Relations()) see all
-// data committed up to this moment, regardless of whether the lock service
-// reported a conflict.
+// listRelationsAtLatestSnapshot reads the table list for the given database
+// using a separate read-only transaction at the latest snapshot. This avoids
+// advancing the current transaction's SnapshotTS, which would bypass the
+// workspace tombstone transfer mechanism and cause duplicate-key errors.
 //
-// This is necessary because the lock conflict detection only checks the locked
-// table (mo_database), but concurrent transactions may have modified related
-// tables (mo_tables) without changing mo_database. In such cases, doLock's
-// hasNewVersionInRange returns false and the snapshot is not advanced.
-var refreshSnapshotAfterLock = func(c *Compile) error {
-	oldSnap := c.proc.GetTxnOperator().Txn().SnapshotTS
-	now, _ := moruntime.ServiceRuntime(c.proc.GetService()).Clock().Now()
-	ts, err := c.proc.Base.TxnClient.WaitLogTailAppliedAt(c.proc.Ctx, now)
+// Returns (deleteTables, ignoreTables, error) where ignoreTables contains
+// hidden/index table names that should not be dropped directly.
+var listRelationsAtLatestSnapshot = func(c *Compile, dbName string) ([]string, []string, error) {
+	accountID, err := defines.GetAccountId(c.proc.Ctx)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	err = c.proc.GetTxnOperator().UpdateSnapshot(c.proc.Ctx, ts)
-	if err != nil {
-		return err
-	}
-	newSnap := c.proc.GetTxnOperator().Txn().SnapshotTS
-	c.proc.Info(c.proc.Ctx, "[DIAG] refreshSnapshotAfterLock",
-		zap.String("txn-id", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
-		zap.String("old-snapshot", oldSnap.DebugString()),
-		zap.String("new-snapshot", newSnap.DebugString()),
-		zap.String("sql", c.sql),
-	)
-	return nil
-}
 
-// isRestoreContext returns true if the current context is part of a restore
-// operation (snapshot restore or PITR restore). During restore, many DDL
-// statements run in a single large transaction; advancing the snapshot
-// mid-transaction can cause the txn to observe externally committed data
-// and fail with duplicate-key errors on commit.
-func isRestoreContext(ctx context.Context) bool {
-	v := ctx.Value(tree.CloneLevelCtxKey{})
-	if v == nil {
-		return false
+	// Query mo_tables in a fresh transaction to see all committed data.
+	sql := fmt.Sprintf(
+		"select %s from `%s`.`%s` where %s = %d and %s = '%s'",
+		catalog.SystemRelAttr_Name, catalog.MO_CATALOG, catalog.MO_TABLES,
+		catalog.SystemRelAttr_AccID, accountID,
+		catalog.SystemRelAttr_DBName, dbName,
+	)
+
+	exec := c.getInternalSQLExecutor()
+	ctx := c.proc.Ctx
+	opts := executor.Options{}.
+		WithDatabase(c.db).
+		WithTimeZone(c.proc.GetSessionInfo().TimeZone).
+		WithDisableIncrStatement()
+
+	res, err := exec.Exec(ctx, sql, opts)
+	if err != nil {
+		return nil, nil, err
 	}
-	switch v.(tree.CloneLevelType) {
-	case tree.RestoreCloneLevelTable,
-		tree.RestoreCloneLevelDatabase,
-		tree.RestoreCloneLevelAccount,
-		tree.RestoreCloneLevelCluster:
-		return true
+	defer res.Close()
+
+	var deleteTables []string
+	var ignoreTables []string
+	for _, b := range res.Batches {
+		for i, v := 0, b.Vecs[0]; i < v.Length(); i++ {
+			name := v.GetStringAt(i)
+			if catalog.IsHiddenTable(name) {
+				ignoreTables = append(ignoreTables, name)
+			} else {
+				deleteTables = append(deleteTables, name)
+			}
+		}
 	}
-	return false
+	return deleteTables, ignoreTables, nil
 }
 
 var lockMoTable = func(
