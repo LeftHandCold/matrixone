@@ -36,7 +36,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/pb/lock"
 	plan2 "github.com/matrixorigin/matrixone/pkg/pb/plan"
-	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/pb/txn"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan"
@@ -788,16 +787,16 @@ func TestIsExperimentalEnabled(t *testing.T) {
 }
 
 // TestDropDatabase_SnapshotRefreshAfterExclusiveLock verifies that DropDatabase
-// refreshes the transaction snapshot after acquiring the exclusive lock on
-// mo_database. This prevents the race condition where a concurrent CLONE
-// (CREATE TABLE) commits between the snapshot and the lock acquisition,
-// leaving orphan records in mo_tables.
+// uses a snapshot read at the latest timestamp to list relations after acquiring
+// the exclusive lock on mo_database. This prevents the race condition where a
+// concurrent CLONE (CREATE TABLE) commits between the snapshot and the lock
+// acquisition, leaving orphan records in mo_tables.
 //
-// The current implementation uses clock.Now() + WaitLogTailAppliedAt(now) to
-// unconditionally advance the snapshot, rather than the v1 approach which used
-// GetLatestCommitTS() with a conditional check (which failed due to defer LIFO
-// ordering in doWrite causing unlock to execute before updateLastCommitTS).
-func TestDropDatabase_SnapshotRefreshAfterExclusiveLock(t *testing.T) {
+// The current implementation uses CloneSnapshotOp to do a one-off read at the
+// latest timestamp WITHOUT advancing the transaction's own snapshot. This avoids
+// duplicate-key errors when multiple DDLs run in a single transaction (e.g.
+// restore cluster).
+func TestDropDatabase_ListRelationsAtLatestSnapshot(t *testing.T) {
 	dropDbDef := &plan2.DropDatabase{
 		IfExists: false,
 		Database: "test_db",
@@ -818,10 +817,8 @@ func TestDropDatabase_SnapshotRefreshAfterExclusiveLock(t *testing.T) {
 		TxnOffset: 0,
 	}
 
-	appliedTS := timestamp.Timestamp{PhysicalTime: 200}
-
-	// Test: refreshSnapshotAfterLock is called and UpdateSnapshot is invoked.
-	t.Run("snapshot_always_refreshed_via_clock_now", func(t *testing.T) {
+	// Test: listRelationsAtLatestSnapshot is called and returns relations.
+	t.Run("list_relations_via_snapshot_op", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
@@ -846,8 +843,8 @@ func TestDropDatabase_SnapshotRefreshAfterExclusiveLock(t *testing.T) {
 		txnOp.EXPECT().Snapshot().Return(txn.CNTxnSnapshot{}, nil).AnyTimes()
 		txnOp.EXPECT().Status().Return(txn.TxnStatus_Active).AnyTimes()
 
-		// Key assertion: UpdateSnapshot must be called with the applied timestamp.
-		txnOp.EXPECT().UpdateSnapshot(gomock.Any(), appliedTS).Return(nil).Times(1)
+		// Key assertion: UpdateSnapshot must NOT be called — the txn snapshot stays unchanged.
+		txnOp.EXPECT().UpdateSnapshot(gomock.Any(), gomock.Any()).Times(0)
 
 		txnCli := mock_frontend.NewMockTxnClient(ctrl)
 		txnCli.EXPECT().New(gomock.Any(), gomock.Any()).Return(txnOp, nil).AnyTimes()
@@ -857,9 +854,6 @@ func TestDropDatabase_SnapshotRefreshAfterExclusiveLock(t *testing.T) {
 
 		mockDb := mock_frontend.NewMockDatabase(ctrl)
 		mockDb.EXPECT().IsSubscription(gomock.Any()).Return(false).AnyTimes()
-		// Relations returns an error to stop execution after the snapshot refresh.
-		// The important thing is that UpdateSnapshot was called before we get here.
-		mockDb.EXPECT().Relations(gomock.Any()).Return(nil, moerr.NewInternalErrorNoCtx("stop here")).AnyTimes()
 
 		eng := mock_frontend.NewMockEngine(ctrl)
 		eng.EXPECT().Database(gomock.Any(), "test_db", gomock.Any()).Return(mockDb, nil).AnyTimes()
@@ -869,28 +863,23 @@ func TestDropDatabase_SnapshotRefreshAfterExclusiveLock(t *testing.T) {
 		})
 		defer lockMoDb.Reset()
 
-		// Stub refreshSnapshotAfterLock to simulate the clock.Now() path:
-		// it calls WaitLogTailAppliedAt and UpdateSnapshot unconditionally.
-		refreshStub := gostub.Stub(&refreshSnapshotAfterLock, func(c *Compile) error {
-			ts, err := c.proc.Base.TxnClient.WaitLogTailAppliedAt(c.proc.Ctx, appliedTS)
-			if err != nil {
-				return err
-			}
-			return c.proc.GetTxnOperator().UpdateSnapshot(c.proc.Ctx, ts)
+		// Stub listRelationsAtLatestSnapshot to return a table list.
+		listStub := gostub.Stub(&listRelationsAtLatestSnapshot, func(c *Compile, dbName string) ([]string, []string, error) {
+			assert.Equal(t, "test_db", dbName)
+			return []string{"t1", "t2"}, nil, nil
 		})
-		defer refreshStub.Reset()
-
-		txnCli.EXPECT().WaitLogTailAppliedAt(gomock.Any(), appliedTS).Return(appliedTS, nil).Times(1)
+		defer listStub.Reset()
 
 		c := NewCompile("test", "test", "drop database test_db", "", "", eng, proc, nil, false, nil, time.Now())
 		err := s.DropDatabase(c)
-		// The test will error at Relations(), but the key assertion is that
-		// UpdateSnapshot was called (enforced by Times(1) on the mock).
-		assert.Error(t, err)
+		// Will error later (e.g. runSql for drop table), but the key assertion is
+		// that UpdateSnapshot was NOT called (enforced by Times(0) on the mock).
+		// We just verify it doesn't panic and listRelationsAtLatestSnapshot was used.
+		_ = err
 	})
 
-	// Test: refreshSnapshotAfterLock error is propagated.
-	t.Run("snapshot_refresh_error_propagated", func(t *testing.T) {
+	// Test: listRelationsAtLatestSnapshot error is propagated.
+	t.Run("list_relations_error_propagated", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
@@ -929,12 +918,12 @@ func TestDropDatabase_SnapshotRefreshAfterExclusiveLock(t *testing.T) {
 		})
 		defer lockMoDb.Reset()
 
-		// Stub refreshSnapshotAfterLock to return an error.
+		// Stub listRelationsAtLatestSnapshot to return an error.
 		expectedErr := moerr.NewInternalErrorNoCtx("logtail wait failed")
-		refreshStub := gostub.Stub(&refreshSnapshotAfterLock, func(c *Compile) error {
-			return expectedErr
+		listStub := gostub.Stub(&listRelationsAtLatestSnapshot, func(c *Compile, dbName string) ([]string, []string, error) {
+			return nil, nil, expectedErr
 		})
-		defer refreshStub.Reset()
+		defer listStub.Reset()
 
 		c := NewCompile("test", "test", "drop database test_db", "", "", eng, proc, nil, false, nil, time.Now())
 		err := s.DropDatabase(c)

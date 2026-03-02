@@ -16,6 +16,7 @@ package compile
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
@@ -3880,12 +3881,44 @@ var lockMoDatabase = func(c *Compile, dbName string, lockMode lock.LockMode) err
 // tables (mo_tables) without changing mo_database. In such cases, doLock's
 // hasNewVersionInRange returns false and the snapshot is not advanced.
 var refreshSnapshotAfterLock = func(c *Compile) error {
+	oldSnap := c.proc.GetTxnOperator().Txn().SnapshotTS
 	now, _ := moruntime.ServiceRuntime(c.proc.GetService()).Clock().Now()
 	ts, err := c.proc.Base.TxnClient.WaitLogTailAppliedAt(c.proc.Ctx, now)
 	if err != nil {
 		return err
 	}
-	return c.proc.GetTxnOperator().UpdateSnapshot(c.proc.Ctx, ts)
+	err = c.proc.GetTxnOperator().UpdateSnapshot(c.proc.Ctx, ts)
+	if err != nil {
+		return err
+	}
+	newSnap := c.proc.GetTxnOperator().Txn().SnapshotTS
+	c.proc.Info(c.proc.Ctx, "[DIAG] refreshSnapshotAfterLock",
+		zap.String("txn-id", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
+		zap.String("old-snapshot", oldSnap.DebugString()),
+		zap.String("new-snapshot", newSnap.DebugString()),
+		zap.String("sql", c.sql),
+	)
+	return nil
+}
+
+// isRestoreContext returns true if the current context is part of a restore
+// operation (snapshot restore or PITR restore). During restore, many DDL
+// statements run in a single large transaction; advancing the snapshot
+// mid-transaction can cause the txn to observe externally committed data
+// and fail with duplicate-key errors on commit.
+func isRestoreContext(ctx context.Context) bool {
+	v := ctx.Value(tree.CloneLevelCtxKey{})
+	if v == nil {
+		return false
+	}
+	switch v.(tree.CloneLevelType) {
+	case tree.RestoreCloneLevelTable,
+		tree.RestoreCloneLevelDatabase,
+		tree.RestoreCloneLevelAccount,
+		tree.RestoreCloneLevelCluster:
+		return true
+	}
+	return false
 }
 
 var lockMoTable = func(
