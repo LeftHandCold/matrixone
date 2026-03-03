@@ -16,7 +16,6 @@ package compile
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
@@ -115,19 +114,6 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return err
 	}
 
-	// Lock a sentinel key on mo_tables to prevent concurrent CREATE TABLE / DDL
-	// from committing new table records while we are dropping the database.
-	if err = lockMoTableSentinel(c, dbName, lock.LockMode_Exclusive); err != nil {
-		return err
-	}
-
-	txnID := hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)
-	c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase lockMoDatabase acquired",
-		zap.String("db", dbName),
-		zap.String("txnID", txnID),
-		zap.String("txn-snapshot", c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString()),
-	)
-
 	// handle sub
 	if db.IsSubscription(c.proc.Ctx) {
 		if err = dropSubscription(c.proc.Ctx, c, dbName); err != nil {
@@ -141,54 +127,20 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return err
 	}
 
-	// Use a separate read-only transaction at the latest snapshot to list all
-	// relations. This covers the race condition where a concurrent "data branch
-	// create table" committed after our transaction started but before we
-	// acquired the exclusive lock on mo_database. Because the lock conflict
-	// detection (doLock/hasNewVersionInRange) only checks the locked table
-	// (mo_database), it cannot detect modifications to mo_tables, so the
-	// current transaction's snapshot may be stale. Reading with a fresh
-	// snapshot in a separate transaction avoids advancing the current
-	// transaction's SnapshotTS, which would bypass the workspace tombstone
-	// transfer mechanism and cause duplicate-key errors on commit.
+	// Drop tables visible to the current transaction via normal SQL path.
+	// This handles tables that the current txn's snapshot can see.
 	deleteTables, ignoreTables, err := listRelationsAtLatestSnapshot(c, dbName)
 	if err != nil {
 		return err
 	}
 	_ = ignoreTables
 
-	c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase listRelationsAtLatestSnapshot",
-		zap.String("db", dbName),
-		zap.String("txnID", txnID),
-		zap.Int("deleteTables", len(deleteTables)),
-		zap.Int("ignoreTables", len(ignoreTables)),
-		zap.Strings("delete", deleteTables),
-		zap.Strings("ignore", ignoreTables),
-		zap.String("txn-snapshot", c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString()),
-	)
-
 	for _, t := range deleteTables {
 		dropSql := fmt.Sprintf(dropTableBeforeDropDatabase, dbName, t)
-		c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase dropping table",
-			zap.String("db", dbName),
-			zap.String("table", t),
-			zap.String("txnID", txnID),
-		)
 		err = c.runSql(dropSql)
 		if err != nil {
-			c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase drop table failed",
-				zap.String("db", dbName),
-				zap.String("table", t),
-				zap.String("txnID", txnID),
-				zap.Error(err),
-			)
 			return err
 		}
-		c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase drop table done",
-			zap.String("db", dbName),
-			zap.String("table", t),
-			zap.String("txnID", txnID),
-		)
 	}
 
 	sql := s.Plan.GetDdl().GetDropDatabase().GetCheckFKSql()
@@ -198,23 +150,21 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		}
 	}
 
-	c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase deleting database",
-		zap.String("db", dbName),
-		zap.String("txnID", txnID),
-	)
 	err = c.e.Delete(c.proc.Ctx, dbName, c.proc.GetTxnOperator())
 	if err != nil {
-		c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase delete database failed",
-			zap.String("db", dbName),
-			zap.String("txnID", txnID),
-			zap.Error(err),
-		)
 		return err
 	}
-	c.proc.Info(c.proc.Ctx, "[DEBUG] DropDatabase delete database done",
-		zap.String("db", dbName),
-		zap.String("txnID", txnID),
-	)
+
+	// Clean up orphan table records that the current transaction could not see.
+	// This handles the race condition where a concurrent "data branch create table"
+	// committed a table record after our transaction's snapshot but before we
+	// acquired the exclusive lock on mo_database. The "DROP TABLE IF EXISTS" above
+	// becomes a no-op for such tables (current txn can't see them), leaving orphan
+	// records in mo_tables/mo_columns. We use a separate transaction with a fresh
+	// snapshot to delete any remaining records for this database.
+	if err = deleteOrphanTableRecords(c, dbName); err != nil {
+		return err
+	}
 
 	// 1.delete all index object record under the database from mo_catalog.mo_indexes
 	deleteSql := fmt.Sprintf(deleteMoIndexesWithDatabaseIdFormat, s.Plan.GetDdl().GetDropDatabase().GetDatabaseId())
@@ -353,10 +303,6 @@ func (s *Scope) AlterView(c *Compile) error {
 		return err
 	}
 
-	if err := lockMoTableSentinel(c, dbName, lock.LockMode_Shared); err != nil {
-		return err
-	}
-
 	if err := lockMoTable(c, dbName, tblName, lock.LockMode_Exclusive); err != nil {
 		return err
 	}
@@ -440,11 +386,6 @@ func (s *Scope) AlterTableInplace(c *Compile) error {
 		var retryErr error
 		// 0. lock origin database metadata in catalog
 		if err = lockMoDatabase(c, dbName, lock.LockMode_Shared); err != nil {
-			return err
-		}
-
-		// 0.5. lock sentinel key on mo_tables
-		if err = lockMoTableSentinel(c, dbName, lock.LockMode_Shared); err != nil {
 			return err
 		}
 
@@ -991,13 +932,6 @@ func (s *Scope) CreateTable(c *Compile) error {
 		return err
 	}
 
-	c.proc.Info(c.proc.Ctx, "[DEBUG] CreateTable lockMoDatabase(Shared) acquired",
-		zap.String("db", dbName),
-		zap.String("table", tblName),
-		zap.String("txnID", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
-		zap.String("txn-snapshot", c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString()),
-	)
-
 	dbSource, err := c.e.Database(c.proc.Ctx, dbName, c.proc.GetTxnOperator())
 	if err != nil {
 		if dbName == "" {
@@ -1050,10 +984,6 @@ func (s *Scope) CreateTable(c *Compile) error {
 		}
 	}
 
-	if err = lockMoTableSentinel(c, dbName, lock.LockMode_Shared); err != nil {
-		return err
-	}
-
 	if err = lockMoTable(c, dbName, tblName, lock.LockMode_Exclusive); err != nil {
 		c.proc.Error(c.proc.Ctx, "createTable",
 			zap.String("databaseName", c.db),
@@ -1062,13 +992,6 @@ func (s *Scope) CreateTable(c *Compile) error {
 		)
 		return err
 	}
-
-	c.proc.Info(c.proc.Ctx, "[DEBUG] CreateTable lockMoTable(Exclusive) acquired",
-		zap.String("db", dbName),
-		zap.String("table", tblName),
-		zap.String("txnID", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
-		zap.String("txn-snapshot", c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString()),
-	)
 
 	if len(qry.IndexTables) > 0 {
 		for _, def := range qry.IndexTables {
@@ -1081,11 +1004,6 @@ func (s *Scope) CreateTable(c *Compile) error {
 		}
 	}
 
-	c.proc.Info(c.proc.Ctx, "[DEBUG] CreateTable dbSource.Create starting",
-		zap.String("db", dbName),
-		zap.String("table", tblName),
-		zap.String("txnID", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
-	)
 	if err = dbSource.Create(
 		context.WithValue(c.proc.Ctx,
 			defines.SqlKey{}, c.sql), tblName,
@@ -1098,11 +1016,6 @@ func (s *Scope) CreateTable(c *Compile) error {
 		)
 		return err
 	}
-	c.proc.Info(c.proc.Ctx, "[DEBUG] CreateTable dbSource.Create done",
-		zap.String("db", dbName),
-		zap.String("table", tblName),
-		zap.String("txnID", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
-	)
 
 	//update mo_foreign_keys
 	for _, sql := range qry.UpdateFkSqls {
@@ -1696,10 +1609,6 @@ func (s *Scope) CreateView(c *Compile) error {
 				return moerr.NewTableAlreadyExists(c.proc.Ctx, fmt.Sprintf("temporary '%s'", viewName))
 			}
 		}
-	}
-
-	if err = lockMoTableSentinel(c, dbName, lock.LockMode_Shared); err != nil {
-		return err
 	}
 
 	if err = lockMoTable(c, dbName, viewName, lock.LockMode_Exclusive); err != nil {
@@ -2455,13 +2364,6 @@ func (s *Scope) TruncateTable(c *Compile) error {
 
 	if !isTemp && c.proc.GetTxnOperator().Txn().IsPessimistic() {
 		var err error
-		if e := lockMoTableSentinel(c, dbName, lock.LockMode_Shared); e != nil {
-			if !moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetry) &&
-				!moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetryWithDefChanged) {
-				return e
-			}
-			err = e
-		}
 		if e := lockMoTable(c, dbName, tblName, lock.LockMode_Exclusive); e != nil {
 			if !moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetry) &&
 				!moerr.IsMoErrCode(err, moerr.ErrTxnNeedRetryWithDefChanged) {
@@ -2715,13 +2617,6 @@ func (s *Scope) DropTable(c *Compile) error {
 
 	if !isTemp && !isView && !isSource && c.proc.GetTxnOperator().Txn().IsPessimistic() {
 		var err error
-		if e := lockMoTableSentinel(c, dbName, lock.LockMode_Shared); e != nil {
-			if !moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetry) &&
-				!moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetryWithDefChanged) {
-				return e
-			}
-			err = e
-		}
 		if e := lockMoTable(c, dbName, tblName, lock.LockMode_Exclusive); e != nil {
 			if !moerr.IsMoErrCode(e, moerr.ErrTxnNeedRetry) &&
 				!moerr.IsMoErrCode(err, moerr.ErrTxnNeedRetryWithDefChanged) {
@@ -3940,32 +3835,6 @@ var lockMoDatabase = func(c *Compile, dbName string, lockMode lock.LockMode) err
 	return nil
 }
 
-// lockMoTableSentinel locks a sentinel key (accountId, dbName, "") on mo_tables
-// to synchronize DropDatabase (Exclusive) with concurrent DDL operations like
-// CreateTable, CreateView, etc. (Shared). This prevents a concurrent CREATE TABLE
-// from committing a new table record while DropDatabase is executing, which would
-// leave orphan records in mo_tables.
-var lockMoTableSentinel = func(c *Compile, dbName string, lockMode lock.LockMode) error {
-	dbRel, err := getRelFromMoCatalog(c, catalog.MO_TABLES)
-	if err != nil {
-		return err
-	}
-	accountID, err := defines.GetAccountId(c.proc.Ctx)
-	if err != nil {
-		return err
-	}
-	// Use empty string as table name to form a sentinel key: Serial(accountId, dbName, "")
-	bat, err := getLockBatch(c.proc, accountID, []string{dbName, ""})
-	if err != nil {
-		return err
-	}
-	defer bat.GetVector(0).Free(c.proc.Mp())
-	if err := lockRows(c.e, c.proc, dbRel, bat, 0, lockMode, lock.Sharding_None, accountID); err != nil {
-		return err
-	}
-	return nil
-}
-
 // listRelationsAtLatestSnapshot reads the table list for the given database
 // using a separate read-only transaction at the latest snapshot. This avoids
 // advancing the current transaction's SnapshotTS, which would bypass the
@@ -4013,6 +3882,55 @@ var listRelationsAtLatestSnapshot = func(c *Compile, dbName string) ([]string, [
 		}
 	}
 	return deleteTables, ignoreTables, nil
+}
+
+// deleteOrphanTableRecords removes any remaining table records in mo_tables
+// and mo_columns for the given database using a separate transaction with a
+// fresh snapshot. This handles the race condition where a concurrent "data
+// branch create table" committed a table record after the DropDatabase
+// transaction's snapshot, making it invisible to the current transaction.
+// The "DROP TABLE IF EXISTS" in the normal path becomes a no-op for such
+// tables, leaving orphan records. This function cleans them up.
+var deleteOrphanTableRecords = func(c *Compile, dbName string) error {
+	accountID, err := defines.GetAccountId(c.proc.Ctx)
+	if err != nil {
+		return err
+	}
+
+	exec := c.getInternalSQLExecutor()
+	ctx := c.proc.Ctx
+	opts := executor.Options{}.
+		WithDatabase(c.db).
+		WithTimeZone(c.proc.GetSessionInfo().TimeZone).
+		WithDisableIncrStatement()
+
+	// Delete orphan records from mo_tables for this database.
+	delTablesSql := fmt.Sprintf(
+		"delete from `%s`.`%s` where %s = %d and %s = '%s'",
+		catalog.MO_CATALOG, catalog.MO_TABLES,
+		catalog.SystemRelAttr_AccID, accountID,
+		catalog.SystemRelAttr_DBName, dbName,
+	)
+	res, err := exec.Exec(ctx, delTablesSql, opts)
+	if err != nil {
+		return err
+	}
+	res.Close()
+
+	// Delete orphan records from mo_columns for this database.
+	delColsSql := fmt.Sprintf(
+		"delete from `%s`.`%s` where %s = %d and %s = '%s'",
+		catalog.MO_CATALOG, catalog.MO_COLUMNS,
+		catalog.SystemColAttr_AccID, accountID,
+		catalog.SystemColAttr_DBName, dbName,
+	)
+	res, err = exec.Exec(ctx, delColsSql, opts)
+	if err != nil {
+		return err
+	}
+	res.Close()
+
+	return nil
 }
 
 var lockMoTable = func(
