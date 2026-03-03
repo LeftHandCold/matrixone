@@ -879,10 +879,15 @@ func TestDropDatabase_ListRelationsAtLatestSnapshot(t *testing.T) {
 		})
 		defer listStub.Reset()
 
-		orphanStub := gostub.Stub(&deleteOrphanTableRecords, func(_ *Compile, _ string) error {
+		orphanStub := gostub.Stub(&deleteOrphanTableRecords, func(_ *Compile, _ string, _ []string) error {
 			return nil
 		})
 		defer orphanStub.Reset()
+
+		visibleStub := gostub.Stub(&listVisibleRelations, func(_ *Compile, _ string) ([]string, error) {
+			return nil, nil
+		})
+		defer visibleStub.Reset()
 
 		c := NewCompile("test", "test", "drop database test_db", "", "", eng, proc, nil, false, nil, time.Now())
 		c.pn = cplan

@@ -127,15 +127,25 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return err
 	}
 
-	// Drop tables visible to the current transaction via normal SQL path.
-	// This handles tables that the current txn's snapshot can see.
-	deleteTables, ignoreTables, err := listRelationsAtLatestSnapshot(c, dbName)
+	// Get all tables from a fresh snapshot (includes tables committed by
+	// concurrent transactions after our snapshot).
+	allTables, allHiddenTables, err := listRelationsAtLatestSnapshot(c, dbName)
 	if err != nil {
 		return err
 	}
-	_ = ignoreTables
+	// Combine regular and hidden tables for orphan detection later.
+	allTablesIncludingHidden := append(allTables, allHiddenTables...)
 
-	for _, t := range deleteTables {
+	// Query tables visible to the current txn BEFORE Engine.Delete modifies
+	// the workspace. After Engine.Delete, the workspace tombstones make these
+	// tables invisible, which would break the orphan diff calculation.
+	visibleTables, err := listVisibleRelations(c, dbName)
+	if err != nil {
+		return err
+	}
+
+	// Drop tables visible to the current transaction via normal SQL path.
+	for _, t := range allTables {
 		dropSql := fmt.Sprintf(dropTableBeforeDropDatabase, dbName, t)
 		err = c.runSql(dropSql)
 		if err != nil {
@@ -156,14 +166,21 @@ func (s *Scope) DropDatabase(c *Compile) error {
 	}
 
 	// Clean up orphan table records that the current transaction could not see.
-	// This handles the race condition where a concurrent "data branch create table"
-	// committed a table record after our transaction's snapshot but before we
-	// acquired the exclusive lock on mo_database. The "DROP TABLE IF EXISTS" above
-	// becomes a no-op for such tables (current txn can't see them), leaving orphan
-	// records in mo_tables/mo_columns. We use a separate transaction with a fresh
-	// snapshot to delete any remaining records for this database.
-	if err = deleteOrphanTableRecords(c, dbName); err != nil {
-		return err
+	// After the DROP TABLE loop and Engine.Delete above, any tables that were
+	// visible to the current txn have been properly deleted (with locks held).
+	// However, tables committed by concurrent "data branch create table" after
+	// our snapshot are invisible to the current txn — the DROP TABLE IF EXISTS
+	// was a no-op for them, leaving orphan records in mo_tables/mo_columns.
+	//
+	// We identify orphans by comparing allTablesIncludingHidden (fresh snapshot)
+	// against visibleTables (current txn snapshot, captured before Engine.Delete).
+	// The orphan records are NOT locked by the current txn, so a separate
+	// transaction can safely delete them without deadlock.
+	orphanTables := diffStringSlice(allTablesIncludingHidden, visibleTables)
+	if len(orphanTables) > 0 {
+		if err = deleteOrphanTableRecords(c, dbName, orphanTables); err != nil {
+			return err
+		}
 	}
 
 	// 1.delete all index object record under the database from mo_catalog.mo_indexes
@@ -3884,14 +3901,69 @@ var listRelationsAtLatestSnapshot = func(c *Compile, dbName string) ([]string, [
 	return deleteTables, ignoreTables, nil
 }
 
-// deleteOrphanTableRecords removes any remaining table records in mo_tables
-// and mo_columns for the given database using a separate transaction with a
-// fresh snapshot. This handles the race condition where a concurrent "data
-// branch create table" committed a table record after the DropDatabase
-// transaction's snapshot, making it invisible to the current transaction.
-// The "DROP TABLE IF EXISTS" in the normal path becomes a no-op for such
-// tables, leaving orphan records. This function cleans them up.
-var deleteOrphanTableRecords = func(c *Compile, dbName string) error {
+// listVisibleRelations queries mo_tables using the current transaction to get
+// the list of tables visible to the current txn's snapshot. This is used to
+// compute the diff against allTables (from a fresh snapshot) to identify
+// orphan tables that need cleanup.
+var listVisibleRelations = func(c *Compile, dbName string) ([]string, error) {
+	accountID, err := defines.GetAccountId(c.proc.Ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	sql := fmt.Sprintf(
+		"select %s from `%s`.`%s` where %s = %d and %s = '%s'",
+		catalog.SystemRelAttr_Name, catalog.MO_CATALOG, catalog.MO_TABLES,
+		catalog.SystemRelAttr_AccID, accountID,
+		catalog.SystemRelAttr_DBName, dbName,
+	)
+
+	exec := c.getInternalSQLExecutor()
+	ctx := c.proc.Ctx
+	opts := executor.Options{}.
+		WithDatabase(c.db).
+		WithTimeZone(c.proc.GetSessionInfo().TimeZone).
+		WithDisableIncrStatement().
+		WithTxn(c.proc.GetTxnOperator())
+
+	res, err := exec.Exec(ctx, sql, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Close()
+
+	var tables []string
+	for _, b := range res.Batches {
+		for i, v := 0, b.Vecs[0]; i < v.Length(); i++ {
+			tables = append(tables, v.GetStringAt(i))
+		}
+	}
+	return tables, nil
+}
+
+// diffStringSlice returns elements in 'all' that are not in 'visible'.
+func diffStringSlice(all, visible []string) []string {
+	set := make(map[string]struct{}, len(visible))
+	for _, s := range visible {
+		set[s] = struct{}{}
+	}
+	var diff []string
+	for _, s := range all {
+		if _, ok := set[s]; !ok {
+			diff = append(diff, s)
+		}
+	}
+	return diff
+}
+
+// deleteOrphanTableRecords removes orphan table records in mo_tables and
+// mo_columns for the given database. Only the specified orphan table names
+// are deleted. These are tables that were committed by a concurrent "data
+// branch create table" after the DropDatabase transaction's snapshot, making
+// them invisible to the current transaction. Because the current transaction
+// does NOT hold locks on these orphan records, a separate transaction can
+// safely delete them without deadlock.
+var deleteOrphanTableRecords = func(c *Compile, dbName string, orphanTables []string) error {
 	accountID, err := defines.GetAccountId(c.proc.Ctx)
 	if err != nil {
 		return err
@@ -3904,31 +3976,35 @@ var deleteOrphanTableRecords = func(c *Compile, dbName string) error {
 		WithTimeZone(c.proc.GetSessionInfo().TimeZone).
 		WithDisableIncrStatement()
 
-	// Delete orphan records from mo_tables for this database.
-	delTablesSql := fmt.Sprintf(
-		"delete from `%s`.`%s` where %s = %d and %s = '%s'",
-		catalog.MO_CATALOG, catalog.MO_TABLES,
-		catalog.SystemRelAttr_AccID, accountID,
-		catalog.SystemRelAttr_DBName, dbName,
-	)
-	res, err := exec.Exec(ctx, delTablesSql, opts)
-	if err != nil {
-		return err
-	}
-	res.Close()
+	for _, tblName := range orphanTables {
+		// Delete orphan record from mo_tables.
+		delTablesSql := fmt.Sprintf(
+			"delete from `%s`.`%s` where %s = %d and %s = '%s' and %s = '%s'",
+			catalog.MO_CATALOG, catalog.MO_TABLES,
+			catalog.SystemRelAttr_AccID, accountID,
+			catalog.SystemRelAttr_DBName, dbName,
+			catalog.SystemRelAttr_Name, tblName,
+		)
+		res, err := exec.Exec(ctx, delTablesSql, opts)
+		if err != nil {
+			return err
+		}
+		res.Close()
 
-	// Delete orphan records from mo_columns for this database.
-	delColsSql := fmt.Sprintf(
-		"delete from `%s`.`%s` where %s = %d and %s = '%s'",
-		catalog.MO_CATALOG, catalog.MO_COLUMNS,
-		catalog.SystemColAttr_AccID, accountID,
-		catalog.SystemColAttr_DBName, dbName,
-	)
-	res, err = exec.Exec(ctx, delColsSql, opts)
-	if err != nil {
-		return err
+		// Delete orphan records from mo_columns.
+		delColsSql := fmt.Sprintf(
+			"delete from `%s`.`%s` where %s = %d and %s = '%s' and %s = '%s'",
+			catalog.MO_CATALOG, catalog.MO_COLUMNS,
+			catalog.SystemColAttr_AccID, accountID,
+			catalog.SystemColAttr_DBName, dbName,
+			catalog.SystemColAttr_RelName, tblName,
+		)
+		res, err = exec.Exec(ctx, delColsSql, opts)
+		if err != nil {
+			return err
+		}
+		res.Close()
 	}
-	res.Close()
 
 	return nil
 }
