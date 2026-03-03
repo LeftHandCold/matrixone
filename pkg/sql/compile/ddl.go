@@ -3963,12 +3963,20 @@ func diffStringSlice(all, visible []string) []string {
 // them invisible to the current transaction. Because the current transaction
 // does NOT hold locks on these orphan records, a separate transaction can
 // safely delete them without deadlock.
+//
+// We use engine.Database.Delete() (not raw SQL DELETE) because TN expects
+// mo_tables DELETE entries to have the full batch format produced by
+// GenDropTableTuple. A raw SQL DELETE only generates a tombstone batch
+// (rowid + pk), which causes an index-out-of-range panic in TN's
+// parseDeleteTable → genDropTables.
+//
+// We also cannot use "DROP TABLE IF EXISTS" SQL in the separate transaction
+// because the DropTable DDL path calls lockMoDatabase(Shared), which
+// conflicts with the parent transaction's Exclusive lock on mo_database.
+// Instead, we call engine.Database.Delete() directly, which goes through
+// txnDatabase.deleteTable() and produces the correct batch format without
+// acquiring any mo_database locks.
 var deleteOrphanTableRecords = func(c *Compile, dbName string, orphanTables []string) error {
-	accountID, err := defines.GetAccountId(c.proc.Ctx)
-	if err != nil {
-		return err
-	}
-
 	exec := c.getInternalSQLExecutor()
 	ctx := c.proc.Ctx
 	opts := executor.Options{}.
@@ -3976,37 +3984,22 @@ var deleteOrphanTableRecords = func(c *Compile, dbName string, orphanTables []st
 		WithTimeZone(c.proc.GetSessionInfo().TimeZone).
 		WithDisableIncrStatement()
 
-	for _, tblName := range orphanTables {
-		// Delete orphan record from mo_tables.
-		delTablesSql := fmt.Sprintf(
-			"delete from `%s`.`%s` where %s = %d and %s = '%s' and %s = '%s'",
-			catalog.MO_CATALOG, catalog.MO_TABLES,
-			catalog.SystemRelAttr_AccID, accountID,
-			catalog.SystemRelAttr_DBName, dbName,
-			catalog.SystemRelAttr_Name, tblName,
-		)
-		res, err := exec.Exec(ctx, delTablesSql, opts)
+	return exec.ExecTxn(ctx, func(te executor.TxnExecutor) error {
+		txnOp := te.Txn()
+		db, err := c.e.Database(ctx, dbName, txnOp)
 		if err != nil {
-			return err
+			// Database may already be invisible if the parent txn's
+			// Engine.Delete has been committed by the time this runs.
+			// In that case, there's nothing to clean up.
+			return nil
 		}
-		res.Close()
-
-		// Delete orphan records from mo_columns.
-		delColsSql := fmt.Sprintf(
-			"delete from `%s`.`%s` where %s = %d and %s = '%s' and %s = '%s'",
-			catalog.MO_CATALOG, catalog.MO_COLUMNS,
-			catalog.SystemColAttr_AccID, accountID,
-			catalog.SystemColAttr_DBName, dbName,
-			catalog.SystemColAttr_RelName, tblName,
-		)
-		res, err = exec.Exec(ctx, delColsSql, opts)
-		if err != nil {
-			return err
+		for _, tblName := range orphanTables {
+			if err := db.Delete(ctx, tblName); err != nil {
+				return err
+			}
 		}
-		res.Close()
-	}
-
-	return nil
+		return nil
+	}, opts)
 }
 
 var lockMoTable = func(
