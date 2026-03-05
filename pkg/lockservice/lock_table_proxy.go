@@ -23,6 +23,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/util"
 	pb "github.com/matrixorigin/matrixone/pkg/pb/lock"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
+	"go.uber.org/zap"
 )
 
 type localLockTableProxy struct {
@@ -89,6 +90,16 @@ func (lp *localLockTableProxy) lock(
 	if w != nil {
 		defer w.close("localLockTableProxy lock", lp.logger)
 	}
+
+	lp.logger.Info("localLockTableProxy Shared lock",
+		zap.String("service", lp.serviceID),
+		zap.String("txn", string(txn.txnID)),
+		zap.Bool("first-shared", first),
+		zap.Bool("send-to-remote", first),
+		zap.Int("local-holders", len(v.txns)),
+		zap.Uint64("table", lp.getBind().Table),
+	)
+
 	lp.mu.Unlock()
 
 	if first {
@@ -139,6 +150,16 @@ func (lp *localLockTableProxy) unlock(
 		row := util.UnsafeBytesToString(key)
 		if v, ok := lp.mu.holders[row]; ok {
 			isHolder := lp.isRemoteHolderLocked(row, txn.txnID)
+
+			lp.logger.Info("localLockTableProxy unlock",
+				zap.String("service", lp.serviceID),
+				zap.String("txn", string(txn.txnID)),
+				zap.Bool("is-remote-holder", isHolder),
+				zap.Int("remaining-holders", len(v.txns)),
+				zap.String("commitTS", commitTS.DebugString()),
+				zap.Uint64("table", lp.getBind().Table),
+			)
+
 			if !v.remove(txn) {
 				return true
 			}

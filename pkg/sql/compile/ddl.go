@@ -16,6 +16,7 @@ package compile
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
@@ -136,8 +137,10 @@ func (s *Scope) DropDatabase(c *Compile) error {
 	{
 		txnOp := c.proc.GetTxnOperator()
 		if txnOp.Txn().IsPessimistic() && txnOp.Txn().IsRCIsolation() {
+			snapshotTS := txnOp.Txn().SnapshotTS
 			latestCommitTS := c.proc.Base.TxnClient.GetLatestCommitTS()
-			if txnOp.Txn().SnapshotTS.Less(latestCommitTS) {
+			advanced := false
+			if snapshotTS.Less(latestCommitTS) {
 				newTS, err := c.proc.Base.TxnClient.WaitLogTailAppliedAt(c.proc.Ctx, latestCommitTS)
 				if err != nil {
 					return err
@@ -145,6 +148,22 @@ func (s *Scope) DropDatabase(c *Compile) error {
 				if err := txnOp.UpdateSnapshot(c.proc.Ctx, newTS); err != nil {
 					return err
 				}
+				advanced = true
+				logutil.Info("DROP DATABASE UpdateSnapshot advanced",
+					zap.String("db", dbName),
+					zap.String("snapshotTS-before", snapshotTS.DebugString()),
+					zap.String("latestCommitTS", latestCommitTS.DebugString()),
+					zap.String("newSnapshotTS", newTS.DebugString()),
+					zap.String("txn-id", hex.EncodeToString(txnOp.Txn().ID)),
+				)
+			}
+			if !advanced {
+				logutil.Info("DROP DATABASE UpdateSnapshot NOT advanced (latestCommitTS <= snapshotTS)",
+					zap.String("db", dbName),
+					zap.String("snapshotTS", snapshotTS.DebugString()),
+					zap.String("latestCommitTS", latestCommitTS.DebugString()),
+					zap.String("txn-id", hex.EncodeToString(txnOp.Txn().ID)),
+				)
 			}
 		}
 	}
@@ -170,6 +189,13 @@ func (s *Scope) DropDatabase(c *Compile) error {
 	if err != nil {
 		return err
 	}
+	logutil.Info("DROP DATABASE Relations() result",
+		zap.String("db", dbName),
+		zap.Int("relation-count", len(relations)),
+		zap.Strings("relations", relations),
+		zap.String("snapshotTS", c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString()),
+		zap.String("txn-id", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
+	)
 	var ignoreTables []string
 	for _, r := range relations {
 		t, err := database.Relation(c.proc.Ctx, r, nil)
