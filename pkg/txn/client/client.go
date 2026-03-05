@@ -435,16 +435,6 @@ func (client *txnClient) updateLastCommitTS(event TxnEvent) {
 		}
 
 		if client.atomic.latestCommitTS.CompareAndSwap(old, new) {
-			oldStr := "nil"
-			if old != nil {
-				oldStr = old.DebugString()
-			}
-			client.logger.Info("updateLastCommitTS advanced",
-				zap.String("sid", client.sid),
-				zap.String("old", oldStr),
-				zap.String("new", new.DebugString()),
-				zap.String("txn-id", hex.EncodeToString(event.Txn.ID)),
-			)
 			return
 		}
 	}

@@ -16,7 +16,6 @@ package compile
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
@@ -25,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	moruntime "github.com/matrixorigin/matrixone/pkg/common/runtime"
 	commonutil "github.com/matrixorigin/matrixone/pkg/common/util"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -115,58 +115,32 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		return err
 	}
 
-	// After acquiring the exclusive lock on mo_database, refresh the
-	// transaction's snapshot to the latest applied logtail timestamp.
+	// After acquiring the exclusive lock on mo_database, temporarily advance
+	// the transaction's snapshot so that Relations() can see all tables
+	// committed by other CNs (e.g. concurrent CLONE) before the lock was
+	// granted.
 	//
-	// This fixes a race condition between concurrent CLONE (CREATE TABLE)
-	// and DROP DATABASE:
-	//   1. CLONE acquires Shared lock on mo_database, creates table in
-	//      mo_tables, commits, releases Shared lock.
-	//   2. DROP acquires Exclusive lock on mo_database. The lock service
-	//      runs hasNewVersionInRange on mo_database rows, but CLONE did
-	//      NOT modify mo_database (only mo_tables), so changed=false and
-	//      the snapshot is NOT advanced past CLONE's commit timestamp.
-	//   3. DROP calls Relations() with the stale snapshot, misses the
-	//      newly created table, and drops the database without deleting
-	//      the table — leaving an orphan record in mo_tables that causes
-	//      an OkExpectedEOB panic during checkpoint replay.
+	// We MUST restore the original SnapshotTS before returning, because
+	// UpdateSnapshot changes txn.SnapshotTS which would affect the
+	// tombstone transfer range in subsequent IncrStatementID calls.
+	// In restore-cluster scenarios (multiple DDLs in one transaction),
+	// a permanently advanced SnapshotTS causes duplicate-key errors.
 	//
-	// By explicitly advancing the snapshot to the latest commit timestamp
-	// after acquiring the exclusive lock, we ensure Relations() sees all
-	// tables committed before the lock was granted.
-	{
-		txnOp := c.proc.GetTxnOperator()
-		if txnOp.Txn().IsPessimistic() && txnOp.Txn().IsRCIsolation() {
-			snapshotTS := txnOp.Txn().SnapshotTS
-			latestCommitTS := c.proc.Base.TxnClient.GetLatestCommitTS()
-			advanced := false
-			if snapshotTS.Less(latestCommitTS) {
-				newTS, err := c.proc.Base.TxnClient.WaitLogTailAppliedAt(c.proc.Ctx, latestCommitTS)
-				if err != nil {
-					return err
-				}
-				if err := txnOp.UpdateSnapshot(c.proc.Ctx, newTS); err != nil {
-					return err
-				}
-				advanced = true
-				logutil.Info("DROP DATABASE UpdateSnapshot advanced",
-					zap.String("db", dbName),
-					zap.String("snapshotTS-before", snapshotTS.DebugString()),
-					zap.String("latestCommitTS", latestCommitTS.DebugString()),
-					zap.String("newSnapshotTS", newTS.DebugString()),
-					zap.String("txn-id", hex.EncodeToString(txnOp.Txn().ID)),
-				)
-			}
-			if !advanced {
-				logutil.Info("DROP DATABASE UpdateSnapshot NOT advanced (latestCommitTS <= snapshotTS)",
-					zap.String("db", dbName),
-					zap.String("snapshotTS", snapshotTS.DebugString()),
-					zap.String("latestCommitTS", latestCommitTS.DebugString()),
-					zap.String("txn-id", hex.EncodeToString(txnOp.Txn().ID)),
-				)
-			}
+	// Within DropDatabase, all internal SQL uses WithDisableIncrStatement(),
+	// so no tombstone transfer is triggered while SnapshotTS is advanced.
+	txnOp := c.proc.GetTxnOperator()
+	origSnapshotTS := txnOp.SnapshotTS()
+	if txnOp.Txn().IsPessimistic() && txnOp.Txn().IsRCIsolation() {
+		now, _ := moruntime.ServiceRuntime(c.proc.GetService()).Clock().Now()
+		if err = txnOp.UpdateSnapshot(c.proc.Ctx, now); err != nil {
+			return err
 		}
 	}
+	defer func() {
+		// Restore SnapshotTS so that tombstone transfer in subsequent
+		// statements is not affected by the temporary advancement.
+		txnOp.TxnRef().SnapshotTS = origSnapshotTS
+	}()
 
 	// handle sub
 	if db.IsSubscription(c.proc.Ctx) {
@@ -189,13 +163,6 @@ func (s *Scope) DropDatabase(c *Compile) error {
 	if err != nil {
 		return err
 	}
-	logutil.Info("DROP DATABASE Relations() result",
-		zap.String("db", dbName),
-		zap.Int("relation-count", len(relations)),
-		zap.Strings("relations", relations),
-		zap.String("snapshotTS", c.proc.GetTxnOperator().Txn().SnapshotTS.DebugString()),
-		zap.String("txn-id", hex.EncodeToString(c.proc.GetTxnOperator().Txn().ID)),
-	)
 	var ignoreTables []string
 	for _, r := range relations {
 		t, err := database.Relation(c.proc.Ctx, r, nil)
