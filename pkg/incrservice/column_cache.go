@@ -29,7 +29,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
-	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"go.uber.org/zap"
 	"golang.org/x/exp/constraints"
 )
@@ -365,22 +364,6 @@ func (col *columnCache) preAllocate(
 	if col.cfg.CountPerAllocate > count {
 		count = col.cfg.CountPerAllocate
 	}
-	// Fault injection: simulate asyncAllocate hang (TN not responding).
-	// Enable:  SELECT enable_fault_injection();
-	// Add:     SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'incrservice_allocate_hang#:::#sleep#300##false');
-	// Remove:  SELECT fault_inject('all.', 'REMOVE_FAULT_POINT', 'incrservice_allocate_hang');
-	// Disable: SELECT disable_fault_injection();
-	if iarg, _, ok := fault.TriggerFault("incrservice_allocate_hang"); ok {
-		col.logger.Error("FAULT INJECTION: incrservice_allocate_hang triggered, simulating TN hang",
-			zap.Uint64("table-id", tableID),
-			zap.String("col", col.col.ColName),
-			zap.Int64("sleep-seconds", iarg))
-		// The sleep action already happened inside TriggerFault.
-		// After waking up, proceed normally — but the caller (newColumnCache)
-		// will have been blocked in waitPrevAllocatingLocked for the sleep duration.
-		// With sleep.300, this simulates a 5-minute TN hang.
-	}
-
 	col.allocator.asyncAllocate(
 		ctx,
 		tableID,

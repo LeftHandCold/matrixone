@@ -27,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 )
 
 const (
@@ -183,6 +184,22 @@ func (a *allocator) doAllocate(act action) {
 	ctx := defines.AttachAccountId(baseCtx, act.accountID)
 	ctx, cancel := context.WithTimeoutCause(ctx, defaultAllocateTimeout, moerr.CauseDoAllocate)
 	defer cancel()
+
+	// Fault injection: simulate store.Allocate hanging on SELECT ... FOR UPDATE lock wait.
+	// In production, this happens when the retry path (after ErrTxnNeedRetryWithDefChanged)
+	// re-enters maybeCreateAutoIncrement → preAllocate → asyncAllocate → doAllocate,
+	// and the SELECT ... FOR UPDATE blocks waiting for a lock held by the previous
+	// (rolled-back-but-not-unlocked) attempt.
+	//
+	// Use together with lock_mo_table_def_changed to reproduce the full bug:
+	//   SELECT enable_fault_injection();
+	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'lock_mo_table_def_changed#1:1:::#echo#0##false');
+	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'incrservice_allocate_hang#:::#sleep#300##false');
+	//
+	// sleep#300 blocks this goroutine for 300 seconds, simulating the lock wait hang.
+	// The 3-minute defaultAllocateTimeout context should cancel it — if it doesn't,
+	// that confirms the timeout propagation bug.
+	fault.TriggerFault("incrservice_allocate_hang")
 
 	from, to, lastAllocateAt, err := a.store.Allocate(
 		ctx,
