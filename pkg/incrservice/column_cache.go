@@ -366,8 +366,10 @@ func (col *columnCache) preAllocate(
 		count = col.cfg.CountPerAllocate
 	}
 	// Fault injection: simulate asyncAllocate hang (TN not responding).
-	// Enable: SELECT mo_ctl('cn', 'AddFaultPoint', 'incrservice_allocate_hang.:::.sleep.300.');
-	// Remove: SELECT mo_ctl('cn', 'RemoveFaultPoint', 'incrservice_allocate_hang');
+	// Enable:  SELECT enable_fault_injection();
+	// Add:     SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'incrservice_allocate_hang#:::#sleep#300##false');
+	// Remove:  SELECT fault_inject('all.', 'REMOVE_FAULT_POINT', 'incrservice_allocate_hang');
+	// Disable: SELECT disable_fault_injection();
 	if iarg, _, ok := fault.TriggerFault("incrservice_allocate_hang"); ok {
 		col.logger.Error("FAULT INJECTION: incrservice_allocate_hang triggered, simulating TN hang",
 			zap.Uint64("table-id", tableID),

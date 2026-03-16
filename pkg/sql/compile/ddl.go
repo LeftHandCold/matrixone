@@ -45,6 +45,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/function"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"github.com/matrixorigin/matrixone/pkg/vectorindex/cache"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
@@ -3865,6 +3866,24 @@ var lockMoTable = func(
 	tblName string,
 	lockMode lock.LockMode,
 ) error {
+	// Fault injection: simulate ErrTxnNeedRetryWithDefChanged from concurrent DDL.
+	// This triggers the Compile.Run retry path (prepareRetry with defChanged=true),
+	// which rebuilds the plan and re-executes CreateTable. On retry, if
+	// incrservice_allocate_hang is also active, maybeCreateAutoIncrement will hang.
+	//
+	// Enable both fault points together to reproduce the full bug:
+	//   SELECT enable_fault_injection();
+	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'lock_mo_table_def_changed#1:1:::#echo#0##false');
+	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'incrservice_allocate_hang#:::#sleep#300##false');
+	//
+	// The freq "1:1::" means: trigger on invocation 1 through 1, skip=default(1), prob=default(1.0)
+	// i.e. trigger exactly once (the first call), then never again — so the retry succeeds.
+	// action=echo just makes TriggerFault return ok=true without blocking.
+	// constant=false so the fault point auto-removes after use.
+	if _, _, ok := fault.TriggerFault("lock_mo_table_def_changed"); ok {
+		return moerr.NewTxnNeedRetryWithDefChangedNoCtx()
+	}
+
 	dbRel, err := getRelFromMoCatalog(c, catalog.MO_TABLES)
 	if err != nil {
 		return err
