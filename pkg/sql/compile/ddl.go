@@ -3873,7 +3873,7 @@ var lockMoTable = func(
 	//
 	// Enable both fault points together to reproduce the full bug:
 	//   SELECT enable_fault_injection();
-	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'lock_mo_table_def_changed#1:1:::#echo#0##false');
+	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'lock_mo_table_def_changed#1:1::#echo#0##false');
 	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'incrservice_allocate_hang#:::#sleep#300##false');
 	//
 	// The freq "1:1::" means: trigger on invocation 1 through 1, skip=default(1), prob=default(1.0)

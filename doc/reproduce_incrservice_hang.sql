@@ -1,76 +1,139 @@
 -- ============================================================================
--- 复现 incrservice hang 问题（单机版）
--- 
+-- 复现 incrservice hang 问题
+--
+-- 包含两个场景：
+--   场景 A：单机版（单 CN，两个 session）
+--   场景 B：多 CN 版（两个 CN，并发 CREATE 同名表 + retry 注入）
+--
 -- 背景：
---   生产环境中，CREATE TABLE (带 auto_increment 列) 在以下条件下卡住数分钟到数十分钟：
---   1. lockMoTable 遇到 ErrTxnNeedRetryWithDefChanged（并发 DDL 导致 table def 变更）
---   2. prepareRetry 回滚 workspace 写入，但不释放 lockService 锁，也不清理 incrservice 内存状态
---   3. 重试时 maybeCreateAutoIncrement 再次进入 incrservice，store.Allocate 的
---      SELECT ... FOR UPDATE 在 lockService 中等待上一次未释放的锁
---   4. doAllocate 的 3 分钟 defaultAllocateTimeout 超时后才返回错误
+--   生产环境中，txn 08f4 的 CREATE TABLE 卡了 63 分钟，只有 leak detection 日志，
+--   没有 context deadline exceeded。根因是 allocator.run() 单线程被阻塞。
 --
--- 本脚本用两个 fault point 模拟这个过程：
---   - lock_mo_table_def_changed: 在 lockMoTable 中触发一次 ErrTxnNeedRetryWithDefChanged
---     freq="1:1:::" 表示只在第 1 次调用时触发，之后不再触发（模拟并发 DDL 只冲突一次）
---   - incrservice_allocate_hang: 在 doAllocate 中 sleep 300 秒，模拟锁等待
---     freq=":::" 表示每次调用都触发
---
--- 执行流程：
---   第一次 CREATE TABLE:
---     → lockMoTable 触发 lock_mo_table_def_changed → 返回 ErrTxnNeedRetryWithDefChanged
---     → Compile.Run 进入 retry 路径 → prepareRetry(defChanged=true)
---     → RollbackLastStatement（回滚 workspace 写入，但不释放锁/不清理 incrservice）
---     → IncrStatementID → 重建 plan（新 table-id）
---
---   重试 CREATE TABLE:
---     → lockMoTable 不再触发（fault 已自动移除）→ 正常拿锁
---     → dbSource.Create 成功（新 table-id）
---     → maybeCreateAutoIncrement → incrservice.Create → INSERT 成功
---     → preAllocate → asyncAllocate → doAllocate
---     → 触发 incrservice_allocate_hang → time.Sleep(300s)
---     → 观察：CREATE TABLE 卡住
---
--- 预期结果：
---   CREATE TABLE 应该在 ~3 分钟后超时返回错误（defaultAllocateTimeout = 3min）
---   如果超过 5 分钟仍然卡住，说明超时机制存在 bug
---
--- 注意：
---   fault.TriggerFault 的 sleep action 使用 time.Sleep，不受 context cancellation 影响
---   这精确模拟了生产环境中 lockService.Lock 等待不响应 context 取消的行为
 -- ============================================================================
 
--- 准备：创建测试数据库
+-- ============================================================================
+-- 场景 A：单机版复现（精确复现 63 分钟 hang）
+--
+-- 原理：
+--   allocator.run() 是单线程串行处理 channel 中的 action。
+--   用 incrservice_store_allocate_hang 让第一个 CREATE TABLE 的 store.Allocate
+--   在 ExecTxn 内部 sleep，阻塞 run() goroutine。
+--   第二个 session 的 CREATE TABLE 的 asyncAllocate action 排在 channel 里，
+--   永远不会被处理 —— 这就是 63 分钟 hang 的复现。
+-- ============================================================================
+
+-- Session 1: 执行以下所有命令
+-- ============================================================================
+
 DROP DATABASE IF EXISTS test_incr_hang;
 CREATE DATABASE test_incr_hang;
 USE test_incr_hang;
 
--- 步骤 1：启用 fault injection
 SELECT enable_fault_injection();
 
--- 步骤 2：注入 fault point
--- 参数格式：name#freq#action#iarg#sarg#constant
--- freq 格式：start:end:skip:prob（空值使用默认值）
-SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'lock_mo_table_def_changed#1:1:::#echo#0##false');
-SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'incrservice_allocate_hang#:::#sleep#300##false');
-
--- 步骤 3：确认 fault point 已注入
+-- 注入 fault point（只触发一次）
+SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'incrservice_store_allocate_hang#1:1::#sleep#3600##false');
 SELECT fault_inject('all.', 'LIST_FAULT_POINT', '');
 
--- 步骤 4：执行 CREATE TABLE（会触发 fault point 链）
--- 记录开始时间，然后观察卡住多久
-SELECT NOW() AS '开始时间';
+SELECT NOW() AS 'Session1 开始时间';
 
--- ⚠️ 这条语句会卡住！预期 ~3 分钟后超时返回错误
--- 如果超过 5 分钟还没返回，说明超时机制有 bug
-CREATE TABLE test_hang (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100)
-);
+-- ⚠️ 卡住！store.Allocate 内部 sleep 3600 秒，run() goroutine 被阻塞
+CREATE TABLE t1 (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100));
 
-SELECT NOW() AS '结束时间';
+-- Session 2: 在另一个 mysql 客户端执行（Session 1 卡住后立即执行）
+-- ============================================================================
+-- USE test_incr_hang;
+-- SELECT NOW() AS 'Session2 开始时间';
+--
+-- -- ⚠️ 无限期卡住！action 在 channel 排队，没有超时
+-- CREATE TABLE t2 (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100));
+--
+-- SELECT NOW() AS 'Session2 结束时间';
 
--- 步骤 5：检查结果
-SHOW TABLES;
+-- 预期：
+--   Session 1: 卡住 ~3600 秒
+--   Session 2: 无限期卡住，没有 timeout 错误，只有 leak detection 日志
 
--- 步骤 6：清理
--- DROP DATABASE IF EXISTS test_incr_hang;
+-- 清理：
+--   DROP DATABASE IF EXISTS test_incr_hang;
+--   SELECT fault_inject('all.', 'REMOVE_FAULT_POINT', 'incrservice_store_allocate_hang');
+
+
+-- ============================================================================
+-- 场景 B：多 CN 版复现（retry + FOR UPDATE 锁 + 并发 CREATE 同名表）
+--
+-- 环境：
+--   CN1: localhost:16001
+--   CN2: localhost:16002
+--   docker-compose: etc/docker-multi-cn-local-disk/
+--
+-- 原理：
+--   CN1 执行 CREATE TABLE，lock_mo_table_def_changed 触发 retry。
+--   retry 后 store.Allocate 的 SELECT ... FOR UPDATE 成功，
+--   incrservice_after_for_update 让它 sleep 600 秒持有行锁。
+--   同时 run() goroutine 被阻塞。
+--
+--   同一 CN1 上的第二个 session 执行 CREATE TABLE（不同表名），
+--   asyncAllocate action 排在 channel 里，永远不会被处理 → 63 分钟 hang。
+--
+--   CN2 执行 CREATE TABLE 同名表，lockMoTable 等待 CN1 的排他锁 → 阻塞。
+-- ============================================================================
+
+-- Terminal 1: 连接 CN1 (mysql -h 127.0.0.1 -P 16001 -u root -p111)
+-- ============================================================================
+
+-- DROP DATABASE IF EXISTS test_hang;
+-- CREATE DATABASE test_hang;
+-- USE test_hang;
+--
+-- SELECT enable_fault_injection();
+--
+-- -- 注入两个 fault points:
+-- -- 1. lock_mo_table_def_changed: 第一次调用触发 retry
+-- SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'lock_mo_table_def_changed#1:1::#echo#0##false');
+-- -- 2. incrservice_after_for_update: FOR UPDATE 成功后 sleep 600 秒
+-- SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'incrservice_after_for_update#:::#sleep#600##false');
+--
+-- SELECT fault_inject('all.', 'LIST_FAULT_POINT', '');
+-- SELECT NOW() AS 'CN1-T1 开始';
+--
+-- -- ⚠️ 卡住：retry 后 store.Allocate 持有 FOR UPDATE 锁 sleep 600s
+-- -- run() goroutine 被阻塞
+-- CREATE TABLE t1 (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100));
+
+-- Terminal 2: 连接同一个 CN1 (mysql -h 127.0.0.1 -P 16001 -u root -p111)
+-- ============================================================================
+
+-- USE test_hang;
+-- SELECT NOW() AS 'CN1-T2 开始';
+--
+-- -- ⚠️ 无限期卡住！
+-- -- lockMoTable 成功（不同表名）→ dbSource.Create → maybeCreateAutoIncrement
+-- -- → incrservice.Create → store.Create(INSERT) → newTableCache → preAllocate
+-- -- → asyncAllocate 发送 action 到 channel → run() goroutine 被 T1 阻塞
+-- -- → action 在 channel 排队 → waitPrevAllocatingLocked 等待 → 永远不会完成
+-- --
+-- -- 这就是 63 分钟 hang 的精确复现！
+-- CREATE TABLE t2 (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100));
+
+-- Terminal 3: 连接 CN2 (mysql -h 127.0.0.1 -P 16002 -u root -p111)
+-- ============================================================================
+
+-- USE test_hang;
+--
+-- -- 方式 1: 创建同名表 → lockMoTable 等待 CN1 的排他锁 → 阻塞
+-- CREATE TABLE t1 (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100));
+--
+-- -- 方式 2: 创建不同表 → 应该成功（CN2 有自己的 allocator）
+-- CREATE TABLE t3 (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100));
+
+-- 验证：
+--   1. Terminal 2 卡住超过 5 分钟（超过 defaultAllocateTimeout 的 3 分钟）→ 成功复现
+--   2. 检查日志：Terminal 2 只有 leak detection，没有 timeout → 和生产一致
+--   3. Terminal 3 方式 2 立即成功 → 证明是 CN1 allocator 问题
+--   4. Terminal 3 方式 1 阻塞 → 证明 lockMoTable 跨 CN 互斥
+
+-- 清理：
+--   DROP DATABASE IF EXISTS test_hang;
+--   SELECT fault_inject('all.', 'REMOVE_FAULT_POINT', 'lock_mo_table_def_changed');
+--   SELECT fault_inject('all.', 'REMOVE_FAULT_POINT', 'incrservice_after_for_update');

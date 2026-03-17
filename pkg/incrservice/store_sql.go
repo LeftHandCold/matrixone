@@ -30,6 +30,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/txn/trace"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 )
 
 var (
@@ -133,6 +134,25 @@ func (s *sqlStore) Allocate(
 		err := s.exec.ExecTxn(
 			ctx,
 			func(te executor.TxnExecutor) error {
+				// Fault injection: simulate store.Allocate blocking INSIDE ExecTxn.
+				// This blocks the allocator.run() goroutine, causing subsequent
+				// asyncAllocate actions to queue in the channel with NO timeout.
+				// This reproduces the 63-minute production hang where:
+				//   1. First CREATE TABLE's doAllocate blocks here (run goroutine stuck)
+				//   2. Second CREATE TABLE's asyncAllocate sends action to channel
+				//   3. Channel action never gets processed (run goroutine is busy)
+				//   4. waitPrevAllocatingLocked waits forever (allocatingC never closed)
+				//   5. defaultAllocateTimeout never starts (it's inside doAllocate)
+				//
+				// Usage:
+				//   SELECT enable_fault_injection();
+				//   SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'incrservice_store_allocate_hang#1:1::#sleep#3600##false');
+				//   -- Session 1: CREATE TABLE t1 (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100));
+				//   -- (blocks in store.Allocate for 3600s, run goroutine stuck)
+				//   -- Session 2: CREATE TABLE t2 (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100));
+				//   -- (action queued in channel, waits indefinitely — THIS is the 63-min hang)
+				fault.TriggerFault("incrservice_store_allocate_hang")
+
 				txnOp = te.Txn()
 				start := time.Now()
 				res, err := te.Exec(fetchSQL, executor.StatementOption{}.WithDisableLog())
@@ -147,6 +167,26 @@ func (s *sqlStore) Allocate(
 					return true
 				})
 				res.Close()
+
+				// Fault injection: block AFTER acquiring FOR UPDATE lock but BEFORE update.
+				// This holds the row lock on mo_increment_columns, causing other CNs'
+				// store.Allocate to block on their SELECT ... FOR UPDATE.
+				//
+				// Production scenario reproduced:
+				//   CN1: store.Allocate acquires FOR UPDATE lock, then hangs
+				//   CN2: store.Allocate blocks on SELECT ... FOR UPDATE waiting for CN1
+				//
+				// Usage on multi-CN cluster:
+				//   -- On CN1 (port 16001):
+				//   SELECT enable_fault_injection();
+				//   SELECT fault_inject('cn1_uuid.', 'ADD_FAULT_POINT',
+				//     'incrservice_after_for_update#:::#sleep#600##false');
+				//   CREATE TABLE test_hang(id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100));
+				//   -- CN1 acquires FOR UPDATE lock, sleeps 600s holding it
+				//   -- On CN2 (port 16002):
+				//   CREATE TABLE test_hang2(id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100));
+				//   -- CN2 blocks on FOR UPDATE, waiting for CN1's lock
+				fault.TriggerFault("incrservice_after_for_update")
 
 				if rows != 1 {
 					accountID, err := defines.GetAccountId(ctx)

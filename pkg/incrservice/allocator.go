@@ -193,7 +193,7 @@ func (a *allocator) doAllocate(act action) {
 	//
 	// Use together with lock_mo_table_def_changed to reproduce the full bug:
 	//   SELECT enable_fault_injection();
-	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'lock_mo_table_def_changed#1:1:::#echo#0##false');
+	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'lock_mo_table_def_changed#1:1::#echo#0##false');
 	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'incrservice_allocate_hang#:::#sleep#300##false');
 	//
 	// sleep#300 blocks this goroutine for 300 seconds, simulating the lock wait hang.
