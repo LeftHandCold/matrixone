@@ -184,6 +184,18 @@ func (s *service) handleRemoteLock(
 	req *pb.Request,
 	resp *pb.Response,
 	cs morpc.ClientSession) {
+	// Fault injection: delay handling remote lock requests.
+	// When injected on CN2 (lock table owner), CN1's client.Send will timeout
+	// because the response never comes back within defaultRPCTimeout (10s).
+	// This causes CN1 to get context.DeadlineExceeded, which handleError converts
+	// to ErrBackendCannotConnect, and canRetryLock retries forever.
+	//
+	// Usage (on CN2 or all CNs):
+	//   SELECT enable_fault_injection();
+	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT',
+	//     'lockservice_handle_remote_lock_hang#:::#sleep#30##false');
+	fault.TriggerFault("lockservice_handle_remote_lock_hang")
+
 	if !s.canLockOnServiceStatus(req.Lock.TxnID, req.Lock.Options, req.LockTable.Table, req.Lock.Rows) {
 		writeResponse(s.logger, cancel, resp, moerr.NewRetryForCNRollingRestart(), cs)
 		return
