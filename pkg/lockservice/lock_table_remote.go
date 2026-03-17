@@ -109,7 +109,7 @@ func (l *remoteLockTable) lock(
 	// Usage:
 	//   SELECT enable_fault_injection();
 	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT',
-	//     'remote_lock_short_timeout#:::#return##1#false');
+	//     'remote_lock_short_timeout#:::#echo#0##false');
 	sendCtx := ctx
 	if _, _, isFault := fault.TriggerFault("remote_lock_short_timeout"); isFault {
 		var sendCancel context.CancelFunc

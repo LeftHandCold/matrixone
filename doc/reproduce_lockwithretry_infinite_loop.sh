@@ -54,3 +54,90 @@ echo "  lockWithRetry 无限循环 Bug 复现"
 echo "  (新方案: remote_lock_short_timeout)"
 echo "============================================"
 echo ""
+
+# Step 1: 清理旧数据
+echo -e "${YELLOW}[Step 1] 清理旧数据...${NC}"
+mysql_cn1 "DROP DATABASE IF EXISTS $DB_NAME;" || true
+
+# Step 2: CN2 创建 seed 表（让锁表绑定到 CN2）
+echo -e "${YELLOW}[Step 2] CN2 创建 seed 表（让锁表绑定到 CN2）...${NC}"
+mysql_cn2 "CREATE DATABASE IF NOT EXISTS $DB_NAME;"
+mysql_cn2 "USE $DB_NAME; CREATE TABLE seed_t1 (id BIGINT AUTO_INCREMENT PRIMARY KEY, v INT);"
+mysql_cn2 "USE $DB_NAME; INSERT INTO seed_t1 (v) VALUES (1);"
+echo -e "${GREEN}  ✅ seed 表已创建，mo_increment_columns 锁表应绑定到 CN2${NC}"
+
+# Step 3: 注入 fault point
+echo -e "${YELLOW}[Step 3] 注入 fault point (remote_lock_short_timeout)...${NC}"
+mysql_cn1 "SELECT enable_fault_injection();"
+# echo action: TriggerFault 返回 ok=true，不做其他事
+# 代码中检查 ok=true 后将 ctx 替换为 1s 超时
+mysql_cn1 "SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'remote_lock_short_timeout#:::#echo#0##false');"
+echo -e "${GREEN}  ✅ remote_lock_short_timeout 已注入（每次 remote lock 的 client.Send 超时 1s）${NC}"
+
+# Step 4: CN1 后台执行 CREATE TABLE
+echo -e "${YELLOW}[Step 4] CN1 执行 CREATE TABLE（后台）...${NC}"
+mysql -h 127.0.0.1 -P "$CN1_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASS" \
+    -e "USE $DB_NAME; CREATE TABLE t_cn1 (id BIGINT AUTO_INCREMENT PRIMARY KEY, val INT);" \
+    2>/dev/null &
+CREATE_PID=$!
+echo -e "  CREATE TABLE PID: $CREATE_PID"
+
+# Step 5: 监控日志
+echo -e "${YELLOW}[Step 5] 监控 CN1 日志（等待 60 秒）...${NC}"
+echo ""
+
+WAIT_SECONDS=60
+INTERVAL=5
+
+for ((i=1; i<=WAIT_SECONDS/INTERVAL; i++)); do
+    sleep "$INTERVAL"
+
+    # 检查 CREATE TABLE 是否还在运行
+    if ! kill -0 "$CREATE_PID" 2>/dev/null; then
+        echo -e "${RED}  ❌ CREATE TABLE 已退出（不应该退出）${NC}"
+        wait "$CREATE_PID" 2>/dev/null
+        echo -e "${RED}  Bug 未复现 — CREATE TABLE 没有卡住${NC}"
+        exit 1
+    fi
+
+    # 检查 CN1 日志中的 lockWithRetry 诊断日志
+    RETRY_COUNT=$(docker logs mo-cn1 2>&1 | grep -c "lockWithRetry" || true)
+    CTX_EXPIRED=$(docker logs mo-cn1 2>&1 | grep "lockWithRetry" | grep -c "ctx.Err=context deadline exceeded" || true)
+    CTX_NIL=$(docker logs mo-cn1 2>&1 | grep "lockWithRetry" | grep -c "ctx.Err=<nil>" || true)
+    echo -e "  [${i}/$((WAIT_SECONDS/INTERVAL))] CREATE TABLE 仍在运行 | lockWithRetry 重试: $RETRY_COUNT | ctx 未过期: $CTX_NIL | ctx 已过期: $CTX_EXPIRED"
+done
+
+echo ""
+
+# Step 6: 判定结果
+if kill -0 "$CREATE_PID" 2>/dev/null && [[ "$RETRY_COUNT" -gt 3 ]]; then
+    echo -e "${RED}============================================${NC}"
+    echo -e "${RED}  🐛 lockWithRetry 无限循环 Bug 已复现！${NC}"
+    echo -e "${RED}============================================${NC}"
+    echo ""
+    echo -e "  CN1 的 CREATE TABLE 已阻塞 ${WAIT_SECONDS} 秒"
+    echo -e "  lockWithRetry 重试了 ${RETRY_COUNT} 次"
+    echo ""
+    if [[ "$CTX_EXPIRED" -gt 0 ]]; then
+        echo -e "  ${RED}铁证：ctx.Err=context deadline exceeded 但循环仍在继续${NC}"
+        echo -e "  原因：handleError 把 context.DeadlineExceeded 转成 ErrBackendCannotConnect"
+        echo -e "        canRetryLock 看到 BackendCannotConnect → 继续重试"
+    else
+        echo -e "  ctx 还未过期（3 分钟），但 retry 已在持续增长"
+        echo -e "  等 3 分钟后 ctx 过期，循环仍不会停止"
+    fi
+    echo ""
+    echo -e "  ${YELLOW}修复方式：lockWithRetry 或 canRetryLock 检查 ctx.Err()${NC}"
+    echo ""
+    echo -e "  最后几条诊断日志："
+    docker logs mo-cn1 2>&1 | grep "lockWithRetry" | tail -5
+    exit 0
+else
+    echo -e "${YELLOW}  ⚠️ 结果不确定${NC}"
+    echo -e "  CREATE TABLE running: $(kill -0 "$CREATE_PID" 2>/dev/null && echo yes || echo no)"
+    echo -e "  Retry count: $RETRY_COUNT"
+    echo ""
+    echo -e "  最后几条 CN1 日志："
+    docker logs mo-cn1 2>&1 | tail -20
+    exit 1
+fi
