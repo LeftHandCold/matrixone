@@ -779,8 +779,16 @@ func lockWithRetry(
 		return result, err
 	}
 
+	retryCount := 0
 	for {
+		retryCount++
 		result, err = lockService.Lock(ctx, tableID, rows, txnID, options)
+		// Diagnostic: log ctx state on each retry to detect infinite loop
+		// when context is already expired but canRetryLock still returns true
+		if retryCount <= 10 || retryCount%30 == 0 {
+			logutil.Errorf("lockWithRetry: retry=%d, table=%d, err=%v, ctx.Err=%v",
+				retryCount, tableID, err, ctx.Err())
+		}
 		if !canRetryLock(tableID, txnOp, err) {
 			break
 		}

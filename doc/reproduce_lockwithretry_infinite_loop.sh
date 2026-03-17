@@ -94,9 +94,11 @@ for ((i=1; i<=WAIT_SECONDS/INTERVAL; i++)); do
         exit 1
     fi
 
-    # 检查 CN1 日志中的 "failed to lock on remote" 计数
-    NEW_COUNT=$(docker logs mo-cn1 2>&1 | grep -c "failed to lock on remote" || true)
-    echo -e "  [${i}/${WAIT_SECONDS/INTERVAL}] CREATE TABLE 仍在运行，'failed to lock on remote' 计数: $NEW_COUNT"
+    # 检查 CN1 日志中的 lockWithRetry 诊断日志
+    NEW_COUNT=$(docker logs mo-cn1 2>&1 | grep -c "lockWithRetry" || true)
+    # 检查是否有 ctx.Err=context deadline exceeded（铁证）
+    CTX_EXPIRED=$(docker logs mo-cn1 2>&1 | grep "lockWithRetry" | grep -c "ctx.Err=context deadline exceeded" || true)
+    echo -e "  [${i}/${WAIT_SECONDS/INTERVAL}] CREATE TABLE 仍在运行，lockWithRetry 重试次数: $NEW_COUNT，ctx 已过期: $CTX_EXPIRED"
     LOCK_FAIL_COUNT=$NEW_COUNT
 done
 
@@ -109,13 +111,17 @@ if kill -0 "$CREATE_PID" 2>/dev/null && [[ "$LOCK_FAIL_COUNT" -gt 3 ]]; then
     echo -e "${RED}============================================${NC}"
     echo ""
     echo -e "  CN1 的 CREATE TABLE 已阻塞 ${WAIT_SECONDS} 秒"
-    echo -e "  CN1 日志显示 ${LOCK_FAIL_COUNT} 次 'failed to lock on remote'"
-    echo -e "  每次错误都是 context deadline exceeded"
-    echo -e "  但 handleError 把它转成 ErrBackendCannotConnect"
-    echo -e "  canRetryLock 看到 ErrBackendCannotConnect → 继续重试"
-    echo -e "  lockWithRetry 永远不退出"
+    echo -e "  lockWithRetry 重试了 ${LOCK_FAIL_COUNT} 次"
+    echo -e "  其中 ctx 已过期的次数: ${CTX_EXPIRED}"
+    echo ""
+    echo -e "  铁证：ctx.Err=context deadline exceeded 但循环仍在继续"
+    echo -e "  原因：handleError 把 context.DeadlineExceeded 转成 ErrBackendCannotConnect"
+    echo -e "        canRetryLock 看到 ErrBackendCannotConnect → 继续重试"
     echo ""
     echo -e "  ${YELLOW}修复方式：lockWithRetry 或 canRetryLock 检查 ctx.Err()${NC}"
+    echo ""
+    echo -e "  最后几条诊断日志："
+    docker logs mo-cn1 2>&1 | grep "lockWithRetry" | tail -5
     exit 0
 else
     echo -e "${YELLOW}  ⚠️ 结果不确定${NC}"
