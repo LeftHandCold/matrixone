@@ -27,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	pb "github.com/matrixorigin/matrixone/pkg/pb/lock"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 )
 
 var methodVersions = map[pb.Method]int64{
@@ -323,6 +324,18 @@ func (s *service) handleGetActiveTxn(
 	req *pb.Request,
 	resp *pb.Response,
 	cs morpc.ClientSession) {
+	// Fault injection: simulate handleGetActiveTxn hanging or being unreachable.
+	// When this fault is active, the RPC handler sleeps, causing the caller's
+	// context to time out (defaultRPCTimeout = 10s). This reproduces the production
+	// scenario where CN2 cannot validate CN1's txn via Method_GetActiveTxn RPC,
+	// triggering the isRetryError bug that keeps orphan txns alive forever.
+	//
+	// Usage:
+	//   SELECT enable_fault_injection();
+	//   SELECT fault_inject('cn1_uuid.', 'ADD_FAULT_POINT',
+	//     'lockservice_get_active_txn_hang#:::#sleep#30##false');
+	fault.TriggerFault("lockservice_get_active_txn_hang")
+
 	resp.GetActiveTxn.Valid = s.serviceID == req.GetActiveTxn.ServiceID
 	if resp.GetActiveTxn.Valid && s.cfg.TxnIterFunc != nil {
 		s.cfg.TxnIterFunc(func(txnID []byte) bool {
