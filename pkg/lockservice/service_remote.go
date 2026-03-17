@@ -204,7 +204,7 @@ func (s *service) handleRemoteLock(
 	l, err := s.getLocalLockTable(req, resp)
 	if err != nil ||
 		l == nil {
-		// means that the lockservice sending the lock request holds a stale
+		// means that the lockservice sending the lock request holds a stalegit
 		// lock table binding.
 		writeResponse(s.logger, cancel, resp, err, cs)
 		return

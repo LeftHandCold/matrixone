@@ -14,6 +14,15 @@
 #   handleError 把 DeadlineExceeded 转成 BackendCannotConnect，
 #   canRetryLock 看到 BackendCannotConnect → 继续重试 → 无限循环。
 #
+# 关键：
+#   fault point 只在 remoteLockTable.lock() 中触发，所以必须让 CN1 去锁
+#   一个绑定在 CN2 上的表。方法是：
+#     1. CN2 创建 seed 表（seed_t1 的锁表绑定到 CN2）
+#     2. CN1 对 seed_t1 执行 INSERT（需要锁 seed_t1 的行 → remote lock → 触发 fault point）
+#
+#   注意：CREATE TABLE 锁的是 mo_increment_columns（系统表），它的锁表
+#   在 CN1 启动时就绑定到了 CN1（local lock），不会走 remoteLockTable。
+#
 # 用法：
 #   bash doc/reproduce_lockwithretry_infinite_loop.sh
 
@@ -40,12 +49,13 @@ mysql_cn2() {
 
 cleanup() {
     echo -e "${YELLOW}清理中...${NC}"
+    # 先移除 fault point，否则后续操作也会被影响
     mysql_cn1 "SELECT fault_inject('all.', 'REMOVE_FAULT_POINT', 'remote_lock_short_timeout');" 2>/dev/null || true
-    mysql_cn1 "DROP DATABASE IF EXISTS $DB_NAME;" 2>/dev/null || true
-    if [[ -n "${CREATE_PID:-}" ]]; then
-        kill "$CREATE_PID" 2>/dev/null || true
-        wait "$CREATE_PID" 2>/dev/null || true
+    if [[ -n "${INSERT_PID:-}" ]]; then
+        kill "$INSERT_PID" 2>/dev/null || true
+        wait "$INSERT_PID" 2>/dev/null || true
     fi
+    mysql_cn1 "DROP DATABASE IF EXISTS $DB_NAME;" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -59,28 +69,31 @@ echo ""
 echo -e "${YELLOW}[Step 1] 清理旧数据...${NC}"
 mysql_cn1 "DROP DATABASE IF EXISTS $DB_NAME;" || true
 
-# Step 2: CN2 创建 seed 表（让锁表绑定到 CN2）
-echo -e "${YELLOW}[Step 2] CN2 创建 seed 表（让锁表绑定到 CN2）...${NC}"
+# Step 2: CN2 创建 seed 表（让 seed_t1 的锁表绑定到 CN2）
+echo -e "${YELLOW}[Step 2] CN2 创建 seed 表（让 seed_t1 的锁表绑定到 CN2）...${NC}"
 mysql_cn2 "CREATE DATABASE IF NOT EXISTS $DB_NAME;"
 mysql_cn2 "USE $DB_NAME; CREATE TABLE seed_t1 (id BIGINT AUTO_INCREMENT PRIMARY KEY, v INT);"
 mysql_cn2 "USE $DB_NAME; INSERT INTO seed_t1 (v) VALUES (1);"
-echo -e "${GREEN}  ✅ seed 表已创建，mo_increment_columns 锁表应绑定到 CN2${NC}"
+echo -e "${GREEN}  ✅ seed_t1 已创建，seed_t1 的锁表绑定到 CN2${NC}"
+echo -e "  （注意：mo_increment_columns 的锁表仍在 CN1 上，不受影响）"
 
-# Step 3: 注入 fault point
-echo -e "${YELLOW}[Step 3] 注入 fault point (remote_lock_short_timeout)...${NC}"
+# Step 3: 注入 fault point（只注入到 CN1）
+echo -e "${YELLOW}[Step 3] 注入 fault point (remote_lock_short_timeout) 到 CN1...${NC}"
 mysql_cn1 "SELECT enable_fault_injection();"
-# echo action: TriggerFault 返回 ok=true，不做其他事
-# 代码中检查 ok=true 后将 ctx 替换为 1s 超时
-mysql_cn1 "SELECT fault_inject('all.', 'ADD_FAULT_POINT', 'remote_lock_short_timeout#:::#echo#0##false');"
-echo -e "${GREEN}  ✅ remote_lock_short_timeout 已注入（每次 remote lock 的 client.Send 超时 1s）${NC}"
+# freq 格式: start:end:skip:prob
+# 空 = 默认（每次都触发）
+mysql_cn1 "SELECT fault_inject('cn.', 'ADD_FAULT_POINT', 'remote_lock_short_timeout#:::#echo#0##false');"
+echo -e "${GREEN}  ✅ remote_lock_short_timeout 已注入到 CN1${NC}"
+echo -e "  （CN1 每次 remote lock 的 client.Send 超时 1s）"
 
-# Step 4: CN1 后台执行 CREATE TABLE
-echo -e "${YELLOW}[Step 4] CN1 执行 CREATE TABLE（后台）...${NC}"
+# Step 4: CN1 后台执行 INSERT（需要锁 seed_t1 → remote lock 到 CN2 → 触发 fault point）
+echo -e "${YELLOW}[Step 4] CN1 执行 INSERT INTO seed_t1（后台）...${NC}"
+echo -e "  seed_t1 的锁表在 CN2 上 → CN1 走 remoteLockTable.lock() → 触发 fault point"
 mysql -h 127.0.0.1 -P "$CN1_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASS" \
-    -e "USE $DB_NAME; CREATE TABLE t_cn1 (id BIGINT AUTO_INCREMENT PRIMARY KEY, val INT);" \
+    -e "USE $DB_NAME; INSERT INTO seed_t1 (v) VALUES (100);" \
     2>/dev/null &
-CREATE_PID=$!
-echo -e "  CREATE TABLE PID: $CREATE_PID"
+INSERT_PID=$!
+echo -e "  INSERT PID: $INSERT_PID"
 
 # Step 5: 监控日志
 echo -e "${YELLOW}[Step 5] 监控 CN1 日志（等待 60 秒）...${NC}"
@@ -92,11 +105,16 @@ INTERVAL=5
 for ((i=1; i<=WAIT_SECONDS/INTERVAL; i++)); do
     sleep "$INTERVAL"
 
-    # 检查 CREATE TABLE 是否还在运行
-    if ! kill -0 "$CREATE_PID" 2>/dev/null; then
-        echo -e "${RED}  ❌ CREATE TABLE 已退出（不应该退出）${NC}"
-        wait "$CREATE_PID" 2>/dev/null
-        echo -e "${RED}  Bug 未复现 — CREATE TABLE 没有卡住${NC}"
+    # 检查 INSERT 是否还在运行
+    if ! kill -0 "$INSERT_PID" 2>/dev/null; then
+        echo -e "${RED}  ❌ INSERT 已退出（不应该退出）${NC}"
+        wait "$INSERT_PID" 2>/dev/null
+        EXIT_CODE=$?
+        echo -e "${RED}  退出码: $EXIT_CODE${NC}"
+        echo -e "${RED}  Bug 未复现 — INSERT 没有卡住${NC}"
+        echo ""
+        echo -e "  最后几条 CN1 日志："
+        docker logs mo-cn1 2>&1 | tail -20
         exit 1
     fi
 
@@ -104,18 +122,19 @@ for ((i=1; i<=WAIT_SECONDS/INTERVAL; i++)); do
     RETRY_COUNT=$(docker logs mo-cn1 2>&1 | grep -c "lockWithRetry" || true)
     CTX_EXPIRED=$(docker logs mo-cn1 2>&1 | grep "lockWithRetry" | grep -c "ctx.Err=context deadline exceeded" || true)
     CTX_NIL=$(docker logs mo-cn1 2>&1 | grep "lockWithRetry" | grep -c "ctx.Err=<nil>" || true)
-    echo -e "  [${i}/$((WAIT_SECONDS/INTERVAL))] CREATE TABLE 仍在运行 | lockWithRetry 重试: $RETRY_COUNT | ctx 未过期: $CTX_NIL | ctx 已过期: $CTX_EXPIRED"
+    REMOTE_LOCK_FAIL=$(docker logs mo-cn1 2>&1 | grep -c "failed to lock on remote" || true)
+    echo -e "  [${i}/$((WAIT_SECONDS/INTERVAL))] INSERT 仍在运行 | lockWithRetry 重试: $RETRY_COUNT | ctx 未过期: $CTX_NIL | ctx 已过期: $CTX_EXPIRED | remote lock 失败: $REMOTE_LOCK_FAIL"
 done
 
 echo ""
 
 # Step 6: 判定结果
-if kill -0 "$CREATE_PID" 2>/dev/null && [[ "$RETRY_COUNT" -gt 3 ]]; then
+if kill -0 "$INSERT_PID" 2>/dev/null && [[ "$RETRY_COUNT" -gt 3 ]]; then
     echo -e "${RED}============================================${NC}"
     echo -e "${RED}  🐛 lockWithRetry 无限循环 Bug 已复现！${NC}"
     echo -e "${RED}============================================${NC}"
     echo ""
-    echo -e "  CN1 的 CREATE TABLE 已阻塞 ${WAIT_SECONDS} 秒"
+    echo -e "  CN1 的 INSERT 已阻塞 ${WAIT_SECONDS} 秒"
     echo -e "  lockWithRetry 重试了 ${RETRY_COUNT} 次"
     echo ""
     if [[ "$CTX_EXPIRED" -gt 0 ]]; then
@@ -123,8 +142,8 @@ if kill -0 "$CREATE_PID" 2>/dev/null && [[ "$RETRY_COUNT" -gt 3 ]]; then
         echo -e "  原因：handleError 把 context.DeadlineExceeded 转成 ErrBackendCannotConnect"
         echo -e "        canRetryLock 看到 BackendCannotConnect → 继续重试"
     else
-        echo -e "  ctx 还未过期（3 分钟），但 retry 已在持续增长"
-        echo -e "  等 3 分钟后 ctx 过期，循环仍不会停止"
+        echo -e "  ctx 还未过期，但 retry 已在持续增长"
+        echo -e "  等 ctx 过期后，循环仍不会停止"
     fi
     echo ""
     echo -e "  ${YELLOW}修复方式：lockWithRetry 或 canRetryLock 检查 ctx.Err()${NC}"
@@ -132,9 +151,21 @@ if kill -0 "$CREATE_PID" 2>/dev/null && [[ "$RETRY_COUNT" -gt 3 ]]; then
     echo -e "  最后几条诊断日志："
     docker logs mo-cn1 2>&1 | grep "lockWithRetry" | tail -5
     exit 0
+elif kill -0 "$INSERT_PID" 2>/dev/null; then
+    echo -e "${YELLOW}  ⚠️ INSERT 仍在运行但没有看到 lockWithRetry 日志${NC}"
+    echo -e "  可能 fault point 没有触发，或者锁表没有绑定到 CN2"
+    echo ""
+    echo -e "  检查 CN1 日志中的 bind 信息："
+    docker logs mo-cn1 2>&1 | grep "bind created" | tail -10
+    echo ""
+    echo -e "  检查 CN2 日志中的 bind 信息："
+    docker logs mo-cn2 2>&1 | grep "bind created" | tail -10
+    echo ""
+    echo -e "  最后几条 CN1 日志："
+    docker logs mo-cn1 2>&1 | tail -20
+    exit 1
 else
-    echo -e "${YELLOW}  ⚠️ 结果不确定${NC}"
-    echo -e "  CREATE TABLE running: $(kill -0 "$CREATE_PID" 2>/dev/null && echo yes || echo no)"
+    echo -e "${YELLOW}  ⚠️ INSERT 已退出${NC}"
     echo -e "  Retry count: $RETRY_COUNT"
     echo ""
     echo -e "  最后几条 CN1 日志："
