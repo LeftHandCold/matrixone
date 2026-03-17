@@ -99,21 +99,30 @@ func (l *remoteLockTable) lock(
 	// ErrBackendCannotConnect, and canRetryLock retries forever because
 	// the original context timeout info is "washed away".
 	//
-	// We use a short timeout (1s) so client.Send times out quickly on each
-	// retry, demonstrating the infinite loop.
+	// We use 1ms timeout so client.Send times out before the RPC can
+	// complete even on a local docker network (~1-5ms round-trip).
+	// Previous attempt with 1s failed because the RPC completed in time.
 	//
 	// NOTE: The old approach of sleeping in handleRemoteLock doesn't work
 	// because morpc's ping/pong heartbeat (every readTimeout/5 = 2s) keeps
 	// the connection alive, preventing the readTimeout from firing.
 	//
+	// IMPORTANT: Only inject to the CN that does REMOTE lock (not the
+	// lock table owner). Use 'cn.' prefix to inject to all CNs — the
+	// fault point only fires in remoteLockTable.lock(), so the lock
+	// table owner (which uses localLockTable) is unaffected.
+	//
 	// Usage:
 	//   SELECT enable_fault_injection();
-	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT',
+	//   SELECT fault_inject('cn.', 'ADD_FAULT_POINT',
 	//     'remote_lock_short_timeout#:::#echo#0##false');
 	sendCtx := ctx
 	if _, _, isFault := fault.TriggerFault("remote_lock_short_timeout"); isFault {
 		var sendCancel context.CancelFunc
-		sendCtx, sendCancel = context.WithTimeout(ctx, time.Second)
+		// Use 1ms timeout — must be shorter than the RPC round-trip time
+		// in docker network (~1-5ms). 1s was too long and the RPC completed
+		// before the timeout fired.
+		sendCtx, sendCancel = context.WithTimeout(ctx, time.Millisecond)
 		defer sendCancel()
 	}
 	resp, err := l.client.Send(sendCtx, req)
