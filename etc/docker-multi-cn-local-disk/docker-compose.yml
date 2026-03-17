@@ -128,6 +128,10 @@ services:
       # Use image-built binary or build inside container for compatibility
     environment:
       - TZ=Asia/Shanghai
+      # Bug reproduction: set to "1" to make remoteLockTable.lock() skip client.Send
+      # and return context.DeadlineExceeded directly. Used to reproduce lockWithRetry
+      # infinite loop bug. Default: unset (normal behavior).
+      - MO_REPRO_REMOTE_LOCK_TIMEOUT=${MO_REPRO_REMOTE_LOCK_TIMEOUT:-}
     networks:
       - matrixone-net
     depends_on:

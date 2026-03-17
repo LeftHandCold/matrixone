@@ -28,7 +28,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	pb "github.com/matrixorigin/matrixone/pkg/pb/lock"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
-	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"go.uber.org/zap"
@@ -93,39 +92,29 @@ func (l *remoteLockTable) lock(
 	// rpc maybe wait too long, to avoid deadlock, we need unlock txn, and lock again
 	// after rpc completed
 	txn.Unlock()
-	// Fault injection: shorten context timeout to simulate RPC timeout.
-	// In production, when the remote CN is unreachable or slow, client.Send
-	// returns context.DeadlineExceeded. handleError converts this to
-	// ErrBackendCannotConnect, and canRetryLock retries forever because
-	// the original context timeout info is "washed away".
+
+	// BUG REPRODUCTION: simulate remote lock RPC timeout.
+	// When env MO_REPRO_REMOTE_LOCK_TIMEOUT=1, skip client.Send entirely
+	// and return context.DeadlineExceeded directly. This reproduces the
+	// production scenario where:
+	//   1. client.Send returns context.DeadlineExceeded
+	//   2. handleError converts it to ErrBackendCannotConnect
+	//   3. canRetryLock sees ErrBackendCannotConnect → sleep 1s → retry
+	//   4. lockWithRetry loops forever (ctx.Err() never checked)
 	//
-	// We use 1ms timeout so client.Send times out before the RPC can
-	// complete even on a local docker network (~1-5ms round-trip).
-	// Previous attempt with 1s failed because the RPC completed in time.
-	//
-	// NOTE: The old approach of sleeping in handleRemoteLock doesn't work
-	// because morpc's ping/pong heartbeat (every readTimeout/5 = 2s) keeps
-	// the connection alive, preventing the readTimeout from firing.
-	//
-	// IMPORTANT: Only inject to the CN that does REMOTE lock (not the
-	// lock table owner). Use 'cn.' prefix to inject to all CNs — the
-	// fault point only fires in remoteLockTable.lock(), so the lock
-	// table owner (which uses localLockTable) is unaffected.
-	//
-	// Usage:
-	//   SELECT enable_fault_injection();
-	//   SELECT fault_inject('cn.', 'ADD_FAULT_POINT',
-	//     'remote_lock_short_timeout#:::#echo#0##false');
-	sendCtx := ctx
-	if _, _, isFault := fault.TriggerFault("remote_lock_short_timeout"); isFault {
-		var sendCancel context.CancelFunc
-		// Use 1ms timeout — must be shorter than the RPC round-trip time
-		// in docker network (~1-5ms). 1s was too long and the RPC completed
-		// before the timeout fired.
-		sendCtx, sendCancel = context.WithTimeout(ctx, time.Millisecond)
-		defer sendCancel()
+	// No fault injection needed — just set the env var before starting CN.
+	var resp *pb.Response
+	var err error
+	if os.Getenv("MO_REPRO_REMOTE_LOCK_TIMEOUT") == "1" {
+		resp = nil
+		err = context.DeadlineExceeded
+		l.logger.Error("BUG REPRO: injecting context.DeadlineExceeded for remote lock",
+			zap.Uint64("table-id", l.bind.Table),
+			zap.String("txn-id", hex.EncodeToString(txn.txnID)),
+		)
+	} else {
+		resp, err = l.client.Send(ctx, req)
 	}
-	resp, err := l.client.Send(sendCtx, req)
 	txn.Lock()
 
 	// txn closed
