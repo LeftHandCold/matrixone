@@ -93,28 +93,18 @@ func (l *remoteLockTable) lock(
 	// after rpc completed
 	txn.Unlock()
 
-	// BUG REPRODUCTION: simulate remote lock RPC timeout.
-	// When env MO_REPRO_REMOTE_LOCK_TIMEOUT=1, skip client.Send entirely
-	// and return context.DeadlineExceeded directly. This reproduces the
-	// production scenario where:
-	//   1. client.Send returns context.DeadlineExceeded
-	//   2. handleError converts it to ErrBackendCannotConnect
-	//   3. canRetryLock sees ErrBackendCannotConnect → sleep 1s → retry
-	//   4. lockWithRetry loops forever (ctx.Err() never checked)
+	// BUG REPRODUCTION: skip client.Send, return context.DeadlineExceeded directly.
+	// This reproduces the production scenario where remote lock RPC times out,
+	// handleError converts it to ErrBackendCannotConnect, and lockWithRetry
+	// loops forever because canRetryLock never checks ctx.Err().
 	//
-	// No fault injection needed — just set the env var before starting CN.
+	// TODO: remove this block after bug is confirmed reproduced.
+	l.logger.Error("BUG REPRO: injecting context.DeadlineExceeded for remote lock",
+		zap.Uint64("table-id", l.bind.Table),
+		zap.String("txn-id", hex.EncodeToString(txn.txnID)),
+	)
 	var resp *pb.Response
-	var err error
-	if os.Getenv("MO_REPRO_REMOTE_LOCK_TIMEOUT") == "1" {
-		resp = nil
-		err = context.DeadlineExceeded
-		l.logger.Error("BUG REPRO: injecting context.DeadlineExceeded for remote lock",
-			zap.Uint64("table-id", l.bind.Table),
-			zap.String("txn-id", hex.EncodeToString(txn.txnID)),
-		)
-	} else {
-		resp, err = l.client.Send(ctx, req)
-	}
+	err := context.DeadlineExceeded
 	txn.Lock()
 
 	// txn closed
