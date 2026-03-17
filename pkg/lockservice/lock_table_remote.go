@@ -28,6 +28,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	pb "github.com/matrixorigin/matrixone/pkg/pb/lock"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"go.uber.org/zap"
@@ -92,7 +93,30 @@ func (l *remoteLockTable) lock(
 	// rpc maybe wait too long, to avoid deadlock, we need unlock txn, and lock again
 	// after rpc completed
 	txn.Unlock()
-	resp, err := l.client.Send(ctx, req)
+	// Fault injection: shorten context timeout to simulate RPC timeout.
+	// In production, when the remote CN is unreachable or slow, client.Send
+	// returns context.DeadlineExceeded. handleError converts this to
+	// ErrBackendCannotConnect, and canRetryLock retries forever because
+	// the original context timeout info is "washed away".
+	//
+	// We use a short timeout (1s) so client.Send times out quickly on each
+	// retry, demonstrating the infinite loop.
+	//
+	// NOTE: The old approach of sleeping in handleRemoteLock doesn't work
+	// because morpc's ping/pong heartbeat (every readTimeout/5 = 2s) keeps
+	// the connection alive, preventing the readTimeout from firing.
+	//
+	// Usage:
+	//   SELECT enable_fault_injection();
+	//   SELECT fault_inject('all.', 'ADD_FAULT_POINT',
+	//     'remote_lock_short_timeout#:::#return##1#false');
+	sendCtx := ctx
+	if _, _, isFault := fault.TriggerFault("remote_lock_short_timeout"); isFault {
+		var sendCancel context.CancelFunc
+		sendCtx, sendCancel = context.WithTimeout(ctx, time.Second)
+		defer sendCancel()
+	}
+	resp, err := l.client.Send(sendCtx, req)
 	txn.Lock()
 
 	// txn closed
