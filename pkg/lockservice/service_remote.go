@@ -29,10 +29,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 )
 
-// Set to 0 to disable. This is a temporary reproduction hack for the full
-// lockservice case, making GetActiveTxn validation exceed the caller timeout.
-const reproGetActiveTxnDelay = 30 * time.Second
-
 var methodVersions = map[pb.Method]int64{
 	pb.Method_Lock:                   defines.MORPCVersion1,
 	pb.Method_ForwardLock:            defines.MORPCVersion1,
@@ -327,14 +323,6 @@ func (s *service) handleGetActiveTxn(
 	req *pb.Request,
 	resp *pb.Response,
 	cs morpc.ClientSession) {
-	if reproGetActiveTxnDelay > 0 {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(reproGetActiveTxnDelay):
-		}
-	}
-
 	resp.GetActiveTxn.Valid = s.serviceID == req.GetActiveTxn.ServiceID
 	if resp.GetActiveTxn.Valid && s.cfg.TxnIterFunc != nil {
 		s.cfg.TxnIterFunc(func(txnID []byte) bool {
