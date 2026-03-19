@@ -76,10 +76,6 @@ func TestLockWithRetryStopsOnDeadlineExceededContext(t *testing.T) {
 		Lock(ctx, uint64(1), gomock.Nil(), []byte("txn1"), lock.LockOptions{}).
 		Return(lock.Result{}, moerr.NewBackendCannotConnectNoCtx("retryable")).
 		Times(1)
-	txnOp.EXPECT().
-		HasLockTable(uint64(1)).
-		Return(false).
-		Times(1)
 
 	start := time.Now()
 	_, err := lockWithRetry(
@@ -112,10 +108,6 @@ func TestLockWithRetryStopsOnCanceledContext(t *testing.T) {
 	lockSvc.EXPECT().
 		Lock(ctx, uint64(1), gomock.Nil(), []byte("txn1"), lock.LockOptions{}).
 		Return(lock.Result{}, moerr.NewBackendCannotConnectNoCtx("retryable")).
-		Times(1)
-	txnOp.EXPECT().
-		HasLockTable(uint64(1)).
-		Return(false).
 		Times(1)
 
 	start := time.Now()
@@ -152,10 +144,6 @@ func TestLockWithRetryKeepsSuccessfulResultAfterContextCanceled(t *testing.T) {
 			cancel()
 			return lock.Result{}, nil
 		}).
-		Times(1)
-	txnOp.EXPECT().
-		HasLockTable(uint64(1)).
-		Return(false).
 		Times(1)
 
 	_, err := lockWithRetry(

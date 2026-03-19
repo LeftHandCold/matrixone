@@ -821,6 +821,9 @@ func LockWithMayUpgrade(
 }
 
 func canRetryLock(ctx context.Context, table uint64, txn client.TxnOperator, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	if moerr.IsMoErrCode(err, moerr.ErrRetryForCNRollingRestart) {
 		return waitToRetryLock(ctx)
 	}

@@ -33,10 +33,10 @@ import (
 	"go.uber.org/zap"
 )
 
-// Set to 0 to disable. This is a temporary verification hack that simulates
-// a remote lock timeout before the request is sent, so the fix can be
-// re-validated without first tripping remote deadlock/waiter side effects.
-const reproRemoteLockSendTimeout = time.Second
+// Set to false to disable. This is a temporary verification hack that waits
+// for the caller context to expire and then returns the same timeout/cancel
+// error, making the reproduction timing match the real caller timeout.
+const reproRemoteLockUseCallerTimeout = true
 
 // remoteLockTable the lock corresponding to the Table is managed by a remote LockTable.
 // And the remoteLockTable acts as a proxy for this LockTable locally.
@@ -99,10 +99,13 @@ func (l *remoteLockTable) lock(
 	txn.Unlock()
 	var resp *pb.Response
 	var err error
-	simulatedTimeout := reproRemoteLockSendTimeout > 0
+	simulatedTimeout := reproRemoteLockUseCallerTimeout
 	if simulatedTimeout {
-		time.Sleep(reproRemoteLockSendTimeout)
-		err = context.DeadlineExceeded
+		<-ctx.Done()
+		err = ctx.Err()
+		if err == nil {
+			err = context.DeadlineExceeded
+		}
 	} else {
 		resp, err = l.client.Send(ctx, req)
 	}
