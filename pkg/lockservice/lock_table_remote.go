@@ -33,6 +33,10 @@ import (
 	"go.uber.org/zap"
 )
 
+// Set to 0 to disable. This is a temporary reproduction hack that forces
+// remote lock RPCs to time out quickly and fall into the old retry loop.
+const reproRemoteLockSendTimeout = time.Second
+
 // remoteLockTable the lock corresponding to the Table is managed by a remote LockTable.
 // And the remoteLockTable acts as a proxy for this LockTable locally.
 type remoteLockTable struct {
@@ -89,10 +93,17 @@ func (l *remoteLockTable) lock(
 	req.Lock.ServiceID = l.serviceID
 	req.Lock.Rows = rows
 
+	sendCtx := ctx
+	sendCancel := func() {}
+	if reproRemoteLockSendTimeout > 0 {
+		sendCtx, sendCancel = context.WithTimeout(ctx, reproRemoteLockSendTimeout)
+	}
+	defer sendCancel()
+
 	// rpc maybe wait too long, to avoid deadlock, we need unlock txn, and lock again
 	// after rpc completed
 	txn.Unlock()
-	resp, err := l.client.Send(ctx, req)
+	resp, err := l.client.Send(sendCtx, req)
 	txn.Lock()
 
 	// txn closed
