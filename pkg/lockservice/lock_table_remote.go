@@ -33,8 +33,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// Set to 0 to disable. This is a temporary reproduction hack that forces
-// remote lock RPCs to time out quickly and fall into the old retry loop.
+// Set to 0 to disable. This is a temporary reproduction hack that simulates
+// a remote lock timeout before the request is sent, so lockWithRetry can loop
+// without first tripping remote deadlock/waiter side effects.
 const reproRemoteLockSendTimeout = time.Second
 
 // remoteLockTable the lock corresponding to the Table is managed by a remote LockTable.
@@ -93,17 +94,18 @@ func (l *remoteLockTable) lock(
 	req.Lock.ServiceID = l.serviceID
 	req.Lock.Rows = rows
 
-	sendCtx := ctx
-	sendCancel := func() {}
-	if reproRemoteLockSendTimeout > 0 {
-		sendCtx, sendCancel = context.WithTimeout(ctx, reproRemoteLockSendTimeout)
-	}
-	defer sendCancel()
-
 	// rpc maybe wait too long, to avoid deadlock, we need unlock txn, and lock again
 	// after rpc completed
 	txn.Unlock()
-	resp, err := l.client.Send(sendCtx, req)
+	var resp *pb.Response
+	var err error
+	simulatedTimeout := reproRemoteLockSendTimeout > 0
+	if simulatedTimeout {
+		time.Sleep(reproRemoteLockSendTimeout)
+		err = context.DeadlineExceeded
+	} else {
+		resp, err = l.client.Send(ctx, req)
+	}
 	txn.Lock()
 
 	// txn closed
@@ -126,8 +128,12 @@ func (l *remoteLockTable) lock(
 		return
 	}
 
-	// encounter any error, we also added lock to txn, because we need unlock on remote
-	_ = txn.lockAdded(l.bind.Group, l.bind, rows, l.logger)
+	// For the synthetic timeout reproduction path, no remote request was actually
+	// sent, so there is nothing to track for remote unlock.
+	if !simulatedTimeout {
+		// encounter any error, we also added lock to txn, because we need unlock on remote
+		_ = txn.lockAdded(l.bind.Group, l.bind, rows, l.logger)
+	}
 	logRemoteLockFailed(l.logger, txn, rows, opts, l.bind, err)
 	// encounter any error, we need try to check bind is valid.
 	// And use origin error to return, because once handlerError
