@@ -81,7 +81,7 @@ backend = "DISK"
 
 [[fileservice]]
 name = "SHARED"
-backend = "MINIO"
+backend = "S3"
 
 [fileservice.s3]
 bucket = "$MINIO_BUCKET"
@@ -89,6 +89,7 @@ endpoint = "$MINIO_ENDPOINT"
 key-prefix = "$MINIO_KEY_PREFIX"
 key-id = "$MINIO_KEY_ID"
 key-secret = "$MINIO_KEY_SECRET"
+region = "us-east-1"
 FSEOF
         if [ -n "$parallel_mode" ]; then
             echo "parallel-mode = \"$parallel_mode\""
@@ -102,7 +103,7 @@ disk-path = "$cache_dir"
 
 [[fileservice]]
 name = "ETL"
-backend = "MINIO"
+backend = "S3"
 
 [fileservice.s3]
 bucket = "$MINIO_BUCKET"
@@ -110,6 +111,7 @@ endpoint = "$MINIO_ENDPOINT"
 key-prefix = "server/etl"
 key-id = "$MINIO_KEY_ID"
 key-secret = "$MINIO_KEY_SECRET"
+region = "us-east-1"
 FSEOF
         if [ -n "$parallel_mode" ]; then
             echo "parallel-mode = \"$parallel_mode\""
