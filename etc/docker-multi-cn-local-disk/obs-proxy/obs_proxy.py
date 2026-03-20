@@ -16,8 +16,9 @@ Docker 环境中：
     (AWS SDK v2 默认使用 virtual-hosted style)
 
 关键设计：
-  - PutObject 检查只看 headers（Content-Length），不缓存 body
-  - 使用 aiohttp ClientSession 做异步流式转发，大文件不会卡住
+  - PutObject ≥64MB 直接拦截返回 400，不转发
+  - 所有需要转发的请求 body 都 < 64MB，用整体读取+一次性发送
+  - 不使用流式转发，避免 asyncio 事件循环成为高并发瓶颈
   - DeleteObjects 需要读 body 检查 XML，但 body 很小
 """
 
@@ -156,12 +157,16 @@ async def check_delete_objects_body(request: web.Request) -> web.Response | None
     return None
 
 
-async def stream_forward(request: web.Request, minio_url: str,
-                         session: aiohttp.ClientSession) -> web.StreamResponse:
-    """Stream-forward request to MinIO via aiohttp — no body buffering.
+async def bulk_forward(request: web.Request, minio_url: str,
+                       session: aiohttp.ClientSession) -> web.Response:
+    """Read entire request body, forward to MinIO in one shot, return full response.
 
-    For large PutObject (tens of MB), this avoids reading the entire body
-    into Python memory before forwarding. The body is streamed chunk by chunk.
+    Since PutObject >= 64MB is blocked (never forwarded), all forwarded requests
+    have body < 64MB. Reading the full body into memory is safe and MUCH faster
+    than streaming chunk-by-chunk through Python's asyncio event loop.
+
+    This eliminates the per-chunk scheduling overhead that caused LOAD DATA
+    operations to stall under high concurrency.
     """
     path_qs = request.path_qs
 
@@ -172,34 +177,33 @@ async def stream_forward(request: web.Request, minio_url: str,
 
     target_url = f"{minio_url}{path_qs}"
 
-    # Stream request body directly from client to MinIO
-    # request.content is a StreamReader — aiohttp will read chunks as they arrive
+    # Read entire request body (safe: max 64MB, typically much smaller)
+    req_body = await request.read()
+
     async with session.request(
         method=request.method,
         url=target_url,
         headers=fwd_headers,
-        data=request.content,  # StreamReader — zero-copy streaming
+        data=req_body if req_body else None,
         allow_redirects=False,
-        timeout=aiohttp.ClientTimeout(total=600),  # 10 min for large files
+        timeout=aiohttp.ClientTimeout(total=600),
     ) as upstream_resp:
-        # Create streaming response back to client
-        resp = web.StreamResponse(
+        # Read entire response body
+        resp_body = await upstream_resp.read()
+
+        # Build response with all upstream headers
+        resp_headers = {k: v for k, v in upstream_resp.headers.items()
+                        if k.lower() not in ("transfer-encoding", "connection",
+                                             "keep-alive")}
+
+        return web.Response(
             status=upstream_resp.status,
-            headers={k: v for k, v in upstream_resp.headers.items()
-                     if k.lower() not in ("transfer-encoding", "connection",
-                                          "keep-alive")},
+            headers=resp_headers,
+            body=resp_body,
         )
-        await resp.prepare(request)
-
-        # Stream response body back
-        async for chunk in upstream_resp.content.iter_any():
-            await resp.write(chunk)
-
-        await resp.write_eof()
-        return resp
 
 
-async def handle_request(request: web.Request) -> web.Response | web.StreamResponse:
+async def handle_request(request: web.Request) -> web.Response:
     stats["total_requests"] += 1
     method = request.method
     path = request.path
@@ -229,10 +233,10 @@ async def handle_request(request: web.Request) -> web.Response | web.StreamRespo
     if method in ("PUT", "DELETE", "POST"):
         log.info(f"✅ FORWARD {method} Host={host} {path}{'?' + qs if qs else ''} CL={cl} TE={te}")
 
-    # Stream-forward to MinIO
+    # Bulk-forward to MinIO (read full body, send in one shot)
     session = request.app["client_session"]
     minio_url = request.app["minio_url"]
-    return await stream_forward(request, minio_url, session)
+    return await bulk_forward(request, minio_url, session)
 
 
 async def handle_stats(request: web.Request) -> web.Response:
@@ -252,7 +256,7 @@ async def on_startup(app: web.Application):
     # Disable automatic Host header — we forward the original Host
     # so S3 Signature V4 stays valid and MinIO (MINIO_DOMAIN=obs-proxy)
     # can extract bucket from virtual-hosted style Host header.
-    connector = aiohttp.TCPConnector(limit=100, force_close=False)
+    connector = aiohttp.TCPConnector(limit=0, force_close=False)
     app["client_session"] = aiohttp.ClientSession(
         connector=connector,
         auto_decompress=False,
@@ -286,7 +290,7 @@ def main():
     log.info(f"   Listen:  http://0.0.0.0:{listen_port}")
     log.info(f"   MinIO:   {minio_url}")
     log.info(f"   Bucket:  {bucket_name}")
-    log.info(f"   转发方式: aiohttp 异步流式转发（大文件不缓存 body）")
+    log.info(f"   转发方式: 整体读取+一次性发送（所有转发请求 body < 64MB）")
     log.info(f"   URL 风格: path-style + virtual-hosted ({bucket_name}.{proxy_hostname})")
     log.info(f"   模拟规则:")
     log.info(f"     1. PutObject CL >= 64MB → 400 seekable error")
