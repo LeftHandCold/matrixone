@@ -1,0 +1,57 @@
+service-type = "PROXY"
+data-dir = "/mo-data"
+
+[log]
+level = "info"
+format = "console"
+max-size = 512
+filename = "/logs/proxy.log"
+
+[hakeeper-client]
+service-addresses = [
+  "mo-log:32001",
+]
+
+[[fileservice]]
+name = "LOCAL"
+backend = "DISK"
+
+[[fileservice]]
+name = "SHARED"
+backend = "MINIO"
+
+[fileservice.s3]
+bucket = "mo-test"
+endpoint = "http://obs-proxy:9000"
+key-prefix = "server/data"
+key-id = "minio"
+key-secret = "minio123"
+
+[fileservice.cache]
+memory-capacity = "512MB"
+disk-capacity = "8GB"
+disk-path = "/mo-data/file-service-cache"
+
+[[fileservice]]
+name = "ETL"
+backend = "MINIO"
+
+[fileservice.s3]
+bucket = "mo-test"
+endpoint = "http://obs-proxy:9000"
+key-prefix = "server/etl"
+key-id = "minio"
+key-secret = "minio123"
+
+[observability]
+disableTrace = true
+disableMetric = false
+enable-metric-to-prom = true
+status-port = 7001
+
+[proxy]
+uuid = "rd1dccb4-4d3c-41f8-b482-5251dc7a41bf"
+listen-address = "0.0.0.0:6009"
+
+[proxy.cluster]
+refresh-interval = "5s"
