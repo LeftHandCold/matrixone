@@ -366,7 +366,7 @@ format = "$LOG_LOG_FORMAT"
 max-size = $LOG_LOG_MAX_SIZE
 filename = "/logs/logservice.log"
 
-$(generate_fileservice "$LOG_MEMORY_CACHE" "$LOG_DISK_CACHE" "$LOG_CACHE_DIR")
+$(STORAGE_MODE=disk generate_fileservice "$LOG_MEMORY_CACHE" "$LOG_DISK_CACHE" "$LOG_CACHE_DIR")
 
 [observability]
 EOF
