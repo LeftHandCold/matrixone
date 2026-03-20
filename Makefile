@@ -491,7 +491,7 @@ dev-up-obs-test:
 	@cd $(DEV_DIR) && rm -f cn1.toml cn2.toml log.toml tn.toml proxy.toml
 	@cd $(DEV_DIR) && \
 		STORAGE_MODE=minio \
-		./start.sh -v $(DEV_VERSION) --profile obs-test up -d --build
+		./start.sh -v $(DEV_VERSION) --profile obs-test --profile matrixone up -d --build
 	@echo ""
 	@echo "✅ OBS test environment started!"
 	@echo ""
@@ -523,7 +523,7 @@ dev-up-obs-test-fixed:
 		OBS_GC_DELETE_BATCH=1 \
 		OBS_GC_DELETE_WORKERS=16 \
 		OBS_GC_CACHE_SIZE=33554432 \
-		./start.sh -v $(DEV_VERSION) --profile obs-test up -d --build
+		./start.sh -v $(DEV_VERSION) --profile obs-test --profile matrixone up -d --build
 	@echo ""
 	@echo "✅ OBS test environment started (with workarounds)!"
 	@echo ""
