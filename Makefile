@@ -485,7 +485,8 @@ dev-up-obs-test:
 	@echo "Starting MatrixOne with OBS Simulator (MinIO + Proxy)..."
 	@echo ""
 	@echo "This mode simulates Huawei OBS S3 compatibility issues:"
-	@echo "  1. PutObject without Content-Length → 400 (seekable error)"
+	@echo "  1. PutObject Content-Length >= 64MB → 400 (seekable error)"
+	@echo "     (MO sizeHint >= 64MB uses raw io.Reader, not seekable)"
 	@echo "  2. DeleteObjects batch XML → 400 (MalformedXML)"
 	@echo ""
 	@cd $(DEV_DIR) && rm -f cn1.toml cn2.toml log.toml tn.toml proxy.toml
@@ -500,7 +501,7 @@ dev-up-obs-test:
 	@echo "  MinIO Console: (not exposed, internal only)"
 	@echo ""
 	@echo "Expected behavior WITHOUT OBS workaround config:"
-	@echo "  - GC writes ≥64MB → seekable error (blocked by proxy)"
+	@echo "  - Object writes >= 64MB → seekable error (blocked by proxy)"
 	@echo "  - GC batch delete → MalformedXML (blocked by proxy)"
 	@echo ""
 	@echo "To test WITH OBS workaround, re-run with:"

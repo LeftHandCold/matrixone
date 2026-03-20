@@ -3,7 +3,10 @@
 OBS Simulator Proxy (Docker version)
 
 模拟华为云 OBS 的两个 S3 兼容性问题：
-1. PutObject 要求 Body 可 seek（有 Content-Length），chunked 传输会被拒绝
+1. PutObject body >= 64MB 时，OBS 要求 body 可 seek（用于签名验证）。
+   MO 的 aws_sdk_v2.Write 在 sizeHint >= 64MB 时直接传 raw io.Reader（不可 seek），
+   即使设置了 Content-Length，OBS 也会拒绝。
+   而 sizeHint < 64MB 时 MO 会先 ReadAll 到 bytes.Reader（可 seek），不会触发此问题。
 2. DeleteObjects 批量删除的 XML 格式不兼容
 
 Docker 环境中：
@@ -49,10 +52,12 @@ def make_s3_error_response(code: str, message: str, resource: str = "",
     return body
 
 
-def is_chunked_transfer(request: web.Request) -> bool:
-    te = request.headers.get("Transfer-Encoding", "").lower()
-    has_content_length = "Content-Length" in request.headers
-    return "chunked" in te or not has_content_length
+# MO's aws_sdk_v2.Write uses this threshold to decide the write path:
+#   sizeHint == nil  → serial multipart upload (each part 64MB, bytes.Reader, seekable) → OK
+#   sizeHint < 64MB  → ReadAll to bytes.Reader + PutObject → seekable → OK
+#   sizeHint >= 64MB → PutObject with raw io.Reader → NOT seekable → OBS fails
+# So we block PutObject when Content-Length >= this threshold.
+SMALL_OBJECT_THRESHOLD = 64 * 1024 * 1024  # 64MB, matches fileservice.smallObjectThreshold
 
 
 def is_put_object(request: web.Request) -> bool:
@@ -73,9 +78,26 @@ def is_delete_objects(request: web.Request) -> bool:
 
 
 async def check_put_seekable(request: web.Request) -> web.Response | None:
+    """Block PutObject requests that would fail on real OBS.
+
+    Real OBS requires the request body to be seekable for signature verification.
+    MO's Write function has three code paths:
+      1. sizeHint == nil  → multipart upload (each part uses bytes.Reader = seekable) → OK
+      2. sizeHint < 64MB  → ReadAll into bytes.Reader + PutObject → seekable → OK
+      3. sizeHint >= 64MB → PutObject with raw io.Reader → NOT seekable → OBS FAILS
+
+    We simulate case 3 by blocking PutObject when Content-Length >= 64MB.
+    We also block chunked/no-Content-Length as a safety net (though MO doesn't
+    normally produce this pattern).
+    """
     if not is_put_object(request):
         return None
-    if is_chunked_transfer(request):
+
+    cl_str = request.headers.get("Content-Length")
+    te = request.headers.get("Transfer-Encoding", "").lower()
+
+    # Case A: chunked or no Content-Length — body is definitely not seekable
+    if "chunked" in te or cl_str is None:
         path = request.path
         stats["blocked_put_seekable"] += 1
         log.warning(
@@ -89,6 +111,29 @@ async def check_put_seekable(request: web.Request) -> web.Response | None:
             resource=path,
         )
         return web.Response(status=400, content_type="application/xml", text=body)
+
+    # Case B: Content-Length >= 64MB — MO passes raw io.Reader (not seekable)
+    # This is the actual OBS failure path in production
+    try:
+        content_length = int(cl_str)
+    except (ValueError, TypeError):
+        content_length = 0
+
+    if content_length >= SMALL_OBJECT_THRESHOLD:
+        path = request.path
+        stats["blocked_put_seekable"] += 1
+        log.warning(
+            f"🚫 BLOCKED PutObject (Content-Length={content_length} >= 64MB): {path} "
+            f"— OBS requires seekable body, but MO sends raw io.Reader for large objects"
+        )
+        body = make_s3_error_response(
+            code="InvalidRequest",
+            message="failed to compute payload hash: failed to seek body to start, "
+                    "request stream is not seekable",
+            resource=path,
+        )
+        return web.Response(status=400, content_type="application/xml", text=body)
+
     return None
 
 
@@ -214,8 +259,10 @@ def main():
     log.info(f"   MinIO:   http://{minio_host}:{minio_port}")
     log.info(f"   转发方式: http.client raw (保留所有原始 headers，不破坏 S3 签名)")
     log.info(f"   模拟规则:")
-    log.info(f"     1. PutObject 无 Content-Length → 400 seekable error")
-    log.info(f"     2. DeleteObjects XML           → 400 MalformedXML")
+    log.info(f"     1. PutObject Content-Length >= 64MB → 400 seekable error")
+    log.info(f"        (MO 的 sizeHint >= 64MB 走 raw io.Reader，不可 seek)")
+    log.info(f"     2. PutObject chunked/无 Content-Length → 400 seekable error")
+    log.info(f"     3. DeleteObjects XML                   → 400 MalformedXML")
     web.run_app(app, host="0.0.0.0", port=listen_port, print=None)
 
 
