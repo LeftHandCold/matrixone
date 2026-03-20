@@ -89,9 +89,11 @@ services:
       - matrixone
     user: "${DOCKER_UID:-501}:${DOCKER_GID:-20}" # Run as current user (macOS default: 501:20, Linux: use 1000:1000)
     entrypoint: [ "/mo-service" ]
-    command: [ "-cfg", "/etc/docker-multi-cn-local-disk/tn.toml" ]
+    command: [ "-cfg", "/etc/docker-multi-cn-local-disk/tn.toml", "-debug-http", "0.0.0.0:6062" ]
     cap_add:
       - NET_ADMIN # Required for network chaos testing with tc (traffic control)
+    ports:
+      - "6062:6062"   # pprof debug port
     volumes:
       - ../../mo-data:/mo-data
       - ../../logs:/logs
@@ -144,11 +146,12 @@ services:
       - matrixone
     user: "${DOCKER_UID:-501}:${DOCKER_GID:-20}" # Run as current user (macOS default: 501:20, Linux: use 1000:1000)
     entrypoint: [ "/mo-service" ]
-    command: [ "-cfg", "/etc/docker-multi-cn-local-disk/cn2.toml" ]
+    command: [ "-cfg", "/etc/docker-multi-cn-local-disk/cn2.toml", "-debug-http", "0.0.0.0:6061" ]
     cap_add:
       - NET_ADMIN # Required for network chaos testing with tc (traffic control)
     ports:
       - "16002:16002" # SQL port
+      - "6061:6061"   # pprof debug port
     volumes:
       - ../../mo-data:/mo-data
       - ../../logs:/logs

@@ -114,7 +114,7 @@ key-secret = "$MINIO_KEY_SECRET"
 region = "us-east-1"
 FSEOF
         if [ -n "$parallel_mode" ]; then
-            echo "parallel-mode = \"$parallel_mode\""
+            echo "parallel-mode = $parallel_mode"
         fi
     else
         cat << FSEOF
