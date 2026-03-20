@@ -488,14 +488,10 @@ dev-up-obs-test:
 	@echo "  1. PutObject without Content-Length → 400 (seekable error)"
 	@echo "  2. DeleteObjects batch XML → 400 (MalformedXML)"
 	@echo ""
-	@echo "Generating MinIO-mode configs..."
-	@cd $(DEV_DIR) && STORAGE_MODE=minio ./generate-config.sh
-	@echo ""
-	@echo "Starting services (MinIO + OBS Proxy + MO cluster)..."
+	@cd $(DEV_DIR) && rm -f cn1.toml cn2.toml log.toml tn.toml proxy.toml
 	@cd $(DEV_DIR) && \
-		DOCKER_UID=$$(id -u) DOCKER_GID=$$(id -g) \
-		IMAGE_NAME=matrixorigin/matrixone:$(DEV_VERSION) \
-		docker compose --profile obs-test --profile matrixone up -d --build
+		STORAGE_MODE=minio \
+		./start.sh -v $(DEV_VERSION) --profile obs-test up -d --build
 	@echo ""
 	@echo "✅ OBS test environment started!"
 	@echo ""
@@ -514,25 +510,20 @@ dev-up-obs-test:
 dev-up-obs-test-fixed:
 	@echo "Starting MatrixOne with OBS Simulator + OBS workaround configs..."
 	@echo ""
-	@echo "Generating MinIO-mode configs with OBS workarounds:"
+	@echo "OBS workarounds:"
 	@echo "  parallel-mode = 1 (force multipart upload)"
 	@echo "  gc-delete-batch-size = 1 (single file delete)"
 	@echo "  gc-delete-worker-num = 16 (parallel delete workers)"
 	@echo "  gc-cache-size = 33554432 (32MB)"
 	@echo ""
+	@cd $(DEV_DIR) && rm -f cn1.toml cn2.toml log.toml tn.toml proxy.toml
 	@cd $(DEV_DIR) && \
 		STORAGE_MODE=minio \
 		OBS_PARALLEL_MODE=1 \
 		OBS_GC_DELETE_BATCH=1 \
 		OBS_GC_DELETE_WORKERS=16 \
 		OBS_GC_CACHE_SIZE=33554432 \
-		./generate-config.sh
-	@echo ""
-	@echo "Starting services..."
-	@cd $(DEV_DIR) && \
-		DOCKER_UID=$$(id -u) DOCKER_GID=$$(id -g) \
-		IMAGE_NAME=matrixorigin/matrixone:$(DEV_VERSION) \
-		docker compose --profile obs-test --profile matrixone up -d --build
+		./start.sh -v $(DEV_VERSION) --profile obs-test up -d --build
 	@echo ""
 	@echo "✅ OBS test environment started (with workarounds)!"
 	@echo ""
