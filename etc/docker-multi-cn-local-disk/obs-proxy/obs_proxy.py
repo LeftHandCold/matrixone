@@ -13,6 +13,11 @@ Docker 环境中：
   - 监听 9000 端口（MO 容器连这个）
   - 转发到 minio:9000（MinIO 容器）
 
+支持两种 S3 URL 风格：
+  - Path-style:           http://obs-proxy:9000/mo-test/key
+  - Virtual-hosted style: http://mo-test.obs-proxy:9000/key
+    (AWS SDK v2 默认使用 virtual-hosted style)
+
 关键设计：使用 http.client 做 raw 转发，完全透传所有 headers（包括 Host、
 Content-Length、Authorization 等），不让任何 HTTP 框架自动修改 headers，
 确保 S3 Signature V4 签名不被破坏。
@@ -37,6 +42,7 @@ stats = {
     "blocked_put_seekable": 0,
     "blocked_delete_multi": 0,
     "forwarded": 0,
+    "virtual_hosted_rewrite": 0,
 }
 
 
@@ -58,6 +64,29 @@ def make_s3_error_response(code: str, message: str, resource: str = "",
 #   sizeHint >= 64MB → PutObject with raw io.Reader → NOT seekable → OBS fails
 # So we block PutObject when Content-Length >= this threshold.
 SMALL_OBJECT_THRESHOLD = 64 * 1024 * 1024  # 64MB, matches fileservice.smallObjectThreshold
+
+
+def extract_bucket_from_host(host: str, proxy_hostname: str) -> str | None:
+    """Extract bucket name from virtual-hosted style Host header.
+
+    AWS SDK v2 virtual-hosted style:
+      Host: <bucket>.<endpoint-hostname>:<port>
+      e.g.: mo-test.obs-proxy:9000
+
+    Returns bucket name if virtual-hosted style detected, None if path-style.
+    """
+    # Strip port
+    hostname = host.split(":")[0] if ":" in host else host
+
+    # If hostname ends with .<proxy_hostname>, it's virtual-hosted style
+    # e.g. "mo-test.obs-proxy" → bucket = "mo-test"
+    suffix = f".{proxy_hostname}"
+    if hostname.endswith(suffix):
+        bucket = hostname[: -len(suffix)]
+        if bucket:
+            return bucket
+
+    return None
 
 
 def is_put_object(request: web.Request) -> bool:
@@ -189,12 +218,35 @@ async def forward_request(request: web.Request, minio_host: str,
                           minio_port: int) -> web.Response:
     body = await request.read()
 
-    # Collect ALL headers from original request — no filtering at all.
+    path_qs = request.path_qs
+
+    # Collect ALL headers from original request — no filtering, no mutation.
     # Host, Authorization, Content-Length, x-amz-* — everything goes through.
+    #
+    # For virtual-hosted style (Host=mo-test.obs-proxy:9000, path=/key):
+    #   - We keep Host as-is so S3 Signature V4 stays valid
+    #   - We keep path as-is (/key, not /mo-test/key)
+    #   - MinIO has MINIO_DOMAIN=obs-proxy, so it extracts bucket="mo-test"
+    #     from Host header and resolves the object correctly
+    #   - If we rewrote path to /mo-test/key, the signature would break
+    #     because S3 SigV4 signs the canonical URI (original path)
+    #
+    # TCP connection goes to minio:9000 (via raw_forward), but HTTP Host
+    # header stays as the client sent it.
     headers = [(k, v) for k, v in request.headers.items()
                if k.lower() not in ("transfer-encoding", "connection")]
 
-    path_qs = request.path_qs
+    # Log virtual-hosted style detection for debugging
+    proxy_hostname = request.app["proxy_hostname"]
+    vhost_bucket = extract_bucket_from_host(
+        request.headers.get("Host", ""), proxy_hostname
+    )
+    if vhost_bucket:
+        stats["virtual_hosted_rewrite"] += 1
+        log.debug(
+            f"🔄 Virtual-hosted style detected: Host={request.headers.get('Host')} "
+            f"bucket={vhost_bucket} path={path_qs}"
+        )
 
     # Run synchronous http.client call in thread pool to avoid blocking event loop
     loop = asyncio.get_event_loop()
@@ -218,6 +270,7 @@ async def handle_request(request: web.Request) -> web.Response:
     qs = request.query_string
     cl = request.headers.get("Content-Length", "?")
     te = request.headers.get("Transfer-Encoding", "")
+    host = request.headers.get("Host", "")
 
     blocked = await check_put_seekable(request)
     if blocked:
@@ -228,17 +281,18 @@ async def handle_request(request: web.Request) -> web.Response:
 
     stats["forwarded"] += 1
     if method in ("PUT", "DELETE", "POST"):
-        log.info(f"✅ FORWARD {method} {path}{'?' + qs if qs else ''} CL={cl} TE={te}")
+        log.info(f"✅ FORWARD {method} Host={host} {path}{'?' + qs if qs else ''} CL={cl} TE={te}")
     return await forward_request(request, minio_host, minio_port)
 
 
 async def handle_stats(request: web.Request) -> web.Response:
     lines = [
         "=== OBS Simulator Stats ===",
-        f"Total requests:        {stats['total_requests']}",
-        f"Blocked (seekable):    {stats['blocked_put_seekable']}",
-        f"Blocked (delete XML):  {stats['blocked_delete_multi']}",
-        f"Forwarded:             {stats['forwarded']}",
+        f"Total requests:          {stats['total_requests']}",
+        f"Blocked (seekable):      {stats['blocked_put_seekable']}",
+        f"Blocked (delete XML):    {stats['blocked_delete_multi']}",
+        f"Virtual-hosted rewrites: {stats['virtual_hosted_rewrite']}",
+        f"Forwarded:               {stats['forwarded']}",
     ]
     return web.Response(text="\n".join(lines))
 
@@ -247,17 +301,28 @@ def main():
     listen_port = int(os.environ.get("LISTEN_PORT", "9000"))
     minio_host = os.environ.get("MINIO_HOST", "minio")
     minio_port = int(os.environ.get("MINIO_PORT", "9000"))
+    bucket_name = os.environ.get("BUCKET_NAME", "mo-test")
+    # The hostname that MO uses in endpoint config (e.g. "obs-proxy")
+    # Virtual-hosted style will be: <bucket>.<proxy_hostname>:<port>
+    proxy_hostname = os.environ.get("PROXY_HOSTNAME", "obs-proxy")
 
     app = web.Application(client_max_size=0)
     app["minio_host"] = minio_host
     app["minio_port"] = minio_port
+    app["bucket_name"] = bucket_name
+    app["proxy_hostname"] = proxy_hostname
     app.router.add_get("/__obs_stats", handle_stats)
     app.router.add_route("*", "/{path_info:.*}", handle_request)
 
     log.info(f"🚀 OBS Simulator Proxy starting")
     log.info(f"   Listen:  http://0.0.0.0:{listen_port}")
     log.info(f"   MinIO:   http://{minio_host}:{minio_port}")
+    log.info(f"   Bucket:  {bucket_name}")
+    log.info(f"   Proxy hostname: {proxy_hostname}")
     log.info(f"   转发方式: http.client raw (保留所有原始 headers，不破坏 S3 签名)")
+    log.info(f"   URL 风格支持:")
+    log.info(f"     - Path-style:    http://{proxy_hostname}:{listen_port}/{bucket_name}/key")
+    log.info(f"     - Virtual-hosted: http://{bucket_name}.{proxy_hostname}:{listen_port}/key")
     log.info(f"   模拟规则:")
     log.info(f"     1. PutObject Content-Length >= 64MB → 400 seekable error")
     log.info(f"        (MO 的 sizeHint >= 64MB 走 raw io.Reader，不可 seek)")

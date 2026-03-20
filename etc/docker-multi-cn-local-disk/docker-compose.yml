@@ -350,6 +350,12 @@ services:
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio123
+      # Enable virtual-hosted style so MinIO can parse bucket from Host header.
+      # AWS SDK v2 sends: Host=mo-test.obs-proxy:9000, path=/key
+      # With MINIO_DOMAIN=obs-proxy, MinIO extracts bucket="mo-test" from Host.
+      # This is critical because S3 Signature V4 signs the original path (/key),
+      # so we cannot rewrite path to /mo-test/key without breaking the signature.
+      MINIO_DOMAIN: obs-proxy
     command: server --console-address ":9001" /data
     healthcheck:
       test: timeout 5s bash -c ':> /dev/tcp/127.0.0.1/9000' || exit 1
@@ -385,6 +391,10 @@ services:
   # Simulates Huawei OBS S3 compatibility issues:
   #   1. PutObject without Content-Length → 400 (seekable error)
   #   2. DeleteObjects batch XML → 400 (MalformedXML)
+  #
+  # AWS SDK v2 uses virtual-hosted style by default: http://mo-test.obs-proxy:9000/key
+  # The DNS aliases below ensure "mo-test.obs-proxy" resolves to this container.
+  # The proxy handles both path-style and virtual-hosted style requests.
   obs-proxy:
     build:
       context: ./obs-proxy
@@ -397,13 +407,20 @@ services:
       LISTEN_PORT: "9000"
       MINIO_HOST: "minio"
       MINIO_PORT: "9000"
+      BUCKET_NAME: "${MINIO_BUCKET:-mo-test}"
     ports:
       - "9200:9000"   # Host access for debugging: curl http://localhost:9200/__obs_stats
     depends_on:
       minio:
         condition: service_healthy
     networks:
-      - matrixone-net
+      matrixone-net:
+        aliases:
+          # AWS SDK v2 virtual-hosted style: http://<bucket>.obs-proxy:9000/<key>
+          # MO config has endpoint=http://obs-proxy:9000, bucket=mo-test
+          # SDK constructs: http://mo-test.obs-proxy:9000/<key>
+          # This alias makes "mo-test.obs-proxy" resolve to this container
+          - mo-test.obs-proxy
     restart: unless-stopped
 
 networks:
