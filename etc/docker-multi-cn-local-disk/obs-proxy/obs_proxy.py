@@ -113,12 +113,18 @@ async def check_delete_objects(request: web.Request) -> web.Response | None:
 async def forward_request(request: web.Request, minio_base: str) -> web.Response:
     target_url = f"{minio_base}{request.path_qs}"
     body = await request.read()
-    skip_headers = {"host", "transfer-encoding", "connection"}
+    # Keep Host header! S3 Signature V4 includes Host in signing.
+    # Client signs with "obs-proxy:9000" as Host — MinIO must see the same
+    # Host header to verify the signature. aiohttp won't override it if we
+    # pass it explicitly via skip_auto_headers.
+    skip_headers = {"transfer-encoding", "connection"}
     headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in skip_headers
     }
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(
+        skip_auto_headers=["Host"],  # Don't override Host — S3 sig depends on it
+    ) as session:
         async with session.request(
             method=request.method,
             url=target_url,
