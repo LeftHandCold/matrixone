@@ -120,6 +120,9 @@ help:
 	@echo "  make dev-logs           - View all logs"
 	@echo "  make dev-mysql          - Connect to database via proxy"
 	@echo "  make dev-clean          - Stop and remove all data"
+	@echo "  make dev-up-obs-test    - Start cluster with OBS simulator (test OBS compat)"
+	@echo "  make dev-up-obs-test-fixed - Start with OBS workaround configs applied"
+	@echo "  make dev-down-obs-test  - Stop OBS test environment"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  make fmt                - Format Go code"
@@ -349,6 +352,11 @@ dev-help:
 	@echo "  make dev-edit-common    - Edit common configuration (all services)"
 	@echo "  make dev-setup-docker-mirror - Configure Docker registry mirror (for faster pulls)"
 	@echo ""
+	@echo "OBS Compatibility Testing:"
+	@echo "  make dev-up-obs-test       - Start cluster with OBS simulator proxy (simulates OBS errors)"
+	@echo "  make dev-up-obs-test-fixed - Start with OBS workaround configs (parallel-mode, single delete)"
+	@echo "  make dev-down-obs-test     - Stop OBS test environment and restore disk mode"
+	@echo ""
 	@echo "Dashboard Management (via mo-tool):"
 	@echo "  Dashboard commands (default: local mode, port 3001):"
 	@echo "    make dev-create-dashboard        - Create dashboards"
@@ -465,6 +473,82 @@ dev-up-test:
 	@echo ""
 	@echo "Test directory mounted at /test in containers"
 	@echo "Run SQL files with: mysql> source /test/distributed/cases/your_test.sql;"
+
+# ============================================================
+# OBS Compatibility Test Mode
+# Starts MinIO + OBS Simulator Proxy + MO cluster
+# MO writes to MinIO through proxy that simulates OBS behavior
+# ============================================================
+
+.PHONY: dev-up-obs-test
+dev-up-obs-test:
+	@echo "Starting MatrixOne with OBS Simulator (MinIO + Proxy)..."
+	@echo ""
+	@echo "This mode simulates Huawei OBS S3 compatibility issues:"
+	@echo "  1. PutObject without Content-Length → 400 (seekable error)"
+	@echo "  2. DeleteObjects batch XML → 400 (MalformedXML)"
+	@echo ""
+	@echo "Generating MinIO-mode configs..."
+	@cd $(DEV_DIR) && STORAGE_MODE=minio ./generate-config.sh
+	@echo ""
+	@echo "Starting services (MinIO + OBS Proxy + MO cluster)..."
+	@cd $(DEV_DIR) && \
+		DOCKER_UID=$$(id -u) DOCKER_GID=$$(id -g) \
+		IMAGE_NAME=matrixorigin/matrixone:$(DEV_VERSION) \
+		docker compose --profile obs-test --profile matrixone up -d --build
+	@echo ""
+	@echo "✅ OBS test environment started!"
+	@echo ""
+	@echo "  MO SQL:      mysql -h 127.0.0.1 -P 6001 -u root -p111"
+	@echo "  OBS Stats:   curl http://localhost:9200/__obs_stats"
+	@echo "  MinIO Console: (not exposed, internal only)"
+	@echo ""
+	@echo "Expected behavior WITHOUT OBS workaround config:"
+	@echo "  - GC writes ≥64MB → seekable error (blocked by proxy)"
+	@echo "  - GC batch delete → MalformedXML (blocked by proxy)"
+	@echo ""
+	@echo "To test WITH OBS workaround, re-run with:"
+	@echo "  make dev-up-obs-test-fixed"
+
+.PHONY: dev-up-obs-test-fixed
+dev-up-obs-test-fixed:
+	@echo "Starting MatrixOne with OBS Simulator + OBS workaround configs..."
+	@echo ""
+	@echo "Generating MinIO-mode configs with OBS workarounds:"
+	@echo "  parallel-mode = 1 (force multipart upload)"
+	@echo "  gc-delete-batch-size = 1 (single file delete)"
+	@echo "  gc-delete-worker-num = 16 (parallel delete workers)"
+	@echo "  gc-cache-size = 33554432 (32MB)"
+	@echo ""
+	@cd $(DEV_DIR) && \
+		STORAGE_MODE=minio \
+		OBS_PARALLEL_MODE=1 \
+		OBS_GC_DELETE_BATCH=1 \
+		OBS_GC_DELETE_WORKERS=16 \
+		OBS_GC_CACHE_SIZE=33554432 \
+		./generate-config.sh
+	@echo ""
+	@echo "Starting services..."
+	@cd $(DEV_DIR) && \
+		DOCKER_UID=$$(id -u) DOCKER_GID=$$(id -g) \
+		IMAGE_NAME=matrixorigin/matrixone:$(DEV_VERSION) \
+		docker compose --profile obs-test --profile matrixone up -d --build
+	@echo ""
+	@echo "✅ OBS test environment started (with workarounds)!"
+	@echo ""
+	@echo "  MO SQL:      mysql -h 127.0.0.1 -P 6001 -u root -p111"
+	@echo "  OBS Stats:   curl http://localhost:9200/__obs_stats"
+	@echo ""
+	@echo "Expected: GC should work normally — all requests forwarded through proxy"
+
+.PHONY: dev-down-obs-test
+dev-down-obs-test:
+	@echo "Stopping OBS test environment..."
+	@cd $(DEV_DIR) && docker compose --profile obs-test --profile matrixone down
+	@echo ""
+	@echo "Regenerating disk-mode configs (restore default)..."
+	@cd $(DEV_DIR) && STORAGE_MODE=disk ./generate-config.sh
+	@echo "✅ Stopped and restored to disk mode"
 
 .PHONY: dev-up-grafana-local
 dev-up-grafana-local:

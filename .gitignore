@@ -67,4 +67,7 @@ docker-compose-log/
 etc/docker-multi-cn-local-disk/*.toml
 !etc/docker-multi-cn-local-disk/launch.toml
 
+# MinIO data (OBS compatibility testing)
+mo-data/minio-data/
+
 *.pyc

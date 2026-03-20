@@ -50,8 +50,129 @@ DEFAULT_CACHE_DIR="/mo-data/file-service-cache"
 DEFAULT_DISABLE_TRACE="true"
 DEFAULT_DISABLE_METRIC="false"  # Always enable metrics for dev-up
 
+# Storage mode: "disk" (default) or "minio" (for OBS compatibility testing)
+STORAGE_MODE="${STORAGE_MODE:-disk}"
+
+# MinIO / OBS proxy settings (only used when STORAGE_MODE=minio)
+MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://obs-proxy:9000}"
+MINIO_BUCKET="${MINIO_BUCKET:-mo-test}"
+MINIO_KEY_PREFIX="${MINIO_KEY_PREFIX:-server/data}"
+MINIO_KEY_ID="${MINIO_KEY_ID:-minio}"
+MINIO_KEY_SECRET="${MINIO_KEY_SECRET:-minio123}"
+# OBS compatibility config (applied to TN only)
+OBS_PARALLEL_MODE="${OBS_PARALLEL_MODE:-}"
+OBS_GC_DELETE_BATCH="${OBS_GC_DELETE_BATCH:-}"
+OBS_GC_DELETE_WORKERS="${OBS_GC_DELETE_WORKERS:-}"
+OBS_GC_CACHE_SIZE="${OBS_GC_CACHE_SIZE:-}"
+
+# Function to generate fileservice TOML section
+# Args: cache_memory, cache_disk, cache_dir, [parallel_mode]
+generate_fileservice() {
+    local cache_memory=$1
+    local cache_disk=$2
+    local cache_dir=$3
+    local parallel_mode=${4:-}
+
+    if [ "$STORAGE_MODE" = "minio" ]; then
+        cat << FSEOF
+[[fileservice]]
+name = "LOCAL"
+backend = "DISK"
+
+[[fileservice]]
+name = "SHARED"
+backend = "MINIO"
+
+[fileservice.s3]
+bucket = "$MINIO_BUCKET"
+endpoint = "$MINIO_ENDPOINT"
+key-prefix = "$MINIO_KEY_PREFIX"
+key-id = "$MINIO_KEY_ID"
+key-secret = "$MINIO_KEY_SECRET"
+FSEOF
+        if [ -n "$parallel_mode" ]; then
+            echo "parallel-mode = \"$parallel_mode\""
+        fi
+        cat << FSEOF
+
+[fileservice.cache]
+memory-capacity = "$cache_memory"
+disk-capacity = "$cache_disk"
+disk-path = "$cache_dir"
+
+[[fileservice]]
+name = "ETL"
+backend = "MINIO"
+
+[fileservice.s3]
+bucket = "$MINIO_BUCKET"
+endpoint = "$MINIO_ENDPOINT"
+key-prefix = "server/etl"
+key-id = "$MINIO_KEY_ID"
+key-secret = "$MINIO_KEY_SECRET"
+FSEOF
+        if [ -n "$parallel_mode" ]; then
+            echo "parallel-mode = \"$parallel_mode\""
+        fi
+    else
+        cat << FSEOF
+[[fileservice]]
+name = "LOCAL"
+backend = "DISK"
+
+[[fileservice]]
+name = "SHARED"
+backend = "DISK"
+data-dir = "/mo-data/shared"
+
+[fileservice.cache]
+memory-capacity = "$cache_memory"
+disk-capacity = "$cache_disk"
+disk-path = "$cache_dir"
+
+[[fileservice]]
+name = "ETL"
+backend = "DISK-ETL"
+FSEOF
+    fi
+}
+
+# Function to generate TN GC config section (OBS compatibility)
+generate_tn_gc_config() {
+    local has_gc_config=false
+    local gc_lines=""
+
+    if [ -n "$OBS_GC_CACHE_SIZE" ]; then
+        gc_lines="${gc_lines}cache-size = ${OBS_GC_CACHE_SIZE}\n"
+        has_gc_config=true
+    fi
+    if [ -n "$OBS_GC_DELETE_BATCH" ]; then
+        gc_lines="${gc_lines}gc-delete-batch-size = ${OBS_GC_DELETE_BATCH}\n"
+        has_gc_config=true
+    fi
+    if [ -n "$OBS_GC_DELETE_WORKERS" ]; then
+        gc_lines="${gc_lines}gc-delete-worker-num = ${OBS_GC_DELETE_WORKERS}\n"
+        has_gc_config=true
+    fi
+
+    if [ "$has_gc_config" = true ]; then
+        echo ""
+        echo "[dn.GCCfg]"
+        printf "$gc_lines"
+    fi
+}
+
 echo "Configuration Summary:"
 echo "======================"
+echo "Storage Mode:    $STORAGE_MODE"
+if [ "$STORAGE_MODE" = "minio" ]; then
+    echo "  MinIO Endpoint:  $MINIO_ENDPOINT"
+    echo "  MinIO Bucket:    $MINIO_BUCKET"
+    if [ -n "$OBS_PARALLEL_MODE" ]; then echo "  parallel-mode:   $OBS_PARALLEL_MODE"; fi
+    if [ -n "$OBS_GC_DELETE_BATCH" ]; then echo "  gc-delete-batch: $OBS_GC_DELETE_BATCH"; fi
+    if [ -n "$OBS_GC_DELETE_WORKERS" ]; then echo "  gc-delete-workers: $OBS_GC_DELETE_WORKERS"; fi
+    if [ -n "$OBS_GC_CACHE_SIZE" ]; then echo "  gc-cache-size:   $OBS_GC_CACHE_SIZE"; fi
+fi
 echo "Common (applies to all services unless overridden):"
 echo "  Log Level:       ${LOG_LEVEL:-$DEFAULT_LOG_LEVEL}"
 echo "  Log Format:      ${LOG_FORMAT:-$DEFAULT_LOG_FORMAT}"
@@ -130,23 +251,7 @@ service-addresses = [
   "mo-log:32001",
 ]
 
-[[fileservice]]
-name = "LOCAL"
-backend = "DISK"
-
-[[fileservice]]
-name = "SHARED"
-backend = "DISK"
-data-dir = "/mo-data/shared"
-
-[fileservice.cache]
-memory-capacity = "$CN1_MEMORY_CACHE"
-disk-capacity = "$CN1_DISK_CACHE"
-disk-path = "$CN1_CACHE_DIR"
-
-[[fileservice]]
-name = "ETL"
-backend = "DISK-ETL"
+$(generate_fileservice "$CN1_MEMORY_CACHE" "$CN1_DISK_CACHE" "$CN1_CACHE_DIR" "$OBS_PARALLEL_MODE")
 
 [observability]
 disableTrace = $CN1_DISABLE_TRACE
@@ -206,23 +311,7 @@ service-addresses = [
   "mo-log:32001",
 ]
 
-[[fileservice]]
-name = "LOCAL"
-backend = "DISK"
-
-[[fileservice]]
-name = "SHARED"
-backend = "DISK"
-data-dir = "/mo-data/shared"
-
-[fileservice.cache]
-memory-capacity = "$CN2_MEMORY_CACHE"
-disk-capacity = "$CN2_DISK_CACHE"
-disk-path = "$CN2_CACHE_DIR"
-
-[[fileservice]]
-name = "ETL"
-backend = "DISK-ETL"
+$(generate_fileservice "$CN2_MEMORY_CACHE" "$CN2_DISK_CACHE" "$CN2_CACHE_DIR" "$OBS_PARALLEL_MODE")
 
 [observability]
 disableTrace = $CN2_DISABLE_TRACE
@@ -277,23 +366,7 @@ format = "$LOG_LOG_FORMAT"
 max-size = $LOG_LOG_MAX_SIZE
 filename = "/logs/logservice.log"
 
-[[fileservice]]
-name = "LOCAL"
-backend = "DISK"
-
-[[fileservice]]
-name = "SHARED"
-backend = "DISK"
-data-dir = "/mo-data/shared"
-
-[fileservice.cache]
-memory-capacity = "$LOG_MEMORY_CACHE"
-disk-capacity = "$LOG_DISK_CACHE"
-disk-path = "$LOG_CACHE_DIR"
-
-[[fileservice]]
-name = "ETL"
-backend = "DISK-ETL"
+$(generate_fileservice "$LOG_MEMORY_CACHE" "$LOG_DISK_CACHE" "$LOG_CACHE_DIR")
 
 [observability]
 EOF
@@ -338,23 +411,7 @@ service-addresses = [
   "mo-log:32001",
 ]
 
-[[fileservice]]
-name = "LOCAL"
-backend = "DISK"
-
-[[fileservice]]
-name = "SHARED"
-backend = "DISK"
-data-dir = "/mo-data/shared"
-
-[fileservice.cache]
-memory-capacity = "$TN_MEMORY_CACHE"
-disk-capacity = "$TN_DISK_CACHE"
-disk-path = "$TN_CACHE_DIR"
-
-[[fileservice]]
-name = "ETL"
-backend = "DISK-ETL"
+$(generate_fileservice "$TN_MEMORY_CACHE" "$TN_DISK_CACHE" "$TN_CACHE_DIR" "$OBS_PARALLEL_MODE")
 
 [observability]
 disableTrace = $TN_DISABLE_TRACE
@@ -389,6 +446,11 @@ incremental-interval = "60s"
 global-interval = "100000s"
 EOF
 
+# Add OBS compatibility GC config to TN (only in minio mode)
+if [ "$STORAGE_MODE" = "minio" ]; then
+    generate_tn_gc_config >> tn.toml
+fi
+
 # Get PROXY-specific configs
 PROXY_LOG_LEVEL=$(get_config "PROXY" "PROXY_" "$DEFAULT_LOG_LEVEL" "LOG_LEVEL")
 PROXY_LOG_FORMAT=$(get_config "PROXY" "PROXY_" "$DEFAULT_LOG_FORMAT" "LOG_FORMAT")
@@ -415,23 +477,7 @@ service-addresses = [
   "mo-log:32001",
 ]
 
-[[fileservice]]
-name = "LOCAL"
-backend = "DISK"
-
-[[fileservice]]
-name = "SHARED"
-backend = "DISK"
-data-dir = "/mo-data/shared"
-
-[fileservice.cache]
-memory-capacity = "$PROXY_MEMORY_CACHE"
-disk-capacity = "$PROXY_DISK_CACHE"
-disk-path = "$PROXY_CACHE_DIR"
-
-[[fileservice]]
-name = "ETL"
-backend = "DISK-ETL"
+$(generate_fileservice "$PROXY_MEMORY_CACHE" "$PROXY_DISK_CACHE" "$PROXY_CACHE_DIR" "$OBS_PARALLEL_MODE")
 
 [observability]
 disableTrace = $PROXY_DISABLE_TRACE
