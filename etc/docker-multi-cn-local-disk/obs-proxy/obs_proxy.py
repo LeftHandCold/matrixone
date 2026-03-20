@@ -9,13 +9,17 @@ OBS Simulator Proxy (Docker version)
 Docker 环境中：
   - 监听 9000 端口（MO 容器连这个）
   - 转发到 minio:9000（MinIO 容器）
+
+关键设计：使用 http.client 做 raw 转发，完全透传所有 headers（包括 Host、
+Content-Length、Authorization 等），不让任何 HTTP 框架自动修改 headers，
+确保 S3 Signature V4 签名不被破坏。
 """
 
-import argparse
+import asyncio
+import http.client
 import logging
 import os
 
-import aiohttp
 from aiohttp import web
 
 logging.basicConfig(
@@ -32,10 +36,9 @@ stats = {
     "forwarded": 0,
 }
 
-SEEKABLE_THRESHOLD = 64 * 1024 * 1024  # 64MB
 
-
-def make_s3_error_response(code: str, message: str, resource: str = "", request_id: str = "OBS-SIM-001"):
+def make_s3_error_response(code: str, message: str, resource: str = "",
+                           request_id: str = "OBS-SIM-001"):
     body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Error>
   <Code>{code}</Code>
@@ -81,7 +84,8 @@ async def check_put_seekable(request: web.Request) -> web.Response | None:
         )
         body = make_s3_error_response(
             code="InvalidRequest",
-            message="failed to compute payload hash: failed to seek body to start, request stream is not seekable",
+            message="failed to compute payload hash: failed to seek body to start, "
+                    "request stream is not seekable",
             resource=path,
         )
         return web.Response(status=400, content_type="application/xml", text=body)
@@ -102,7 +106,8 @@ async def check_delete_objects(request: web.Request) -> web.Response | None:
         )
         body = make_s3_error_response(
             code="MalformedXML",
-            message="The XML you provided was not well-formed or did not validate against our published schema",
+            message="The XML you provided was not well-formed or did not validate "
+                    "against our published schema",
             resource=request.path,
             request_id="OBS-SIM-DELETE-001",
         )
@@ -110,40 +115,59 @@ async def check_delete_objects(request: web.Request) -> web.Response | None:
     return None
 
 
-async def forward_request(request: web.Request, minio_base: str) -> web.Response:
-    target_url = f"{minio_base}{request.path_qs}"
+def raw_forward(method: str, path_qs: str, headers: list[tuple[str, str]],
+                body: bytes | None, minio_host: str, minio_port: int
+                ) -> tuple[int, list[tuple[str, str]], bytes]:
+    """Forward request to MinIO using http.client — zero header mutation.
+
+    We use http.client directly (not aiohttp, not requests, not urllib3) because
+    it gives us full control over the wire format. We pass ALL original headers
+    exactly as received, including Host and Authorization, so S3 Signature V4
+    verification on MinIO side sees the exact same headers the client signed.
+    """
+    conn = http.client.HTTPConnection(minio_host, minio_port, timeout=300)
+    try:
+        conn.putrequest(method, path_qs, skip_host=True, skip_accept_encoding=True)
+        for name, value in headers:
+            conn.putheader(name, value)
+        conn.endheaders(body or b"")
+        resp = conn.getresponse()
+        resp_body = resp.read()
+        resp_headers = [(k, v) for k, v in resp.getheaders()
+                        if k.lower() not in ("transfer-encoding", "connection")]
+        return resp.status, resp_headers, resp_body
+    finally:
+        conn.close()
+
+
+async def forward_request(request: web.Request, minio_host: str,
+                          minio_port: int) -> web.Response:
     body = await request.read()
-    # Keep Host header! S3 Signature V4 includes Host in signing.
-    # Client signs with "obs-proxy:9000" as Host — MinIO must see the same
-    # Host header to verify the signature. aiohttp won't override it if we
-    # pass it explicitly via skip_auto_headers.
-    skip_headers = {"transfer-encoding", "connection"}
-    headers = {
-        k: v for k, v in request.headers.items()
-        if k.lower() not in skip_headers
-    }
-    async with aiohttp.ClientSession(
-        skip_auto_headers=["Host"],  # Don't override Host — S3 sig depends on it
-    ) as session:
-        async with session.request(
-            method=request.method,
-            url=target_url,
-            headers=headers,
-            data=body if body else None,
-            allow_redirects=False,
-        ) as resp:
-            resp_body = await resp.read()
-            resp_headers = {}
-            skip_resp = {"transfer-encoding", "connection", "content-encoding"}
-            for k, v in resp.headers.items():
-                if k.lower() not in skip_resp:
-                    resp_headers[k] = v
-            return web.Response(status=resp.status, headers=resp_headers, body=resp_body)
+
+    # Collect ALL headers from original request — no filtering at all.
+    # Host, Authorization, Content-Length, x-amz-* — everything goes through.
+    headers = [(k, v) for k, v in request.headers.items()
+               if k.lower() not in ("transfer-encoding", "connection")]
+
+    path_qs = request.path_qs
+
+    # Run synchronous http.client call in thread pool to avoid blocking event loop
+    loop = asyncio.get_event_loop()
+    status, resp_headers, resp_body = await loop.run_in_executor(
+        None, raw_forward, request.method, path_qs, headers, body,
+        minio_host, minio_port
+    )
+
+    resp = web.Response(status=status, body=resp_body)
+    for name, value in resp_headers:
+        resp.headers[name] = value
+    return resp
 
 
 async def handle_request(request: web.Request) -> web.Response:
     stats["total_requests"] += 1
-    minio_base = request.app["minio_base"]
+    minio_host = request.app["minio_host"]
+    minio_port = request.app["minio_port"]
     method = request.method
     path = request.path
     qs = request.query_string
@@ -160,7 +184,7 @@ async def handle_request(request: web.Request) -> web.Response:
     stats["forwarded"] += 1
     if method in ("PUT", "DELETE", "POST"):
         log.info(f"✅ FORWARD {method} {path}{'?' + qs if qs else ''} CL={cl} TE={te}")
-    return await forward_request(request, minio_base)
+    return await forward_request(request, minio_host, minio_port)
 
 
 async def handle_stats(request: web.Request) -> web.Response:
@@ -178,16 +202,17 @@ def main():
     listen_port = int(os.environ.get("LISTEN_PORT", "9000"))
     minio_host = os.environ.get("MINIO_HOST", "minio")
     minio_port = int(os.environ.get("MINIO_PORT", "9000"))
-    minio_base = f"http://{minio_host}:{minio_port}"
 
     app = web.Application(client_max_size=0)
-    app["minio_base"] = minio_base
+    app["minio_host"] = minio_host
+    app["minio_port"] = minio_port
     app.router.add_get("/__obs_stats", handle_stats)
     app.router.add_route("*", "/{path_info:.*}", handle_request)
 
     log.info(f"🚀 OBS Simulator Proxy starting")
     log.info(f"   Listen:  http://0.0.0.0:{listen_port}")
-    log.info(f"   MinIO:   {minio_base}")
+    log.info(f"   MinIO:   http://{minio_host}:{minio_port}")
+    log.info(f"   转发方式: http.client raw (保留所有原始 headers，不破坏 S3 签名)")
     log.info(f"   模拟规则:")
     log.info(f"     1. PutObject 无 Content-Length → 400 seekable error")
     log.info(f"     2. DeleteObjects XML           → 400 MalformedXML")
