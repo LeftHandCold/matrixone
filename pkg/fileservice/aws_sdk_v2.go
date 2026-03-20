@@ -426,6 +426,17 @@ func (a *AwsSDKv2) Write(
 		}
 
 	} else {
+		if _, ok := r.(io.Seeker); !ok {
+			// Large non-seekable readers are incompatible with the raw PutObject path
+			// on some S3-compatible backends (for example OBS behind non-TLS or custom
+			// payload-hash behavior). Fall back to multipart upload with concurrency=1
+			// so callers do not need parallel-mode=1 just to avoid the 64MB raw PUT path.
+			return a.WriteMultipartParallel(ctx, key, r, sizeHint, &ParallelMultipartOption{
+				PartSize:    defaultParallelMultipartPartSize,
+				Concurrency: 1,
+				Expire:      expire,
+			})
+		}
 		_, err = a.putObject(
 			ctx,
 			&s3.PutObjectInput{
@@ -566,9 +577,14 @@ func (a *AwsSDKv2) WriteMultipartParallel(
 
 	jobCh := make(chan partJob, options.Concurrency*2)
 
-	startWorker := func() error {
+	startWorker := func() {
 		wg.Add(1)
-		return getParallelUploadPool().Submit(func() {
+		// Use plain goroutines instead of the global parallelUploadPool to avoid
+		// pool-starvation deadlock: when many concurrent WriteMultipartParallel calls
+		// (e.g. LOAD DATA with 15+ parallel scopes) all compete for a tiny global pool
+		// (capacity = NumCPU), every caller blocks on pool.Submit() waiting for workers
+		// that are themselves held by other callers — classic circular wait.
+		go func() {
 			defer wg.Done()
 			for job := range jobCh {
 				if ctx.Err() != nil {
@@ -603,14 +619,11 @@ func (a *AwsSDKv2) WriteMultipartParallel(
 				})
 				partsLock.Unlock()
 			}
-		})
+		}()
 	}
 
 	for i := 0; i < options.Concurrency; i++ {
-		if submitErr := startWorker(); submitErr != nil {
-			setErr(submitErr)
-			break
-		}
+		startWorker()
 	}
 
 	sendJob := func(bufPtr *[]byte, buf []byte, n int) bool {

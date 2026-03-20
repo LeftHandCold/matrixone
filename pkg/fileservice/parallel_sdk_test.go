@@ -27,10 +27,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/panjf2000/ants/v2"
 	costypes "github.com/tencentyun/cos-go-sdk-v5"
 )
 
@@ -291,6 +293,84 @@ func TestAwsMultipartCreateFail(t *testing.T) {
 	size := int64(len(data))
 	if err := sdk.WriteMultipartParallel(context.Background(), "object", bytes.NewReader(data), &size, nil); err == nil {
 		t.Fatalf("expected create multipart error")
+	}
+}
+
+func TestAwsWriteLargeNonSeekableFallsBackToMultipart(t *testing.T) {
+	server, state := newMockAWSServer(t, 0)
+	defer server.Close()
+	state.uploadID = "uid-large-nonseekable"
+
+	sdk := newTestAWSClient(t, server)
+	data := bytes.Repeat([]byte("k"), int(smallObjectThreshold+1))
+	size := int64(len(data))
+	reader := io.LimitReader(bytes.NewReader(data), size)
+
+	if err := sdk.Write(context.Background(), "object", reader, &size, nil); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if state.putCount != 0 {
+		t.Fatalf("expected multipart fallback instead of raw put, got %d put requests", state.putCount)
+	}
+	if len(state.parts) != 2 {
+		t.Fatalf("expected 2 multipart parts, got %d", len(state.parts))
+	}
+	if len(state.completeBody) == 0 {
+		t.Fatalf("expected multipart complete request")
+	}
+}
+
+func TestAwsParallelMultipartDoesNotDeadlockOnTinyGlobalPool(t *testing.T) {
+	server, state := newMockAWSServer(t, 0)
+	defer server.Close()
+	state.uploadID = "uid-no-deadlock"
+
+	sdk := newTestAWSClient(t, server)
+	data := bytes.Repeat([]byte("m"), int(minMultipartPartSize*2))
+	size := int64(len(data))
+
+	oldPool := parallelUploadPool
+	oldOnce := parallelUploadPoolOnce
+	tinyPool, err := ants.NewPool(1)
+	if err != nil {
+		t.Fatalf("create ants pool: %v", err)
+	}
+	parallelUploadPool = nil
+	parallelUploadPoolOnce = sync.Once{}
+	parallelUploadPoolOnce.Do(func() {
+		parallelUploadPool = tinyPool
+	})
+	defer func() {
+		tinyPool.Release()
+		parallelUploadPool = oldPool
+		parallelUploadPoolOnce = oldOnce
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sdk.WriteMultipartParallel(ctx, "object", bytes.NewReader(data), &size, &ParallelMultipartOption{
+			PartSize:    minMultipartPartSize,
+			Concurrency: 2,
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("write failed: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("multipart upload timed out, likely deadlocked")
+	}
+
+	if len(state.parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(state.parts))
+	}
+	if len(state.completeBody) == 0 {
+		t.Fatalf("expected multipart complete request")
 	}
 }
 
