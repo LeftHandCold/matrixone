@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -38,6 +39,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	smithy "github.com/aws/smithy-go"
 	"go.uber.org/zap"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -47,11 +49,12 @@ import (
 )
 
 type AwsSDKv2 struct {
-	name            string
-	bucket          string
-	client          *s3.Client
-	perfCounterSets []*perfcounter.CounterSet
-	listMaxKeys     int32
+	name               string
+	bucket             string
+	client             *s3.Client
+	perfCounterSets    []*perfcounter.CounterSet
+	listMaxKeys        int32
+	disableMultiDelete atomic.Bool
 }
 
 func NewAwsSDKv2(
@@ -824,6 +827,9 @@ func (a *AwsSDKv2) deleteSingle(ctx context.Context, key string) error {
 func (a *AwsSDKv2) deleteMultiObj(ctx context.Context, objs []types.ObjectIdentifier) error {
 	ctx, span := trace.Start(ctx, "AwsSDKv2.deleteMultiObj")
 	defer span.End()
+	if a.disableMultiDelete.Load() {
+		return a.deleteMultiObjOneByOne(ctx, objs)
+	}
 	output, err := a.deleteObjects(ctx, &s3.DeleteObjectsInput{
 		Bucket: ptrTo(a.bucket),
 		Delete: &types.Delete{
@@ -834,6 +840,17 @@ func (a *AwsSDKv2) deleteMultiObj(ctx context.Context, objs []types.ObjectIdenti
 	})
 	// delete api failed
 	if err != nil {
+		if isS3APIErrorCode(err, "MalformedXML") {
+			a.disableMultiDelete.Store(true)
+			logutil.Warn(
+				"s3 delete objects returned MalformedXML, disabling multi-delete and falling back to single deletes",
+				zap.String("fs", a.name),
+				zap.String("bucket", a.bucket),
+				zap.Int("count", len(objs)),
+				zap.Error(err),
+			)
+			return a.deleteMultiObjOneByOne(ctx, objs)
+		}
 		return err
 	}
 	// delete api success, but with delete file failed.
@@ -848,6 +865,29 @@ func (a *AwsSDKv2) deleteMultiObj(ctx context.Context, objs []types.ObjectIdenti
 	}
 	if message.Len() > 0 {
 		return moerr.NewInternalErrorNoCtxf("S3 Delete failed: %s", message.String())
+	}
+	return nil
+}
+
+func (a *AwsSDKv2) deleteMultiObjOneByOne(ctx context.Context, objs []types.ObjectIdentifier) error {
+	message := strings.Builder{}
+	for _, obj := range objs {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if obj.Key == nil {
+			return moerr.NewInternalErrorNoCtx("S3 delete fallback got nil key")
+		}
+
+		if err := a.deleteSingle(ctx, *obj.Key); err != nil {
+			message.WriteString(fmt.Sprintf("%s: %v;", *obj.Key, err))
+		}
+	}
+	if message.Len() > 0 {
+		return moerr.NewInternalErrorNoCtxf("S3 delete fallback failed: %s", message.String())
 	}
 	return nil
 }
@@ -975,6 +1015,11 @@ func (a *AwsSDKv2) deleteObjects(ctx context.Context, params *s3.DeleteObjectsIn
 		maxRetryAttemps,
 		IsRetryableError,
 	)
+}
+
+func isS3APIErrorCode(err error, code string) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == code
 }
 
 func (a *AwsSDKv2) mapError(err error, path string) error {

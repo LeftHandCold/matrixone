@@ -82,9 +82,33 @@ func newMockAWSServer(t *testing.T, failPart int32) (*httptest.Server, *awsServe
 			state.mu.Unlock()
 			w.Header().Set("Content-Type", "application/xml")
 			_, _ = w.Write([]byte(`<CompleteMultipartUploadResult><Location>loc</Location><Bucket>bucket</Bucket><Key>object</Key><ETag>"etag"</ETag></CompleteMultipartUploadResult>`))
+		case r.Method == http.MethodPost && strings.Contains(r.URL.RawQuery, "delete"):
+			_, _ = io.ReadAll(r.Body)
+			state.mu.Lock()
+			state.deleteMultiCount++
+			state.mu.Unlock()
+			if state.failDeleteMultiMalformed {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = w.Write([]byte(awsS3ErrorXML("MalformedXML", "The XML you provided was not well-formed")))
+				return
+			}
+			if state.failDeleteMultiInternal {
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = w.Write([]byte(awsS3ErrorXML("InternalError", "internal error")))
+				return
+			}
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<DeleteResult></DeleteResult>`))
 		case r.Method == http.MethodDelete && strings.Contains(r.URL.RawQuery, "uploadId"):
 			state.aborted.Store(true)
 			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodDelete:
+			state.mu.Lock()
+			state.deleteSingleKeys = append(state.deleteSingleKeys, awsObjectKeyFromPath(r.URL.Path))
+			state.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -93,16 +117,33 @@ func newMockAWSServer(t *testing.T, failPart int32) (*httptest.Server, *awsServe
 }
 
 type awsServerState struct {
-	mu           sync.Mutex
-	parts        map[int32][]byte
-	completeBody []byte
-	failPart     int32
-	failComplete bool
-	failCreate   bool
-	uploadID     string
-	aborted      atomic.Bool
-	putCount     int
-	putBody      []byte
+	mu                       sync.Mutex
+	parts                    map[int32][]byte
+	completeBody             []byte
+	failPart                 int32
+	failComplete             bool
+	failCreate               bool
+	uploadID                 string
+	aborted                  atomic.Bool
+	putCount                 int
+	putBody                  []byte
+	deleteMultiCount         int
+	deleteSingleKeys         []string
+	failDeleteMultiMalformed bool
+	failDeleteMultiInternal  bool
+}
+
+func awsObjectKeyFromPath(path string) string {
+	trimmed := strings.TrimPrefix(path, "/")
+	parts := strings.SplitN(trimmed, "/", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return parts[1]
+}
+
+func awsS3ErrorXML(code, message string) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>%s</Code><Message>%s</Message></Error>`, code, message)
 }
 
 func newTestAWSClient(t *testing.T, srv *httptest.Server) *AwsSDKv2 {
@@ -371,6 +412,66 @@ func TestAwsParallelMultipartDoesNotDeadlockOnTinyGlobalPool(t *testing.T) {
 	}
 	if len(state.completeBody) == 0 {
 		t.Fatalf("expected multipart complete request")
+	}
+}
+
+func TestAwsDeleteMultiUsesBatchWhenSupported(t *testing.T) {
+	server, state := newMockAWSServer(t, 0)
+	defer server.Close()
+
+	sdk := newTestAWSClient(t, server)
+	if err := sdk.Delete(context.Background(), "a", "b", "c"); err != nil {
+		t.Fatalf("delete failed: %v", err)
+	}
+	if state.deleteMultiCount != 1 {
+		t.Fatalf("expected 1 batch delete, got %d", state.deleteMultiCount)
+	}
+	if len(state.deleteSingleKeys) != 0 {
+		t.Fatalf("expected no single-delete fallback, got %v", state.deleteSingleKeys)
+	}
+}
+
+func TestAwsDeleteMultiFallsBackToSinglesOnMalformedXML(t *testing.T) {
+	server, state := newMockAWSServer(t, 0)
+	defer server.Close()
+	state.failDeleteMultiMalformed = true
+
+	sdk := newTestAWSClient(t, server)
+	if err := sdk.Delete(context.Background(), "a", "b", "c"); err != nil {
+		t.Fatalf("delete failed: %v", err)
+	}
+	if state.deleteMultiCount != 1 {
+		t.Fatalf("expected 1 batch delete attempt, got %d", state.deleteMultiCount)
+	}
+	if strings.Join(state.deleteSingleKeys, ",") != "a,b,c" {
+		t.Fatalf("expected single-delete fallback for all keys, got %v", state.deleteSingleKeys)
+	}
+
+	if err := sdk.Delete(context.Background(), "d", "e"); err != nil {
+		t.Fatalf("second delete failed: %v", err)
+	}
+	if state.deleteMultiCount != 1 {
+		t.Fatalf("expected later deletes to skip batch after malformed xml, got %d batch attempts", state.deleteMultiCount)
+	}
+	if strings.Join(state.deleteSingleKeys, ",") != "a,b,c,d,e" {
+		t.Fatalf("expected later deletes to go directly to single-delete path, got %v", state.deleteSingleKeys)
+	}
+}
+
+func TestAwsDeleteMultiDoesNotFallbackOnOtherErrors(t *testing.T) {
+	server, state := newMockAWSServer(t, 0)
+	defer server.Close()
+	state.failDeleteMultiInternal = true
+
+	sdk := newTestAWSClient(t, server)
+	if err := sdk.Delete(context.Background(), "a", "b"); err == nil {
+		t.Fatalf("expected delete error")
+	}
+	if state.deleteMultiCount != 1 {
+		t.Fatalf("expected 1 batch delete attempt, got %d", state.deleteMultiCount)
+	}
+	if len(state.deleteSingleKeys) != 0 {
+		t.Fatalf("expected no single-delete fallback, got %v", state.deleteSingleKeys)
 	}
 }
 
