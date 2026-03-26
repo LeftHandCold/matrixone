@@ -88,6 +88,38 @@ type GCWindow struct {
 	}
 }
 
+const defaultGlobalCheckpointDeleteChunkSize = 4096
+
+type uniqueFileCollector struct {
+	seen  map[string]struct{}
+	files []string
+}
+
+func newUniqueFileCollector(capacity int) *uniqueFileCollector {
+	if capacity < 0 {
+		capacity = 0
+	}
+	return &uniqueFileCollector{
+		seen:  make(map[string]struct{}, capacity),
+		files: make([]string, 0, capacity),
+	}
+}
+
+func (c *uniqueFileCollector) Consume(files []string) error {
+	for _, file := range files {
+		if _, ok := c.seen[file]; ok {
+			continue
+		}
+		c.seen[file] = struct{}{}
+		c.files = append(c.files, file)
+	}
+	return nil
+}
+
+func (c *uniqueFileCollector) Files() []string {
+	return c.files
+}
+
 func (w *GCWindow) GetObjectStats() []objectio.ObjectStats {
 	return w.files
 }
@@ -133,6 +165,45 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	mp *mpool.MPool,
 	fs fileservice.FileService,
 ) ([]string, string, error) {
+	collector := newUniqueFileCollector(len(w.files))
+	_, metaFile, err := w.executeGlobalCheckpointBasedGCInBatches(
+		ctx,
+		gCkp,
+		snapshots,
+		pitrs,
+		cdcWatermarks,
+		snapshotMeta,
+		checkpointCli,
+		buffer,
+		cacheSize,
+		estimateRows,
+		probility,
+		mp,
+		fs,
+		collector.Consume,
+	)
+	if err != nil {
+		return nil, "", err
+	}
+	return collector.Files(), metaFile, nil
+}
+
+func (w *GCWindow) executeGlobalCheckpointBasedGCInBatches(
+	ctx context.Context,
+	gCkp *checkpoint.CheckpointEntry,
+	snapshots *logtail.SnapshotInfo,
+	pitrs *logtail.PitrInfo,
+	cdcWatermarks map[uint64]types.TS,
+	snapshotMeta *logtail.SnapshotMeta,
+	checkpointCli checkpoint.Runner,
+	buffer *containers.OneSchemaBatchBuffer,
+	cacheSize int,
+	estimateRows int,
+	probility float64,
+	mp *mpool.MPool,
+	fs fileservice.FileService,
+	onFilesToGC func([]string) error,
+) (int, string, error) {
 	// Record memory usage at start
 	v2.GCMemoryObjectsGauge.Set(float64(len(w.files)))
 
@@ -157,19 +228,18 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 	)
 	defer job.Close()
 
-	if err := job.Execute(ctx); err != nil {
-		return nil, "", err
+	if err := job.ExecuteForStreaming(ctx); err != nil {
+		return 0, "", err
 	}
 
-	vecToGC, filesNotGC := job.Result()
-	defer vecToGC.Free(w.mp)
+	canGCFiles, canGCTail, filesNotGC := job.StreamingResult()
 	var metaFile string
 	var err error
 	var bf *bloomfilter.BloomFilter
 	if metaFile, err = w.writeMetaForRemainings(
 		ctx, filesNotGC,
 	); err != nil {
-		return nil, "", err
+		return 0, "", err
 	}
 	w.files = filesNotGC
 	sourcer = w.MakeFilesReader(ctx, fs)
@@ -184,26 +254,123 @@ func (w *GCWindow) ExecuteGlobalCheckpointBasedGC(
 		dataProcess,
 	)
 	if err != nil {
-		return nil, "", err
+		return 0, "", err
 	}
-	// Use a map to deduplicate file names, as the same object may appear
-	// multiple times in vecToGC (e.g., when referenced by multiple tables).
-	// This avoids sending duplicate delete requests to S3.
-	// Note: We use map instead of bloom filter because bloom filter's false positive
-	// could cause file leaks (files that should be deleted but are skipped).
-	filesToGCSet := make(map[string]struct{})
-	bf.Test(vecToGC,
-		func(exists bool, i int) {
-			if !exists {
-				filesToGCSet[string(vecToGC.GetBytesAt(i))] = struct{}{}
+
+	candidateSourcer, release := MakeLoadFunc(
+		ctx,
+		canGCTail,
+		canGCFiles,
+		fs,
+		timestamp.Timestamp{},
+		readutil.WithColumns(
+			ObjectTableSeqnums,
+			ObjectTableTypes,
+		),
+	)
+	if release != nil {
+		defer release()
+	}
+
+	deleteCount, err := streamDeleteCandidatesFromSourcer(
+		ctx,
+		candidateSourcer,
+		bf,
+		buffer,
+		w.mp,
+		defaultGlobalCheckpointDeleteChunkSize,
+		onFilesToGC,
+	)
+	if err != nil {
+		return 0, "", err
+	}
+	return deleteCount, metaFile, nil
+}
+
+func streamDeleteCandidatesFromSourcer(
+	ctx context.Context,
+	sourcer SourerFn,
+	bf *bloomfilter.BloomFilter,
+	buffer *containers.OneSchemaBatchBuffer,
+	mp *mpool.MPool,
+	chunkSize int,
+	onFilesToGC func([]string) error,
+) (int, error) {
+	if chunkSize <= 0 {
+		chunkSize = defaultGlobalCheckpointDeleteChunkSize
+	}
+	if onFilesToGC == nil {
+		onFilesToGC = func([]string) error { return nil }
+	}
+
+	bat := buffer.Fetch()
+	defer buffer.Putback(bat, mp)
+
+	pending := make([]string, 0, chunkSize)
+	seen := make(map[string]struct{}, chunkSize)
+	deleteCount := 0
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		deleteCount += len(pending)
+		chunk := append([]string(nil), pending...)
+		if err := onFilesToGC(chunk); err != nil {
+			return err
+		}
+		pending = pending[:0]
+		clear(seen)
+		return nil
+	}
+
+	for {
+		bat.CleanOnlyData()
+		done, err := sourcer(ctx, bat.Attrs, nil, mp, bat)
+		if err != nil {
+			return deleteCount, err
+		}
+		if done {
+			break
+		}
+
+		nameVec := vector.NewVec(types.New(types.T_varchar, types.MaxVarcharLen, 0))
+		for i := 0; i < bat.RowCount(); i++ {
+			stats := objectio.ObjectStats(bat.Vecs[0].GetBytesAt(i))
+			if err := vector.AppendBytes(
+				nameVec,
+				[]byte(stats.ObjectName().UnsafeString()),
+				false,
+				mp,
+			); err != nil {
+				nameVec.Free(mp)
+				return deleteCount, err
+			}
+		}
+
+		bf.Test(nameVec, func(exists bool, i int) {
+			if exists {
 				return
 			}
+			name := string(nameVec.GetBytesAt(i))
+			if _, ok := seen[name]; ok {
+				return
+			}
+			seen[name] = struct{}{}
+			pending = append(pending, name)
 		})
-	filesToGC := make([]string, 0, len(filesToGCSet))
-	for file := range filesToGCSet {
-		filesToGC = append(filesToGC, file)
+		nameVec.Free(mp)
+
+		if len(pending) >= chunkSize {
+			if err := flush(); err != nil {
+				return deleteCount, err
+			}
+		}
 	}
-	return filesToGC, metaFile, nil
+
+	if err := flush(); err != nil {
+		return deleteCount, err
+	}
+	return deleteCount, nil
 }
 
 // ScanCheckpoints will load data from the `checkpointEntries` one by one and

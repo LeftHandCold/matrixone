@@ -19,6 +19,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/common/malloc"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
 	"go.uber.org/zap"
@@ -76,9 +77,12 @@ type CheckpointBasedGCJob struct {
 	checkpointCli checkpoint.Runner // Added to access catalog
 
 	result struct {
-		vecToGC    *vector.Vector
-		filesNotGC []objectio.ObjectStats
+		vecToGC     *vector.Vector
+		canGCFiles  []objectio.ObjectStats
+		canGCTail   []*batch.Batch
+		filesNotGC  []objectio.ObjectStats
 	}
+	canGCSinker *ioutil.Sinker
 }
 
 func NewCheckpointBasedGCJob(
@@ -128,7 +132,13 @@ func (e *CheckpointBasedGCJob) Close() error {
 	e.ts = nil
 	e.globalCkpLoc = nil
 	e.globalCkpVer = 0
+	if e.canGCSinker != nil {
+		e.canGCSinker.Close()
+		e.canGCSinker = nil
+	}
 	e.result.vecToGC = nil
+	e.result.canGCFiles = nil
+	e.result.canGCTail = nil
 	e.result.filesNotGC = nil
 	return e.GCExecutor.Close()
 }
@@ -209,8 +219,82 @@ func (e *CheckpointBasedGCJob) Execute(ctx context.Context) error {
 	return nil
 }
 
+func (e *CheckpointBasedGCJob) ExecuteForStreaming(ctx context.Context) error {
+	attrs, attrTypes := ckputil.DataScan_TableIDAtrrs, ckputil.DataScan_TableIDTypes
+	buffer := containers.NewOneSchemaBatchBuffer(
+		mpool.MB*16,
+		attrs,
+		attrTypes,
+		false,
+	)
+	defer buffer.Close(e.mp)
+	transObjects := make(map[string]map[uint64]*ObjectEntry, 100)
+	coarseFilter, err := MakeBloomfilterCoarseFilter(
+		ctx,
+		e.config.coarseEstimateRows,
+		e.config.coarseProbility,
+		buffer,
+		e.globalCkpLoc,
+		e.globalCkpVer,
+		e.ts,
+		&transObjects,
+		e.mp,
+		e.fs,
+	)
+	if err != nil {
+		return err
+	}
+
+	fineFilter, err := MakeSnapshotAndPitrFineFilter(
+		e.ts,
+		e.snapshots,
+		e.pitr,
+		e.snapshotMeta,
+		transObjects,
+		e.cdcWatermarks,
+		e.checkpointCli,
+		e.fs,
+		e.mp,
+	)
+	if err != nil {
+		return err
+	}
+
+	if e.canGCSinker != nil {
+		e.canGCSinker.Close()
+		e.canGCSinker = nil
+	}
+	e.canGCSinker = e.getSinker(
+		ioutil.WithBuffer(e.buffer.impl, false),
+		ioutil.WithTailSizeCap(e.config.canGCCacheSize),
+	)
+
+	newFiles, err := e.Run(
+		ctx,
+		e.sourcer.Read,
+		coarseFilter,
+		fineFilter,
+		e.canGCSinker.Write,
+	)
+	if err != nil {
+		return err
+	}
+	if err = e.canGCSinker.Sync(ctx); err != nil {
+		return err
+	}
+	canGCFiles, canGCTail := e.canGCSinker.GetResult()
+	e.result.canGCFiles = append(e.result.canGCFiles[:0], canGCFiles...)
+	e.result.canGCTail = canGCTail
+	e.result.filesNotGC = append(e.result.filesNotGC[:0], newFiles...)
+	return nil
+}
+
 func (e *CheckpointBasedGCJob) Result() (*vector.Vector, []objectio.ObjectStats) {
 	return e.result.vecToGC, e.result.filesNotGC
+}
+
+func (e *CheckpointBasedGCJob) StreamingResult() ([]objectio.ObjectStats, []*batch.Batch, []objectio.ObjectStats) {
+	return e.result.canGCFiles, e.result.canGCTail, e.result.filesNotGC
 }
 
 func dataProcess(b *bloomfilter.BloomFilter, vec *vector.Vector, pool *mpool.MPool) error {

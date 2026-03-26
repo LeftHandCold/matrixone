@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
 	"github.com/matrixorigin/matrixone/pkg/common/bitmap"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -28,6 +29,8 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/readutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 	"github.com/stretchr/testify/require"
@@ -635,4 +638,85 @@ func TestFilesToGCDeduplicationWithEmptyInput(t *testing.T) {
 				"Expected %d unique files, got %d", tc.expected, len(filesToGC))
 		})
 	}
+}
+
+func TestUniqueFileCollectorDeduplicatesAcrossBatches(t *testing.T) {
+	collector := newUniqueFileCollector(2)
+
+	require.NoError(t, collector.Consume([]string{"file1", "file2", "file1"}))
+	require.NoError(t, collector.Consume([]string{"file2", "file3"}))
+
+	require.Equal(t, []string{"file1", "file2", "file3"}, collector.Files())
+}
+
+func TestStreamDeleteCandidatesFromSourcerFiltersAndChunks(t *testing.T) {
+	ctx := context.Background()
+	mp := mpool.MustNewZeroNoFixed()
+	defer mpool.DeleteMPool(mp)
+
+	makeStats := func(id byte) objectio.ObjectStats {
+		stats := objectio.NewObjectStats()
+		name := objectio.BuildObjectName(&types.Uuid{id}, 0)
+		objectio.SetObjectStatsObjectName(stats, name)
+		return *stats
+	}
+	objectNameString := func(stats objectio.ObjectStats) string {
+		return (&stats).ObjectName().String()
+	}
+
+	bat := batch.NewWithSchema(false, ObjectTableAttrs, ObjectTableTypes)
+	defer bat.Clean(mp)
+	for _, stats := range []objectio.ObjectStats{
+		makeStats(0x01),
+		makeStats(0x02),
+		makeStats(0x01), // duplicate within one batch
+		makeStats(0x03), // protected by bloom filter
+	} {
+		require.NoError(t, vector.AppendBytes(bat.Vecs[0], stats[:], false, mp))
+		require.NoError(t, vector.AppendFixed[types.TS](bat.Vecs[1], types.BuildTS(1, 0), false, mp))
+		require.NoError(t, vector.AppendFixed[types.TS](bat.Vecs[2], types.BuildTS(2, 0), false, mp))
+		require.NoError(t, vector.AppendFixed[uint64](bat.Vecs[3], 1, false, mp))
+		require.NoError(t, vector.AppendFixed[uint64](bat.Vecs[4], 1, false, mp))
+	}
+	bat.SetRowCount(bat.Vecs[0].Length())
+
+	nameVec := vector.NewVec(types.New(types.T_varchar, types.MaxVarcharLen, 0))
+	require.NoError(t, vector.AppendBytes(nameVec, []byte(objectNameString(makeStats(0x03))), false, mp))
+	bf := bloomfilter.New(16, 0.00001)
+	bf.Add(nameVec)
+	nameVec.Free(mp)
+
+	sourcer, release := MakeLoadFunc(
+		ctx,
+		[]*batch.Batch{bat},
+		nil,
+		nil,
+		timestamp.Timestamp{},
+		readutil.WithColumns(ObjectTableSeqnums, ObjectTableTypes),
+	)
+	defer release()
+
+	buffer := MakeGCWindowBuffer(mpool.MB)
+	defer buffer.Close(mp)
+
+	var chunks [][]string
+	count, err := streamDeleteCandidatesFromSourcer(
+		ctx,
+		sourcer,
+		&bf,
+		buffer,
+		mp,
+		2,
+		func(files []string) error {
+			chunk := append([]string(nil), files...)
+			chunks = append(chunks, chunk)
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+	require.Equal(t, [][]string{{
+		objectNameString(makeStats(0x01)),
+		objectNameString(makeStats(0x02)),
+	}}, chunks)
 }

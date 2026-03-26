@@ -1223,33 +1223,19 @@ func (c *checkpointCleaner) tryGCAgainstGCKPLocked(
 	// Note: CDC DBs are updated from watermark table data in updateTableInfo
 	// which is called during snapshotMeta.Update, so no need to call it here
 
-	filesToGC, err := c.doGCAgainstGlobalCheckpointLocked(
+	deleteRequestCount, err := c.doGCAgainstGlobalCheckpointLocked(
 		ctx, gckp, snapshots, pitrs, memoryBuffer,
 	)
 	if err != nil {
 		extraErrMsg = "doGCAgainstGlobalCheckpointLocked failed"
 		return
 	}
-	// Delete files after doGCAgainstGlobalCheckpointLocked
-	// TODO:Requires Physical Removal Policy
-	// Note: Data files are GC'ed normally even when backup protection is active.
-	// Only checkpoint metadata merge/delete is skipped (handled in mergeCheckpointFilesLocked).
-	if err = c.deleter.DeleteMany(
-		ctx,
-		c.TaskNameLocked(),
-		filesToGC,
-	); err != nil {
-		extraErrMsg = fmt.Sprintf("ExecDelete %v failed", filesToGC)
-		// record GC file delete errors
-		v2.GCErrorIOErrorCounter.Inc()
-		return
-	}
 
 	// Record file deletion metrics
-	if len(filesToGC) > 0 {
+	if deleteRequestCount > 0 {
 		deleteStart := time.Now()
-		v2.GCDataFileDeletionCounter.Add(float64(len(filesToGC)))
-		v2.GCObjectDeletedCounter.Add(float64(len(filesToGC)))
+		v2.GCDataFileDeletionCounter.Add(float64(deleteRequestCount))
+		v2.GCObjectDeletedCounter.Add(float64(deleteRequestCount))
 		// Record delete duration
 		v2.GCCheckpointDeleteDurationHistogram.Observe(time.Since(deleteStart).Seconds())
 		v2.GCSnapshotDeleteDurationHistogram.Observe(time.Since(deleteStart).Seconds())
@@ -1276,7 +1262,7 @@ func (c *checkpointCleaner) tryGCAgainstGCKPLocked(
 		waterMark = scanMark
 	}
 	err = c.mergeCheckpointFilesLocked(
-		ctx, &waterMark, memoryBuffer, snapshots, pitrs, len(filesToGC),
+		ctx, &waterMark, memoryBuffer, snapshots, pitrs, deleteRequestCount,
 	)
 	if err != nil {
 		extraErrMsg = fmt.Sprintf("mergeCheckpointFilesLocked %v failed", waterMark.ToString())
@@ -1292,11 +1278,11 @@ func (c *checkpointCleaner) doGCAgainstGlobalCheckpointLocked(
 	snapshots *logtail.SnapshotInfo,
 	pitrs *logtail.PitrInfo,
 	memoryBuffer *containers.OneSchemaBatchBuffer,
-) ([]string, error) {
+) (int, error) {
 	now := time.Now()
 
 	var (
-		filesToGC                   []string
+		deleteRequestCount          int
 		metafile                    string
 		err                         error
 		softDuration, mergeDuration time.Duration
@@ -1327,9 +1313,9 @@ func (c *checkpointCleaner) doGCAgainstGlobalCheckpointLocked(
 	scannedWindow := c.GetScannedWindowLocked()
 	cdcWatermarks, err := c.CDCTables()
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	if filesToGC, metafile, err = scannedWindow.ExecuteGlobalCheckpointBasedGC(
+	if deleteRequestCount, metafile, err = scannedWindow.executeGlobalCheckpointBasedGCInBatches(
 		ctx,
 		gckp,
 		snapshots,
@@ -1343,9 +1329,24 @@ func (c *checkpointCleaner) doGCAgainstGlobalCheckpointLocked(
 		c.config.probility,
 		c.mp,
 		c.fs,
+		func(files []string) error {
+			if len(files) == 0 {
+				return nil
+			}
+			if err := c.deleteFilesWithPolicy(
+				ctx,
+				c.TaskNameLocked(),
+				files,
+			); err != nil {
+				extraErrMsg = fmt.Sprintf("ExecDelete %d files failed", len(files))
+				v2.GCErrorIOErrorCounter.Inc()
+				return err
+			}
+			return nil
+		},
 	); err != nil {
 		extraErrMsg = fmt.Sprintf("ExecuteGlobalCheckpointBasedGC %v failed", gckp.String())
-		return nil, err
+		return 0, err
 	}
 
 	if err = c.appendFilesToWAL(
@@ -1357,7 +1358,7 @@ func (c *checkpointCleaner) doGCAgainstGlobalCheckpointLocked(
 			zap.String("metafile", metafile),
 			zap.Error(err))
 		v2.GCErrorIOErrorCounter.Inc()
-		return nil, err
+		return 0, err
 	}
 	c.mutAddMetaFileLocked(metafile, ioutil.NewTSRangeFile(
 		metafile,
@@ -1382,7 +1383,7 @@ func (c *checkpointCleaner) doGCAgainstGlobalCheckpointLocked(
 	mergeDuration = time.Since(now)
 	// Record merge table duration (different from merge checkpoint duration)
 	v2.GCMergeTableDurationHistogram.Observe(mergeDuration.Seconds())
-	return filesToGC, nil
+	return deleteRequestCount, nil
 }
 
 func (c *checkpointCleaner) scanCheckpointsAsDebugWindow(
