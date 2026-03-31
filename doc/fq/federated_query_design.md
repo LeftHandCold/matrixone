@@ -14,6 +14,11 @@
 
 如果你刚接触联邦查询，建议先看 `doc/fq/federated_query_beginner_guide.md`，先建立概念，再看本设计稿。
 
+如果你希望直接看已经冻结的 V1 最终版本，请优先看：
+
+- `doc/fq/federated_query_v1_final_design.md`
+- `doc/fq/federated_query_v1_checklist.md`
+
 如果要把当前“保守 MVP”口径升级成“更完整的一期正式交付范围”，请继续看 `doc/fq/federated_query_scope_replan.md`。
 
 如果要把 PostgreSQL 也正式纳入规划，请继续看 `doc/fq/federated_query_postgresql_addendum.md`。

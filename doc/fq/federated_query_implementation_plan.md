@@ -2,9 +2,13 @@
 
 > 如果下一步要把方案直接转成“按代码模块推进”的落地清单，请继续看 `doc/fq/federated_query_code_checklist.md`。
 >
+> 如果要把 V1 checklist 继续拆到“可直接派活的代码任务包”，请继续看 `doc/fq/federated_query_v1_impl_task_breakdown.md`。
+>
 > 如果要把当前保守 MVP 口径扩大成更完整的一期交付范围，请继续看 `doc/fq/federated_query_scope_replan.md`。
 >
 > 如果要把 PostgreSQL 也纳入一期设计，请继续看 `doc/fq/federated_query_postgresql_addendum.md`。
+>
+> 如果要直接看冻结后的 V1 最终决策版，请继续看 `doc/fq/federated_query_v1_final_design.md` 与 `doc/fq/federated_query_v1_checklist.md`。
 
 ## 1. 文档目的
 

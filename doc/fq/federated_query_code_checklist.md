@@ -5,6 +5,8 @@
 > 如果你希望把 Oracle/MySQL、refresh、更强 pushdown、更多首发能力直接纳入一期正式交付，请继续看 `doc/fq/federated_query_scope_replan.md`。
 >
 > 如果要把 PostgreSQL 也纳入规划，请继续看 `doc/fq/federated_query_postgresql_addendum.md`。
+>
+> 如果要直接看冻结后的 V1 执行版清单，请继续看 `doc/fq/federated_query_v1_checklist.md`。
 
 本文把前面的设计稿、实施拆解稿和 review 结论进一步收敛成一份**可以直接拿来排期和开工**的 checklist。目标不是再讲一遍设计理念，而是回答：
 
