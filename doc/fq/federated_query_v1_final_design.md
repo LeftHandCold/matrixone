@@ -218,9 +218,12 @@ V1 冻结为：
 
 - 首版统一按全量重刷理解
 - refresh 只更新 metadata / imported schema
+- refresh 期间同一 catalog / foreign table 的并发 refresh 需要串行化
 - 已经开始执行的查询继续使用其已绑定 schema
 - refresh 成功后的新查询使用新 metadata
 - 远端对象丢失时，将 imported foreign table 标记为 invalid，并在查询时报错
+- 远端类型定义一旦变化，即使看起来只是 widening / length 扩大，也先按 schema drift 处理，不做静默兼容
+- 只有在 `REFRESH` 后新类型仍能稳定映射到 MO 类型时，才更新 imported schema；否则继续走 invalid / 显式失败路径
 
 ## 5.5 source-specific catalog 边界
 
@@ -299,9 +302,16 @@ V1 明确遵守下面这些原则：
 并由 `ExternalCatalog` 负责：
 
 - metadata discovery
+- connection pool 与 session 生命周期边界
 - `NewSession()`
 - `TestConnection()`
 - stats 获取
+
+V1 进一步冻结：
+
+- 不要求跨 CN 的全局连接池语义
+- connection pool 的拥有者是执行 CN 上的 `ExternalCatalog`
+- 查询执行通过 `NewSession()` 借出 session，并在 reader/stream close 时回收到统一关闭路径
 
 ### 8.2 DialectAdapter
 

@@ -1,4 +1,4 @@
-# MatrixOne 联邦查询 Oracle/MySQL 首批支持拆分草案
+# MatrixOne 联邦查询首批 SQL / Catalog / 接口草案
 
 ## 1. 文档目标
 
@@ -6,19 +6,19 @@
 
 如果要看“保守 MVP 之外，哪些能力可以拉进更完整的一期范围”，请继续看 `doc/fq/federated_query_scope_replan.md`。
 
-如果要把 PostgreSQL 也纳入首批规划，请继续看 `doc/fq/federated_query_postgresql_addendum.md`。
+如果要看 PostgreSQL 的特殊设计点，请继续看 `doc/fq/federated_query_postgresql_addendum.md`。
 
-- Oracle / MySQL 首批支持时，SQL 面应该长什么样
+- MySQL / PostgreSQL / Oracle 首批支持时，SQL 面应该长什么样
 - `CONNECTION + EXTERNAL CATALOG + IMPORTED FOREIGN TABLE` 的 catalog 元数据该怎么落
-- 关键 Go 接口应该先怎么拆，才能尽快做出可跑的 MVP
+- 关键 Go 接口应该先怎么拆，才能尽快做出可跑的 V1 主骨架
 
 本文不再重复解释“为什么要做联邦查询”，而是直接给出首批可落地的设计拆分。
 
 ## 2. 目标范围
 
-本文只覆盖首批目标范围：
+本文覆盖冻结后的 V1 首批目标范围：
 
-- 目标源：`MySQL`、`Oracle`
+- 目标源：`MySQL`、`PostgreSQL`、`Oracle`
 - 查询类型：`SELECT`
 - 执行形态：单 CN、`TABLE_SCAN` 主路径
 - pushdown 范围：projection + basic predicate
@@ -273,7 +273,7 @@ INTO ext_hr;
 - 权限变化传播
 - 本地类型覆写冲突
 
-这些都不适合 MVP 首版。
+这些都不适合 V1 首阶段。
 
 ## 4.5 推荐补充语句
 
@@ -285,7 +285,7 @@ INTO ext_hr;
 - `DROP CONNECTION`
 - `DROP EXTERNAL CATALOG`
 
-次优先级：
+同属 V1 范围，建议在控制面阶段一并规划：
 
 - `ALTER CONNECTION`
 - `ALTER EXTERNAL CATALOG`
@@ -311,10 +311,13 @@ INTO ext_hr;
 
 - 如果远端缺列/类型明显不兼容，查询失败并给出可 refresh 的提示
 - 不允许静默重映射到不同列含义
+- 即使是“看起来兼容”的类型变化，也先按 schema drift 处理，不做静默兼容
+- 例如 `int -> bigint`、`varchar` 长度扩大、`decimal` 精度/scale 变化、`timestamp` 相关 flavor 变化，都要求显式 `REFRESH`
+- `REFRESH` 后如果新类型仍能稳定映射到 MO 类型，则更新 imported schema；否则进入 invalid / 显式报错路径
 
 ## 4.7 `REFRESH` 的 V1 语义
 
-如果首版引入 `REFRESH EXTERNAL CATALOG` / `REFRESH FOREIGN TABLE`，建议把行为直接定义清楚：
+V1 已引入 `REFRESH EXTERNAL CATALOG` / `REFRESH FOREIGN TABLE`，建议把行为直接定义清楚：
 
 - 首版 `REFRESH` 统一按**全量重刷**理解，不做增量 refresh
 - refresh 只更新 metadata / imported schema，不隐式修改用户 SQL
@@ -470,6 +473,7 @@ type ExternalCatalog interface {
 - metadata discovery
 - metadata cache
 - identifier mapping
+- connection pool 与 session 生命周期管理
 - 调用 dialect adapter 生成元数据 SQL
 
 这里的 `namespace` 是接口层的统一叫法：
@@ -477,6 +481,13 @@ type ExternalCatalog interface {
 - MySQL 中通常对应 remote database
 - PostgreSQL 中通常对应 remote schema（catalog 已绑定一个 database）
 - Oracle 中通常对应 remote schema
+
+并建议进一步冻结以下运行时边界：
+
+- connection pool 的生命周期以 `ExternalCatalog` 为边界，而不是 per query 临时建池
+- `NewSession(ctx)` 返回的是一次查询执行阶段使用的 session 句柄，由 catalog 统一完成建连、借还与必要的 session 初始化
+- `Session.Close()` 必须负责归还连接到 pool 或关闭底层连接，不能依赖 GC
+- `RowStream.Close()` / `foreignReader.Close()` 必须最终传播到 `Session.Close()`，避免连接泄漏
 
 ## 6.3 Dialect Adapter 层
 
@@ -546,6 +557,8 @@ type RowStream interface {
 
 - connector 接口尽量简单
 - projection/filter/order 的复杂决策尽量在 MO 侧完成
+- session state 的初始化与清理由 `NewSession()` / `Session` 内部管理，不暴露给 planner
+- 查询中断、reader close、stream close 都必须落到统一的资源回收路径
 - connector 只负责执行远端 SQL 并返回流式结果
 
 ### 6.4.1 `test_connection` 与连接池位置
@@ -670,7 +683,7 @@ type foreignReader struct {
 - `SHOW CREATE CATALOG`
 - metadata test connection
 
-## M2：MySQL 全链路 MVP
+## M2：MySQL 全链路 V1 子里程碑
 
 交付：
 
@@ -680,7 +693,7 @@ type foreignReader struct {
 - MySQL single-table query
 - projection/basic predicate pushdown
 
-## M3：PostgreSQL 方言 MVP
+## M3：PostgreSQL 方言 V1 子里程碑
 
 交付：
 
@@ -689,7 +702,7 @@ type foreignReader struct {
 - PostgreSQL type mapping
 - PostgreSQL basic query 与保守 pushdown
 
-## M4：Oracle 方言 MVP
+## M4：Oracle 方言 V1 子里程碑
 
 交付：
 

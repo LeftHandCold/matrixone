@@ -6,7 +6,7 @@
 >
 > 如果要把当前保守 MVP 口径扩大成更完整的一期交付范围，请继续看 `doc/fq/federated_query_scope_replan.md`。
 >
-> 如果要把 PostgreSQL 也纳入一期设计，请继续看 `doc/fq/federated_query_postgresql_addendum.md`。
+> 如果要看 PostgreSQL 的特殊设计点，请继续看 `doc/fq/federated_query_postgresql_addendum.md`。
 >
 > 如果要直接看冻结后的 V1 最终决策版，请继续看 `doc/fq/federated_query_v1_final_design.md` 与 `doc/fq/federated_query_v1_checklist.md`。
 
@@ -19,7 +19,7 @@
 - 每个阶段的交付物是什么
 - 每个阶段的风险点和验证方法是什么
 
-本文以“首版做一个可落地的只读单 CN 联邦查询 MVP”为目标。更细的 Oracle/MySQL SQL 设计、catalog 元数据与关键接口草案见 `doc/fq/federated_query_sql_catalog_interface_draft.md`。
+本文以“先落地冻结后的只读单 CN 联邦查询 V1 主骨架”为目标。更细的 SQL 设计、catalog 元数据与关键接口草案见 `doc/fq/federated_query_sql_catalog_interface_draft.md`。
 
 ## 2. 实施总原则
 
@@ -57,7 +57,7 @@
 - 首版控制面目标调整为 `CONNECTION + EXTERNAL CATALOG`
 - 首版执行面先走 `CREATE FOREIGN TABLE ... FROM CATALOG ...` 或 `IMPORT FOREIGN SCHEMA`
 - `IMPORT FOREIGN SCHEMA` 定位为批量导入语法，复用单表导入主管线
-- 首批目标源明确包含 `MySQL` 和 `Oracle`
+- 首批目标源明确包含 `MySQL`、`PostgreSQL` 和 `Oracle`
 
 这一步不需要改代码，但非常关键。范围不收敛，后面代码很容易失控。
 
@@ -391,21 +391,17 @@ type Capabilities struct {
     PredicatePushdown  bool
     LimitPushdown      bool
     OrderPushdown      bool
-    AggPushdown        bool
-    JoinPushdown       bool
 }
 ```
 
-首版建议至少覆盖：
+V1 建议先冻结为：
 
 - ProjectionPushdown
 - PredicatePushdown
 - LimitPushdown
 - OrderPushdown
-- AggPushdown
-- JoinPushdown
 
-尽管首版只用前几个能力位，但先把能力边界定义清楚，后续迭代更稳；更细粒度的函数级 capability 可以后续再扩展。
+`AggPushdown` / `JoinPushdown` 不作为 V1 冻结接口契约的一部分；等后续真的引入相关能力时，再显式扩展 capability 结构，避免 supporting docs 与最终边界不一致。
 
 ### 5.4 首批方言 adapter 选择
 
@@ -529,7 +525,7 @@ type Capabilities struct {
 - Oracle 的空字符串与 `NULL` 语义差异必须单独防护
 - Oracle 标识符和大小写行为必须通过 dialect adapter 统一处理
 
-如果把 PostgreSQL 也纳入一期，则还应明确：
+对于 PostgreSQL，一期还应明确：
 
 - PostgreSQL 的 `ILIKE` / regex / `NULLS FIRST/LAST` 不能默认下推
 - PostgreSQL 的 `search_path` 不应隐式影响 metadata discovery
@@ -638,11 +634,13 @@ type Capabilities struct {
 
 ### 8.4 连接池与资源管理
 
-首版建议先不做复杂全局池，但至少需要：
+V1 不要求复杂的跨 CN 全局连接池，但应明确以下最小边界：
 
-- session 级或 query 级连接复用
+- connection pool 以执行 CN 上的 `ExternalCatalog` 为边界
+- 每次查询执行通过 `NewSession()` 借出并初始化 session
 - context cancel 时及时关闭远端结果流
-- reader close / pipeline exit 时释放连接
+- reader close / pipeline exit / stream close 最终都要传播到 `Session.Close()`
+- `Session.Close()` 负责归还连接到 pool 或关闭底层连接，不能依赖 GC
 
 ### 8.5 阶段 6 验收标准
 
@@ -911,7 +909,7 @@ type Capabilities struct {
 
 ## 7. 最推荐的落地顺序
 
-如果只从“尽快做出可用 MVP”角度看，建议严格按下面顺序推进：
+如果只从“尽快做出可用 V1 主骨架”角度看，建议严格按下面顺序推进：
 
 1. 先做 `CONNECTION` / `FOREIGN TABLE` 元数据
 2. 再做 disttae relation 解析返回 `foreignRelation`
@@ -928,7 +926,7 @@ type Capabilities struct {
 
 ## 8. 交付标准建议
 
-我建议把联邦查询 MVP 的“完成标准”定义为：
+我建议把联邦查询 V1 主骨架的“完成标准”定义为：
 
 - 可以创建 connection
 - 可以创建 foreign table

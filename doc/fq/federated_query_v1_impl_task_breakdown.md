@@ -320,6 +320,10 @@
   - type mapping
   - basic predicate / limit / order pushdown
 - 定义 capability 结构体
+- 冻结 pool/session 生命周期：
+  - connection pool 以 catalog 为边界
+  - `NewSession()` 负责借出并初始化 session
+  - `Session.Close()` / `RowStream.Close()` 能回收资源
 
 ### 依赖
 
@@ -332,6 +336,7 @@
 ### 验证
 
 - mock connector 可以被 foreign reader 调用
+- close 路径能正确释放 session / stream 资源
 
 ---
 

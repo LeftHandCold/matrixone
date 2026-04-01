@@ -39,6 +39,7 @@
 - [ ] `REFRESH EXTERNAL CATALOG` / `REFRESH FOREIGN TABLE` 的 V1 语义冻结为全量重刷
 - [ ] 同一 catalog / foreign table 的并发 refresh 需要串行化
 - [ ] refresh 后远端缺失对象进入 invalid 状态
+- [ ] 即使是表面兼容的类型变化（如 widening / length 扩大），也按 schema drift 处理并要求显式 refresh
 - [ ] `foreign + foreign JOIN` 的口径冻结为：允许本地执行，但不作为 V1 主打能力
 - [ ] 多方言混合查询的口径冻结为：不承诺跨源 pushdown，由 MO 本地统一做 JOIN / AGG / residual filter
 
