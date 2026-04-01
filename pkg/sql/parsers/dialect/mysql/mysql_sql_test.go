@@ -138,6 +138,33 @@ func TestConnectionStatements(t *testing.T) {
 	require.Equal(t, "show create connection conn_pg", tree.String(showStmt, dialect.MYSQL))
 }
 
+func TestConnectionStatementsRoundTripEscapedOptions(t *testing.T) {
+	original := &tree.CreateConnection{
+		Name: tree.Identifier("conn_mysql"),
+		Type: "mysql",
+		Options: []*tree.ConnectionOption{
+			{Key: tree.Identifier("path"), Value: "C:\\tmp\\fq"},
+			{Key: tree.Identifier("note"), Value: "line1\nline2\t'a'"},
+		},
+	}
+
+	stmt, err := ParseOne(context.TODO(), tree.String(original, dialect.MYSQL), 1)
+	require.NoError(t, err)
+
+	createStmt, ok := stmt.(*tree.CreateConnection)
+	require.True(t, ok)
+
+	got := make(map[string]string, len(createStmt.Options))
+	for _, opt := range createStmt.Options {
+		got[string(opt.Key)] = opt.Value
+	}
+
+	require.Equal(t, map[string]string{
+		"path": "C:\\tmp\\fq",
+		"note": "line1\nline2\t'a'",
+	}, got)
+}
+
 var (
 	partitionSQL = struct {
 		input  string

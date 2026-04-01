@@ -60,7 +60,8 @@ func IsDDL(stmt tree.Statement) bool {
 	case *tree.CreateTable, *tree.DropTable,
 		*tree.CreateView, *tree.DropView, *tree.AlterView, *tree.AlterTable, *tree.RenameTable,
 		*tree.CreateDatabase, *tree.DropDatabase, *tree.CreateSequence, *tree.DropSequence,
-		*tree.CreateIndex, *tree.DropIndex, *tree.TruncateTable:
+		*tree.CreateIndex, *tree.DropIndex, *tree.TruncateTable,
+		*tree.CreateConnection, *tree.DropConnection:
 		return true
 	}
 	return false
@@ -69,7 +70,8 @@ func IsDDL(stmt tree.Statement) bool {
 // IsDropStatement checks the statement is the drop statement.
 func IsDropStatement(stmt tree.Statement) bool {
 	switch stmt.(type) {
-	case *tree.DropDatabase, *tree.DropTable, *tree.DropView, *tree.DropIndex, *tree.DropSequence:
+	case *tree.DropDatabase, *tree.DropTable, *tree.DropView, *tree.DropIndex, *tree.DropSequence,
+		*tree.DropConnection:
 		return true
 	}
 	return false
@@ -137,7 +139,8 @@ func statementCanBeExecutedInUncommittedTransaction(
 
 	switch st := stmt.(type) {
 	//ddl statement
-	case *tree.CreateTable, *tree.CreateIndex, *tree.CreateView, *tree.AlterView, *tree.AlterTable:
+	case *tree.CreateTable, *tree.CreateIndex, *tree.CreateView, *tree.AlterView, *tree.AlterTable,
+		*tree.CreateConnection:
 		// CTAS is allowed in explicit transactions now because its internal
 		// INSERT ... SELECT is executed in the same txn as CREATE TABLE.
 		//if createTblStmt, ok := stmt.(*tree.CreateTable); ok && createTblStmt.IsAsSelect {
@@ -225,7 +228,7 @@ func statementCanBeExecutedInUncommittedTransaction(
 				USE ROLE role;
 		*/
 		return !st.IsUseRole(), nil
-	case *tree.DropTable, *tree.DropIndex, *tree.DropView, *tree.TruncateTable:
+	case *tree.DropTable, *tree.DropIndex, *tree.DropView, *tree.TruncateTable, *tree.DropConnection:
 		return true, nil
 	case *tree.DropSequence: //Case1, Case3 above
 		//background transaction can execute the DROPxxx in one transaction

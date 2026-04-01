@@ -20,6 +20,17 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/reuse"
 )
 
+var connectionStringLiteralEscaper = strings.NewReplacer(
+	"\\", "\\\\",
+	"\n", "\\n",
+	"\x00", "\\0",
+	"\r", "\\r",
+	"\b", "\\b",
+	string(rune(26)), "\\Z",
+	"\t", "\\t",
+	"'", "''",
+)
+
 func init() {
 	reuse.CreatePool[DropConnection](
 		func() *DropConnection { return &DropConnection{} },
@@ -153,6 +164,6 @@ func (node *ConnectionOption) reset() {
 
 func writeConnectionQuotedString(ctx *FmtCtx, value string) {
 	ctx.WriteByte('\'')
-	ctx.WriteString(strings.ReplaceAll(value, "'", "''"))
+	ctx.WriteString(connectionStringLiteralEscaper.Replace(value))
 	ctx.WriteByte('\'')
 }

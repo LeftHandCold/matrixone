@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	mysqlparser "github.com/matrixorigin/matrixone/pkg/sql/parsers/dialect/mysql"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/stretchr/testify/require"
 )
@@ -63,6 +64,29 @@ func TestBuildShowCreateConnectionSQLMasksSecrets(t *testing.T) {
 		sql,
 	)
 	require.NotContains(t, sql, "pw''1")
+}
+
+func TestBuildShowCreateConnectionSQLRoundTripsEscapedOptions(t *testing.T) {
+	sql := buildShowCreateConnectionSQL("conn1", "mysql", map[string]string{
+		"path": `C:\tmp\fq`,
+		"note": "line1\nline2\t'a'",
+	})
+
+	stmt, err := mysqlparser.ParseOne(context.TODO(), sql, 1)
+	require.NoError(t, err)
+
+	createStmt, ok := stmt.(*tree.CreateConnection)
+	require.True(t, ok)
+
+	got := make(map[string]string, len(createStmt.Options))
+	for _, opt := range createStmt.Options {
+		got[string(opt.Key)] = opt.Value
+	}
+
+	require.Equal(t, map[string]string{
+		"path": `C:\tmp\fq`,
+		"note": "line1\nline2\t'a'",
+	}, got)
 }
 
 func TestEscapeConnectionSQLLiteralEscapesSpecialCharacters(t *testing.T) {
