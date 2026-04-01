@@ -4872,7 +4872,9 @@ func (builder *QueryBuilder) buildTable(stmt tree.TableExpr, ctx *BindContext, p
 		}
 		nodeType := plan.Node_TABLE_SCAN
 		var externScan *plan.ExternScan
-		if tableDef.TableType == catalog.SystemExternalRel {
+		if tableDef.TableType == catalog.SystemForeignRel {
+			return 0, moerr.NewNotSupportedf(builder.GetContext(), "query foreign table %s", table)
+		} else if tableDef.TableType == catalog.SystemExternalRel {
 			nodeType = plan.Node_EXTERNAL_SCAN
 			externScan = &plan.ExternScan{
 				Type:           int32(plan.ExternType_EXTERNAL_TB),

@@ -204,6 +204,35 @@ func TestBuildAlterForeignTableRejected(t *testing.T) {
 	}
 }
 
+func TestBuildSelectForeignTableRejected(t *testing.T) {
+	setupForeignTablePlanTestRuntime()
+
+	mock := NewMockOptimizer(false)
+	mock.ctxt.tables["orders_ext"] = &TableDef{
+		Name:      "orders_ext",
+		TableType: catalog.SystemForeignRel,
+		Cols: []*ColDef{{
+			Name: "id",
+			Typ:  pbplan.Type{Id: int32(types.T_int64)},
+			Default: &pbplan.Default{
+				NullAbility: true,
+			},
+		}},
+	}
+	mock.ctxt.objects["orders_ext"] = &ObjectRef{
+		SchemaName: "tpch",
+		ObjName:    "orders_ext",
+	}
+
+	_, err := buildSingleStmt(mock, t, "select * from tpch.orders_ext")
+	if err == nil {
+		t.Fatalf("expected select from foreign table to fail")
+	}
+	if !strings.Contains(err.Error(), "foreign table") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func setupForeignTablePlanTestRuntime() {
 	rt := moruntime.DefaultRuntime()
 	moruntime.SetupServiceBasedRuntime("", rt)
