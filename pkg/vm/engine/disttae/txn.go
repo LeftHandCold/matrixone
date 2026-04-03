@@ -1241,6 +1241,7 @@ func (txn *Transaction) deleteBatch(
 		min1           = uint32(math.MaxUint32)
 		max1           = uint32(0)
 		cnRowIdOffsets = make([]int64, 0, len(rowids))
+		sleptOnPersist = false
 	)
 
 	for i, rowid := range rowids {
@@ -1251,6 +1252,10 @@ func (txn *Transaction) deleteBatch(
 		rowOffset := rowid.GetRowOffset()
 
 		if colexec.IsDeletionOnTxnUnCommitPersisted(nil, rowid.BorrowSegmentID(), tableId, txn.op.Txn().ID) {
+			if !sleptOnPersist {
+				maybeCPKeyReproRandomSleep(cpkeyReproStagePersistedDelete)
+				sleptOnPersist = true
+			}
 			txn.deletedBlocks.addDeletedBlocks(&blkid, []int64{int64(rowOffset)})
 			cnRowIdOffsets = append(cnRowIdOffsets, int64(i))
 			continue
@@ -1640,6 +1645,8 @@ func (txn *Transaction) compactDeletionOnObjsLocked(ctx context.Context) error {
 		locker.Lock()
 		tbl.ensureSeqnumsAndTypesExpectRowid()
 		locker.Unlock()
+
+		maybeCPKeyReproRandomSleep(cpkeyReproStageObjectRewrite)
 
 		bat, fileName, err := tbl.rewriteObjectByDeletion(ctx, stats, objBlkDeletion[*objId])
 		if err != nil {

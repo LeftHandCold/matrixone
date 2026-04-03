@@ -461,6 +461,7 @@ func (db *txnDB) Freeze(ctx context.Context) (err error) {
 			delete(db.tables, table.GetID())
 		}
 	}
+	objectio.WaitInjected(objectio.FJ_TxnFreezeBeforeDedup)
 	nowTS := db.store.rt.Now()
 	for _, table := range db.tables {
 		if err = table.PrePreareTransfer(

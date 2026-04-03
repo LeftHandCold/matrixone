@@ -608,6 +608,9 @@ func (txn *Transaction) IncrStatementID(ctx context.Context, commit bool) error 
 	txn.statementID++
 
 	if txn.op.Txn().IsRCIsolation() {
+		if !commit {
+			maybeCPKeyReproRandomSleep(cpkeyReproStageStatementBoundary)
+		}
 		// each statement's start snapshot
 		// will be used by transfer than between statements
 		txn.transfer.timestamps = append(txn.transfer.timestamps, txn.op.SnapshotTS())
