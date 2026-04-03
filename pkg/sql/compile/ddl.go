@@ -79,6 +79,29 @@ func getTruncateIndexTableNames(tableDef *plan.TableDef) []string {
 	return indexTableNames
 }
 
+func filterDropDatabaseTables(relations, ignoreTables []string) []string {
+	relationSet := make(map[string]struct{}, len(relations))
+	for _, relation := range relations {
+		relationSet[relation] = struct{}{}
+	}
+
+	ignoreSet := make(map[string]struct{}, len(ignoreTables))
+	for _, ignore := range ignoreTables {
+		if _, ok := relationSet[ignore]; ok {
+			ignoreSet[ignore] = struct{}{}
+		}
+	}
+
+	deleteTables := make([]string, 0, len(relations))
+	for _, relation := range relations {
+		if _, ok := ignoreSet[relation]; ok {
+			continue
+		}
+		deleteTables = append(deleteTables, relation)
+	}
+	return deleteTables
+}
+
 func (s *Scope) CreateDatabase(c *Compile) error {
 	if s.ScopeAnalyzer == nil {
 		s.ScopeAnalyzer = NewScopeAnalyzer()
@@ -209,19 +232,7 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		}
 	}
 
-	deleteTables := make([]string, 0, len(relations)-len(ignoreTables))
-	for _, r := range relations {
-		isIndexTable := false
-		for _, d := range ignoreTables {
-			if d == r {
-				isIndexTable = true
-				break
-			}
-		}
-		if !isIndexTable {
-			deleteTables = append(deleteTables, r)
-		}
-	}
+	deleteTables := filterDropDatabaseTables(relations, ignoreTables)
 
 	for _, t := range deleteTables {
 		dropSql := fmt.Sprintf(dropTableBeforeDropDatabase, dbName, t)

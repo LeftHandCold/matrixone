@@ -662,6 +662,32 @@ func TestScope_Database(t *testing.T) {
 	})
 }
 
+func TestFilterDropDatabaseTables(t *testing.T) {
+	t.Run("keeps non index relations", func(t *testing.T) {
+		deleteTables := filterDropDatabaseTables(
+			[]string{"t1", "idx_t1", "t2"},
+			[]string{"idx_t1", "idx_t1", "missing_idx"},
+		)
+		assert.Equal(t, []string{"t1", "t2"}, deleteTables)
+	})
+
+	t.Run("keeps order and ignores only present index tables", func(t *testing.T) {
+		deleteTables := filterDropDatabaseTables(
+			[]string{"idx_t1", "t1", "t2", "idx_t2"},
+			[]string{"idx_t2", "stale_idx"},
+		)
+		assert.Equal(t, []string{"idx_t1", "t1", "t2"}, deleteTables)
+	})
+
+	t.Run("handles all relations ignored", func(t *testing.T) {
+		deleteTables := filterDropDatabaseTables(
+			[]string{"idx_t1", "idx_t2"},
+			[]string{"idx_t1", "idx_t2", "idx_t2"},
+		)
+		assert.Empty(t, deleteTables)
+	})
+}
+
 func Test_addTimeSpan(t *testing.T) {
 	cases := []struct {
 		name    string
