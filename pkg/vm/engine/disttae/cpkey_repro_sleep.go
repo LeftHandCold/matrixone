@@ -28,9 +28,9 @@ import (
 )
 
 const (
-	envCPKeyReproRandomSleepMS     = 80
-	envCPKeyReproRandomSleepPct    = 60
-	envCPKeyReproRandomSleepStages = cpkeyReproStageStatementBoundary + "," + cpkeyReproStagePersistedDelete + "," + cpkeyReproStageObjectRewrite
+	envCPKeyReproRandomSleepMS     = "MO_CPKEY_REPRO_RANDOM_SLEEP_MS"
+	envCPKeyReproRandomSleepPct    = "MO_CPKEY_REPRO_RANDOM_SLEEP_PCT"
+	envCPKeyReproRandomSleepStages = "MO_CPKEY_REPRO_RANDOM_SLEEP_STAGES"
 
 	cpkeyReproStageStatementBoundary = "stmt-boundary"
 	cpkeyReproStagePersistedDelete   = "persisted-delete"
