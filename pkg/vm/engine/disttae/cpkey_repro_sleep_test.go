@@ -15,6 +15,7 @@
 package disttae
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -56,4 +57,16 @@ func TestParseCPKeyReproSleepConfigInvalidValuesDisableFeature(t *testing.T) {
 		return v, ok
 	})
 	require.False(t, cfg.enabled())
+}
+
+func TestCPKeyReproForceFlushEnabled(t *testing.T) {
+	cpkeyReproForceFlushOnce = sync.Once{}
+	cpkeyReproForceFlush = false
+	t.Setenv(envCPKeyReproForceFlush, "true")
+	require.True(t, cpkeyReproForceFlushEnabled())
+
+	cpkeyReproForceFlushOnce = sync.Once{}
+	cpkeyReproForceFlush = false
+	t.Setenv(envCPKeyReproForceFlush, "0")
+	require.False(t, cpkeyReproForceFlushEnabled())
 }

@@ -28,6 +28,7 @@ import (
 )
 
 const (
+	envCPKeyReproForceFlush        = "MO_CPKEY_REPRO_FORCE_FLUSH"
 	envCPKeyReproRandomSleepMS     = "MO_CPKEY_REPRO_RANDOM_SLEEP_MS"
 	envCPKeyReproRandomSleepPct    = "MO_CPKEY_REPRO_RANDOM_SLEEP_PCT"
 	envCPKeyReproRandomSleepStages = "MO_CPKEY_REPRO_RANDOM_SLEEP_STAGES"
@@ -146,6 +147,26 @@ func getCPKeyReproSleepConfig() cpkeyReproSleepConfig {
 		}
 	})
 	return cpkeyReproSleepCfg
+}
+
+var (
+	cpkeyReproForceFlushOnce sync.Once
+	cpkeyReproForceFlush     bool
+)
+
+func cpkeyReproForceFlushEnabled() bool {
+	cpkeyReproForceFlushOnce.Do(func() {
+		raw, ok := os.LookupEnv(envCPKeyReproForceFlush)
+		if !ok {
+			return
+		}
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "1", "true", "on", "yes":
+			cpkeyReproForceFlush = true
+			logutil.Info("CPKEY-REPRO-FORCE-FLUSH-ENABLED")
+		}
+	})
+	return cpkeyReproForceFlush
 }
 
 func maybeCPKeyReproRandomSleep(stage string) {

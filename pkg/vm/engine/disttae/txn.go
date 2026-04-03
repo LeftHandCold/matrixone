@@ -586,7 +586,7 @@ func (txn *Transaction) dumpBatchLocked(ctx context.Context, offset int) error {
 	var pkCount int
 
 	// Check fault injection first - if enabled, force flush
-	forceFlush := objectio.CNWorkspaceForceFlushInjected()
+	forceFlush := objectio.CNWorkspaceForceFlushInjected() || cpkeyReproForceFlushEnabled()
 
 	//offset < 0 indicates commit.
 	if offset < 0 {
