@@ -67,6 +67,8 @@ import (
     connectorOptions []*tree.ConnectorOption
     connectionOption *tree.ConnectionOption
     connectionOptions []*tree.ConnectionOption
+    externalCatalogOption *tree.ExternalCatalogOption
+    externalCatalogOptions []*tree.ExternalCatalogOption
 
     functionName *tree.FunctionName
     funcArg tree.FunctionArg
@@ -442,7 +444,7 @@ import (
 %token <str> RECURSIVE CONFIG DRAINER
 
 // Source
-%token <str> SOURCE STREAM HEADERS CONNECTOR CONNECTORS DAEMON PAUSE CANCEL TASK RESUME
+%token <str> SOURCE STREAM HEADERS CONNECTOR CONNECTORS CATALOG DAEMON PAUSE CANCEL TASK RESUME
 
 // Match
 %token <str> MATCH AGAINST BOOLEAN LANGUAGE WITH QUERY EXPANSION WITHOUT VALIDATION
@@ -516,11 +518,11 @@ import (
 %type <statements> stmt_list stmt_list_return
 %type <statement> create_stmt insert_stmt insert_no_with_stmt delete_stmt drop_stmt alter_stmt truncate_table_stmt alter_sequence_stmt upgrade_stmt
 %type <statement> delete_without_using_stmt delete_with_using_stmt
-%type <statement> drop_ddl_stmt drop_database_stmt drop_table_stmt drop_index_stmt drop_prepare_stmt drop_view_stmt drop_connector_stmt drop_connection_stmt drop_function_stmt drop_procedure_stmt drop_sequence_stmt
+%type <statement> drop_ddl_stmt drop_database_stmt drop_table_stmt drop_index_stmt drop_prepare_stmt drop_view_stmt drop_connector_stmt drop_connection_stmt drop_external_catalog_stmt drop_function_stmt drop_procedure_stmt drop_sequence_stmt
 %type <statement> drop_account_stmt drop_role_stmt drop_user_stmt
 %type <statement> create_account_stmt create_user_stmt create_role_stmt
 %type <statement> create_ddl_stmt create_table_stmt create_database_stmt create_index_stmt create_view_stmt create_function_stmt create_extension_stmt create_procedure_stmt create_sequence_stmt
-%type <statement> create_source_stmt create_connector_stmt create_connection_stmt pause_daemon_task_stmt cancel_daemon_task_stmt resume_daemon_task_stmt
+%type <statement> create_source_stmt create_connector_stmt create_connection_stmt create_external_catalog_stmt pause_daemon_task_stmt cancel_daemon_task_stmt resume_daemon_task_stmt
 %type <statement> show_stmt show_create_stmt show_columns_stmt show_databases_stmt show_target_filter_stmt show_table_status_stmt show_grants_stmt show_collation_stmt show_accounts_stmt show_roles_stmt show_stages_stmt show_snapshots_stmt show_upgrade_stmt show_rules_on_role_stmt
 %type <statement> show_tables_stmt show_sequences_stmt show_process_stmt show_errors_stmt show_warnings_stmt show_target
 %type <statement> show_procedure_status_stmt show_function_status_stmt show_node_list_stmt show_locks_stmt
@@ -655,6 +657,8 @@ import (
 %type <connectorOptions> connector_option_list
 %type <connectionOption> connection_option
 %type <connectionOptions> connection_option_list
+%type <externalCatalogOption> external_catalog_option
+%type <externalCatalogOptions> external_catalog_option_list
 %type <from> from_clause from_opt
 %type <where> where_expression_opt having_opt
 %type <groupBy> group_by_opt
@@ -4761,6 +4765,10 @@ show_create_stmt:
     {
 	    $$ = &tree.ShowCreateConnection{Name: $4.Compare()}
     }
+|   SHOW CREATE CATALOG ident
+    {
+	    $$ = &tree.ShowCreateCatalog{Name: $4.Compare()}
+    }
 
 show_servers_stmt:
     SHOW BACKEND SERVERS
@@ -4832,6 +4840,7 @@ drop_ddl_stmt:
 |   drop_procedure_stmt
 |   drop_stage_stmt
 |   drop_connection_stmt
+|   drop_external_catalog_stmt
 |   drop_connector_stmt
 |   drop_snapshot_stmt
 |   drop_pitr_stmt
@@ -6679,6 +6688,7 @@ create_stmt:
 |   create_publication_stmt
 |   create_stage_stmt
 |   create_connection_stmt
+|   create_external_catalog_stmt
 |   create_snapshot_stmt
 |   create_pitr_stmt
 |   create_cdc_stmt
@@ -7413,6 +7423,14 @@ drop_connection_stmt:
         var ifExists = $3
         var name = tree.Identifier($4.Compare())
         $$ = tree.NewDropConnection(ifExists, name)
+    }
+
+drop_external_catalog_stmt:
+    DROP EXTERNAL CATALOG exists_opt ident
+    {
+        var ifExists = $4
+        var name = tree.Identifier($5.Compare())
+        $$ = tree.NewDropExternalCatalog(ifExists, name)
     }
 
 remove_stage_files_stmt:
@@ -8168,6 +8186,17 @@ create_connection_stmt:
         var connType = $7
         var options = $10
         $$ = tree.NewCreateConnection(ifNotExists, name, connType, options)
+    }
+
+create_external_catalog_stmt:
+    CREATE EXTERNAL CATALOG not_exists_opt ident USING CONNECTION ident TYPE '=' STRING connection_options_keyword '(' external_catalog_option_list ')'
+    {
+        var ifNotExists = $4
+        var name = tree.Identifier($5.Compare())
+        var connectionName = tree.Identifier($8.Compare())
+        var catalogType = $11
+        var options = $14
+        $$ = tree.NewCreateExternalCatalog(ifNotExists, name, connectionName, catalogType, options)
     }
 
 show_connectors_stmt:
@@ -9148,6 +9177,22 @@ connection_option:
     ident equal_opt STRING
     {
         $$ = tree.NewConnectionOption(tree.Identifier($1.Compare()), $3)
+    }
+
+external_catalog_option_list:
+    external_catalog_option
+    {
+        $$ = []*tree.ExternalCatalogOption{$1}
+    }
+|   external_catalog_option_list ',' external_catalog_option
+    {
+        $$ = append($1, $3)
+    }
+
+external_catalog_option:
+    ident equal_opt STRING
+    {
+        $$ = tree.NewExternalCatalogOption(tree.Identifier($1.Compare()), $3)
     }
 
 source_option_list_opt:
@@ -13266,6 +13311,7 @@ non_reserved_keyword:
 |   BRANCH
 |   CLONE
 |   CANCEL
+|   CATALOG
 |   CHAIN
 |   CHECKSUM
 |   CLUSTER

@@ -102,6 +102,12 @@ func execInFrontend(ses *Session, execCtx *ExecCtx) (stats statistic.StatsArray,
 		if err = handleCreateConnection(ses, execCtx, st); err != nil {
 			return
 		}
+	case *tree.CreateExternalCatalog:
+		ses.EnterFPrint(FPCreateExternalCatalog)
+		defer ses.ExitFPrint(FPCreateExternalCatalog)
+		if err = handleCreateExternalCatalog(ses, execCtx, st); err != nil {
+			return
+		}
 	case *tree.PauseDaemonTask:
 		ses.EnterFPrint(FPPauseDaemonTask)
 		defer ses.ExitFPrint(FPPauseDaemonTask)
@@ -136,6 +142,12 @@ func execInFrontend(ses *Session, execCtx *ExecCtx) (stats statistic.StatsArray,
 		if err = handleDropConnection(ses, execCtx, st); err != nil {
 			return
 		}
+	case *tree.DropExternalCatalog:
+		ses.EnterFPrint(FPDropExternalCatalog)
+		defer ses.ExitFPrint(FPDropExternalCatalog)
+		if err = handleDropExternalCatalog(ses, execCtx, st); err != nil {
+			return
+		}
 	case *tree.ShowConnectors:
 		ses.EnterFPrint(FPShowConnectors)
 		defer ses.ExitFPrint(FPShowConnectors)
@@ -146,6 +158,12 @@ func execInFrontend(ses *Session, execCtx *ExecCtx) (stats statistic.StatsArray,
 		ses.EnterFPrint(FPShowCreateConnection)
 		defer ses.ExitFPrint(FPShowCreateConnection)
 		if err = handleShowCreateConnection(ses, execCtx, st); err != nil {
+			return
+		}
+	case *tree.ShowCreateCatalog:
+		ses.EnterFPrint(FPShowCreateCatalog)
+		defer ses.ExitFPrint(FPShowCreateCatalog)
+		if err = handleShowCreateCatalog(ses, execCtx, st); err != nil {
 			return
 		}
 	case *tree.Deallocate:

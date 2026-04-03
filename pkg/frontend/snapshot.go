@@ -111,6 +111,7 @@ var (
 		"mo_stored_procedure":         0,
 		"mo_mysql_compatibility_mode": 1,
 		catalog.MO_CONNECTIONS:        0,
+		catalog.MO_EXTERNAL_CATALOGS:  0,
 		"mo_stages":                   0,
 		catalog.MO_PUBS:               1,
 		catalog.MO_SUBS:               1,

@@ -450,6 +450,10 @@ func (node *ShowCreateConnection) StmtKind() StmtKind {
 	return compositeResRowType
 }
 
+func (node *ShowCreateCatalog) StmtKind() StmtKind {
+	return compositeResRowType
+}
+
 func (node *ShowPublications) StmtKind() StmtKind {
 	return compositeResRowType
 }
@@ -503,6 +507,10 @@ func (node *CreateConnector) StmtKind() StmtKind {
 }
 
 func (node *CreateConnection) StmtKind() StmtKind {
+	return frontendStatusTyp
+}
+
+func (node *CreateExternalCatalog) StmtKind() StmtKind {
 	return frontendStatusTyp
 }
 
@@ -603,6 +611,10 @@ func (node *DropConnector) StmtKind() StmtKind {
 }
 
 func (node *DropConnection) StmtKind() StmtKind {
+	return frontendStatusTyp
+}
+
+func (node *DropExternalCatalog) StmtKind() StmtKind {
 	return frontendStatusTyp
 }
 

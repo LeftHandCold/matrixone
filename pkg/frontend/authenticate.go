@@ -930,6 +930,7 @@ var (
 		"mo_mysql_compatibility_mode": 0,
 		"mo_stages":                   0,
 		catalog.MO_CONNECTIONS:        0,
+		catalog.MO_EXTERNAL_CATALOGS:  0,
 		catalog.MOAutoIncrTable:       0,
 		"mo_sessions":                 0,
 		"mo_configurations":           0,
@@ -976,6 +977,7 @@ var (
 		"mo_pubs":                     0,
 		"mo_stages":                   0,
 		catalog.MO_CONNECTIONS:        0,
+		catalog.MO_EXTERNAL_CATALOGS:  0,
 		"mo_sessions":                 0,
 		"mo_configurations":           0,
 		"mo_locks":                    0,
@@ -1026,6 +1028,7 @@ var (
 		MoCatalogMoStoredProcedureDDL,
 		MoCatalogMoStagesDDL,
 		MoCatalogMoConnectionsDDL,
+		MoCatalogMoExternalCatalogsDDL,
 		MoCatalogMoSessionsDDL,
 		MoCatalogMoConfigurationsDDL,
 		MoCatalogMoLocksDDL,
@@ -1058,6 +1061,7 @@ var (
 		`drop table if exists mo_catalog.mo_user_defined_function;`,
 		`drop table if exists mo_catalog.mo_stored_procedure;`,
 		`drop table if exists mo_catalog.mo_stages;`,
+		`drop table if exists mo_catalog.mo_external_catalogs;`,
 		`drop table if exists mo_catalog.mo_connections;`,
 		`drop view if exists mo_catalog.mo_sessions;`,
 		`drop view if exists mo_catalog.mo_configurations;`,
@@ -6246,7 +6250,7 @@ func determinePrivilegeSetOfStatement(stmt tree.Statement) *privilege {
 		*tree.ShowTableNumber, *tree.ShowColumnNumber,
 		*tree.ShowTableValues, *tree.ShowNodeList, *tree.ShowRolesStmt,
 		*tree.ShowLocks, *tree.ShowFunctionOrProcedureStatus, *tree.ShowPublications, *tree.ShowSubscriptions,
-		*tree.ShowBackendServers, *tree.ShowStages, *tree.ShowConnectors, *tree.ShowCreateConnection, *tree.DropConnector,
+		*tree.ShowBackendServers, *tree.ShowStages, *tree.ShowConnectors, *tree.ShowCreateConnection, *tree.ShowCreateCatalog, *tree.DropConnector,
 		*tree.PauseDaemonTask, *tree.CancelDaemonTask, *tree.ResumeDaemonTask, *tree.ShowRecoveryWindow,
 		*tree.ShowRules:
 		objType = objectTypeNone
@@ -6343,7 +6347,8 @@ func determinePrivilegeSetOfStatement(stmt tree.Statement) *privilege {
 	case *tree.CreateStage, *tree.AlterStage, *tree.DropStage, *tree.RemoveStageFiles:
 		objType = objectTypeNone
 		kind = privilegeKindNone
-	case *tree.CreateConnection, *tree.DropConnection:
+	case *tree.CreateConnection, *tree.DropConnection,
+		*tree.CreateExternalCatalog, *tree.DropExternalCatalog:
 		objType = objectTypeNone
 		kind = privilegeKindNone
 	case *tree.BackupStart:

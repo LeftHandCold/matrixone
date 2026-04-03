@@ -1394,6 +1394,10 @@ func handleCreateConnection(ses FeSession, execCtx *ExecCtx, cs *tree.CreateConn
 	return doCreateConnection(execCtx.reqCtx, ses.(*Session), cs)
 }
 
+func handleCreateExternalCatalog(ses FeSession, execCtx *ExecCtx, cs *tree.CreateExternalCatalog) error {
+	return doCreateExternalCatalog(execCtx.reqCtx, ses.(*Session), cs)
+}
+
 func handleAlterStage(ses FeSession, execCtx *ExecCtx, as *tree.AlterStage) error {
 	return doAlterStage(execCtx.reqCtx, ses.(*Session), as)
 }
@@ -1406,8 +1410,16 @@ func handleDropConnection(ses FeSession, execCtx *ExecCtx, ds *tree.DropConnecti
 	return doDropConnection(execCtx.reqCtx, ses.(*Session), ds)
 }
 
+func handleDropExternalCatalog(ses FeSession, execCtx *ExecCtx, ds *tree.DropExternalCatalog) error {
+	return doDropExternalCatalog(execCtx.reqCtx, ses.(*Session), ds)
+}
+
 func handleShowCreateConnection(ses FeSession, execCtx *ExecCtx, sc *tree.ShowCreateConnection) error {
 	return doShowCreateConnection(execCtx.reqCtx, ses.(*Session), sc)
+}
+
+func handleShowCreateCatalog(ses FeSession, execCtx *ExecCtx, sc *tree.ShowCreateCatalog) error {
+	return doShowCreateCatalog(execCtx.reqCtx, ses.(*Session), sc)
 }
 
 func handleRemoveStageFiles(ses FeSession, execCtx *ExecCtx, rs *tree.RemoveStageFiles) error {

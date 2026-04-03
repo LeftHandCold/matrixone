@@ -805,6 +805,19 @@ func (node *ShowCreateConnection) Format(ctx *FmtCtx) {
 func (node *ShowCreateConnection) GetStatementType() string { return "Show Create Connection" }
 func (node *ShowCreateConnection) GetQueryType() string     { return QueryTypeOth }
 
+type ShowCreateCatalog struct {
+	showImpl
+	Name string
+}
+
+func (node *ShowCreateCatalog) Format(ctx *FmtCtx) {
+	ctx.WriteString("show create catalog ")
+	ctx.WriteString(node.Name)
+}
+
+func (node *ShowCreateCatalog) GetStatementType() string { return "Show Create Catalog" }
+func (node *ShowCreateCatalog) GetQueryType() string     { return QueryTypeOth }
+
 type ShowTableSize struct {
 	showImpl
 	Table  *UnresolvedObjectName

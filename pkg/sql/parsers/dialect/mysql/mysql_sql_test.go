@@ -138,6 +138,39 @@ func TestConnectionStatements(t *testing.T) {
 	require.Equal(t, "show create connection conn_pg", tree.String(showStmt, dialect.MYSQL))
 }
 
+func TestExternalCatalogStatements(t *testing.T) {
+	stmt, err := ParseOne(
+		context.TODO(),
+		"create external catalog if not exists mysql_sales using connection conn_mysql_sales type = 'mysql' options (include_databases = 'sales,dim', metadata_cache_ttl = '300s', test_connection = 'true')",
+		1,
+	)
+	require.NoError(t, err)
+
+	createStmt, ok := stmt.(*tree.CreateExternalCatalog)
+	require.True(t, ok)
+	require.True(t, createStmt.IfNotExists)
+	require.Equal(
+		t,
+		"create external catalog if not exists mysql_sales using connection conn_mysql_sales type = 'mysql' options (include_databases = 'sales,dim', metadata_cache_ttl = '300s', test_connection = 'true')",
+		tree.String(createStmt, dialect.MYSQL),
+	)
+
+	stmt, err = ParseOne(context.TODO(), "drop external catalog if exists mysql_sales", 1)
+	require.NoError(t, err)
+
+	dropStmt, ok := stmt.(*tree.DropExternalCatalog)
+	require.True(t, ok)
+	require.True(t, dropStmt.IfExists)
+	require.Equal(t, "drop external catalog if exists mysql_sales", tree.String(dropStmt, dialect.MYSQL))
+
+	stmt, err = ParseOne(context.TODO(), "show create catalog mysql_sales", 1)
+	require.NoError(t, err)
+
+	showStmt, ok := stmt.(*tree.ShowCreateCatalog)
+	require.True(t, ok)
+	require.Equal(t, "show create catalog mysql_sales", tree.String(showStmt, dialect.MYSQL))
+}
+
 func TestConnectionStatementsRoundTripEscapedOptions(t *testing.T) {
 	original := &tree.CreateConnection{
 		Name: tree.Identifier("conn_mysql"),
@@ -162,6 +195,34 @@ func TestConnectionStatementsRoundTripEscapedOptions(t *testing.T) {
 	require.Equal(t, map[string]string{
 		"path": "C:\\tmp\\fq",
 		"note": "line1\nline2\t'a'",
+	}, got)
+}
+
+func TestExternalCatalogStatementsRoundTripEscapedOptions(t *testing.T) {
+	original := &tree.CreateExternalCatalog{
+		Name:           tree.Identifier("oracle_hr"),
+		ConnectionName: tree.Identifier("conn_oracle_hr"),
+		Type:           "oracle",
+		Options: []*tree.ExternalCatalogOption{
+			{Key: tree.Identifier("quoted_identifier"), Value: "auto"},
+			{Key: tree.Identifier("note"), Value: "line1\nline2\t'a'"},
+		},
+	}
+
+	stmt, err := ParseOne(context.TODO(), tree.String(original, dialect.MYSQL), 1)
+	require.NoError(t, err)
+
+	createStmt, ok := stmt.(*tree.CreateExternalCatalog)
+	require.True(t, ok)
+
+	got := make(map[string]string, len(createStmt.Options))
+	for _, opt := range createStmt.Options {
+		got[string(opt.Key)] = opt.Value
+	}
+
+	require.Equal(t, map[string]string{
+		"quoted_identifier": "auto",
+		"note":              "line1\nline2\t'a'",
 	}, got)
 }
 
@@ -1036,16 +1097,16 @@ var (
 			input:  "load data local infile 'data' replace into table db.a (a, b, @vc, @vd) set a = @vc != 0, d = @vd != 1",
 			output: "load data local infile data replace into table db.a (a, b, @vc, @vd) set a = @vc != 0, d = @vd != 1",
 		}, {
-			input: "load data local infile 'data' replace into table db.a lines starting by '#' terminated by '\t' ignore 2 lines",
+			input:  "load data local infile 'data' replace into table db.a lines starting by '#' terminated by '\t' ignore 2 lines",
 			output: "load data local infile data replace into table db.a lines starting by # terminated by 	 ignore 2 lines",
 		}, {
-			input: "load data local infile 'data' replace into table db.a lines starting by '#' terminated by '\t' ignore 2 rows",
+			input:  "load data local infile 'data' replace into table db.a lines starting by '#' terminated by '\t' ignore 2 rows",
 			output: "load data local infile data replace into table db.a lines starting by # terminated by 	 ignore 2 lines",
 		}, {
-			input: "load data local infile 'data' replace into table db.a lines terminated by '\t' starting by '#' ignore 2 lines",
+			input:  "load data local infile 'data' replace into table db.a lines terminated by '\t' starting by '#' ignore 2 lines",
 			output: "load data local infile data replace into table db.a lines starting by # terminated by 	 ignore 2 lines",
 		}, {
-			input: "load data local infile 'data' replace into table db.a lines terminated by '\t' starting by '#' ignore 2 rows",
+			input:  "load data local infile 'data' replace into table db.a lines terminated by '\t' starting by '#' ignore 2 rows",
 			output: "load data local infile data replace into table db.a lines starting by # terminated by 	 ignore 2 lines",
 		}, {
 			input:  "load data infile 'data.txt' into table db.a fields terminated by '\t' escaped by '\t'",

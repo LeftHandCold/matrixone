@@ -90,13 +90,16 @@ const (
 	FPPrepareString
 	FPCreateConnector
 	FPCreateConnection
+	FPCreateExternalCatalog
 	FPPauseDaemonTask
 	FPCancelDaemonTask
 	FPResumeDaemonTask
 	FPDropConnector
 	FPDropConnection
+	FPDropExternalCatalog
 	FPShowConnectors
 	FPShowCreateConnection
+	FPShowCreateCatalog
 	FPDeallocate
 	FPReset
 	FPSetVar

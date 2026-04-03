@@ -144,6 +144,9 @@ const (
 	// MO_CONNECTIONS connection meta table
 	MO_CONNECTIONS = "mo_connections"
 
+	// MO_EXTERNAL_CATALOGS external catalog meta table
+	MO_EXTERNAL_CATALOGS = "mo_external_catalogs"
+
 	// MO_PUBS publication meta table
 	MO_PUBS = "mo_pubs"
 

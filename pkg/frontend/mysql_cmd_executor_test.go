@@ -1123,6 +1123,7 @@ func Test_statement_type(t *testing.T) {
 			{&tree.Insert{}},
 			{&tree.BeginTransaction{}},
 			{&tree.ShowTables{}},
+			{&tree.ShowCreateCatalog{}},
 			{&tree.Use{}},
 		}
 		ctrl := gomock.NewController(t)
@@ -1132,11 +1133,17 @@ func Test_statement_type(t *testing.T) {
 			ret, _ := statementCanBeExecutedInUncommittedTransaction(context.TODO(), ses, k.stmt)
 			convey.So(ret, convey.ShouldBeTrue)
 		}
+		ret, _ := statementCanBeExecutedInUncommittedTransaction(context.TODO(), ses, &tree.CreateExternalCatalog{})
+		convey.So(ret, convey.ShouldBeFalse)
+		ret, _ = statementCanBeExecutedInUncommittedTransaction(context.TODO(), ses, &tree.DropExternalCatalog{})
+		convey.So(ret, convey.ShouldBeFalse)
 
 		convey.So(IsDDL(&tree.CreateTable{}), convey.ShouldBeTrue)
 		convey.So(IsDDL(&tree.CreateConnection{}), convey.ShouldBeTrue)
+		convey.So(IsDDL(&tree.CreateExternalCatalog{}), convey.ShouldBeTrue)
 		convey.So(IsDropStatement(&tree.DropTable{}), convey.ShouldBeTrue)
 		convey.So(IsDropStatement(&tree.DropConnection{}), convey.ShouldBeTrue)
+		convey.So(IsDropStatement(&tree.DropExternalCatalog{}), convey.ShouldBeTrue)
 		convey.So(IsAdministrativeStatement(&tree.CreateAccount{}), convey.ShouldBeTrue)
 		convey.So(IsParameterModificationStatement(&tree.SetVar{}), convey.ShouldBeTrue)
 		convey.So(NeedToBeCommittedInActiveTransaction(&tree.SetVar{}), convey.ShouldBeTrue)
@@ -1407,7 +1414,10 @@ func Test_StatementClassify(t *testing.T) {
 		{&tree.ShowPublications{}, true},
 		{&tree.ShowCreatePublications{}, true},
 		{&tree.ShowCreateConnection{}, true},
+		{&tree.ShowCreateCatalog{}, true},
 		{&tree.ShowBackendServers{}, true},
+		{&tree.CreateExternalCatalog{}, false},
+		{&tree.DropExternalCatalog{}, false},
 	}
 	ses := &Session{
 		feSessionImpl: feSessionImpl{},

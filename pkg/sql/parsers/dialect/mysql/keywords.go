@@ -103,6 +103,7 @@ func init() {
 		"config":                     CONFIG,
 		"connector":                  CONNECTOR,
 		"connectors":                 CONNECTORS,
+		"catalog":                    CATALOG,
 		"cipher":                     CIPHER,
 		"chain":                      CHAIN,
 		"client":                     CLIENT,

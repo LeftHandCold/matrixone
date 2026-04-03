@@ -61,7 +61,8 @@ func IsDDL(stmt tree.Statement) bool {
 		*tree.CreateView, *tree.DropView, *tree.AlterView, *tree.AlterTable, *tree.RenameTable,
 		*tree.CreateDatabase, *tree.DropDatabase, *tree.CreateSequence, *tree.DropSequence,
 		*tree.CreateIndex, *tree.DropIndex, *tree.TruncateTable,
-		*tree.CreateConnection, *tree.DropConnection:
+		*tree.CreateConnection, *tree.DropConnection,
+		*tree.CreateExternalCatalog, *tree.DropExternalCatalog:
 		return true
 	}
 	return false
@@ -71,7 +72,7 @@ func IsDDL(stmt tree.Statement) bool {
 func IsDropStatement(stmt tree.Statement) bool {
 	switch stmt.(type) {
 	case *tree.DropDatabase, *tree.DropTable, *tree.DropView, *tree.DropIndex, *tree.DropSequence,
-		*tree.DropConnection:
+		*tree.DropConnection, *tree.DropExternalCatalog:
 		return true
 	}
 	return false
@@ -186,6 +187,7 @@ func statementCanBeExecutedInUncommittedTransaction(
 		*tree.ShowSubscriptions,
 		*tree.ShowCreatePublications,
 		*tree.ShowCreateConnection,
+		*tree.ShowCreateCatalog,
 		*tree.ShowBackendServers,
 		*tree.ShowAccountUpgrade,
 		*tree.ShowConnectors,
@@ -228,7 +230,8 @@ func statementCanBeExecutedInUncommittedTransaction(
 				USE ROLE role;
 		*/
 		return !st.IsUseRole(), nil
-	case *tree.DropTable, *tree.DropIndex, *tree.DropView, *tree.TruncateTable, *tree.DropConnection:
+	case *tree.DropTable, *tree.DropIndex, *tree.DropView, *tree.TruncateTable,
+		*tree.DropConnection:
 		return true, nil
 	case *tree.DropSequence: //Case1, Case3 above
 		//background transaction can execute the DROPxxx in one transaction

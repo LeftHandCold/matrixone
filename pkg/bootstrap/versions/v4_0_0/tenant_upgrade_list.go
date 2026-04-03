@@ -29,6 +29,7 @@ var tenantUpgEntries = []versions.UpgradeEntry{
 	enablePartitionMetadata,
 	enablePartitionTables,
 	enableConnections,
+	enableExternalCatalogs,
 	upg_alter_mo_snapshots,
 	enableRoleRule,
 	upg_information_schema_columns,
@@ -76,6 +77,16 @@ var enableConnections = versions.UpgradeEntry{
 	UpgSql:    frontend.MoCatalogMoConnectionsDDL,
 	CheckFunc: func(txn executor.TxnExecutor, accountId uint32) (bool, error) {
 		return versions.CheckTableDefinition(txn, accountId, catalog.MO_CATALOG, catalog.MO_CONNECTIONS)
+	},
+}
+
+var enableExternalCatalogs = versions.UpgradeEntry{
+	Schema:    catalog.MO_CATALOG,
+	TableName: catalog.MO_EXTERNAL_CATALOGS,
+	UpgType:   versions.CREATE_NEW_TABLE,
+	UpgSql:    frontend.MoCatalogMoExternalCatalogsDDL,
+	CheckFunc: func(txn executor.TxnExecutor, accountId uint32) (bool, error) {
+		return versions.CheckTableDefinition(txn, accountId, catalog.MO_CATALOG, catalog.MO_EXTERNAL_CATALOGS)
 	},
 }
 

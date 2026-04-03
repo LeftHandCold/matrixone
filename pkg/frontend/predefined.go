@@ -239,6 +239,22 @@ var (
 				primary key(connection_id)
 			)`, catalog.MO_CATALOG, catalog.MO_CONNECTIONS)
 
+	MoCatalogMoExternalCatalogsDDL = fmt.Sprintf(`create table %s.%s (
+				catalog_id bigint unsigned auto_increment,
+				catalog_name varchar(256) unique key,
+				catalog_type varchar(32),
+				connection_id bigint unsigned,
+				catalog_options text,
+				metadata_cache_ttl varchar(64),
+				catalog_status varchar(32),
+				owner bigint unsigned,
+				creator bigint unsigned,
+				account_id bigint unsigned,
+				created_time timestamp,
+				comment text,
+				primary key(catalog_id)
+			)`, catalog.MO_CATALOG, catalog.MO_EXTERNAL_CATALOGS)
+
 	MoCatalogMoCdcTaskDDL = `create table mo_catalog.mo_cdc_task (
     			account_id bigint unsigned,			
     			task_id uuid,

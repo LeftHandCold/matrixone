@@ -82,6 +82,7 @@ var (
 )
 
 type connectionMetadata struct {
+	id          uint64
 	name        string
 	typ         string
 	optionsJSON string
@@ -174,15 +175,22 @@ func doDropConnection(ctx context.Context, ses *Session, ds *tree.DropConnection
 		err = finishTxn(ctx, bh, err)
 	}()
 
-	exists, err := checkConnectionExistOrNot(ctx, bh, string(ds.Name))
+	meta, err := loadConnectionMetadata(ctx, bh, string(ds.Name), true)
 	if err != nil {
 		return err
 	}
-	if !exists {
+	if meta == nil {
 		if ds.IfExists {
 			return nil
 		}
 		return moerr.NewInternalErrorf(ctx, "the connection %s does not exist", ds.Name)
+	}
+	referenced, err := checkConnectionReferencedByExternalCatalog(ctx, bh, meta.id)
+	if err != nil {
+		return err
+	}
+	if referenced {
+		return moerr.NewInternalErrorf(ctx, "the connection %s is referenced by external catalogs", ds.Name)
 	}
 
 	return bh.Exec(ctx, getSqlForDropConnection(string(ds.Name)))
@@ -199,7 +207,7 @@ func doShowCreateConnection(ctx context.Context, ses *Session, sc *tree.ShowCrea
 	bh := ses.GetBackgroundExec(ctx)
 	defer bh.Close()
 
-	meta, err := loadConnectionMetadata(ctx, bh, sc.Name)
+	meta, err := loadConnectionMetadata(ctx, bh, sc.Name, false)
 	if err != nil {
 		return err
 	}
@@ -287,9 +295,9 @@ func checkConnectionExistOrNot(ctx context.Context, bh BackgroundExec, connectio
 	return execResultArrayHasData(erArray), nil
 }
 
-func loadConnectionMetadata(ctx context.Context, bh BackgroundExec, connectionName string) (*connectionMetadata, error) {
+func loadConnectionMetadata(ctx context.Context, bh BackgroundExec, connectionName string, forUpdate bool) (*connectionMetadata, error) {
 	bh.ClearExecResultSet()
-	if err := bh.Exec(ctx, getSqlForGetConnection(connectionName)); err != nil {
+	if err := bh.Exec(ctx, getSqlForGetConnection(connectionName, forUpdate)); err != nil {
 		return nil, err
 	}
 
@@ -301,20 +309,38 @@ func loadConnectionMetadata(ctx context.Context, bh BackgroundExec, connectionNa
 		return nil, nil
 	}
 
-	typ, err := erArray[0].GetString(ctx, 0, 0)
+	id, err := erArray[0].GetUint64(ctx, 0, 0)
 	if err != nil {
 		return nil, err
 	}
-	optionsJSON, err := erArray[0].GetString(ctx, 0, 1)
+	typ, err := erArray[0].GetString(ctx, 0, 1)
+	if err != nil {
+		return nil, err
+	}
+	optionsJSON, err := erArray[0].GetString(ctx, 0, 2)
 	if err != nil {
 		return nil, err
 	}
 
 	return &connectionMetadata{
+		id:          id,
 		name:        connectionName,
 		typ:         typ,
 		optionsJSON: optionsJSON,
 	}, nil
+}
+
+func checkConnectionReferencedByExternalCatalog(ctx context.Context, bh BackgroundExec, connectionID uint64) (bool, error) {
+	bh.ClearExecResultSet()
+	if err := bh.Exec(ctx, getSqlForCheckConnectionReferencedByExternalCatalog(connectionID)); err != nil {
+		return false, err
+	}
+
+	erArray, err := getResultSet(ctx, bh)
+	if err != nil {
+		return false, err
+	}
+	return execResultArrayHasData(erArray), nil
 }
 
 func decodeConnectionOptions(raw string) (map[string]string, error) {
@@ -374,12 +400,27 @@ func getSqlForCheckConnection(connectionName string) string {
 	)
 }
 
-func getSqlForGetConnection(connectionName string) string {
-	return fmt.Sprintf(
-		"select connection_type, connection_options from %s.%s where connection_name = '%s' order by connection_id;",
+func getSqlForGetConnection(connectionName string, forUpdate bool) string {
+	sql := fmt.Sprintf(
+		"select connection_id, connection_type, connection_options from %s.%s where connection_name = '%s' order by connection_id",
 		catalog.MO_CATALOG,
 		catalog.MO_CONNECTIONS,
 		escapeConnectionSQLLiteral(connectionName),
+	)
+	if forUpdate {
+		sql += " for update"
+	} else {
+		sql += ";"
+	}
+	return sql
+}
+
+func getSqlForCheckConnectionReferencedByExternalCatalog(connectionID uint64) string {
+	return fmt.Sprintf(
+		"select catalog_id from %s.%s where connection_id = %d order by catalog_id;",
+		catalog.MO_CATALOG,
+		catalog.MO_EXTERNAL_CATALOGS,
+		connectionID,
 	)
 }
 
