@@ -1,4 +1,5 @@
 FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04 AS builder
+RUN sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g; s|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g; s|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
 RUN apt-get update
 RUN apt-get install -y locales
 RUN localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
@@ -37,14 +38,23 @@ ENV CONDA_PREFIX=/root/miniconda/envs/go
 ENV PATH="${CONDA_PREFIX}/bin:${PATH}"
 ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${CONDA_PREFIX}/lib"
 
-# goproxy
-ARG GOPROXY="https://proxy.golang.org,direct"
+# Install standalone Go 1.23.5 to replace conda Go (conda Go has concurrent map bug under QEMU)
+RUN wget https://mirrors.aliyun.com/golang/go1.23.5.linux-amd64.tar.gz -O /tmp/go.tar.gz && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm /tmp/go.tar.gz
+ENV PATH="/usr/local/go/bin:${CONDA_PREFIX}/bin:${PATH}"
+ENV GOROOT=/usr/local/go
+
+# goproxy - use Chinese mirror
+ARG GOPROXY="https://goproxy.cn,direct"
 RUN go env -w GOPROXY=${GOPROXY}
 
-RUN go mod download
+# skip go mod download - go.sum generated locally to avoid QEMU segfault
+# RUN go mod download
 
 ENV MO_CL_CUDA=1
-RUN make clean && make
+ENV GOFLAGS="-p=12"
+RUN make clean && make CGO_ENABLED=1 -j12
 
 # build runtime docker image
 FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04
