@@ -120,6 +120,9 @@ func NewFlushTableTailEntry(
 			if err != nil {
 				return nil, err
 			}
+			if hasHiddenCompositePrimaryKey(entry.tableEntry.GetLastestSchemaLocked(false)) {
+				objectio.WaitInjected(objectio.FJ_TNFlushPostCollectTransfer)
+			}
 		}
 		// prepare transfer pages
 		if err := entry.addTransferPages(ctx); err != nil {

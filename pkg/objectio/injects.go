@@ -27,13 +27,18 @@ const (
 )
 
 const (
-	FJ_CommitDelete         = "fj/commit/delete"
-	FJ_CommitSlowLog        = "fj/commit/slowlog"
-	FJ_CommitWait           = "fj/commit/wait"
-	FJ_TransferSlow         = "fj/transfer/slow"
-	FJ_TxnFreezeBeforeDedup = "fj/txn/freeze_before_dedup"
-	FJ_FlushTimeout         = "fj/flush/timeout"
-	FJ_FlushEntry           = "fj/flush/entry"
+	FJ_CommitDelete                      = "fj/commit/delete"
+	FJ_CommitSlowLog                     = "fj/commit/slowlog"
+	FJ_CommitWait                        = "fj/commit/wait"
+	FJ_TransferSlow                      = "fj/transfer/slow"
+	FJ_TxnFreezeBeforeDedup              = "fj/txn/freeze_before_dedup"
+	FJ_TxnFreezeAfterTransferBeforeDedup = "fj/txn/freeze_after_transfer_before_dedup"
+	FJ_TxnDedupAfterGetRowsByPK          = "fj/txn/dedup_after_get_rows_by_pk"
+	FJ_TxnDedupAfterFindDeletes          = "fj/txn/dedup_after_find_deletes"
+	FJ_TNMergePostCollectTransfer        = "fj/tn/merge/post_collect_transfer"
+	FJ_TNFlushPostCollectTransfer        = "fj/tn/flushtail/post_collect_transfer"
+	FJ_FlushTimeout                      = "fj/flush/timeout"
+	FJ_FlushEntry                        = "fj/flush/entry"
 
 	FJ_CheckpointSave = "fj/checkpoint/save"
 	FJ_GCKPWait1      = "fj/gckp/wait1"

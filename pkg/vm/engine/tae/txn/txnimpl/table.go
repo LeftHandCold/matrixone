@@ -1211,10 +1211,16 @@ func (tbl *txnTable) DoPrecommitDedupByPK(
 			return
 		}
 		defer rowIDs.Close()
+		if !isTombstone && tbl.hasHiddenCompositePrimaryKey(false) {
+			objectio.WaitInjected(objectio.FJ_TxnDedupAfterGetRowsByPK)
+		}
 		if !isTombstone {
 			err = tbl.findDeletes(tbl.store.ctx, rowIDs, tbl.dedupTS.Next(), now)
 			if err != nil {
 				return
+			}
+			if tbl.hasHiddenCompositePrimaryKey(false) {
+				objectio.WaitInjected(objectio.FJ_TxnDedupAfterFindDeletes)
 			}
 		}
 		for i := 0; i < rowIDs.Length(); i++ {

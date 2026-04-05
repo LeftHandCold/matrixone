@@ -106,6 +106,9 @@ func NewMergeObjectsEntry(
 		if err != nil {
 			return nil, err
 		}
+		if hasHiddenCompositePrimaryKey(entry.relation.Schema(false).(*catalog.Schema)) {
+			objectio.WaitInjected(objectio.FJ_TNMergePostCollectTransfer)
+		}
 		if err := entry.prepareTransferPage(ctx); err != nil {
 			return nil, err
 		}

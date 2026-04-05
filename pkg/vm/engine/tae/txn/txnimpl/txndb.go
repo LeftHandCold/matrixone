@@ -475,6 +475,9 @@ func (db *txnDB) Freeze(ctx context.Context) (err error) {
 	if dedupType.SkipTargetOldCommitted() {
 		now := time.Now()
 		for _, table := range db.tables {
+			if table.hasHiddenCompositePrimaryKey(false) {
+				objectio.WaitInjected(objectio.FJ_TxnFreezeAfterTransferBeforeDedup)
+			}
 			if err = table.PrePrepareDedup(
 				ctx, false, txnif.FreezePhase, nowTS,
 			); err != nil {

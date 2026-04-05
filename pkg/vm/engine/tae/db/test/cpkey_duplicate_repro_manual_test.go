@@ -40,6 +40,14 @@ import (
 )
 
 func TestManualCompositePKDuplicateAfterMerge(t *testing.T) {
+	runManualCompositePKDuplicateRepro(t, objectio.FJ_TxnFreezeBeforeDedup)
+}
+
+func TestManualCompositePKDuplicateAfterTransferBeforeDedup(t *testing.T) {
+	runManualCompositePKDuplicateRepro(t, objectio.FJ_TxnFreezeAfterTransferBeforeDedup)
+}
+
+func runManualCompositePKDuplicateRepro(t *testing.T, waitKey string) {
 	defer testutils.AfterTest(t)()
 	testutils.EnsureNoLeak(t)
 
@@ -63,7 +71,6 @@ func TestManualCompositePKDuplicateAfterMerge(t *testing.T) {
 	fault.Enable()
 	defer fault.Disable()
 
-	waitKey := objectio.FJ_TxnFreezeBeforeDedup
 	waitersKey := t.Name() + "/getwaiters"
 	notifyKey := t.Name() + "/notify"
 	require.NoError(t, fault.AddFaultPoint(ctx, waitKey, "1:1::", "wait", 0, "", false))
