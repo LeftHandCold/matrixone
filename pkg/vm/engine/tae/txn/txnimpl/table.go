@@ -1211,7 +1211,11 @@ func (tbl *txnTable) DoPrecommitDedupByPK(
 			return
 		}
 		defer rowIDs.Close()
-		if !isTombstone && tbl.hasHiddenCompositePrimaryKey(false) {
+		traceCompositePK := !isTombstone && tbl.hasHiddenCompositePrimaryKey(false)
+		beforeFindDeletes := dedupTraceSnapshot{}
+		afterFindDeletes := dedupTraceSnapshot{}
+		if traceCompositePK {
+			beforeFindDeletes = captureDedupTraceSnapshot(pks, rowIDs, true)
 			objectio.WaitInjected(objectio.FJ_TxnDedupAfterGetRowsByPK)
 		}
 		if !isTombstone {
@@ -1219,7 +1223,18 @@ func (tbl *txnTable) DoPrecommitDedupByPK(
 			if err != nil {
 				return
 			}
-			if tbl.hasHiddenCompositePrimaryKey(false) {
+			if traceCompositePK {
+				afterFindDeletes = captureDedupTraceSnapshot(pks, rowIDs, true)
+				if afterFindDeletes.nonNullCount > 0 {
+					tbl.logCompositePKFindDeletesUnmasked(
+						phase,
+						tbl.dedupTS.Next(),
+						ts,
+						now,
+						beforeFindDeletes,
+						afterFindDeletes,
+					)
+				}
 				objectio.WaitInjected(objectio.FJ_TxnDedupAfterFindDeletes)
 			}
 		}
@@ -1237,6 +1252,18 @@ func (tbl *txnTable) DoPrecommitDedupByPK(
 					zap.String("phase", phase),
 					zap.String("from", tbl.dedupTS.Next().ToString()),
 					zap.String("to", ts.ToString()),
+				)
+				tbl.logDedupDuplicateDetails(
+					pks,
+					rowIDs,
+					isTombstone,
+					phase,
+					tbl.dedupTS.Next(),
+					ts,
+					now,
+					i,
+					beforeFindDeletes,
+					afterFindDeletes,
 				)
 				entry := common.TypeStringValue(*pks.GetType(), pks.Get(i), false)
 				err = moerr.NewDuplicateEntryNoCtx(entry, colName)
