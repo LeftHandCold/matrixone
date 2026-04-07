@@ -45,6 +45,7 @@ const (
 
 	FJ_TraceRanges         = "fj/trace/ranges"
 	FJ_TracePartitionState = "fj/trace/partitionstate"
+	FJ_TraceForUpdate      = "fj/trace/forupdate"
 	FJ_PrefetchThreshold   = "fj/prefetch/threshold"
 
 	FJ_Debug19524 = "fj/debug/19524"
@@ -238,6 +239,20 @@ func InjectLogPartitionState(
 ) (rmFault func(), err error) {
 	return InjectLogging(
 		FJ_TracePartitionState,
+		databaseName,
+		tableName,
+		level,
+		false,
+	)
+}
+
+func InjectTraceForUpdate(
+	databaseName string,
+	tableName string,
+	level int,
+) (rmFault func(), err error) {
+	return InjectLogging(
+		FJ_TraceForUpdate,
 		databaseName,
 		tableName,
 		level,
@@ -625,6 +640,14 @@ func InjectLogRanges(
 
 func PartitionStateInjected(dbName, tableName string) (bool, int) {
 	iarg, sarg, injected := fault.TriggerFault(FJ_TracePartitionState)
+	if !injected {
+		return false, 0
+	}
+	return checkLoggingArgs(int(iarg), sarg, dbName, tableName)
+}
+
+func TraceForUpdateInjected(dbName, tableName string) (bool, int) {
+	iarg, sarg, injected := fault.TriggerFault(FJ_TraceForUpdate)
 	if !injected {
 		return false, 0
 	}

@@ -204,6 +204,7 @@ func performLock(
 			zap.Bool("filter", target.filter != nil),
 			zap.Int32("filter-col", target.filterColIndexInBatch),
 			zap.Int32("primary-index", target.primaryColumnIndexInBatch))
+		traceForUpdateInput(proc, target, bat)
 		var filterCols []int32
 		// For partitioned tables, filter is not nil
 		// no function call AddLockTargetWithPartition to set target.filter, so next code is unused
@@ -251,6 +252,7 @@ func performLock(
 				zap.String("refresh-ts", refreshTS.DebugString()),
 				zap.Error(err))
 		}
+		traceForUpdateResult(proc, target, locked, defChanged, refreshTS, err)
 		if err != nil {
 			return err
 		}

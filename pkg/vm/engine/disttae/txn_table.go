@@ -2672,8 +2672,13 @@ func (tbl *txnTable) primaryKeysMayBeChanged(
 	}()
 
 	v2.TxnPKMayBeChangedTotalCounter.Inc()
+	traceEnabled, traceLevel := traceForUpdateEnabled(tbl)
 
 	if tbl.db.op.IsSnapOp() {
+		if traceEnabled {
+			traceForUpdatePKCheck(tbl, traceLevel, from, to, nil, nil, "snapshot-op", false, false, false,
+				moerr.NewInternalErrorNoCtx("primary key modification is not allowed in snapshot transaction"))
+		}
 		return false,
 			moerr.NewInternalErrorNoCtx("primary key modification is not allowed in snapshot transaction")
 	}
@@ -2688,6 +2693,9 @@ func (tbl *txnTable) primaryKeysMayBeChanged(
 		tbl.db.databaseName)
 	v2.TxnLazyLoadCkpDurationHistogram.Observe(time.Since(lazyLoadStart).Seconds())
 	if err != nil {
+		if traceEnabled {
+			traceForUpdatePKCheck(tbl, traceLevel, from, to, nil, nil, "load-latest-ckp", false, false, false, err)
+		}
 		return false, err
 	}
 	snap := part.Snapshot()
@@ -2705,20 +2713,30 @@ func (tbl *txnTable) primaryKeysMayBeChanged(
 
 	if exist {
 		v2.TxnPKMayBeChangedMemHitCounter.Inc()
+		if traceEnabled {
+			traceForUpdatePKCheck(tbl, traceLevel, from, to, snap, keys, "in-mem", true, flushed, true, nil)
+		}
 		return true, nil
 	}
 	if !flushed {
 		v2.TxnPKMayBeChangedMemNotFlushedCounter.Inc()
+		if traceEnabled {
+			traceForUpdatePKCheck(tbl, traceLevel, from, to, snap, keys, "not-flushed", false, flushed, false, nil)
+		}
 		return false, nil
 	}
 
 	//need check pk whether exist on S3 block.
 	v2.TxnPKMayBeChangedPersistedCounter.Inc()
-	return tbl.PKPersistedBetween(
+	changed, err := tbl.PKPersistedBetween(
 		snap,
 		from,
 		to,
 		keysVector, checkTombstone)
+	if traceEnabled {
+		traceForUpdatePKCheck(tbl, traceLevel, from, to, snap, keys, "persisted", false, flushed, changed, err)
+	}
+	return changed, err
 }
 
 func (tbl *txnTable) MergeObjects(
