@@ -2478,17 +2478,11 @@ func (tbl *txnTable) PKPersistedBetween(
 
 	candidateBlks := make(map[types.Blockid]*objectio.BlockInfo)
 
-	// Only check objects that changed within the lock refresh window. For RC retry
-	// detection we must keep transient objects too, otherwise a flush/merge cycle
-	// can hide a same-PK update and produce a false "unchanged" answer.
-	changedObjs := p.GetChangedObjectNamesBetween(from.Next(), to)
+	//only check data objects.
+	delObjs, cObjs := p.GetChangedObjsBetween(from.Next(), types.MaxTs())
 	isFakePK := tbl.GetTableDef(ctx).Pkey.PkeyColName == catalog.FakePrimaryKeyColName
-	for objName := range changedObjs {
-		obj, ok := p.GetObject(objName)
-		if !ok {
-			continue
-		}
-		if err := func(obj objectio.ObjectEntry) (err2 error) {
+	if err := ForeachCommittedObjects(cObjs, delObjs, p,
+		func(obj objectio.ObjectEntry) (err2 error) {
 			var zmCkecked bool
 			if !isFakePK {
 				// if the object info contains a pk zonemap, fast-check with the zonemap
@@ -2558,9 +2552,8 @@ func (tbl *txnTable) PKPersistedBetween(
 				}, obj.ObjectStats)
 
 			return
-		}(obj); err != nil {
-			return true, err
-		}
+		}); err != nil {
+		return true, err
 	}
 
 	keys.InplaceSort()
