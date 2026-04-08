@@ -1237,6 +1237,29 @@ func (tbl *txnTable) DoPrecommitDedupByPK(
 				}
 				objectio.WaitInjected(objectio.FJ_TxnDedupAfterFindDeletes)
 			}
+			if traceCompositePK && afterFindDeletes.nonNullCount > 0 {
+				var localMaskChanged bool
+				localMaskChanged, err = tbl.maskLocalCompositePKDeleteCandidates(
+					tbl.store.ctx,
+					pks,
+					rowIDs,
+					common.WorkspaceAllocator,
+				)
+				if err != nil {
+					return
+				}
+				if localMaskChanged {
+					afterLocalMask := captureDedupTraceSnapshot(pks, rowIDs, true)
+					tbl.logCompositePKLocalTombstoneMask(
+						phase,
+						tbl.dedupTS.Next(),
+						ts,
+						now,
+						afterFindDeletes,
+						afterLocalMask,
+					)
+				}
+			}
 		}
 		for i := 0; i < rowIDs.Length(); i++ {
 			var colName string

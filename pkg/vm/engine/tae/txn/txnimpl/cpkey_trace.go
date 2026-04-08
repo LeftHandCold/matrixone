@@ -132,6 +132,28 @@ func (tbl *txnTable) logCompositePKFindDeletesUnmasked(
 	logutil.Warn("TN-COMPOSITE-PK-FINDDELETES-UNMASKED", fields...)
 }
 
+func (tbl *txnTable) logCompositePKLocalTombstoneMask(
+	phase string,
+	lookupFrom types.TS,
+	lookupTo types.TS,
+	maskTo types.TS,
+	before dedupTraceSnapshot,
+	after dedupTraceSnapshot,
+) {
+	fields := []zap.Field{
+		zap.Uint64("table-id", tbl.GetID()),
+		zap.String("table", tbl.dataTable.schema.Name),
+		zap.String("txn", tbl.store.txn.String()),
+		zap.String("phase", phase),
+		zap.String("lookup-from", lookupFrom.ToString()),
+		zap.String("lookup-to", lookupTo.ToString()),
+		zap.String("mask-to", maskTo.ToString()),
+	}
+	fields = appendDedupSnapshotFields(fields, "before", before)
+	fields = appendDedupSnapshotFields(fields, "after", after)
+	logutil.Info("TN-COMPOSITE-PK-LOCAL-TOMBSTONE-MASK", fields...)
+}
+
 func (tbl *txnTable) logDedupDuplicateDetails(
 	pks containers.Vector,
 	rowIDs containers.Vector,

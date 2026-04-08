@@ -22,7 +22,6 @@ import (
 	"time"
 
 	pkgcatalog "github.com/matrixorigin/matrixone/pkg/catalog"
-	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
@@ -39,15 +38,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestManualCompositePKDuplicateAfterMerge(t *testing.T) {
-	runManualCompositePKDuplicateRepro(t, objectio.FJ_TxnFreezeBeforeDedup)
+func TestManualCompositePKUpdateAfterMerge(t *testing.T) {
+	runManualCompositePKUpdateRepro(t, objectio.FJ_TxnFreezeBeforeDedup)
 }
 
-func TestManualCompositePKDuplicateAfterTransferBeforeDedup(t *testing.T) {
-	runManualCompositePKDuplicateRepro(t, objectio.FJ_TxnFreezeAfterTransferBeforeDedup)
+func TestManualCompositePKUpdateAfterTransferBeforeDedup(t *testing.T) {
+	runManualCompositePKUpdateRepro(t, objectio.FJ_TxnFreezeAfterTransferBeforeDedup)
 }
 
-func runManualCompositePKDuplicateRepro(t *testing.T, waitKey string) {
+func runManualCompositePKUpdateRepro(t *testing.T, waitKey string) {
 	defer testutils.AfterTest(t)()
 	testutils.EnsureNoLeak(t)
 
@@ -56,7 +55,7 @@ func runManualCompositePKDuplicateRepro(t *testing.T, waitKey string) {
 	tae := testutil.NewTestEngine(ctx, ModuleName, t, opts)
 	defer tae.Close()
 
-	schema := newManualCompositePKSchema(t, "manual_cpkey_duplicate_after_merge")
+	schema := newManualCompositePKSchema(t, "manual_cpkey_update_after_merge")
 	tae.BindSchema(schema)
 
 	bat := buildManualCompositePKBatch(schema, 200)
@@ -103,8 +102,7 @@ func runManualCompositePKDuplicateRepro(t *testing.T, waitKey string) {
 	objectio.NotifyInjected(notifyKey)
 
 	err = <-errCh
-	require.Error(t, err)
-	require.True(t, moerr.IsMoErrCode(err, moerr.ErrDuplicateEntry), "expected duplicate entry, got %v", err)
+	require.NoError(t, err)
 }
 
 func newManualCompositePKSchema(t *testing.T, name string) *catalog.Schema {
