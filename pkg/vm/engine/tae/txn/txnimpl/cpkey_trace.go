@@ -15,10 +15,12 @@
 package txnimpl
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
@@ -155,6 +157,7 @@ func (tbl *txnTable) logCompositePKLocalTombstoneMask(
 }
 
 func (tbl *txnTable) logDedupDuplicateDetails(
+	ctx context.Context,
 	pks containers.Vector,
 	rowIDs containers.Vector,
 	isTombstone bool,
@@ -183,8 +186,36 @@ func (tbl *txnTable) logDedupDuplicateDetails(
 	if !maskTo.IsEmpty() {
 		fields = append(fields, zap.String("mask-to", maskTo.ToString()))
 	}
+	if isTombstone {
+		if duplicateRowID, ok := dedupTraceRowIDAt(rowIDs, duplicateIdx); ok {
+			sourceStats := tbl.collectTombstoneDuplicateSourceStats(ctx, duplicateRowID, lookupTo)
+			fields = append(fields,
+				zap.Int("tombstone-local-node-rows", sourceStats.localNodeRows),
+				zap.Int("tombstone-local-node-hits", sourceStats.localNodeHits),
+				zap.Int("tombstone-local-stats-total", sourceStats.localStatsTotal),
+				zap.Int("tombstone-local-stats-hits", sourceStats.localStatsHits),
+				zap.Int("tombstone-local-stats-matched-objects", sourceStats.localStatsMatchedObjects),
+				zap.String("tombstone-local-stats-object-sample", sourceStats.localStatsObjectSample),
+				zap.Int("tombstone-visible-object-total", sourceStats.visibleObjectTotal),
+				zap.Int("tombstone-visible-object-hits", sourceStats.visibleObjectHits),
+				zap.Int("tombstone-visible-object-matched-objects", sourceStats.visibleObjectMatchedObjects),
+				zap.String("tombstone-visible-object-sample", sourceStats.visibleObjectSample),
+			)
+			if sourceStats.err != "" {
+				fields = append(fields, zap.String("tombstone-trace-error", sourceStats.err))
+			}
+		}
+	}
 	fields = appendDedupSnapshotFields(fields, "current", current)
 	fields = appendDedupSnapshotFields(fields, "before", before)
 	fields = appendDedupSnapshotFields(fields, "after", after)
 	logutil.Error("TN-DEDUP-DUPLICATE-DETAIL", fields...)
+}
+
+func dedupTraceRowIDAt(vec containers.Vector, idx int) (types.Rowid, bool) {
+	if vec == nil || idx < 0 || idx >= vec.Length() || vec.IsNull(idx) {
+		return types.Rowid{}, false
+	}
+	rowIDs := vector.MustFixedColWithTypeCheck[types.Rowid](vec.GetDownstreamVector())
+	return rowIDs[idx], true
 }

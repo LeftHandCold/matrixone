@@ -360,6 +360,13 @@ func (tbl *txnTable) TransferDeletes(
 			}
 			tbl.store.warChecker.Delete(id)
 			if currentTransferBatch != nil {
+				tbl.logTombstoneTransferBatchDuplicate(
+					phase,
+					startTS,
+					ts,
+					obj,
+					currentTransferBatch,
+				)
 				if sinker == nil {
 					sinker = ioutil.NewTombstoneSinker(
 						objectio.HiddenColumnSelection_None,
@@ -1277,6 +1284,7 @@ func (tbl *txnTable) DoPrecommitDedupByPK(
 					zap.String("to", ts.ToString()),
 				)
 				tbl.logDedupDuplicateDetails(
+					tbl.store.ctx,
 					pks,
 					rowIDs,
 					isTombstone,
