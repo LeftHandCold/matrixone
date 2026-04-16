@@ -43,11 +43,13 @@ type nativeMergeSortPool struct {
 type recordingFS struct {
 	fileservice.FileService
 	mu        sync.Mutex
+	readCalls int
 	readSizes []int64
 }
 
 func (r *recordingFS) Read(ctx context.Context, vector *fileservice.IOVector) error {
 	r.mu.Lock()
+	r.readCalls++
 	for _, entry := range vector.Entries {
 		r.readSizes = append(r.readSizes, entry.Size)
 	}
@@ -61,9 +63,16 @@ func (r *recordingFS) snapshotReadSizes() []int64 {
 	return append([]int64(nil), r.readSizes...)
 }
 
+func (r *recordingFS) snapshotReadCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.readCalls
+}
+
 func (r *recordingFS) resetReadSizes() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.readCalls = 0
 	r.readSizes = nil
 }
 
@@ -240,6 +249,59 @@ func TestReadSidecarV4UsesRangeReads(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, postings, 8)
 	require.Equal(t, afterFirstLookup, fs.snapshotReadSizes())
+}
+
+func TestReadSidecarV4BatchesExactTermReads(t *testing.T) {
+	builder := NewBuilder(fulltext.FullTextParserParam{}, nil)
+	require.NoError(t, builder.Add(Document{
+		Block: 1,
+		Row:   1,
+		PK:    []byte("pk-1"),
+		Values: []fulltext.IndexValue{
+			{Text: "native stablegamma", Type: types.T_text},
+		},
+	}))
+	require.NoError(t, builder.Add(Document{
+		Block: 1,
+		Row:   2,
+		PK:    []byte("pk-2"),
+		Values: []fulltext.IndexValue{
+			{Text: "native stablegamma", Type: types.T_text},
+		},
+	}))
+
+	baseFS, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	fs := &recordingFS{FileService: baseFS}
+
+	objID := objectio.NewObjectid()
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+	buf, err := builder.Build().MarshalBinary()
+	require.NoError(t, err)
+	require.NoError(t, fs.Write(context.Background(), fileservice.IOVector{
+		FilePath: SidecarPath(objName.String(), "__idx_body"),
+		Entries: []fileservice.IOEntry{{
+			Offset: 0,
+			Size:   int64(len(buf)),
+			Data:   buf,
+		}},
+	}))
+
+	fs.resetReadSizes()
+	seg, ok, err := ReadSidecar(context.Background(), fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, 3, fs.snapshotReadCalls())
+
+	matches, err := seg.SearchAll([]string{"native", "stablegamma"})
+	require.NoError(t, err)
+	require.Len(t, matches, 2)
+	require.Equal(t, 4, fs.snapshotReadCalls())
+
+	matches, err = seg.SearchAll([]string{"native", "stablegamma"})
+	require.NoError(t, err)
+	require.Len(t, matches, 2)
+	require.Equal(t, 4, fs.snapshotReadCalls())
 }
 
 func TestObjectIndexerBuildAndReadSidecarWithNullMultiColumn(t *testing.T) {

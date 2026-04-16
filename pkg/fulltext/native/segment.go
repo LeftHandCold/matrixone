@@ -77,11 +77,12 @@ type Segment struct {
 	DocCount int64
 	TokenSum int64
 
-	mu         sync.RWMutex
-	termOrder  []string
-	lazyData   []byte
-	lazyTerms  map[string]segmentTermMeta
-	lazyLoader segmentTermLoader
+	mu              sync.RWMutex
+	termOrder       []string
+	lazyData        []byte
+	lazyTerms       map[string]segmentTermMeta
+	lazyLoader      segmentTermLoader
+	lazyBatchLoader segmentTermBatchLoader
 }
 
 type segmentTermMeta struct {
@@ -91,6 +92,13 @@ type segmentTermMeta struct {
 }
 
 type segmentTermLoader func(offset, size int64) ([]byte, error)
+
+type segmentTermBatchLoader func(requests []segmentTermLoadRequest) (map[string][]byte, error)
+
+type segmentTermLoadRequest struct {
+	term string
+	meta segmentTermMeta
+}
 
 type segmentHeaderV4 struct {
 	DocCount      int64
@@ -204,11 +212,20 @@ func (s *Segment) Lookup(term string) ([]Posting, error) {
 
 func (s *Segment) LookupPrefix(prefix string) ([]Posting, error) {
 	terms := s.termNames()
-	postings := make([]Posting, 0, 8)
+	matchedTerms := make([]string, 0, 8)
 	for _, term := range terms {
-		if !strings.HasPrefix(term, prefix) {
-			continue
+		if strings.HasPrefix(term, prefix) {
+			matchedTerms = append(matchedTerms, term)
 		}
+	}
+	if len(matchedTerms) == 0 {
+		return nil, nil
+	}
+	if err := s.ensureTermsLoaded(matchedTerms); err != nil {
+		return nil, err
+	}
+	postings := make([]Posting, 0, 8)
+	for _, term := range matchedTerms {
 		termPostings, err := s.loadTermPostings(term)
 		if err != nil {
 			return nil, err
@@ -248,6 +265,13 @@ func (s *Segment) SearchAll(words []string) ([]Match, error) {
 		}
 		return ordered[i].word < ordered[j].word
 	})
+	orderedWords := make([]string, 0, len(ordered))
+	for _, term := range ordered {
+		orderedWords = append(orderedWords, term.word)
+	}
+	if err := s.ensureTermsLoaded(orderedWords); err != nil {
+		return nil, err
+	}
 
 	candidates := make(map[string]*Match)
 	for i, term := range ordered {
@@ -875,6 +899,71 @@ func (s *Segment) termPostingCount(term string) (uint32, bool) {
 		return 0, false
 	}
 	return meta.postingCount, true
+}
+
+func (s *Segment) ensureTermsLoaded(terms []string) error {
+	if s == nil || len(terms) == 0 {
+		return nil
+	}
+	s.mu.RLock()
+	if len(s.lazyData) > 0 || s.lazyBatchLoader == nil {
+		s.mu.RUnlock()
+		for _, term := range terms {
+			if _, err := s.loadTermPostings(term); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	requests := make([]segmentTermLoadRequest, 0, len(terms))
+	seen := make(map[string]struct{}, len(terms))
+	for _, term := range terms {
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		if _, ok := s.Terms[term]; ok {
+			continue
+		}
+		meta, ok := s.lazyTerms[term]
+		if !ok {
+			continue
+		}
+		requests = append(requests, segmentTermLoadRequest{
+			term: term,
+			meta: meta,
+		})
+	}
+	batchLoader := s.lazyBatchLoader
+	s.mu.RUnlock()
+	if len(requests) == 0 {
+		return nil
+	}
+	blobs, err := batchLoader(requests)
+	if err != nil {
+		return err
+	}
+	decoded := make(map[string][]Posting, len(requests))
+	for _, request := range requests {
+		data, ok := blobs[request.term]
+		if !ok {
+			return moerr.NewInternalErrorNoCtx("native fulltext segment batch loader missing term payload")
+		}
+		postings, err := decodeEncodedPostings(data, request.meta.postingCount)
+		if err != nil {
+			return err
+		}
+		decoded[request.term] = postings
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for term, postings := range decoded {
+		if _, ok := s.Terms[term]; ok {
+			continue
+		}
+		s.Terms[term] = postings
+	}
+	return nil
 }
 
 func (s *Segment) loadTermPostings(term string) ([]Posting, error) {

@@ -263,6 +263,16 @@ func ReadSidecar(ctx context.Context, fs fileservice.FileService, objName object
 			}
 			return data, nil
 		}
+		seg.lazyBatchLoader = func(requests []segmentTermLoadRequest) (map[string][]byte, error) {
+			blobs, exists, err := readSidecarRanges(ctx, fs, filePath, requests)
+			if err != nil {
+				return nil, err
+			}
+			if !exists {
+				return nil, moerr.NewFileNotFoundNoCtx(filePath)
+			}
+			return blobs, nil
+		}
 		return seg, true, nil
 	}
 
@@ -307,6 +317,35 @@ func readSidecarRange(
 		return nil, false, err
 	}
 	return vec.Entries[0].Data, true, nil
+}
+
+func readSidecarRanges(
+	ctx context.Context,
+	fs fileservice.FileService,
+	filePath string,
+	requests []segmentTermLoadRequest,
+) (map[string][]byte, bool, error) {
+	vec := &fileservice.IOVector{
+		FilePath: filePath,
+		Entries:  make([]fileservice.IOEntry, len(requests)),
+	}
+	for i, request := range requests {
+		vec.Entries[i] = fileservice.IOEntry{
+			Offset: request.meta.offset,
+			Size:   request.meta.size,
+		}
+	}
+	if err := fs.Read(ctx, vec); err != nil {
+		if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	blobs := make(map[string][]byte, len(requests))
+	for i, request := range requests {
+		blobs[request.term] = vec.Entries[i].Data
+	}
+	return blobs, true, nil
 }
 
 func AppendQueryBatch(
