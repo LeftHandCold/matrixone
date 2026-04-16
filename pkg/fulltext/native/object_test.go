@@ -493,6 +493,69 @@ func TestObjectIndexerBuildAndReadSidecarWithNullMultiColumnAfterMergeAObj(t *te
 	require.Len(t, cherryPostings, 1)
 }
 
+func TestObjectIndexerWriteSkipsEmptySidecarWithRowHint(t *testing.T) {
+	schema := catalog.NewEmptySchema("fts_native_test_empty_segment_skip")
+	require.NoError(t, schema.AppendPKCol("id", types.T_int64.ToType(), 0))
+	require.NoError(t, schema.AppendCol("body", types.T_varchar.ToType()))
+
+	cstrDef := &engine.ConstraintDef{
+		Cts: []engine.Constraint{
+			&engine.PrimaryKeyDef{
+				Pkey: &pbplan.PrimaryKeyDef{
+					PkeyColName: "id",
+					Names:       []string{"id"},
+				},
+			},
+			&engine.IndexDef{
+				Indexes: []*pbplan.IndexDef{{
+					IndexName:       "idx_body",
+					IndexTableName:  "__idx_body",
+					IndexAlgo:       pkgcatalog.MOIndexFullTextAlgo.ToString(),
+					Parts:           []string{"body"},
+					IndexAlgoParams: `{"parser":"default"}`,
+				}},
+			},
+		},
+	}
+	var err error
+	schema.Constraint, err = cstrDef.MarshalBinary()
+	require.NoError(t, err)
+	require.NoError(t, schema.Finalize(false))
+
+	mp := mpool.MustNewZero()
+	idVec := vector.NewVec(types.T_int64.ToType())
+	bodyVec := vector.NewVec(types.T_varchar.ToType())
+	defer idVec.Free(mp)
+	defer bodyVec.Free(mp)
+	require.NoError(t, vector.AppendFixed[int64](idVec, 1, false, mp))
+	require.NoError(t, vector.AppendBytes(bodyVec, []byte(""), false, mp))
+
+	bat := batch.NewWithSize(2)
+	bat.Attrs = []string{"id", "body"}
+	bat.Vecs[0] = idVec
+	bat.Vecs[1] = bodyVec
+	bat.SetRowCount(1)
+
+	indexer, err := NewObjectIndexer(schema)
+	require.NoError(t, err)
+	require.NoError(t, indexer.AddBatch(bat, []uint32{1}))
+
+	fs, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+
+	objID := objectio.NewObjectid()
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+	require.NoError(t, indexer.Write(context.Background(), fs, objName, 1))
+
+	_, ok, err := ReadSidecar(context.Background(), fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	_, ok, err = ReadSidecarLocator(context.Background(), fs, objName.String())
+	require.NoError(t, err)
+	require.False(t, ok)
+}
+
 func TestAppendQueryBatchBuildsSyntheticSegment(t *testing.T) {
 	mp := mpool.MustNewZero()
 

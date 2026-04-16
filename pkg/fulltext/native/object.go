@@ -27,10 +27,12 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/fulltext"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
+	"go.uber.org/zap"
 )
 
 type IndexDefinition struct {
@@ -183,9 +185,18 @@ func (o *ObjectIndexer) AddBatch(bat *batch.Batch, blockRows []uint32) error {
 	return nil
 }
 
-func (o *ObjectIndexer) Write(ctx context.Context, fs fileservice.FileService, objName objectio.ObjectName) error {
+func (o *ObjectIndexer) Write(
+	ctx context.Context,
+	fs fileservice.FileService,
+	objName objectio.ObjectName,
+	expectedRows ...uint32,
+) error {
 	if o.Empty() {
 		return nil
+	}
+	rowHint := uint32(0)
+	if len(expectedRows) > 0 {
+		rowHint = expectedRows[0]
 	}
 	entries := make([]SidecarLocatorEntry, 0, len(o.builders))
 	for _, idx := range o.indexes {
@@ -194,6 +205,15 @@ func (o *ObjectIndexer) Write(ctx context.Context, fs fileservice.FileService, o
 			continue
 		}
 		seg := builder.Build()
+		if rowHint > 0 && seg.DocCount == 0 {
+			logutil.Warn(
+				"native fulltext sidecar skipped for empty segment",
+				zap.String("object", objName.String()),
+				zap.String("index_table", idx.TableName),
+				zap.Uint32("rows", rowHint),
+			)
+			continue
+		}
 		buf, err := seg.MarshalBinary()
 		if err != nil {
 			return err

@@ -759,7 +759,7 @@ func (task *flushTableTailTask) mergeAObjs(ctx context.Context, isTombstone bool
 	writerStats := writer.Stats()
 	objectio.SetObjectStats(stats, &writerStats)
 	if !nativeIndexingClosed && nativeIndexer != nil {
-		if err = nativeIndexer.Write(ctx, task.rt.Fs, stats.ObjectName()); err != nil {
+		if err = nativeIndexer.Write(ctx, task.rt.Fs, stats.ObjectName(), stats.Rows()); err != nil {
 			task.logNativeSidecarError("flush-tail-write", err)
 		}
 	}

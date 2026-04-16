@@ -167,7 +167,7 @@ func (task *flushObjTask) Execute(ctx context.Context) (err error) {
 				}
 				if idxErr = indexer.AddBatch(cnBatch, blockRows); idxErr != nil {
 					task.logNativeSidecarError("flush-add", idxErr)
-				} else if idxErr = indexer.Write(ctx, task.fs, sidecarObjectName); idxErr != nil {
+				} else if idxErr = indexer.Write(ctx, task.fs, sidecarObjectName, task.stats.Rows()); idxErr != nil {
 					task.logNativeSidecarError("flush-write", idxErr)
 				}
 			}

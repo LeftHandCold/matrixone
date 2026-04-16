@@ -224,7 +224,7 @@ func (task *mergeObjectsTask) OnObjectSynced(ctx context.Context, stats *objecti
 		task.nativeIndexer == nil || task.nativeIndexer.Empty() {
 		return nil
 	}
-	if err := task.nativeIndexer.Write(ctx, task.rt.Fs, stats.ObjectName()); err != nil {
+	if err := task.nativeIndexer.Write(ctx, task.rt.Fs, stats.ObjectName(), stats.Rows()); err != nil {
 		task.nativeObjectFailed = true
 		task.logNativeSidecarError("merge-write", err)
 	}
