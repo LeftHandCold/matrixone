@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
+	"sync"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/fulltext"
@@ -71,6 +73,17 @@ type Segment struct {
 	Terms    map[string][]Posting
 	DocCount int64
 	TokenSum int64
+
+	mu        sync.RWMutex
+	termOrder []string
+	lazyData  []byte
+	lazyTerms map[string]segmentTermMeta
+}
+
+type segmentTermMeta struct {
+	offset       int
+	size         int
+	postingCount uint32
 }
 
 type Builder struct {
@@ -165,32 +178,72 @@ func (b *Builder) Build() *Segment {
 	return segment
 }
 
-func (s *Segment) Lookup(term string) []Posting {
-	postings := s.Terms[term]
+func (s *Segment) Lookup(term string) ([]Posting, error) {
+	postings, err := s.loadTermPostings(term)
+	if err != nil {
+		return nil, err
+	}
 	if len(postings) == 0 {
-		return nil
+		return nil, nil
 	}
-	out := make([]Posting, 0, len(postings))
-	for _, posting := range postings {
-		out = append(out, Posting{
-			Ref:       cloneRowRef(posting.Ref),
-			DocLen:    posting.DocLen,
-			Positions: append([]int32(nil), posting.Positions...),
-		})
-	}
-	return out
+	return clonePostings(postings), nil
 }
 
-func (s *Segment) SearchAll(words []string) []Match {
+func (s *Segment) LookupPrefix(prefix string) ([]Posting, error) {
+	terms := s.termNames()
+	postings := make([]Posting, 0, 8)
+	for _, term := range terms {
+		if !strings.HasPrefix(term, prefix) {
+			continue
+		}
+		termPostings, err := s.loadTermPostings(term)
+		if err != nil {
+			return nil, err
+		}
+		postings = append(postings, termPostings...)
+	}
+	if len(postings) == 0 {
+		return nil, nil
+	}
+	sortPostings(postings)
+	return clonePostings(postings), nil
+}
+
+func (s *Segment) SearchAll(words []string) ([]Match, error) {
 	if len(words) == 0 {
-		return nil
+		return nil, nil
 	}
 
+	type searchTerm struct {
+		word         string
+		postingCount uint32
+	}
+	ordered := make([]searchTerm, 0, len(words))
+	for _, word := range words {
+		postingCount, ok := s.termPostingCount(word)
+		if !ok || postingCount == 0 {
+			return nil, nil
+		}
+		ordered = append(ordered, searchTerm{
+			word:         word,
+			postingCount: postingCount,
+		})
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].postingCount != ordered[j].postingCount {
+			return ordered[i].postingCount < ordered[j].postingCount
+		}
+		return ordered[i].word < ordered[j].word
+	})
+
 	candidates := make(map[string]*Match)
-	for i, word := range words {
-		postings := s.Terms[word]
+	for i, term := range ordered {
+		postings, err := s.loadTermPostings(term.word)
+		if err != nil {
+			return nil, err
+		}
 		if len(postings) == 0 {
-			return nil
+			return nil, nil
 		}
 		if i == 0 {
 			for _, posting := range postings {
@@ -203,7 +256,7 @@ func (s *Segment) SearchAll(words []string) []Match {
 					Ref:    cloneRowRef(posting.Ref),
 					DocLen: posting.DocLen,
 					Positions: map[string][]int32{
-						word: append([]int32(nil), posting.Positions...),
+						term.word: append([]int32(nil), posting.Positions...),
 					},
 				}
 			}
@@ -222,12 +275,12 @@ func (s *Segment) SearchAll(words []string) []Match {
 				continue
 			}
 			clone := cloneMatch(match)
-			clone.Positions[word] = append([]int32(nil), posting.Positions...)
+			clone.Positions[term.word] = append([]int32(nil), posting.Positions...)
 			next[key] = clone
 		}
 		candidates = next
 		if len(candidates) == 0 {
-			return nil
+			return nil, nil
 		}
 	}
 
@@ -241,12 +294,12 @@ func (s *Segment) SearchAll(words []string) []Match {
 	for _, key := range keys {
 		matches = append(matches, *candidates[key])
 	}
-	return matches
+	return matches, nil
 }
 
-func (s *Segment) SearchPhrase(tokens []PhraseToken) []Match {
+func (s *Segment) SearchPhrase(tokens []PhraseToken) ([]Match, error) {
 	if len(tokens) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	unique := make([]string, 0, len(tokens))
@@ -259,9 +312,12 @@ func (s *Segment) SearchPhrase(tokens []PhraseToken) []Match {
 		unique = append(unique, token.Word)
 	}
 
-	candidates := s.SearchAll(unique)
+	candidates, err := s.SearchAll(unique)
+	if err != nil {
+		return nil, err
+	}
 	if len(candidates) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	matches := make([]Match, 0, len(candidates))
@@ -270,7 +326,7 @@ func (s *Segment) SearchPhrase(tokens []PhraseToken) []Match {
 			matches = append(matches, candidate)
 		}
 	}
-	return matches
+	return matches, nil
 }
 
 func hasPhrase(positionsByWord map[string][]int32, tokens []PhraseToken) bool {
@@ -325,15 +381,16 @@ func (s *Segment) MarshalBinary() ([]byte, error) {
 	}
 
 	terms := make([]string, 0, len(s.Terms))
-	for term := range s.Terms {
-		terms = append(terms, term)
-	}
-	sort.Strings(terms)
+	terms = s.termNames()
 	if err := binary.Write(&buf, binary.LittleEndian, uint32(len(terms))); err != nil {
 		return nil, err
 	}
 	for _, term := range terms {
-		postings := append([]Posting(nil), s.Terms[term]...)
+		postings, err := s.loadTermPostings(term)
+		if err != nil {
+			return nil, err
+		}
+		postings = append([]Posting(nil), postings...)
 		sortPostings(postings)
 		if err := writeBytes(&buf, []byte(term)); err != nil {
 			return nil, err
@@ -392,7 +449,8 @@ func UnmarshalBinary(data []byte) (*Segment, error) {
 		return nil, moerr.NewInternalErrorNoCtx("invalid native fulltext segment magic")
 	}
 
-	if err := readSegmentTerms(reader, segment); err != nil {
+	termPayload := data[len(data)-reader.Len():]
+	if err := indexSegmentTerms(termPayload, segment); err != nil {
 		return nil, err
 	}
 	if magic == segmentMagicV1 {
@@ -429,55 +487,38 @@ func readSegmentHeaderV3(reader *bytes.Reader, segment *Segment) error {
 	return nil
 }
 
-func readSegmentTerms(reader *bytes.Reader, segment *Segment) error {
+func indexSegmentTerms(data []byte, segment *Segment) error {
+	reader := bytes.NewReader(data)
 	var termCount uint32
 	if err := binary.Read(reader, binary.LittleEndian, &termCount); err != nil {
 		return err
 	}
-	segment.Terms = make(map[string][]Posting, termCount)
-	for range termCount {
+	segment.Terms = make(map[string][]Posting)
+	segment.termOrder = make([]string, 0, termCount)
+	segment.lazyData = data
+	segment.lazyTerms = make(map[string]segmentTermMeta, termCount)
+	for i := uint32(0); i < termCount; i++ {
 		termBytes, err := readBytes(reader)
 		if err != nil {
 			return err
 		}
+		term := string(termBytes)
 
 		var postingCount uint32
 		if err := binary.Read(reader, binary.LittleEndian, &postingCount); err != nil {
 			return err
 		}
-
-		postings := make([]Posting, 0, postingCount)
-		for range postingCount {
-			var posting Posting
-			if err := binary.Read(reader, binary.LittleEndian, &posting.Ref.Block); err != nil {
-				return err
-			}
-			if err := binary.Read(reader, binary.LittleEndian, &posting.Ref.Row); err != nil {
-				return err
-			}
-			pk, err := readBytes(reader)
-			if err != nil {
-				return err
-			}
-			posting.Ref.PK = pk
-			if err := binary.Read(reader, binary.LittleEndian, &posting.DocLen); err != nil {
-				return err
-			}
-			var posCount uint32
-			if err := binary.Read(reader, binary.LittleEndian, &posCount); err != nil {
-				return err
-			}
-			posting.Positions = make([]int32, 0, posCount)
-			for range posCount {
-				var pos int32
-				if err := binary.Read(reader, binary.LittleEndian, &pos); err != nil {
-					return err
-				}
-				posting.Positions = append(posting.Positions, pos)
-			}
-			postings = append(postings, posting)
+		start := int(reader.Size()) - reader.Len()
+		if err := skipEncodedPostings(reader, postingCount); err != nil {
+			return err
 		}
-		segment.Terms[string(termBytes)] = postings
+		end := int(reader.Size()) - reader.Len()
+		segment.termOrder = append(segment.termOrder, term)
+		segment.lazyTerms[term] = segmentTermMeta{
+			offset:       start,
+			size:         end - start,
+			postingCount: postingCount,
+		}
 	}
 	return nil
 }
@@ -507,6 +548,18 @@ func cloneMatch(match *Match) *Match {
 	}
 }
 
+func clonePostings(postings []Posting) []Posting {
+	out := make([]Posting, 0, len(postings))
+	for _, posting := range postings {
+		out = append(out, Posting{
+			Ref:       cloneRowRef(posting.Ref),
+			DocLen:    posting.DocLen,
+			Positions: append([]int32(nil), posting.Positions...),
+		})
+	}
+	return out
+}
+
 func sortPostings(postings []Posting) {
 	sort.Slice(postings, func(i, j int) bool {
 		if postings[i].Ref.Block != postings[j].Ref.Block {
@@ -533,22 +586,189 @@ func readBytes(reader *bytes.Reader) ([]byte, error) {
 		return nil, err
 	}
 	data := make([]byte, length)
-	if _, err := reader.Read(data); err != nil {
+	if _, err := io.ReadFull(reader, data); err != nil {
 		return nil, err
 	}
 	return data, nil
+}
+
+func skipVarBytes(reader *bytes.Reader) error {
+	var length uint32
+	if err := binary.Read(reader, binary.LittleEndian, &length); err != nil {
+		return err
+	}
+	return skipBytes(reader, int(length))
+}
+
+func skipBytes(reader *bytes.Reader, length int) error {
+	if length < 0 || length > reader.Len() {
+		return io.ErrUnexpectedEOF
+	}
+	_, err := reader.Seek(int64(length), io.SeekCurrent)
+	return err
+}
+
+func skipEncodedPostings(reader *bytes.Reader, postingCount uint32) error {
+	for i := uint32(0); i < postingCount; i++ {
+		if err := skipEncodedPosting(reader); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func skipEncodedPosting(reader *bytes.Reader) error {
+	var block uint16
+	if err := binary.Read(reader, binary.LittleEndian, &block); err != nil {
+		return err
+	}
+	var row uint32
+	if err := binary.Read(reader, binary.LittleEndian, &row); err != nil {
+		return err
+	}
+	if err := skipVarBytes(reader); err != nil {
+		return err
+	}
+	var docLen int32
+	if err := binary.Read(reader, binary.LittleEndian, &docLen); err != nil {
+		return err
+	}
+	var posCount uint32
+	if err := binary.Read(reader, binary.LittleEndian, &posCount); err != nil {
+		return err
+	}
+	return skipBytes(reader, int(posCount)*4)
+}
+
+func readPosting(reader *bytes.Reader) (Posting, error) {
+	var posting Posting
+	if err := binary.Read(reader, binary.LittleEndian, &posting.Ref.Block); err != nil {
+		return Posting{}, err
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &posting.Ref.Row); err != nil {
+		return Posting{}, err
+	}
+	pk, err := readBytes(reader)
+	if err != nil {
+		return Posting{}, err
+	}
+	posting.Ref.PK = pk
+	if err := binary.Read(reader, binary.LittleEndian, &posting.DocLen); err != nil {
+		return Posting{}, err
+	}
+	var posCount uint32
+	if err := binary.Read(reader, binary.LittleEndian, &posCount); err != nil {
+		return Posting{}, err
+	}
+	posting.Positions = make([]int32, 0, posCount)
+	for i := uint32(0); i < posCount; i++ {
+		var pos int32
+		if err := binary.Read(reader, binary.LittleEndian, &pos); err != nil {
+			return Posting{}, err
+		}
+		posting.Positions = append(posting.Positions, pos)
+	}
+	return posting, nil
+}
+
+func decodeEncodedPostings(data []byte, postingCount uint32) ([]Posting, error) {
+	reader := bytes.NewReader(data)
+	postings := make([]Posting, 0, postingCount)
+	for i := uint32(0); i < postingCount; i++ {
+		posting, err := readPosting(reader)
+		if err != nil {
+			return nil, err
+		}
+		postings = append(postings, posting)
+	}
+	if reader.Len() != 0 {
+		return nil, moerr.NewInternalErrorNoCtx("native fulltext segment postings length mismatch")
+	}
+	return postings, nil
 }
 
 func encodeRowKey(key rowKey) string {
 	return fmt.Sprintf("%d/%d/%x", key.block, key.row, key.pk)
 }
 
+func (s *Segment) termNames() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	if len(s.termOrder) > 0 {
+		names := append([]string(nil), s.termOrder...)
+		s.mu.RUnlock()
+		return names
+	}
+	names := make([]string, 0, len(s.Terms))
+	for term := range s.Terms {
+		names = append(names, term)
+	}
+	s.mu.RUnlock()
+	sort.Strings(names)
+	return names
+}
+
+func (s *Segment) termPostingCount(term string) (uint32, bool) {
+	if s == nil {
+		return 0, false
+	}
+	s.mu.RLock()
+	if postings, ok := s.Terms[term]; ok {
+		s.mu.RUnlock()
+		return uint32(len(postings)), true
+	}
+	meta, ok := s.lazyTerms[term]
+	s.mu.RUnlock()
+	if !ok {
+		return 0, false
+	}
+	return meta.postingCount, true
+}
+
+func (s *Segment) loadTermPostings(term string) ([]Posting, error) {
+	if s == nil {
+		return nil, nil
+	}
+	s.mu.RLock()
+	if postings, ok := s.Terms[term]; ok {
+		s.mu.RUnlock()
+		return postings, nil
+	}
+	meta, ok := s.lazyTerms[term]
+	lazyData := s.lazyData
+	s.mu.RUnlock()
+	if !ok {
+		return nil, nil
+	}
+	if meta.offset < 0 || meta.size < 0 || meta.offset+meta.size > len(lazyData) {
+		return nil, moerr.NewInternalErrorNoCtx("native fulltext segment term offset out of range")
+	}
+	postings, err := decodeEncodedPostings(lazyData[meta.offset:meta.offset+meta.size], meta.postingCount)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if existing, ok := s.Terms[term]; ok {
+		s.mu.Unlock()
+		return existing, nil
+	}
+	s.Terms[term] = postings
+	s.mu.Unlock()
+	return postings, nil
+}
+
 func (s *Segment) rebuildStats() {
-	if s == nil || len(s.Terms) == 0 {
+	if s == nil {
 		return
 	}
 	docLens := make(map[string]int32)
-	for _, postings := range s.Terms {
+	for _, term := range s.termNames() {
+		postings, err := s.loadTermPostings(term)
+		if err != nil {
+			return
+		}
 		for _, posting := range postings {
 			key := encodeRowKey(rowKey{
 				block: posting.Ref.Block,

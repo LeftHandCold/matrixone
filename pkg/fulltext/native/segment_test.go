@@ -48,15 +48,17 @@ func TestBuilderLookupAndPhrase(t *testing.T) {
 	require.Equal(t, int64(2), segment.DocCount)
 	require.Equal(t, int64(5), segment.TokenSum)
 
-	matrix := segment.Lookup("matrix")
+	matrix, err := segment.Lookup("matrix")
+	require.NoError(t, err)
 	require.Len(t, matrix, 2)
 	require.Equal(t, int32(2), matrix[0].DocLen)
 	require.Equal(t, []int32{0}, matrix[0].Positions)
 
-	matches := segment.SearchPhrase([]PhraseToken{
+	matches, err := segment.SearchPhrase([]PhraseToken{
 		{Word: "matrix", Pos: 0},
 		{Word: "origin", Pos: 7},
 	})
+	require.NoError(t, err)
 	require.Len(t, matches, 1)
 	require.Equal(t, uint32(10), matches[0].Ref.Row)
 	require.Equal(t, []int32{7}, matches[0].Positions["origin"])
@@ -79,8 +81,16 @@ func TestSegmentMarshalRoundTrip(t *testing.T) {
 
 	decoded, err := UnmarshalBinary(data)
 	require.NoError(t, err)
-	require.Equal(t, segment.Lookup("matrix origin"), decoded.Lookup("matrix origin"))
-	require.Equal(t, segment.Lookup("fts"), decoded.Lookup("fts"))
+	segmentMatrixOrigin, err := segment.Lookup("matrix origin")
+	require.NoError(t, err)
+	decodedMatrixOrigin, err := decoded.Lookup("matrix origin")
+	require.NoError(t, err)
+	require.Equal(t, segmentMatrixOrigin, decodedMatrixOrigin)
+	segmentFTS, err := segment.Lookup("fts")
+	require.NoError(t, err)
+	decodedFTS, err := decoded.Lookup("fts")
+	require.NoError(t, err)
+	require.Equal(t, segmentFTS, decodedFTS)
 	require.Equal(t, segment.DocCount, decoded.DocCount)
 	require.Equal(t, segment.TokenSum, decoded.TokenSum)
 }
@@ -122,7 +132,11 @@ func TestSegmentUnmarshalLegacyRebuildsStats(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, segment.DocCount, decoded.DocCount)
 	require.Equal(t, segment.TokenSum, decoded.TokenSum)
-	require.Equal(t, segment.Lookup("matrix"), decoded.Lookup("matrix"))
+	segmentMatrix, err := segment.Lookup("matrix")
+	require.NoError(t, err)
+	decodedMatrix, err := decoded.Lookup("matrix")
+	require.NoError(t, err)
+	require.Equal(t, segmentMatrix, decodedMatrix)
 }
 
 func TestSegmentUnmarshalLegacyV2Stats(t *testing.T) {
@@ -152,7 +166,48 @@ func TestSegmentUnmarshalLegacyV2Stats(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, segment.DocCount, decoded.DocCount)
 	require.Equal(t, segment.TokenSum, decoded.TokenSum)
-	require.Equal(t, segment.Lookup("native"), decoded.Lookup("native"))
+	segmentNative, err := segment.Lookup("native")
+	require.NoError(t, err)
+	decodedNative, err := decoded.Lookup("native")
+	require.NoError(t, err)
+	require.Equal(t, segmentNative, decodedNative)
+}
+
+func TestSegmentUnmarshalLazyLoadsTerms(t *testing.T) {
+	builder := NewBuilder(fulltext.FullTextParserParam{}, nil)
+	require.NoError(t, builder.Add(Document{
+		Block: 1,
+		Row:   1,
+		PK:    []byte("pk-1"),
+		Values: []fulltext.IndexValue{
+			{Text: "native matrix", Type: types.T_text},
+		},
+	}))
+	require.NoError(t, builder.Add(Document{
+		Block: 1,
+		Row:   2,
+		PK:    []byte("pk-2"),
+		Values: []fulltext.IndexValue{
+			{Text: "network native", Type: types.T_text},
+		},
+	}))
+
+	data, err := builder.Build().MarshalBinary()
+	require.NoError(t, err)
+
+	decoded, err := UnmarshalBinary(data)
+	require.NoError(t, err)
+	require.Empty(t, decoded.Terms)
+
+	prefix, err := decoded.LookupPrefix("nat")
+	require.NoError(t, err)
+	require.Len(t, prefix, 2)
+	require.Empty(t, decoded.Terms["network"])
+
+	nativePostings, err := decoded.Lookup("native")
+	require.NoError(t, err)
+	require.Len(t, nativePostings, 2)
+	require.Contains(t, decoded.Terms, "native")
 }
 
 func marshalLegacyV1Segment(s *Segment) ([]byte, error) {

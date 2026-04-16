@@ -308,7 +308,10 @@ func populatePhraseCompat(
 	cache := newNativeDeleteCache()
 	count := int64(0)
 	for _, obj := range scan.objects {
-		matches := obj.segment.SearchPhrase(tokens)
+		matches, err := obj.segment.SearchPhrase(tokens)
+		if err != nil {
+			return err
+		}
 		for _, match := range matches {
 			if deleted, err := isNativeDeleted(proc.Ctx, scan, cache, obj, match.Ref); err != nil {
 				return err
@@ -353,7 +356,10 @@ func populateBooleanNative(
 
 	for _, obj := range scan.objects {
 		for idx, leaf := range leafs {
-			postings := nativeLookupLeaf(obj.segment, leaf)
+			postings, err := nativeLookupLeaf(obj.segment, leaf)
+			if err != nil {
+				return err
+			}
 			for _, posting := range postings {
 				key := nativeRowKey(obj.key, posting.Ref)
 				state := docs[key]
@@ -395,7 +401,11 @@ func populateBooleanNative(
 					Pos:  child.Position,
 				})
 			}
-			for _, match := range obj.segment.SearchPhrase(tokens) {
+			matches, err := obj.segment.SearchPhrase(tokens)
+			if err != nil {
+				return err
+			}
+			for _, match := range matches {
 				phraseSets[phrase][nativeRowKey(obj.key, match.Ref)] = struct{}{}
 			}
 		}
@@ -457,21 +467,15 @@ func collectNativePatterns(patterns []*fulltext.Pattern, leafs map[int32]*fullte
 	}
 }
 
-func nativeLookupLeaf(seg *ftnative.Segment, leaf *fulltext.Pattern) []ftnative.Posting {
+func nativeLookupLeaf(seg *ftnative.Segment, leaf *fulltext.Pattern) ([]ftnative.Posting, error) {
 	switch leaf.Operator {
 	case fulltext.TEXT, fulltext.JOIN:
 		return seg.Lookup(leaf.Text)
 	case fulltext.STAR:
 		prefix := strings.TrimSuffix(leaf.Text, "*")
-		postings := make([]ftnative.Posting, 0, 8)
-		for term, termPostings := range seg.Terms {
-			if strings.HasPrefix(term, prefix) {
-				postings = append(postings, termPostings...)
-			}
-		}
-		return postings
+		return seg.LookupPrefix(prefix)
 	default:
-		return nil
+		return nil, nil
 	}
 }
 

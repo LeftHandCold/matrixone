@@ -96,17 +96,20 @@ func TestAppendNativeTailBatchUsesRealRowIDs(t *testing.T) {
 	require.NotNil(t, seg1)
 	require.NotNil(t, seg2)
 
-	oldPostings := seg1.segment.Lookup("mmmnnnppp")
+	oldPostings, err := seg1.segment.Lookup("mmmnnnppp")
+	require.NoError(t, err)
 	require.Len(t, oldPostings, 1)
 	require.Equal(t, uint16(0), oldPostings[0].Ref.Block)
 	require.Equal(t, uint32(10), oldPostings[0].Ref.Row)
 
-	newPostings1 := seg1.segment.Lookup("cccxxxzzz")
+	newPostings1, err := seg1.segment.Lookup("cccxxxzzz")
+	require.NoError(t, err)
 	require.Len(t, newPostings1, 1)
 	require.Equal(t, uint16(0), newPostings1[0].Ref.Block)
 	require.Equal(t, uint32(11), newPostings1[0].Ref.Row)
 
-	newPostings2 := seg2.segment.Lookup("cccxxxzzz")
+	newPostings2, err := seg2.segment.Lookup("cccxxxzzz")
+	require.NoError(t, err)
 	require.Len(t, newPostings2, 1)
 	require.Equal(t, uint16(1), newPostings2[0].Ref.Block)
 	require.Equal(t, uint32(5), newPostings2[0].Ref.Row)

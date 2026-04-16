@@ -111,8 +111,12 @@ func TestObjectIndexerBuildAndReadSidecar(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, int64(2), seg.DocCount)
 	require.Equal(t, int64(7), seg.TokenSum)
-	require.Len(t, seg.Lookup("native"), 2)
-	require.Len(t, seg.Lookup("matrix"), 1)
+	nativePostings, err := seg.Lookup("native")
+	require.NoError(t, err)
+	require.Len(t, nativePostings, 2)
+	matrixPostings, err := seg.Lookup("matrix")
+	require.NoError(t, err)
+	require.Len(t, matrixPostings, 1)
 
 	locator, ok, err := ReadSidecarLocator(context.Background(), fs, objName.String())
 	require.NoError(t, err)
@@ -190,9 +194,15 @@ func TestObjectIndexerBuildAndReadSidecarWithNullMultiColumn(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, int64(2), seg.DocCount)
-	require.Len(t, seg.Lookup("apple"), 1)
-	require.Len(t, seg.Lookup("banana"), 1)
-	require.Len(t, seg.Lookup("cherry"), 1)
+	applePostings, err := seg.Lookup("apple")
+	require.NoError(t, err)
+	require.Len(t, applePostings, 1)
+	bananaPostings, err := seg.Lookup("banana")
+	require.NoError(t, err)
+	require.Len(t, bananaPostings, 1)
+	cherryPostings, err := seg.Lookup("cherry")
+	require.NoError(t, err)
+	require.Len(t, cherryPostings, 1)
 }
 
 func TestObjectIndexerBuildAndReadSidecarWithNullMultiColumnAfterMergeAObj(t *testing.T) {
@@ -272,7 +282,9 @@ func TestObjectIndexerBuildAndReadSidecarWithNullMultiColumnAfterMergeAObj(t *te
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, int64(2), seg.DocCount)
-	require.Len(t, seg.Lookup("cherry"), 1)
+	cherryPostings, err := seg.Lookup("cherry")
+	require.NoError(t, err)
+	require.Len(t, cherryPostings, 1)
 }
 
 func TestAppendQueryBatchBuildsSyntheticSegment(t *testing.T) {
@@ -301,8 +313,12 @@ func TestAppendQueryBatchBuildsSyntheticSegment(t *testing.T) {
 	seg := builder.Build()
 	require.Equal(t, int64(2), seg.DocCount)
 	require.Equal(t, int64(4), seg.TokenSum)
-	require.Len(t, seg.Lookup("appendable"), 1)
-	require.Len(t, seg.Lookup("tail"), 1)
+	appendablePostings, err := seg.Lookup("appendable")
+	require.NoError(t, err)
+	require.Len(t, appendablePostings, 1)
+	tailPostings, err := seg.Lookup("tail")
+	require.NoError(t, err)
+	require.Len(t, tailPostings, 1)
 }
 
 func TestAppendQueryBatchKeepsSyntheticRefsUniqueAcrossCalls(t *testing.T) {
@@ -334,7 +350,8 @@ func TestAppendQueryBatchKeepsSyntheticRefsUniqueAcrossCalls(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), nextDoc)
 
-	postings := builder.Build().Lookup("shared")
+	postings, err := builder.Build().Lookup("shared")
+	require.NoError(t, err)
 	require.Len(t, postings, 2)
 	require.NotEqual(t, postings[0].Ref.Row, postings[1].Ref.Row)
 }
