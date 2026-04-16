@@ -217,8 +217,57 @@ func (o *ObjectIndexer) Write(ctx context.Context, fs fileservice.FileService, o
 }
 
 func ReadSidecar(ctx context.Context, fs fileservice.FileService, objName objectio.ObjectName, indexTableName string) (*Segment, bool, error) {
+	filePath := SidecarPath(objName.String(), indexTableName)
+	prefix, exists, err := readSidecarRange(ctx, fs, filePath, 0, int64(segmentPrefixLen))
+	if err != nil {
+		return nil, false, err
+	}
+	if !exists {
+		return nil, false, nil
+	}
+	magic, headerLen, err := parseSegmentPrefix(prefix)
+	if err != nil {
+		return nil, false, err
+	}
+	if magic == segmentMagicV4 {
+		headerBytes, exists, err := readSidecarRange(ctx, fs, filePath, int64(segmentPrefixLen), int64(headerLen))
+		if err != nil {
+			return nil, false, err
+		}
+		if !exists {
+			return nil, false, moerr.NewFileNotFoundNoCtx(filePath)
+		}
+		seg := &Segment{}
+		header, err := readSegmentHeaderV4(headerBytes, seg)
+		if err != nil {
+			return nil, false, err
+		}
+		dirOffset := int64(segmentPrefixLen) + int64(headerLen)
+		dirBytes, exists, err := readSidecarRange(ctx, fs, filePath, dirOffset, int64(header.DirectorySize))
+		if err != nil {
+			return nil, false, err
+		}
+		if !exists {
+			return nil, false, moerr.NewFileNotFoundNoCtx(filePath)
+		}
+		if err := indexSegmentDirectoryV4(dirBytes, header.TermCount, seg); err != nil {
+			return nil, false, err
+		}
+		seg.lazyLoader = func(offset, size int64) ([]byte, error) {
+			data, exists, err := readSidecarRange(ctx, fs, filePath, offset, size)
+			if err != nil {
+				return nil, err
+			}
+			if !exists {
+				return nil, moerr.NewFileNotFoundNoCtx(filePath)
+			}
+			return data, nil
+		}
+		return seg, true, nil
+	}
+
 	vec := &fileservice.IOVector{
-		FilePath: SidecarPath(objName.String(), indexTableName),
+		FilePath: filePath,
 		Entries: []fileservice.IOEntry{{
 			Offset: 0,
 			Size:   -1,
@@ -235,6 +284,29 @@ func ReadSidecar(ctx context.Context, fs fileservice.FileService, objName object
 		return nil, false, err
 	}
 	return seg, true, nil
+}
+
+func readSidecarRange(
+	ctx context.Context,
+	fs fileservice.FileService,
+	filePath string,
+	offset int64,
+	size int64,
+) ([]byte, bool, error) {
+	vec := &fileservice.IOVector{
+		FilePath: filePath,
+		Entries: []fileservice.IOEntry{{
+			Offset: offset,
+			Size:   size,
+		}},
+	}
+	if err := fs.Read(ctx, vec); err != nil {
+		if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return vec.Entries[0].Data, true, nil
 }
 
 func AppendQueryBatch(

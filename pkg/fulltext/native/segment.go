@@ -32,10 +32,13 @@ var (
 	segmentMagicV1 = [8]byte{'M', 'O', 'F', 'T', 'S', 'N', '1', 0}
 	segmentMagicV2 = [8]byte{'M', 'O', 'F', 'T', 'S', 'N', '2', 0}
 	segmentMagicV3 = [8]byte{'M', 'O', 'F', 'T', 'S', 'N', '3', 0}
+	segmentMagicV4 = [8]byte{'M', 'O', 'F', 'T', 'S', 'N', '4', 0}
 )
 
 const (
+	segmentPrefixLen    = uint32(12)
 	segmentHeaderLenV3  = uint32(16)
+	segmentHeaderLenV4  = uint32(24)
 	segmentMaxHeaderLen = uint32(1 << 20)
 )
 
@@ -74,16 +77,26 @@ type Segment struct {
 	DocCount int64
 	TokenSum int64
 
-	mu        sync.RWMutex
-	termOrder []string
-	lazyData  []byte
-	lazyTerms map[string]segmentTermMeta
+	mu         sync.RWMutex
+	termOrder  []string
+	lazyData   []byte
+	lazyTerms  map[string]segmentTermMeta
+	lazyLoader segmentTermLoader
 }
 
 type segmentTermMeta struct {
-	offset       int
-	size         int
+	offset       int64
+	size         int64
 	postingCount uint32
+}
+
+type segmentTermLoader func(offset, size int64) ([]byte, error)
+
+type segmentHeaderV4 struct {
+	DocCount      int64
+	TokenSum      int64
+	TermCount     uint32
+	DirectorySize uint32
 }
 
 type Builder struct {
@@ -366,25 +379,9 @@ func (s *Segment) MarshalBinary() ([]byte, error) {
 		return nil, nil
 	}
 
-	var buf bytes.Buffer
-	if _, err := buf.Write(segmentMagicV3[:]); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(&buf, binary.LittleEndian, segmentHeaderLenV3); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(&buf, binary.LittleEndian, s.DocCount); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(&buf, binary.LittleEndian, s.TokenSum); err != nil {
-		return nil, err
-	}
-
-	terms := make([]string, 0, len(s.Terms))
-	terms = s.termNames()
-	if err := binary.Write(&buf, binary.LittleEndian, uint32(len(terms))); err != nil {
-		return nil, err
-	}
+	terms := s.termNames()
+	postingBlobs := make(map[string][]byte, len(terms))
+	directorySize := uint32(0)
 	for _, term := range terms {
 		postings, err := s.loadTermPostings(term)
 		if err != nil {
@@ -392,47 +389,97 @@ func (s *Segment) MarshalBinary() ([]byte, error) {
 		}
 		postings = append([]Posting(nil), postings...)
 		sortPostings(postings)
+		blob, err := encodePostings(postings)
+		if err != nil {
+			return nil, err
+		}
+		postingBlobs[term] = blob
+		directorySize += uint32(4 + len(term) + 4 + 8 + 8)
+	}
+
+	postingsStart := int64(segmentPrefixLen + segmentHeaderLenV4 + directorySize)
+	var buf bytes.Buffer
+	if _, err := buf.Write(segmentMagicV4[:]); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.LittleEndian, segmentHeaderLenV4); err != nil {
+		return nil, err
+	}
+	header := segmentHeaderV4{
+		DocCount:      s.DocCount,
+		TokenSum:      s.TokenSum,
+		TermCount:     uint32(len(terms)),
+		DirectorySize: directorySize,
+	}
+	if err := binary.Write(&buf, binary.LittleEndian, header.DocCount); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.LittleEndian, header.TokenSum); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.LittleEndian, header.TermCount); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.LittleEndian, header.DirectorySize); err != nil {
+		return nil, err
+	}
+
+	postingOffset := postingsStart
+	for _, term := range terms {
 		if err := writeBytes(&buf, []byte(term)); err != nil {
 			return nil, err
 		}
-		if err := binary.Write(&buf, binary.LittleEndian, uint32(len(postings))); err != nil {
+		postingCount, ok := s.termPostingCount(term)
+		if !ok {
+			return nil, moerr.NewInternalErrorNoCtx("native fulltext segment missing posting count")
+		}
+		if err := binary.Write(&buf, binary.LittleEndian, postingCount); err != nil {
 			return nil, err
 		}
-		for _, posting := range postings {
-			if err := binary.Write(&buf, binary.LittleEndian, posting.Ref.Block); err != nil {
-				return nil, err
-			}
-			if err := binary.Write(&buf, binary.LittleEndian, posting.Ref.Row); err != nil {
-				return nil, err
-			}
-			if err := writeBytes(&buf, posting.Ref.PK); err != nil {
-				return nil, err
-			}
-			if err := binary.Write(&buf, binary.LittleEndian, posting.DocLen); err != nil {
-				return nil, err
-			}
-			if err := binary.Write(&buf, binary.LittleEndian, uint32(len(posting.Positions))); err != nil {
-				return nil, err
-			}
-			for _, pos := range posting.Positions {
-				if err := binary.Write(&buf, binary.LittleEndian, pos); err != nil {
-					return nil, err
-				}
-			}
+		if err := binary.Write(&buf, binary.LittleEndian, uint64(postingOffset)); err != nil {
+			return nil, err
+		}
+		blob := postingBlobs[term]
+		if err := binary.Write(&buf, binary.LittleEndian, uint64(len(blob))); err != nil {
+			return nil, err
+		}
+		postingOffset += int64(len(blob))
+	}
+	for _, term := range terms {
+		if _, err := buf.Write(postingBlobs[term]); err != nil {
+			return nil, err
 		}
 	}
 	return buf.Bytes(), nil
 }
 
 func UnmarshalBinary(data []byte) (*Segment, error) {
-	reader := bytes.NewReader(data)
-	segment := &Segment{}
-
-	var magic [8]byte
-	if _, err := reader.Read(magic[:]); err != nil {
+	magic, headerLen, err := parseSegmentPrefix(data)
+	if err != nil {
 		return nil, err
 	}
+
+	reader := bytes.NewReader(data[8:])
+	segment := &Segment{}
 	switch magic {
+	case segmentMagicV4:
+		if len(data) < int(segmentPrefixLen+headerLen) {
+			return nil, moerr.NewInternalErrorNoCtx("native fulltext segment v4 header exceeds payload")
+		}
+		headerBytes := data[segmentPrefixLen : segmentPrefixLen+headerLen]
+		header, err := readSegmentHeaderV4(headerBytes, segment)
+		if err != nil {
+			return nil, err
+		}
+		dirStart := int(segmentPrefixLen + headerLen)
+		dirEnd := dirStart + int(header.DirectorySize)
+		if dirEnd > len(data) {
+			return nil, moerr.NewInternalErrorNoCtx("native fulltext segment v4 directory exceeds payload")
+		}
+		if err := indexSegmentDirectoryV4(data[dirStart:dirEnd], header.TermCount, segment); err != nil {
+			return nil, err
+		}
+		segment.lazyData = data
 	case segmentMagicV3:
 		if err := readSegmentHeaderV3(reader, segment); err != nil {
 			return nil, err
@@ -449,9 +496,11 @@ func UnmarshalBinary(data []byte) (*Segment, error) {
 		return nil, moerr.NewInternalErrorNoCtx("invalid native fulltext segment magic")
 	}
 
-	termPayload := data[len(data)-reader.Len():]
-	if err := indexSegmentTerms(termPayload, segment); err != nil {
-		return nil, err
+	if magic != segmentMagicV4 {
+		termPayload := data[len(data)-reader.Len():]
+		if err := indexSegmentTerms(termPayload, segment); err != nil {
+			return nil, err
+		}
 	}
 	if magic == segmentMagicV1 {
 		segment.rebuildStats()
@@ -487,6 +536,80 @@ func readSegmentHeaderV3(reader *bytes.Reader, segment *Segment) error {
 	return nil
 }
 
+func parseSegmentPrefix(data []byte) ([8]byte, uint32, error) {
+	var magic [8]byte
+	if len(data) < 8 {
+		return magic, 0, io.ErrUnexpectedEOF
+	}
+	copy(magic[:], data[:8])
+	if magic == segmentMagicV3 || magic == segmentMagicV4 {
+		if len(data) < int(segmentPrefixLen) {
+			return magic, 0, io.ErrUnexpectedEOF
+		}
+		return magic, binary.LittleEndian.Uint32(data[8:12]), nil
+	}
+	return magic, 0, nil
+}
+
+func readSegmentHeaderV4(header []byte, segment *Segment) (segmentHeaderV4, error) {
+	if len(header) < int(segmentHeaderLenV4) {
+		return segmentHeaderV4{}, moerr.NewInternalErrorNoCtx("native fulltext segment v4 header too small")
+	}
+	reader := bytes.NewReader(header)
+	var out segmentHeaderV4
+	if err := binary.Read(reader, binary.LittleEndian, &out.DocCount); err != nil {
+		return segmentHeaderV4{}, err
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &out.TokenSum); err != nil {
+		return segmentHeaderV4{}, err
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &out.TermCount); err != nil {
+		return segmentHeaderV4{}, err
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &out.DirectorySize); err != nil {
+		return segmentHeaderV4{}, err
+	}
+	segment.DocCount = out.DocCount
+	segment.TokenSum = out.TokenSum
+	return out, nil
+}
+
+func indexSegmentDirectoryV4(data []byte, termCount uint32, segment *Segment) error {
+	reader := bytes.NewReader(data)
+	segment.Terms = make(map[string][]Posting)
+	segment.termOrder = make([]string, 0, termCount)
+	segment.lazyTerms = make(map[string]segmentTermMeta, termCount)
+	for i := uint32(0); i < termCount; i++ {
+		termBytes, err := readBytes(reader)
+		if err != nil {
+			return err
+		}
+		term := string(termBytes)
+		var postingCount uint32
+		if err := binary.Read(reader, binary.LittleEndian, &postingCount); err != nil {
+			return err
+		}
+		var offset uint64
+		if err := binary.Read(reader, binary.LittleEndian, &offset); err != nil {
+			return err
+		}
+		var size uint64
+		if err := binary.Read(reader, binary.LittleEndian, &size); err != nil {
+			return err
+		}
+		segment.termOrder = append(segment.termOrder, term)
+		segment.lazyTerms[term] = segmentTermMeta{
+			offset:       int64(offset),
+			size:         int64(size),
+			postingCount: postingCount,
+		}
+	}
+	if reader.Len() != 0 {
+		return moerr.NewInternalErrorNoCtx("native fulltext segment v4 directory length mismatch")
+	}
+	return nil
+}
+
 func indexSegmentTerms(data []byte, segment *Segment) error {
 	reader := bytes.NewReader(data)
 	var termCount uint32
@@ -515,8 +638,8 @@ func indexSegmentTerms(data []byte, segment *Segment) error {
 		end := int(reader.Size()) - reader.Len()
 		segment.termOrder = append(segment.termOrder, term)
 		segment.lazyTerms[term] = segmentTermMeta{
-			offset:       start,
-			size:         end - start,
+			offset:       int64(start),
+			size:         int64(end - start),
 			postingCount: postingCount,
 		}
 	}
@@ -671,6 +794,33 @@ func readPosting(reader *bytes.Reader) (Posting, error) {
 	return posting, nil
 }
 
+func encodePostings(postings []Posting) ([]byte, error) {
+	var buf bytes.Buffer
+	for _, posting := range postings {
+		if err := binary.Write(&buf, binary.LittleEndian, posting.Ref.Block); err != nil {
+			return nil, err
+		}
+		if err := binary.Write(&buf, binary.LittleEndian, posting.Ref.Row); err != nil {
+			return nil, err
+		}
+		if err := writeBytes(&buf, posting.Ref.PK); err != nil {
+			return nil, err
+		}
+		if err := binary.Write(&buf, binary.LittleEndian, posting.DocLen); err != nil {
+			return nil, err
+		}
+		if err := binary.Write(&buf, binary.LittleEndian, uint32(len(posting.Positions))); err != nil {
+			return nil, err
+		}
+		for _, pos := range posting.Positions {
+			if err := binary.Write(&buf, binary.LittleEndian, pos); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return buf.Bytes(), nil
+}
+
 func decodeEncodedPostings(data []byte, postingCount uint32) ([]Posting, error) {
 	reader := bytes.NewReader(data)
 	postings := make([]Posting, 0, postingCount)
@@ -738,14 +888,30 @@ func (s *Segment) loadTermPostings(term string) ([]Posting, error) {
 	}
 	meta, ok := s.lazyTerms[term]
 	lazyData := s.lazyData
+	lazyLoader := s.lazyLoader
 	s.mu.RUnlock()
 	if !ok {
 		return nil, nil
 	}
-	if meta.offset < 0 || meta.size < 0 || meta.offset+meta.size > len(lazyData) {
-		return nil, moerr.NewInternalErrorNoCtx("native fulltext segment term offset out of range")
+	var payload []byte
+	if len(lazyData) > 0 {
+		if meta.offset < 0 || meta.size < 0 || meta.offset+meta.size > int64(len(lazyData)) {
+			return nil, moerr.NewInternalErrorNoCtx("native fulltext segment term offset out of range")
+		}
+		start := int(meta.offset)
+		end := int(meta.offset + meta.size)
+		payload = lazyData[start:end]
+	} else {
+		if lazyLoader == nil {
+			return nil, moerr.NewInternalErrorNoCtx("native fulltext segment missing lazy loader")
+		}
+		var err error
+		payload, err = lazyLoader(meta.offset, meta.size)
+		if err != nil {
+			return nil, err
+		}
 	}
-	postings, err := decodeEncodedPostings(lazyData[meta.offset:meta.offset+meta.size], meta.postingCount)
+	postings, err := decodeEncodedPostings(payload, meta.postingCount)
 	if err != nil {
 		return nil, err
 	}

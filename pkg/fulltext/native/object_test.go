@@ -16,6 +16,7 @@ package native
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	pkgcatalog "github.com/matrixorigin/matrixone/pkg/catalog"
@@ -37,6 +38,33 @@ import (
 
 type nativeMergeSortPool struct {
 	pool *containers.VectorPool
+}
+
+type recordingFS struct {
+	fileservice.FileService
+	mu        sync.Mutex
+	readSizes []int64
+}
+
+func (r *recordingFS) Read(ctx context.Context, vector *fileservice.IOVector) error {
+	r.mu.Lock()
+	for _, entry := range vector.Entries {
+		r.readSizes = append(r.readSizes, entry.Size)
+	}
+	r.mu.Unlock()
+	return r.FileService.Read(ctx, vector)
+}
+
+func (r *recordingFS) snapshotReadSizes() []int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]int64(nil), r.readSizes...)
+}
+
+func (r *recordingFS) resetReadSizes() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.readSizes = nil
 }
 
 func (p *nativeMergeSortPool) GetVector(typ *types.Type) (*vector.Vector, func()) {
@@ -124,6 +152,94 @@ func TestObjectIndexerBuildAndReadSidecar(t *testing.T) {
 	require.Len(t, locator.Entries, 1)
 	require.Equal(t, "__idx_body", locator.Entries[0].IndexTable)
 	require.Equal(t, SidecarPath(objName.String(), "__idx_body"), locator.Entries[0].FilePath)
+}
+
+func TestReadSidecarV4UsesRangeReads(t *testing.T) {
+	schema := catalog.NewEmptySchema("fts_native_range_read")
+	require.NoError(t, schema.AppendPKCol("id", types.T_int64.ToType(), 0))
+	require.NoError(t, schema.AppendCol("body", types.T_varchar.ToType()))
+
+	cstrDef := &engine.ConstraintDef{
+		Cts: []engine.Constraint{
+			&engine.PrimaryKeyDef{
+				Pkey: &pbplan.PrimaryKeyDef{
+					PkeyColName: "id",
+					Names:       []string{"id"},
+				},
+			},
+			&engine.IndexDef{
+				Indexes: []*pbplan.IndexDef{{
+					IndexName:       "idx_body",
+					IndexTableName:  "__idx_body",
+					IndexAlgo:       pkgcatalog.MOIndexFullTextAlgo.ToString(),
+					Parts:           []string{"body"},
+					IndexAlgoParams: `{"parser":"default"}`,
+				}},
+			},
+		},
+	}
+	var err error
+	schema.Constraint, err = cstrDef.MarshalBinary()
+	require.NoError(t, err)
+	require.NoError(t, schema.Finalize(false))
+
+	mp := mpool.MustNewZero()
+	idVec := vector.NewVec(types.T_int64.ToType())
+	bodyVec := vector.NewVec(types.T_varchar.ToType())
+	defer idVec.Free(mp)
+	defer bodyVec.Free(mp)
+	for i := 1; i <= 8; i++ {
+		require.NoError(t, vector.AppendFixed[int64](idVec, int64(i), false, mp))
+		require.NoError(t, vector.AppendBytes(bodyVec, []byte("native stablegamma marker payload"), false, mp))
+	}
+
+	bat := batch.NewWithSize(2)
+	bat.Attrs = []string{"id", "body"}
+	bat.Vecs[0] = idVec
+	bat.Vecs[1] = bodyVec
+	bat.SetRowCount(8)
+
+	indexer, err := NewObjectIndexer(schema)
+	require.NoError(t, err)
+	require.NoError(t, indexer.AddBatch(bat, []uint32{8}))
+
+	baseFS, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	fs := &recordingFS{FileService: baseFS}
+
+	objID := objectio.NewObjectid()
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+	require.NoError(t, indexer.Write(context.Background(), fs, objName))
+
+	filePath := SidecarPath(objName.String(), "__idx_body")
+	entry, err := fs.StatFile(context.Background(), filePath)
+	require.NoError(t, err)
+
+	fs.resetReadSizes()
+	seg, ok, err := ReadSidecar(context.Background(), fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Empty(t, seg.Terms)
+
+	initialReads := fs.snapshotReadSizes()
+	require.GreaterOrEqual(t, len(initialReads), 3)
+	var initialBytes int64
+	for _, size := range initialReads {
+		require.NotEqual(t, int64(-1), size)
+		initialBytes += size
+	}
+	require.Less(t, initialBytes, entry.Size)
+
+	postings, err := seg.Lookup("native")
+	require.NoError(t, err)
+	require.Len(t, postings, 8)
+	afterFirstLookup := fs.snapshotReadSizes()
+	require.Greater(t, len(afterFirstLookup), len(initialReads))
+
+	postings, err = seg.Lookup("native")
+	require.NoError(t, err)
+	require.Len(t, postings, 8)
+	require.Equal(t, afterFirstLookup, fs.snapshotReadSizes())
 }
 
 func TestObjectIndexerBuildAndReadSidecarWithNullMultiColumn(t *testing.T) {
