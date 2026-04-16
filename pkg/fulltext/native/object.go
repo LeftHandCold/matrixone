@@ -242,13 +242,16 @@ func ReadSidecar(ctx context.Context, fs fileservice.FileService, objName object
 		if err != nil {
 			return nil, false, err
 		}
-		dirOffset := int64(segmentPrefixLen) + int64(headerLen)
-		dirBytes, exists, err := readSidecarRange(ctx, fs, filePath, dirOffset, int64(header.DirectorySize))
-		if err != nil {
-			return nil, false, err
-		}
-		if !exists {
-			return nil, false, moerr.NewFileNotFoundNoCtx(filePath)
+		var dirBytes []byte
+		if header.DirectorySize > 0 {
+			dirOffset := int64(segmentPrefixLen) + int64(headerLen)
+			dirBytes, exists, err = readSidecarRange(ctx, fs, filePath, dirOffset, int64(header.DirectorySize))
+			if err != nil {
+				return nil, false, err
+			}
+			if !exists {
+				return nil, false, moerr.NewFileNotFoundNoCtx(filePath)
+			}
 		}
 		if err := indexSegmentDirectoryV4(dirBytes, header.TermCount, seg); err != nil {
 			return nil, false, err

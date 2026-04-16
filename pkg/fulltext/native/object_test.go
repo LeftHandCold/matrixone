@@ -251,6 +251,34 @@ func TestReadSidecarV4UsesRangeReads(t *testing.T) {
 	require.Equal(t, afterFirstLookup, fs.snapshotReadSizes())
 }
 
+func TestReadSidecarV4EmptySegmentSkipsZeroLengthDirectoryRead(t *testing.T) {
+	baseFS, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	fs := &recordingFS{FileService: baseFS}
+
+	objID := objectio.NewObjectid()
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+	buf, err := NewBuilder(fulltext.FullTextParserParam{}, nil).Build().MarshalBinary()
+	require.NoError(t, err)
+	require.NoError(t, fs.Write(context.Background(), fileservice.IOVector{
+		FilePath: SidecarPath(objName.String(), "__idx_body"),
+		Entries: []fileservice.IOEntry{{
+			Offset: 0,
+			Size:   int64(len(buf)),
+			Data:   buf,
+		}},
+	}))
+
+	fs.resetReadSizes()
+	seg, ok, err := ReadSidecar(context.Background(), fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, int64(0), seg.DocCount)
+	require.Equal(t, int64(0), seg.TokenSum)
+	require.Empty(t, seg.Terms)
+	require.Equal(t, []int64{int64(segmentPrefixLen), int64(segmentHeaderLenV4)}, fs.snapshotReadSizes())
+}
+
 func TestReadSidecarV4BatchesExactTermReads(t *testing.T) {
 	builder := NewBuilder(fulltext.FullTextParserParam{}, nil)
 	require.NoError(t, builder.Add(Document{
