@@ -167,8 +167,14 @@ func (task *flushObjTask) Execute(ctx context.Context) (err error) {
 				}
 				if idxErr = indexer.AddBatch(cnBatch, blockRows); idxErr != nil {
 					task.logNativeSidecarError("flush-add", idxErr)
-				} else if idxErr = indexer.Write(ctx, task.fs, sidecarObjectName, task.stats.Rows()); idxErr != nil {
-					task.logNativeSidecarError("flush-write", idxErr)
+				} else {
+					published, writeErr := indexer.Write(ctx, task.fs, sidecarObjectName, task.stats.Rows())
+					if len(published) > 0 {
+						ftnative.PublishRuntimeSidecars(task.meta.GetTable().ID, sidecarObjectName.String(), published)
+					}
+					if writeErr != nil {
+						task.logNativeSidecarError("flush-write", writeErr)
+					}
 				}
 			}
 		}

@@ -84,3 +84,50 @@ func TestExpandDeletePathsWithBrokenLocatorDoesNotBlockBaseDelete(t *testing.T) 
 		SidecarLocatorPath("obj_002"),
 	}, expanded)
 }
+
+func TestExpandDeletePathsWithRuntimeRegistryPrefersPublishedSidecars(t *testing.T) {
+	ctx := context.Background()
+	fs, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	ResetRuntimeSidecarRegistry()
+
+	require.NoError(t, fs.Write(ctx, fileservice.IOVector{
+		FilePath: "obj_003",
+		Entries: []fileservice.IOEntry{{
+			Offset: 0,
+			Size:   1,
+			Data:   []byte("o"),
+		}},
+	}))
+	require.NoError(t, fs.Write(ctx, fileservice.IOVector{
+		FilePath: SidecarLocatorPath("obj_003"),
+		Entries: []fileservice.IOEntry{{
+			Offset: 0,
+			Size:   1,
+			Data:   []byte("l"),
+		}},
+	}))
+	require.NoError(t, fs.Write(ctx, fileservice.IOVector{
+		FilePath: "obj_003.fts.registry.seg",
+		Entries: []fileservice.IOEntry{{
+			Offset: 0,
+			Size:   1,
+			Data:   []byte("s"),
+		}},
+	}))
+	PublishRuntimeSidecars(7, "obj_003", []PublishedSidecar{{
+		IndexTable:     "__idx_body",
+		SidecarPath:    "obj_003.fts.registry.seg",
+		LocatorPath:    SidecarLocatorPath("obj_003"),
+		SegmentVersion: CurrentSegmentVersion,
+		DocCount:       1,
+		Flags:          SidecarFlagLocatorWritten,
+	}})
+
+	expanded := ExpandDeletePathsWithSidecars(ctx, fs, []string{"obj_003"})
+	require.Equal(t, []string{
+		"obj_003",
+		SidecarLocatorPath("obj_003"),
+		"obj_003.fts.registry.seg",
+	}, expanded)
+}

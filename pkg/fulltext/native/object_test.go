@@ -141,7 +141,22 @@ func TestObjectIndexerBuildAndReadSidecar(t *testing.T) {
 
 	objID := objectio.NewObjectid()
 	objName := objectio.BuildObjectNameWithObjectID(&objID)
-	require.NoError(t, indexer.Write(context.Background(), fs, objName))
+	ResetRuntimeSidecarRegistry()
+	published, err := indexer.Write(context.Background(), fs, objName)
+	require.NoError(t, err)
+	require.Len(t, published, 1)
+	require.Equal(t, "__idx_body", published[0].IndexTable)
+	require.Equal(t, SidecarPath(objName.String(), "__idx_body"), published[0].SidecarPath)
+	require.Equal(t, SidecarLocatorPath(objName.String()), published[0].LocatorPath)
+	require.Equal(t, CurrentSegmentVersion, published[0].SegmentVersion)
+	require.Equal(t, int64(2), published[0].DocCount)
+	require.NotZero(t, published[0].Flags&SidecarFlagLocatorWritten)
+	PublishRuntimeSidecars(42, objName.String(), published)
+	registrySet, ok := LookupRuntimeSidecars(objName.String())
+	require.True(t, ok)
+	require.Equal(t, uint64(42), registrySet.TableID)
+	require.Len(t, registrySet.Entries, 1)
+	require.Equal(t, published[0], registrySet.Entries["__idx_body"])
 
 	seg, ok, err := ReadSidecar(context.Background(), fs, objName, "__idx_body")
 	require.NoError(t, err)
@@ -218,7 +233,8 @@ func TestReadSidecarV4UsesRangeReads(t *testing.T) {
 
 	objID := objectio.NewObjectid()
 	objName := objectio.BuildObjectNameWithObjectID(&objID)
-	require.NoError(t, indexer.Write(context.Background(), fs, objName))
+	_, err = indexer.Write(context.Background(), fs, objName)
+	require.NoError(t, err)
 
 	filePath := SidecarPath(objName.String(), "__idx_body")
 	entry, err := fs.StatFile(context.Background(), filePath)
@@ -394,7 +410,8 @@ func TestObjectIndexerBuildAndReadSidecarWithNullMultiColumn(t *testing.T) {
 
 	objID := objectio.NewObjectid()
 	objName := objectio.BuildObjectNameWithObjectID(&objID)
-	require.NoError(t, indexer.Write(context.Background(), fs, objName))
+	_, err = indexer.Write(context.Background(), fs, objName)
+	require.NoError(t, err)
 
 	seg, ok, err := ReadSidecar(context.Background(), fs, objName, "__idx_ab")
 	require.NoError(t, err)
@@ -482,7 +499,8 @@ func TestObjectIndexerBuildAndReadSidecarWithNullMultiColumnAfterMergeAObj(t *te
 
 	objID := objectio.NewObjectid()
 	objName := objectio.BuildObjectNameWithObjectID(&objID)
-	require.NoError(t, indexer.Write(context.Background(), fs, objName))
+	_, err = indexer.Write(context.Background(), fs, objName)
+	require.NoError(t, err)
 
 	seg, ok, err := ReadSidecar(context.Background(), fs, objName, "__idx_ab")
 	require.NoError(t, err)
@@ -545,7 +563,9 @@ func TestObjectIndexerWriteSkipsEmptySidecarWithRowHint(t *testing.T) {
 
 	objID := objectio.NewObjectid()
 	objName := objectio.BuildObjectNameWithObjectID(&objID)
-	require.NoError(t, indexer.Write(context.Background(), fs, objName, 1))
+	published, err := indexer.Write(context.Background(), fs, objName, 1)
+	require.NoError(t, err)
+	require.Nil(t, published)
 
 	_, ok, err := ReadSidecar(context.Background(), fs, objName, "__idx_body")
 	require.NoError(t, err)

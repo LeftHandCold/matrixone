@@ -41,6 +41,13 @@ const (
 	// TableObjects should be clustered by `table`+`object_type`+`id` + `is_deleted`
 	TableObjectsAttr_Cluster = "cluster"
 
+	TableObjectsAttr_FTSIndexTable     = "fts_index_table"
+	TableObjectsAttr_FTSSidecarPath    = "fts_sidecar_path"
+	TableObjectsAttr_FTSLocatorPath    = "fts_locator_path"
+	TableObjectsAttr_FTSSegmentVersion = "fts_segment_version"
+	TableObjectsAttr_FTSDocCount       = "fts_doc_count"
+	TableObjectsAttr_FTSFlags          = "fts_flags"
+
 	// TableObjectsAttr_PhysicalAddr = objectio.PhysicalAddr_Attr
 )
 
@@ -54,13 +61,21 @@ const (
 	TableObjectsAttr_DeleteTS_Idx   = ioutil.TableObjectsAttr_DeleteTS_Idx
 	TableObjectsAttr_Cluster_Idx    = ioutil.TableObjectsAttr_Cluster_Idx
 
-	TableObjectsAttr_PhysicalAddr_Idx = 8
+	TableObjectsAttr_FTSIndexTable_Idx = 8
+	TableObjectsAttr_FTSSidecarPath_Idx = 9
+	TableObjectsAttr_FTSLocatorPath_Idx = 10
+	TableObjectsAttr_FTSSegmentVersion_Idx = 11
+	TableObjectsAttr_FTSDocCount_Idx = 12
+	TableObjectsAttr_FTSFlags_Idx = 13
+
+	TableObjectsAttr_PhysicalAddr_Idx = 14
 )
 
 const (
 	ObjectType_Invalid   = ioutil.ObjectType_Invalid
 	ObjectType_Data      = ioutil.ObjectType_Data
 	ObjectType_Tombstone = ioutil.ObjectType_Tombstone
+	ObjectType_FTSSidecar int8 = ioutil.ObjectType_Tombstone + 1
 )
 
 var TableObjectsAttrs = []string{
@@ -72,6 +87,12 @@ var TableObjectsAttrs = []string{
 	TableObjectsAttr_CreateTS,
 	TableObjectsAttr_DeleteTS,
 	TableObjectsAttr_Cluster,
+	TableObjectsAttr_FTSIndexTable,
+	TableObjectsAttr_FTSSidecarPath,
+	TableObjectsAttr_FTSLocatorPath,
+	TableObjectsAttr_FTSSegmentVersion,
+	TableObjectsAttr_FTSDocCount,
+	TableObjectsAttr_FTSFlags,
 	// TableObjectsAttr_PhysicalAddr,
 }
 
@@ -84,9 +105,15 @@ var TableObjectsTypes = []types.Type{
 	types.T_TS.ToType(),
 	types.T_TS.ToType(),
 	types.T_char.ToType(),
+	types.New(types.T_varchar, types.MaxVarcharLen, 0),
+	types.New(types.T_varchar, types.MaxVarcharLen, 0),
+	types.New(types.T_varchar, types.MaxVarcharLen, 0),
+	types.T_uint32.ToType(),
+	types.T_int64.ToType(),
+	types.T_uint16.ToType(),
 	// types.T_Rowid.ToType(),
 }
-var TableObjectsSeqnums = []uint16{0, 1, 2, 3, 4, 5, 6, 7}
+var TableObjectsSeqnums = []uint16{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
 
 // var ObjectEntryTypes = []types.Type{
 // 	TableObjectsTypes[TableObjectsAttr_ID_Idx],

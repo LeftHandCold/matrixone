@@ -759,8 +759,12 @@ func (task *flushTableTailTask) mergeAObjs(ctx context.Context, isTombstone bool
 	writerStats := writer.Stats()
 	objectio.SetObjectStats(stats, &writerStats)
 	if !nativeIndexingClosed && nativeIndexer != nil {
-		if err = nativeIndexer.Write(ctx, task.rt.Fs, stats.ObjectName(), stats.Rows()); err != nil {
-			task.logNativeSidecarError("flush-tail-write", err)
+		published, writeErr := nativeIndexer.Write(ctx, task.rt.Fs, stats.ObjectName(), stats.Rows())
+		if len(published) > 0 {
+			ftnative.PublishRuntimeSidecars(task.rel.GetMeta().(*catalog.TableEntry).ID, stats.ObjectName().String(), published)
+		}
+		if writeErr != nil {
+			task.logNativeSidecarError("flush-tail-write", writeErr)
 		}
 	}
 	// create new object to hold merged blocks

@@ -190,15 +190,16 @@ func (o *ObjectIndexer) Write(
 	fs fileservice.FileService,
 	objName objectio.ObjectName,
 	expectedRows ...uint32,
-) error {
+) ([]PublishedSidecar, error) {
 	if o.Empty() {
-		return nil
+		return nil, nil
 	}
 	rowHint := uint32(0)
 	if len(expectedRows) > 0 {
 		rowHint = expectedRows[0]
 	}
 	entries := make([]SidecarLocatorEntry, 0, len(o.builders))
+	published := make([]PublishedSidecar, 0, len(o.builders))
 	for _, idx := range o.indexes {
 		builder, ok := o.builders[idx.TableName]
 		if !ok {
@@ -216,24 +217,41 @@ func (o *ObjectIndexer) Write(
 		}
 		buf, err := seg.MarshalBinary()
 		if err != nil {
-			return err
+			return published, err
 		}
+		sidecarPath := SidecarPath(objName.String(), idx.TableName)
 		if err := fs.Write(ctx, fileservice.IOVector{
-			FilePath: SidecarPath(objName.String(), idx.TableName),
+			FilePath: sidecarPath,
 			Entries: []fileservice.IOEntry{{
 				Offset: 0,
 				Size:   int64(len(buf)),
 				Data:   buf,
 			}},
 		}); err != nil {
-			return err
+			return published, err
 		}
 		entries = append(entries, SidecarLocatorEntry{
 			IndexTable: idx.TableName,
-			FilePath:   SidecarPath(objName.String(), idx.TableName),
+			FilePath:   sidecarPath,
+		})
+		published = append(published, PublishedSidecar{
+			IndexTable:     idx.TableName,
+			SidecarPath:    sidecarPath,
+			LocatorPath:    SidecarLocatorPath(objName.String()),
+			SegmentVersion: CurrentSegmentVersion,
+			DocCount:       seg.DocCount,
 		})
 	}
-	return WriteSidecarLocator(ctx, fs, objName.String(), entries)
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	if err := WriteSidecarLocator(ctx, fs, objName.String(), entries); err != nil {
+		return published, err
+	}
+	for i := range published {
+		published[i].Flags |= SidecarFlagLocatorWritten
+	}
+	return published, nil
 }
 
 func ReadSidecar(ctx context.Context, fs fileservice.FileService, objName objectio.ObjectName, indexTableName string) (*Segment, bool, error) {

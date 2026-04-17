@@ -325,6 +325,63 @@ func (reader *CKPReader) ReadMeta(
 	return
 }
 
+func (reader *CKPReader) Read(
+	ctx context.Context,
+	bat *batch.Batch,
+	mp *mpool.MPool,
+) (end bool, err error) {
+	return reader.readFiltered(ctx, bat, mp, false)
+}
+
+func (reader *CKPReader) readFTSSidecarRows(
+	ctx context.Context,
+	bat *batch.Batch,
+	mp *mpool.MPool,
+) (end bool, err error) {
+	return reader.readFiltered(ctx, bat, mp, true)
+}
+
+func (reader *CKPReader) readFiltered(
+	ctx context.Context,
+	bat *batch.Batch,
+	mp *mpool.MPool,
+	wantFTSSidecar bool,
+) (end bool, err error) {
+	if reader.ckpDataReader == nil {
+		return true, nil
+	}
+	for {
+		if end, err = reader.ckpDataReader.Read(ctx, bat, mp); err != nil || end {
+			return
+		}
+		if filterCheckpointRowsByType(bat, wantFTSSidecar) {
+			return false, nil
+		}
+		bat.CleanOnlyData()
+	}
+}
+
+func filterCheckpointRowsByType(bat *batch.Batch, wantFTSSidecar bool) bool {
+	if bat == nil || bat.RowCount() == 0 {
+		return false
+	}
+	objectTypes := vector.MustFixedColNoTypeCheck[int8](bat.Vecs[ckputil.TableObjectsAttr_ObjectType_Idx])
+	sels := make([]int64, 0, len(objectTypes))
+	for i, objectType := range objectTypes {
+		isFTSSidecar := objectType == ckputil.ObjectType_FTSSidecar
+		if wantFTSSidecar == isFTSSidecar {
+			sels = append(sels, int64(i))
+		}
+	}
+	if len(sels) == 0 {
+		return false
+	}
+	if len(sels) != bat.RowCount() {
+		bat.Shrink(sels, false)
+	}
+	return true
+}
+
 func readMetaForV12(
 	ctx context.Context,
 	location objectio.Location,
@@ -611,6 +668,11 @@ func compatibilityForV12(
 		ckpData.Vecs[ckputil.TableObjectsAttr_CreateTS_Idx].Union(src.Vecs[ObjectInfo_CreateAt_Idx+2].GetDownstreamVector(), sels, mp)
 		ckpData.Vecs[ckputil.TableObjectsAttr_DeleteTS_Idx].Union(src.Vecs[ObjectInfo_DeleteAt_Idx+2].GetDownstreamVector(), sels, mp)
 		for i := 0; i < src.Length(); i++ {
+			if err = appendEmptyFTSSidecarColumns(ckpData, mp); err != nil {
+				return
+			}
+		}
+		for i := 0; i < src.Length(); i++ {
 			rowID := types.NewRowid(blockID, uint32(i))
 			vector.AppendFixed(ckpData.Vecs[ckputil.TableObjectsAttr_PhysicalAddr_Idx], rowID, false, mp)
 		}
@@ -677,6 +739,70 @@ func (reader *CKPReader) ForEachRow(
 				objectio.ObjectStats(objectStatsVec.GetBytesAt(i)),
 				createTSs[i],
 				deleteTSs[i],
+				rowids[i],
+			); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (reader *CKPReader) ForEachFTSSidecarRow(
+	ctx context.Context,
+	forEachRow func(
+		account uint32,
+		dbid, tid uint64,
+		objectStats objectio.ObjectStats,
+		create, delete types.TS,
+		indexTable, sidecarPath, locatorPath string,
+		segmentVersion uint32,
+		docCount int64,
+		flags uint16,
+		rowID types.Rowid,
+	) error,
+) (err error) {
+	if reader.withTableID {
+		panic("not support")
+	}
+	tmpBatch := ckputil.MakeDataScanTableIDBatch()
+	defer tmpBatch.Clean(reader.mp)
+	defer reader.ckpDataReader.Reset(ctx)
+	for {
+		tmpBatch.CleanOnlyData()
+		var end bool
+		if end, err = reader.readFTSSidecarRows(ctx, tmpBatch, reader.mp); err != nil {
+			return
+		}
+		if end {
+			return
+		}
+		accounts := vector.MustFixedColNoTypeCheck[uint32](tmpBatch.Vecs[ckputil.TableObjectsAttr_Accout_Idx])
+		dbids := vector.MustFixedColNoTypeCheck[uint64](tmpBatch.Vecs[ckputil.TableObjectsAttr_DB_Idx])
+		tableIds := vector.MustFixedColNoTypeCheck[uint64](tmpBatch.Vecs[ckputil.TableObjectsAttr_Table_Idx])
+		objectStatsVec := tmpBatch.Vecs[ckputil.TableObjectsAttr_ID_Idx]
+		createTSs := vector.MustFixedColNoTypeCheck[types.TS](tmpBatch.Vecs[ckputil.TableObjectsAttr_CreateTS_Idx])
+		deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](tmpBatch.Vecs[ckputil.TableObjectsAttr_DeleteTS_Idx])
+		indexTables := tmpBatch.Vecs[ckputil.TableObjectsAttr_FTSIndexTable_Idx]
+		sidecarPaths := tmpBatch.Vecs[ckputil.TableObjectsAttr_FTSSidecarPath_Idx]
+		locatorPaths := tmpBatch.Vecs[ckputil.TableObjectsAttr_FTSLocatorPath_Idx]
+		segmentVersions := vector.MustFixedColNoTypeCheck[uint32](tmpBatch.Vecs[ckputil.TableObjectsAttr_FTSSegmentVersion_Idx])
+		docCounts := vector.MustFixedColNoTypeCheck[int64](tmpBatch.Vecs[ckputil.TableObjectsAttr_FTSDocCount_Idx])
+		flagsCol := vector.MustFixedColNoTypeCheck[uint16](tmpBatch.Vecs[ckputil.TableObjectsAttr_FTSFlags_Idx])
+		rowids := vector.MustFixedColNoTypeCheck[types.Rowid](tmpBatch.Vecs[ckputil.TableObjectsAttr_PhysicalAddr_Idx])
+		for i, rows := 0, tmpBatch.RowCount(); i < rows; i++ {
+			if err = forEachRow(
+				accounts[i],
+				dbids[i],
+				tableIds[i],
+				objectio.ObjectStats(objectStatsVec.GetBytesAt(i)),
+				createTSs[i],
+				deleteTSs[i],
+				indexTables.GetStringAt(i),
+				sidecarPaths.GetStringAt(i),
+				locatorPaths.GetStringAt(i),
+				segmentVersions[i],
+				docCounts[i],
+				flagsCol[i],
 				rowids[i],
 			); err != nil {
 				return

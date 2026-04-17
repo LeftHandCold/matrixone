@@ -1235,8 +1235,9 @@ func (c *checkpointCleaner) tryGCAgainstGCKPLocked(
 	// TODO:Requires Physical Removal Policy
 	// Note: Data files are GC'ed normally even when backup protection is active.
 	// Only checkpoint metadata merge/delete is skipped (handled in mergeCheckpointFilesLocked).
+	baseObjectPaths := append([]string(nil), filesToGC...)
 	baseFilesToGC := len(filesToGC)
-	filesToGC = ftnative.ExpandDeletePathsWithLocators(ctx, c.fs, filesToGC)
+	filesToGC = ftnative.ExpandDeletePathsWithSidecars(ctx, c.fs, filesToGC)
 	if err = c.deleter.DeleteMany(
 		ctx,
 		c.TaskNameLocked(),
@@ -1247,6 +1248,7 @@ func (c *checkpointCleaner) tryGCAgainstGCKPLocked(
 		v2.GCErrorIOErrorCounter.Inc()
 		return
 	}
+	ftnative.RemoveRuntimeSidecars(baseObjectPaths...)
 
 	// Record file deletion metrics
 	if baseFilesToGC > 0 {

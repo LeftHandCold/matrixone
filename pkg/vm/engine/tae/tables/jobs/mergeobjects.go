@@ -224,7 +224,11 @@ func (task *mergeObjectsTask) OnObjectSynced(ctx context.Context, stats *objecti
 		task.nativeIndexer == nil || task.nativeIndexer.Empty() {
 		return nil
 	}
-	if err := task.nativeIndexer.Write(ctx, task.rt.Fs, stats.ObjectName(), stats.Rows()); err != nil {
+	published, err := task.nativeIndexer.Write(ctx, task.rt.Fs, stats.ObjectName(), stats.Rows())
+	if len(published) > 0 {
+		ftnative.PublishRuntimeSidecars(task.tid, stats.ObjectName().String(), published)
+	}
+	if err != nil {
 		task.nativeObjectFailed = true
 		task.logNativeSidecarError("merge-write", err)
 	}

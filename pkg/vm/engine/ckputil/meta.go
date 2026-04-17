@@ -83,6 +83,8 @@ func (r *TableRange) String() string {
 		objType = "DATA"
 	case ObjectType_Tombstone:
 		objType = "TOMBSTONE"
+	case ObjectType_FTSSidecar:
+		objType = "FTS_SIDECAR"
 	default:
 		panic(fmt.Sprintf("invalid object type %d", r.ObjectType))
 	}
