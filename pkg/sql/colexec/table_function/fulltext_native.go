@@ -305,32 +305,39 @@ func populatePhraseCompat(
 		})
 	}
 
-	cache := newNativeDeleteCache()
-	count := int64(0)
+	states := make([]*nativeDocState, 0, 64)
 	for _, obj := range scan.objects {
 		matches, err := obj.segment.SearchPhrase(tokens)
 		if err != nil {
 			return err
 		}
 		for _, match := range matches {
-			if deleted, err := isNativeDeleted(proc.Ctx, scan, cache, obj, match.Ref); err != nil {
-				return err
-			} else if deleted {
-				continue
-			}
-			addr, buf, err := u.mpool.NewItem()
-			if err != nil {
-				return err
-			}
-			for i := 0; i < s.Nkeywords; i++ {
-				buf[i] = 1
-			}
-			pk := decodeNativePK(match.Ref.PK, scan.pkType)
-			u.agghtab[pk] = addr
-			u.docLenMap[pk] = match.DocLen
-			markNativeOwned(u, pk)
-			count++
+			states = append(states, &nativeDocState{
+				pk:              decodeNativePK(match.Ref.PK, scan.pkType),
+				docLen:          match.DocLen,
+				ref:             match.Ref,
+				obj:             obj.name,
+				segmentKey:      obj.key,
+				applyTombstones: obj.applyTombstones,
+			})
 		}
+	}
+	liveStates, err := filterLiveNativeDocStates(proc.Ctx, scan, newNativeDeleteCache(), states)
+	if err != nil {
+		return err
+	}
+	count := int64(len(liveStates))
+	for _, state := range liveStates {
+		addr, buf, err := u.mpool.NewItem()
+		if err != nil {
+			return err
+		}
+		for i := 0; i < s.Nkeywords; i++ {
+			buf[i] = 1
+		}
+		u.agghtab[state.pk] = addr
+		u.docLenMap[state.pk] = state.docLen
+		markNativeOwned(u, state.pk)
 	}
 	for i := range u.aggcnt {
 		u.aggcnt[i] = count
@@ -412,22 +419,17 @@ func populateBooleanNative(
 	}
 
 	candidates := nativeCandidateSet(s, leafSets, phraseSets)
-	cache := newNativeDeleteCache()
+	states := make([]*nativeDocState, 0, len(candidates))
 	for key := range candidates {
-		state := docs[key]
-		if state == nil {
-			continue
+		if state := docs[key]; state != nil {
+			states = append(states, state)
 		}
-		if deleted, err := isNativeDeleted(proc.Ctx, scan, cache, nativeObjectSegment{
-			key:             state.segmentKey,
-			name:            state.obj,
-			applyTombstones: state.applyTombstones,
-		}, state.ref); err != nil {
-			return err
-		} else if deleted {
-			continue
-		}
-
+	}
+	liveStates, err := filterLiveNativeDocStates(proc.Ctx, scan, newNativeDeleteCache(), states)
+	if err != nil {
+		return err
+	}
+	for _, state := range liveStates {
 		addr, buf, err := u.mpool.NewItem()
 		if err != nil {
 			return err
@@ -550,6 +552,162 @@ func newNativeDeleteCache() *nativeDeleteCache {
 		hasBlock: make(map[string]bool),
 		deleted:  make(map[string]map[uint32]bool),
 	}
+}
+
+type nativeDeleteGroup struct {
+	blockKey string
+	obj      objectio.ObjectName
+	block    uint16
+	indexes  []int
+}
+
+func filterLiveNativeDocStates(
+	ctx context.Context,
+	scan *nativePreparedScan,
+	cache *nativeDeleteCache,
+	states []*nativeDocState,
+) ([]*nativeDocState, error) {
+	if len(states) == 0 || scan == nil || scan.tombstones == nil {
+		return states, nil
+	}
+	if !scan.tombstones.HasAnyInMemoryTombstone() && !scan.tombstones.HasAnyTombstoneFile() {
+		return states, nil
+	}
+
+	live := make([]bool, len(states))
+	groups := make(map[string]*nativeDeleteGroup)
+	for i, state := range states {
+		if state == nil {
+			continue
+		}
+		if !state.applyTombstones {
+			live[i] = true
+			continue
+		}
+		blockKey := nativeBlockKey(state.segmentKey, state.ref.Block)
+		group := groups[blockKey]
+		if group == nil {
+			group = &nativeDeleteGroup{
+				blockKey: blockKey,
+				obj:      state.obj,
+				block:    state.ref.Block,
+			}
+			groups[blockKey] = group
+		}
+		group.indexes = append(group.indexes, i)
+	}
+
+	for _, group := range groups {
+		if err := filterLiveNativeDeleteGroup(ctx, scan, cache, states, live, group); err != nil {
+			return nil, err
+		}
+	}
+
+	out := make([]*nativeDocState, 0, len(states))
+	for i, state := range states {
+		if live[i] {
+			out = append(out, state)
+		}
+	}
+	return out, nil
+}
+
+func filterLiveNativeDeleteGroup(
+	ctx context.Context,
+	scan *nativePreparedScan,
+	cache *nativeDeleteCache,
+	states []*nativeDocState,
+	live []bool,
+	group *nativeDeleteGroup,
+) error {
+	if group == nil {
+		return nil
+	}
+
+	has, ok := cache.hasBlock[group.blockKey]
+	if !ok {
+		bid := objectio.NewBlockidWithObjectID(group.obj.ObjectId(), group.block)
+		var err error
+		has, err = scan.tombstones.HasBlockTombstone(ctx, &bid, scan.fs)
+		if err != nil {
+			return err
+		}
+		cache.hasBlock[group.blockKey] = has
+	}
+
+	rowCache := cache.deleted[group.blockKey]
+	if rowCache == nil {
+		rowCache = make(map[uint32]bool)
+		cache.deleted[group.blockKey] = rowCache
+	}
+	if !has {
+		for _, idx := range group.indexes {
+			row := states[idx].ref.Row
+			rowCache[row] = false
+			live[idx] = true
+		}
+		return nil
+	}
+
+	rowIndexes := make(map[uint32][]int, len(group.indexes))
+	pendingRows := make([]uint32, 0, len(group.indexes))
+	for _, idx := range group.indexes {
+		row := states[idx].ref.Row
+		if deleted, ok := rowCache[row]; ok {
+			if !deleted {
+				live[idx] = true
+			}
+			continue
+		}
+		if _, ok := rowIndexes[row]; !ok {
+			pendingRows = append(pendingRows, row)
+		}
+		rowIndexes[row] = append(rowIndexes[row], idx)
+	}
+	if len(pendingRows) == 0 {
+		return nil
+	}
+
+	sort.Slice(pendingRows, func(i, j int) bool {
+		return pendingRows[i] < pendingRows[j]
+	})
+	rows := make([]int64, len(pendingRows))
+	for i, row := range pendingRows {
+		rows[i] = int64(row)
+	}
+
+	bid := objectio.NewBlockidWithObjectID(group.obj.ObjectId(), group.block)
+	rows = scan.tombstones.ApplyInMemTombstones(&bid, rows, nil)
+	if len(rows) > 0 {
+		var err error
+		rows, err = scan.tombstones.ApplyPersistedTombstones(
+			ctx,
+			scan.fs,
+			&scan.snapshot,
+			&bid,
+			rows,
+			nil,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	liveRows := make(map[uint32]struct{}, len(rows))
+	for _, row := range rows {
+		liveRows[uint32(row)] = struct{}{}
+	}
+	for _, row := range pendingRows {
+		_, ok := liveRows[row]
+		rowCache[row] = !ok
+		if !ok {
+			continue
+		}
+		for _, idx := range rowIndexes[row] {
+			live[idx] = true
+		}
+	}
+	return nil
 }
 
 func isNativeDeleted(
