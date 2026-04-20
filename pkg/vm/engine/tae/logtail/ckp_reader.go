@@ -341,6 +341,17 @@ func (reader *CKPReader) readFTSSidecarRows(
 	return reader.readFiltered(ctx, bat, mp, true)
 }
 
+func (reader *CKPReader) readAllRows(
+	ctx context.Context,
+	bat *batch.Batch,
+	mp *mpool.MPool,
+) (end bool, err error) {
+	if reader.ckpDataReader == nil {
+		return true, nil
+	}
+	return reader.ckpDataReader.Read(ctx, bat, mp)
+}
+
 func (reader *CKPReader) readFiltered(
 	ctx context.Context,
 	bat *batch.Batch,
@@ -598,16 +609,33 @@ func (reader *CKPReader) PrefetchData(sid string) {
 }
 
 func (reader *CKPReader) GetCheckpointData(ctx context.Context) (ckpData *batch.Batch, err error) {
+	return reader.getCheckpointData(ctx, reader.Read)
+}
+
+// GetRawCheckpointData returns the full checkpoint object-list batch, including
+// auxiliary rows such as FTS sidecar metadata.
+func (reader *CKPReader) GetRawCheckpointData(ctx context.Context) (ckpData *batch.Batch, err error) {
+	return reader.getCheckpointData(ctx, reader.readAllRows)
+}
+
+func (reader *CKPReader) getCheckpointData(
+	ctx context.Context,
+	readFn func(context.Context, *batch.Batch, *mpool.MPool) (bool, error),
+) (ckpData *batch.Batch, err error) {
 	if reader.withTableID {
 		panic("not support")
 	}
 	ckpData = ckputil.MakeDataScanTableIDBatch()
 	tmpBatch := ckputil.MakeDataScanTableIDBatch()
 	defer tmpBatch.Clean(reader.mp)
+	if reader.ckpDataReader != nil {
+		reader.ckpDataReader.Reset(ctx)
+		defer reader.ckpDataReader.Reset(ctx)
+	}
 	for {
 		tmpBatch.CleanOnlyData()
 		var end bool
-		if end, err = reader.Read(ctx, tmpBatch, reader.mp); err != nil {
+		if end, err = readFn(ctx, tmpBatch, reader.mp); err != nil {
 			return
 		}
 		if end {
@@ -712,7 +740,10 @@ func (reader *CKPReader) ForEachRow(
 	}
 	tmpBatch := ckputil.MakeDataScanTableIDBatch()
 	defer tmpBatch.Clean(reader.mp)
-	defer reader.ckpDataReader.Reset(ctx)
+	if reader.ckpDataReader != nil {
+		reader.ckpDataReader.Reset(ctx)
+		defer reader.ckpDataReader.Reset(ctx)
+	}
 	for {
 		tmpBatch.CleanOnlyData()
 		var end bool
@@ -766,7 +797,10 @@ func (reader *CKPReader) ForEachFTSSidecarRow(
 	}
 	tmpBatch := ckputil.MakeDataScanTableIDBatch()
 	defer tmpBatch.Clean(reader.mp)
-	defer reader.ckpDataReader.Reset(ctx)
+	if reader.ckpDataReader != nil {
+		reader.ckpDataReader.Reset(ctx)
+		defer reader.ckpDataReader.Reset(ctx)
+	}
 	for {
 		tmpBatch.CleanOnlyData()
 		var end bool

@@ -144,6 +144,24 @@ func mockDataBatch(
 			for j := 0; j < dataRows+tombstoneRows; j++ {
 				require.NoError(t, vector.AppendFixed(vec, types.NextGlobalTsForTest(), false, mp))
 			}
+		} else if i == TableObjectsAttr_FTSIndexTable_Idx ||
+			i == TableObjectsAttr_FTSSidecarPath_Idx ||
+			i == TableObjectsAttr_FTSLocatorPath_Idx {
+			for j := 0; j < dataRows+tombstoneRows; j++ {
+				require.NoError(t, vector.AppendBytes(vec, nil, true, mp))
+			}
+		} else if i == TableObjectsAttr_FTSSegmentVersion_Idx {
+			for j := 0; j < dataRows+tombstoneRows; j++ {
+				require.NoError(t, vector.AppendFixed(vec, uint32(0), true, mp))
+			}
+		} else if i == TableObjectsAttr_FTSDocCount_Idx {
+			for j := 0; j < dataRows+tombstoneRows; j++ {
+				require.NoError(t, vector.AppendFixed(vec, int64(0), true, mp))
+			}
+		} else if i == TableObjectsAttr_FTSFlags_Idx {
+			for j := 0; j < dataRows+tombstoneRows; j++ {
+				require.NoError(t, vector.AppendFixed(vec, uint16(0), true, mp))
+			}
 		}
 	}
 	data.SetRowCount(dataRows + tombstoneRows)

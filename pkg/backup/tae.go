@@ -37,6 +37,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/function/ctl"
@@ -277,6 +278,147 @@ func parallelCopyData(srcFs, dstFs fileservice.FileService,
 	return taeFileList, nil
 }
 
+func parallelCopyFlatFiles(
+	srcFs, dstFs fileservice.FileService,
+	files map[string]*logtail.BackupFlatFile,
+	parallelCount int,
+) ([]*taeFile, error) {
+	var copyCount, skipCount, copySize int64
+	var fileMutex sync.Mutex
+	taeFileList := make([]*taeFile, 0, len(files))
+	errC := make(chan error, 1)
+	defer close(errC)
+	jobScheduler := tasks.NewParallelJobScheduler(parallelCount)
+	defer jobScheduler.Stop()
+
+	backupJobs := make([]*tasks.Job, 0, len(files))
+	getJob := func(srcFs, dstFs fileservice.FileService, file *logtail.BackupFlatFile) *tasks.Job {
+		job := new(tasks.Job)
+		job.Init(context.Background(), file.Path, tasks.JTAny,
+			func(_ context.Context) *tasks.JobResult {
+				info, err := srcFs.StatFile(context.Background(), file.Path)
+				if err != nil {
+					if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+						fileMutex.Lock()
+						skipCount++
+						fileMutex.Unlock()
+						return &tasks.JobResult{Res: nil}
+					}
+					errC <- err
+					return &tasks.JobResult{Err: err, Res: nil}
+				}
+				if !file.NeedCopy {
+					fileMutex.Lock()
+					copyCount++
+					copySize += info.Size
+					taeFileList = append(taeFileList, &taeFile{
+						path:     file.Path,
+						size:     info.Size,
+						needCopy: false,
+						ts:       file.CreateTS,
+					})
+					fileMutex.Unlock()
+					return &tasks.JobResult{Res: nil}
+				}
+				checksum, err := CopyFileWithRetry(context.Background(), srcFs, dstFs, file.Path, "")
+				if err != nil {
+					if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+						fileMutex.Lock()
+						skipCount++
+						fileMutex.Unlock()
+						return &tasks.JobResult{Res: nil}
+					}
+					errC <- err
+					return &tasks.JobResult{Err: err, Res: nil}
+				}
+				fileMutex.Lock()
+				copyCount++
+				copySize += info.Size
+				taeFileList = append(taeFileList, &taeFile{
+					path:     file.Path,
+					size:     info.Size,
+					checksum: checksum,
+					needCopy: file.NeedCopy,
+					ts:       file.CreateTS,
+				})
+				fileMutex.Unlock()
+				return &tasks.JobResult{Res: nil}
+			})
+		return job
+	}
+
+	for _, file := range files {
+		backupJobs = append(backupJobs, getJob(srcFs, dstFs, file))
+	}
+	for _, job := range backupJobs {
+		if err := jobScheduler.Schedule(job); err != nil {
+			logutil.Infof("schedule aux file job failed %v", err.Error())
+			return nil, err
+		}
+		select {
+		case err := <-errC:
+			logutil.Infof("copy aux file failed %v", err.Error())
+			return nil, err
+		default:
+		}
+	}
+	for _, job := range backupJobs {
+		ret := job.WaitDone()
+		if ret.Err != nil {
+			logutil.Infof("wait aux file job done failed %v", ret.Err.Error())
+			return nil, ret.Err
+		}
+	}
+	logutil.Info("backup", common.OperationField("copy aux file"),
+		common.AnyField("copy file size", copySize),
+		common.AnyField("copy file num", copyCount),
+		common.AnyField("skip file num", skipCount),
+		common.AnyField("total file num", len(files)))
+	return taeFileList, nil
+}
+
+func copyFTSAuxFilesWithLocators(
+	ctx context.Context,
+	srcFs, dstFs fileservice.FileService,
+	objectPath string,
+	backup types.TS,
+	copied map[string]struct{},
+) ([]*taeFile, error) {
+	expanded := ftnative.ExpandDeletePathsWithLocators(ctx, srcFs, []string{objectPath})
+	if len(expanded) <= 1 {
+		return nil, nil
+	}
+	taeFiles := make([]*taeFile, 0, len(expanded)-1)
+	for _, path := range expanded {
+		if path == objectPath {
+			continue
+		}
+		if _, ok := copied[path]; ok {
+			continue
+		}
+		checksum, err := CopyFileWithRetry(ctx, srcFs, dstFs, path, "")
+		if err != nil {
+			if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		info, err := srcFs.StatFile(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		copied[path] = struct{}{}
+		taeFiles = append(taeFiles, &taeFile{
+			path:     path,
+			size:     info.Size,
+			checksum: checksum,
+			needCopy: true,
+			ts:       backup,
+		})
+	}
+	return taeFiles, nil
+}
+
 func execBackup(
 	ctx context.Context,
 	sid string,
@@ -293,6 +435,7 @@ func execBackup(
 	trimString := names[1]
 	names = names[1:]
 	files := make(map[string]*objectio.BackupObject, 0)
+	auxFiles := make(map[string]*logtail.BackupFlatFile, 0)
 	gcFileMap := make(map[string]string)
 	softDeletes := make(map[string]bool)
 	var loadDuration, copyDuration, reWriteDuration time.Duration
@@ -343,6 +486,26 @@ func execBackup(
 			return err
 		}
 		oNames = append(oNames, oneNames...)
+		auxEntries, err := logtail.LoadCheckpointFTSFiles(ctx, data, &baseTS)
+		if err != nil {
+			return err
+		}
+		for _, aux := range auxEntries {
+			existing := auxFiles[aux.Path]
+			if existing == nil {
+				auxFiles[aux.Path] = aux
+				continue
+			}
+			if existing.CreateTS.IsEmpty() || aux.CreateTS.LT(&existing.CreateTS) {
+				existing.CreateTS = aux.CreateTS
+			}
+			if aux.DropTS.IsEmpty() {
+				existing.DropTS = types.TS{}
+			} else if existing.DropTS.IsEmpty() || existing.DropTS.LT(&aux.DropTS) {
+				existing.DropTS = aux.DropTS
+			}
+			existing.NeedCopy = existing.NeedCopy || aux.NeedCopy
+		}
 		if i == len(names)-1 {
 			lastData = data
 		}
@@ -377,6 +540,14 @@ func execBackup(
 		}
 		if files[objName] == nil {
 			files[objName] = oName
+		}
+	}
+	for _, auxFile := range auxFiles {
+		if dstHave[auxFile.Path] {
+			auxFile.NeedCopy = false
+		}
+		if globalIndex != nil && globalIndex.Has(auxFile.Path) {
+			auxFile.NeedCopy = false
 		}
 	}
 
@@ -423,6 +594,11 @@ func execBackup(
 	if err != nil {
 		return err
 	}
+	auxTaeFiles, err := parallelCopyFlatFiles(srcFs, dstFs, auxFiles, parallelNum)
+	if err != nil {
+		return err
+	}
+	taeFileList = append(taeFileList, auxTaeFiles...)
 
 	// copy checkpoint and gc meta
 	sizeList, minTs, err := CopyCheckpointDir(ctx, srcFs, dstFs, "ckp", start)
@@ -579,6 +755,7 @@ func CopyGCDir(
 	}
 
 	copyFiles := make([]ioutil.TSRangeFile, 0)
+	auxCopied := make(map[string]struct{})
 
 	for _, metaFile := range metaFiles {
 		window := gc.NewGCWindow(common.DebugAllocator, srcFs)
@@ -604,6 +781,19 @@ func CopyGCDir(
 				needCopy: true,
 				ts:       backup,
 			})
+			auxFiles, err := copyFTSAuxFilesWithLocators(
+				ctx,
+				srcFs,
+				dstFs,
+				object.ObjectName().String(),
+				backup,
+				auxCopied,
+			)
+			if err != nil {
+				needCopy = false
+				break
+			}
+			filesList = append(filesList, auxFiles...)
 		}
 		if needCopy {
 			copyFiles = append(copyFiles, metaFile)

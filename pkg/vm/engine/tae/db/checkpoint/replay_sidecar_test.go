@@ -21,8 +21,10 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/ckputil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
 	"github.com/stretchr/testify/require"
 )
@@ -67,6 +69,19 @@ func TestReplayFTSSidecarRegistry(t *testing.T) {
 
 	reader, err := logtail.GetCheckpointReader(ctx, "test", fs, location, logtail.CheckpointCurrentVersion)
 	require.NoError(t, err)
+
+	// Replay consumes checkpoint readers through Read(...) before rebuilding the sidecar registry.
+	// Exhaust the reader first so the test locks the actual replay ordering.
+	tmpBatch := ckputil.MakeDataScanTableIDBatch()
+	defer tmpBatch.Clean(common.CheckpointAllocator)
+	for {
+		tmpBatch.CleanOnlyData()
+		end, err := reader.Read(ctx, tmpBatch, common.CheckpointAllocator)
+		require.NoError(t, err)
+		if end {
+			break
+		}
+	}
 
 	ftnative.ResetRuntimeSidecarRegistry()
 	replayer := &CkpReplayer{

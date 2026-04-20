@@ -312,7 +312,7 @@ func ForEachFile(
 		objectStatsVec := tmpBat.Vecs[4]
 		createTSs := vector.MustFixedColNoTypeCheck[types.TS](tmpBat.Vecs[5])
 		deleteTSs := vector.MustFixedColNoTypeCheck[types.TS](tmpBat.Vecs[6])
-		rowids := vector.MustFixedColNoTypeCheck[types.Rowid](tmpBat.Vecs[8])
+		rowids := vector.MustFixedColNoTypeCheck[types.Rowid](tmpBat.Vecs[TableObjectsAttr_PhysicalAddr_Idx])
 		for i, rows := 0, tmpBat.RowCount(); i < rows; i++ {
 			if err = forEachRow(
 				accouts[i],

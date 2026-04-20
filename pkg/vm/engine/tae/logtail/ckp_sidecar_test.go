@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -127,4 +128,104 @@ func TestCheckpointCarriesFTSSidecarRowsSeparately(t *testing.T) {
 	require.NoError(t, err)
 	defer ckpData.Clean(common.CheckpointAllocator)
 	require.Equal(t, 1, ckpData.RowCount())
+
+	rawData, err := reader.GetRawCheckpointData(ctx)
+	require.NoError(t, err)
+	defer rawData.Clean(common.CheckpointAllocator)
+	require.Equal(t, 2, rawData.RowCount())
+	objectTypes := vector.MustFixedColNoTypeCheck[int8](rawData.Vecs[ckputil.TableObjectsAttr_ObjectType_Idx])
+	require.Equal(t, []int8{ckputil.ObjectType_Data, ckputil.ObjectType_FTSSidecar}, objectTypes)
+
+	flatFiles, err := LoadCheckpointFTSFiles(ctx, reader, nil)
+	require.NoError(t, err)
+	require.Len(t, flatFiles, 2)
+	flatFileNeedCopy := make(map[string]bool, len(flatFiles))
+	for _, file := range flatFiles {
+		flatFileNeedCopy[file.Path] = file.NeedCopy
+	}
+	require.Equal(t, map[string]bool{
+		ftnative.SidecarLocatorPath(objectName):        true,
+		ftnative.SidecarPath(objectName, "__idx_body"): true,
+	}, flatFileNeedCopy)
+
+	baseTS := types.BuildTS(101, 0)
+	flatFiles, err = LoadCheckpointFTSFiles(ctx, reader, &baseTS)
+	require.NoError(t, err)
+	require.Len(t, flatFiles, 2)
+	flatFileNeedCopy = make(map[string]bool, len(flatFiles))
+	for _, file := range flatFiles {
+		flatFileNeedCopy[file.Path] = file.NeedCopy
+	}
+	require.Equal(t, map[string]bool{
+		ftnative.SidecarLocatorPath(objectName):        false,
+		ftnative.SidecarPath(objectName, "__idx_body"): false,
+	}, flatFileNeedCopy)
+
+	tableReader := NewCKPReaderWithTableID_V2(
+		CheckpointCurrentVersion,
+		location,
+		table.ID,
+		common.CheckpointAllocator,
+		fs,
+	)
+	require.NoError(t, tableReader.ReadMeta(ctx))
+	ranges, err := tableReader.GetTableRanges(ctx)
+	require.NoError(t, err)
+	require.Len(t, ranges, 1)
+	require.Equal(t, ckputil.ObjectType_Data, ranges[0].ObjectType)
+	require.Equal(t, 1, ranges[0].Rows())
+
+	dstFS, err := fileservice.NewMemoryFS("dst", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	lastReader, err := GetCheckpointReader(ctx, "test", fs, location, CheckpointCurrentVersion)
+	require.NoError(t, err)
+	rewrittenLocation, _, _, err := ReWriteCheckpointAndBlockFromKey(
+		ctx,
+		"test",
+		fs,
+		dstFS,
+		location,
+		lastReader,
+		CheckpointCurrentVersion,
+		createTS,
+	)
+	require.NoError(t, err)
+
+	rewrittenReader, err := GetCheckpointReader(ctx, "test", dstFS, rewrittenLocation, CheckpointCurrentVersion)
+	require.NoError(t, err)
+	rewrittenRaw, err := rewrittenReader.GetRawCheckpointData(ctx)
+	require.NoError(t, err)
+	defer rewrittenRaw.Clean(common.CheckpointAllocator)
+	require.Equal(t, 2, rewrittenRaw.RowCount())
+	rewrittenSidecarRows := 0
+	err = rewrittenReader.ForEachFTSSidecarRow(
+		ctx,
+		func(
+			_ uint32,
+			_ uint64,
+			tid uint64,
+			objectStats objectio.ObjectStats,
+			create, delete types.TS,
+			indexTable, sidecarPath, locatorPath string,
+			segmentVersion uint32,
+			docCount int64,
+			flags uint16,
+			_ types.Rowid,
+		) error {
+			rewrittenSidecarRows++
+			require.Equal(t, table.ID, tid)
+			require.Equal(t, objectName, objectStats.ObjectName().String())
+			require.Equal(t, createTS, create)
+			require.True(t, delete.IsEmpty())
+			require.Equal(t, "__idx_body", indexTable)
+			require.Equal(t, ftnative.SidecarPath(objectName, "__idx_body"), sidecarPath)
+			require.Equal(t, ftnative.SidecarLocatorPath(objectName), locatorPath)
+			require.Equal(t, ftnative.CurrentSegmentVersion, segmentVersion)
+			require.Equal(t, int64(3), docCount)
+			require.NotZero(t, flags&ftnative.SidecarFlagLocatorWritten)
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, rewrittenSidecarRows)
 }
