@@ -127,16 +127,53 @@ func ExtractIndexDefinitions(schema *catalog.Schema) ([]IndexDefinition, error) 
 	return defs, nil
 }
 
-func NewObjectIndexer(schema *catalog.Schema) (*ObjectIndexer, error) {
-	indexes, err := ExtractIndexDefinitions(schema)
+func ExtractPlanIndexDefinitions(tableDef *plan.TableDef) ([]IndexDefinition, error) {
+	if tableDef == nil || len(tableDef.Indexes) == 0 {
+		return nil, nil
+	}
+
+	defs := make([]IndexDefinition, 0, len(tableDef.Indexes))
+	for _, idx := range tableDef.Indexes {
+		if idx == nil || !pkgcatalog.IsFullTextIndexAlgo(idx.IndexAlgo) {
+			continue
+		}
+		param, err := parseIndexParam(idx)
+		if err != nil {
+			return nil, err
+		}
+		def := IndexDefinition{
+			Name:      idx.IndexName,
+			TableName: idx.IndexTableName,
+			Parts:     append([]string(nil), idx.Parts...),
+			Param:     param,
+		}
+		if hasDatalinkPartInPlan(tableDef, idx.Parts) {
+			def.SkipReason = "datalink columns require query-time tokenization fallback"
+		}
+		defs = append(defs, def)
+	}
+	return defs, nil
+}
+
+func NewPlanObjectIndexer(tableDef *plan.TableDef) (*ObjectIndexer, error) {
+	if tableDef == nil || tableDef.Pkey == nil {
+		return nil, moerr.NewInternalErrorNoCtx("native fulltext sidecar requires primary key in table definition")
+	}
+	pkIdx, ok := tableDef.Name2ColIndex[tableDef.Pkey.PkeyColName]
+	if !ok || int(pkIdx) >= len(tableDef.Cols) {
+		return nil, moerr.NewInternalErrorNoCtx("native fulltext sidecar primary key column missing from table definition")
+	}
+	indexes, err := ExtractPlanIndexDefinitions(tableDef)
 	if err != nil {
 		return nil, err
 	}
-	pk := schema.GetPrimaryKey()
+	return newObjectIndexer(tableDef.Pkey.PkeyColName, types.T(tableDef.Cols[pkIdx].Typ.Id), indexes), nil
+}
+
+func newObjectIndexer(pkName string, pkType types.T, indexes []IndexDefinition) *ObjectIndexer {
 	ret := &ObjectIndexer{
-		schema:   schema,
-		pkName:   pk.Name,
-		pkType:   pk.Type.Oid,
+		pkName:   pkName,
+		pkType:   pkType,
 		indexes:  indexes,
 		builders: make(map[string]*Builder, len(indexes)),
 	}
@@ -146,6 +183,17 @@ func NewObjectIndexer(schema *catalog.Schema) (*ObjectIndexer, error) {
 		}
 		ret.builders[idx.TableName] = NewBuilder(idx.Param, nil)
 	}
+	return ret
+}
+
+func NewObjectIndexer(schema *catalog.Schema) (*ObjectIndexer, error) {
+	indexes, err := ExtractIndexDefinitions(schema)
+	if err != nil {
+		return nil, err
+	}
+	pk := schema.GetPrimaryKey()
+	ret := newObjectIndexer(pk.Name, pk.Type.Oid, indexes)
+	ret.schema = schema
 	return ret, nil
 }
 

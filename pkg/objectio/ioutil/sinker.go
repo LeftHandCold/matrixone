@@ -82,6 +82,9 @@ type FileSinker interface {
 	Close() error
 }
 
+type BatchWrittenHook func(*batch.Batch, []uint32) error
+type ObjectSyncedHook func(context.Context, fileservice.FileService, objectio.ObjectName, uint32) error
+
 var _ FileSinker = new(FSinkerImpl)
 
 type FSinkerImpl struct {
@@ -95,6 +98,8 @@ type FSinkerImpl struct {
 	seqnums         []uint16
 	schemaVersion   uint32
 	hiddenSelection objectio.HiddenColumnSelection
+	onBatchWritten  BatchWrittenHook
+	onObjectSynced  ObjectSyncedHook
 }
 
 func (s *FSinkerImpl) Sink(ctx context.Context, b *batch.Batch) error {
@@ -116,8 +121,14 @@ func (s *FSinkerImpl) Sink(ctx context.Context, b *batch.Batch) error {
 		}
 	}
 
-	_, err := s.writer.WriteBatch(b)
-	return err
+	block, err := s.writer.WriteBatch(b)
+	if err != nil {
+		return err
+	}
+	if s.onBatchWritten != nil {
+		return s.onBatchWritten(b, []uint32{block.GetRows()})
+	}
+	return nil
 }
 
 func (s *FSinkerImpl) Sync(ctx context.Context) (*objectio.ObjectStats, error) {
@@ -130,6 +141,11 @@ func (s *FSinkerImpl) Sync(ctx context.Context) (*objectio.ObjectStats, error) {
 		ss = s.writer.GetObjectStats(objectio.WithSorted(), objectio.WithCNCreated())
 	} else {
 		ss = s.writer.GetObjectStats(objectio.WithCNCreated())
+	}
+	if s.onObjectSynced != nil {
+		if err := s.onObjectSynced(ctx, s.fs, ss.ObjectName(), ss.Rows()); err != nil {
+			return nil, err
+		}
 	}
 
 	// s.writer.Reset
@@ -174,8 +190,28 @@ func NewFSinkerImplFactory(
 	isTombstone bool,
 	schemaVersion uint32,
 ) FileSinkerFactory {
+	return NewFSinkerImplFactoryWithHooks(
+		seqnums,
+		sortKeyPos,
+		isPrimaryKey,
+		isTombstone,
+		schemaVersion,
+		nil,
+		nil,
+	)
+}
+
+func NewFSinkerImplFactoryWithHooks(
+	seqnums []uint16,
+	sortKeyPos int,
+	isPrimaryKey bool,
+	isTombstone bool,
+	schemaVersion uint32,
+	onBatchWritten BatchWrittenHook,
+	onObjectSynced ObjectSyncedHook,
+) FileSinkerFactory {
 	return func(mp *mpool.MPool, fs fileservice.FileService) FileSinker {
-		return NewFSinkerImpl(
+		return NewFSinkerImplWithHooks(
 			seqnums,
 			sortKeyPos,
 			isPrimaryKey,
@@ -183,6 +219,8 @@ func NewFSinkerImplFactory(
 			schemaVersion,
 			mp,
 			fs,
+			onBatchWritten,
+			onObjectSynced,
 		)
 	}
 }
@@ -209,14 +247,40 @@ func NewFSinkerImpl(
 	mp *mpool.MPool,
 	fs fileservice.FileService,
 ) *FSinkerImpl {
+	return NewFSinkerImplWithHooks(
+		seqnums,
+		sortKeyPos,
+		isPrimaryKey,
+		isTombstone,
+		schemaVersion,
+		mp,
+		fs,
+		nil,
+		nil,
+	)
+}
+
+func NewFSinkerImplWithHooks(
+	seqnums []uint16,
+	sortKeyPos int,
+	isPrimaryKey bool,
+	isTombstone bool,
+	schemaVersion uint32,
+	mp *mpool.MPool,
+	fs fileservice.FileService,
+	onBatchWritten BatchWrittenHook,
+	onObjectSynced ObjectSyncedHook,
+) *FSinkerImpl {
 	return &FSinkerImpl{
-		fs:            fs,
-		mp:            mp,
-		seqnums:       seqnums,
-		sortKeyPos:    sortKeyPos,
-		isPrimaryKey:  isPrimaryKey,
-		isTombstone:   isTombstone,
-		schemaVersion: schemaVersion,
+		fs:             fs,
+		mp:             mp,
+		seqnums:        seqnums,
+		sortKeyPos:     sortKeyPos,
+		isPrimaryKey:   isPrimaryKey,
+		isTombstone:    isTombstone,
+		schemaVersion:  schemaVersion,
+		onBatchWritten: onBatchWritten,
+		onObjectSynced: onObjectSynced,
 	}
 }
 
