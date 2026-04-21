@@ -357,6 +357,9 @@ func TestBackfillCommittedPersistedSidecars(t *testing.T) {
 }
 
 func TestReadPublishedSidecarSkipsDeterministicMissWhenLocatorMissing(t *testing.T) {
+	ResetRuntimeSidecarRegistry()
+	defer ResetRuntimeSidecarRegistry()
+
 	baseFS, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
 	require.NoError(t, err)
 	fs := &recordingFS{FileService: baseFS}
@@ -371,6 +374,13 @@ func TestReadPublishedSidecarSkipsDeterministicMissWhenLocatorMissing(t *testing
 	paths := fs.snapshotReadPaths()
 	require.Equal(t, []string{SidecarLocatorPath(objName.String())}, paths)
 	require.NotContains(t, paths, SidecarPath(objName.String(), "__idx_body"))
+
+	fs.resetReadSizes()
+	seg, ok, err = ReadPublishedSidecar(context.Background(), fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Nil(t, seg)
+	require.Empty(t, fs.snapshotReadPaths())
 }
 
 func planType(oid types.T) pbplan.Type {

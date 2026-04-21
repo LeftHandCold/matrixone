@@ -312,10 +312,10 @@ func BackfillCommittedPersistedSidecars(
 		return err
 	}
 	relData, err := rel.Ranges(ctx, engine.RangesParam{
-		PreAllocBlocks:     2,
+		PreAllocBlocks:     256,
 		TxnOffset:          0,
 		Policy:             engine.Policy_CollectCommittedPersistedData,
-		DontSupportRelData: false,
+		DontSupportRelData: true,
 	})
 	if err != nil {
 		return err
@@ -486,31 +486,49 @@ func resolvePublishedSidecarPath(
 ) (string, bool, error) {
 	if set, ok := LookupRuntimeSidecars(objectPath); ok {
 		if entry, ok := set.Entries[indexTableName]; ok && entry.SidecarPath != "" {
+			if hasMissingSidecar(entry.SidecarPath) {
+				return "", false, nil
+			}
 			exists, err := statPathExists(ctx, fs, entry.SidecarPath)
 			if err != nil {
 				return "", false, err
 			}
 			if exists {
+				clearMissingSidecar(entry.SidecarPath)
 				return entry.SidecarPath, true, nil
 			}
+			markMissingSidecar(entry.SidecarPath)
 		}
 	}
 
+	if hasMissingLocator(objectPath) {
+		return "", false, nil
+	}
 	locator, exists, err := ReadSidecarLocator(ctx, fs, objectPath)
-	if err != nil || !exists {
+	if err != nil {
 		return "", false, err
 	}
+	if !exists {
+		markMissingLocator(objectPath)
+		return "", false, err
+	}
+	clearMissingLocator(objectPath)
 	for _, entry := range locator.Entries {
 		if entry.IndexTable != indexTableName || entry.FilePath == "" {
 			continue
+		}
+		if hasMissingSidecar(entry.FilePath) {
+			return "", false, nil
 		}
 		exists, err := statPathExists(ctx, fs, entry.FilePath)
 		if err != nil {
 			return "", false, err
 		}
 		if exists {
+			clearMissingSidecar(entry.FilePath)
 			return entry.FilePath, true, nil
 		}
+		markMissingSidecar(entry.FilePath)
 		return "", false, nil
 	}
 	return "", false, nil
@@ -758,6 +776,7 @@ func publishSidecarSegment(
 			locatorEntries[entry.IndexTable] = entry
 		}
 	}
+	clearMissingLocator(objName.String())
 	locatorEntries[indexTableName] = SidecarLocatorEntry{
 		IndexTable: indexTableName,
 		FilePath:   sidecarPath,

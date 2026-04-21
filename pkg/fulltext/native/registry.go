@@ -58,6 +58,17 @@ var globalSidecarRegistry = &runtimeSidecarRegistry{
 	objects: make(map[string]ObjectSidecarSet),
 }
 
+type missingSidecarCache struct {
+	sync.RWMutex
+	locators map[string]struct{}
+	sidecars map[string]struct{}
+}
+
+var globalMissingSidecarCache = &missingSidecarCache{
+	locators: make(map[string]struct{}),
+	sidecars: make(map[string]struct{}),
+}
+
 func PublishRuntimeSidecars(tableID uint64, objectName string, entries []PublishedSidecar) {
 	normalized := normalizePublishedSidecars(entries)
 	if objectName == "" || len(normalized) == 0 {
@@ -73,6 +84,10 @@ func PublishRuntimeSidecars(tableID uint64, objectName string, entries []Publish
 		TableID:    tableID,
 		ObjectName: objectName,
 		Entries:    entryMap,
+	}
+	clearMissingLocator(objectName)
+	for _, entry := range normalized {
+		clearMissingSidecar(entry.SidecarPath)
 	}
 }
 
@@ -94,6 +109,7 @@ func RemoveRuntimeSidecars(objectNames ...string) {
 	defer globalSidecarRegistry.Unlock()
 	for _, objectName := range objectNames {
 		delete(globalSidecarRegistry.objects, objectName)
+		clearMissingLocator(objectName)
 	}
 }
 
@@ -101,6 +117,7 @@ func ResetRuntimeSidecarRegistry() {
 	globalSidecarRegistry.Lock()
 	defer globalSidecarRegistry.Unlock()
 	globalSidecarRegistry.objects = make(map[string]ObjectSidecarSet)
+	resetMissingSidecarCache()
 }
 
 func ExpandDeletePathsWithSidecars(
@@ -224,4 +241,61 @@ func objectPathFromSidecar(sidecarPath string) string {
 		return sidecarPath[:idx]
 	}
 	return sidecarPath
+}
+
+func hasMissingLocator(objectPath string) bool {
+	globalMissingSidecarCache.RLock()
+	defer globalMissingSidecarCache.RUnlock()
+	_, ok := globalMissingSidecarCache.locators[objectPath]
+	return ok
+}
+
+func markMissingLocator(objectPath string) {
+	if objectPath == "" {
+		return
+	}
+	globalMissingSidecarCache.Lock()
+	defer globalMissingSidecarCache.Unlock()
+	globalMissingSidecarCache.locators[objectPath] = struct{}{}
+}
+
+func clearMissingLocator(objectPath string) {
+	if objectPath == "" {
+		return
+	}
+	globalMissingSidecarCache.Lock()
+	defer globalMissingSidecarCache.Unlock()
+	delete(globalMissingSidecarCache.locators, objectPath)
+}
+
+func hasMissingSidecar(sidecarPath string) bool {
+	globalMissingSidecarCache.RLock()
+	defer globalMissingSidecarCache.RUnlock()
+	_, ok := globalMissingSidecarCache.sidecars[sidecarPath]
+	return ok
+}
+
+func markMissingSidecar(sidecarPath string) {
+	if sidecarPath == "" {
+		return
+	}
+	globalMissingSidecarCache.Lock()
+	defer globalMissingSidecarCache.Unlock()
+	globalMissingSidecarCache.sidecars[sidecarPath] = struct{}{}
+}
+
+func clearMissingSidecar(sidecarPath string) {
+	if sidecarPath == "" {
+		return
+	}
+	globalMissingSidecarCache.Lock()
+	defer globalMissingSidecarCache.Unlock()
+	delete(globalMissingSidecarCache.sidecars, sidecarPath)
+}
+
+func resetMissingSidecarCache() {
+	globalMissingSidecarCache.Lock()
+	defer globalMissingSidecarCache.Unlock()
+	globalMissingSidecarCache.locators = make(map[string]struct{})
+	globalMissingSidecarCache.sidecars = make(map[string]struct{})
 }
