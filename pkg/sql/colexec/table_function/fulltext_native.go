@@ -322,7 +322,7 @@ func populatePhraseCompat(
 			})
 		}
 	}
-	liveStates, err := filterLiveNativeDocStates(proc.Ctx, scan, newNativeDeleteCache(), states)
+	liveStates, err := filterLiveNativeDocStates(proc.Ctx, proc.GetService(), scan, newNativeDeleteCache(), states)
 	if err != nil {
 		return err
 	}
@@ -425,7 +425,7 @@ func populateBooleanNative(
 			states = append(states, state)
 		}
 	}
-	liveStates, err := filterLiveNativeDocStates(proc.Ctx, scan, newNativeDeleteCache(), states)
+	liveStates, err := filterLiveNativeDocStates(proc.Ctx, proc.GetService(), scan, newNativeDeleteCache(), states)
 	if err != nil {
 		return err
 	}
@@ -563,6 +563,7 @@ type nativeDeleteGroup struct {
 
 func filterLiveNativeDocStates(
 	ctx context.Context,
+	service string,
 	scan *nativePreparedScan,
 	cache *nativeDeleteCache,
 	states []*nativeDocState,
@@ -595,6 +596,15 @@ func filterLiveNativeDocStates(
 			groups[blockKey] = group
 		}
 		group.indexes = append(group.indexes, i)
+	}
+
+	if scan.tombstones.HasAnyTombstoneFile() && len(groups) > 0 {
+		bids := make([]objectio.Blockid, 0, len(groups))
+		for _, group := range groups {
+			bid := objectio.NewBlockidWithObjectID(group.obj.ObjectId(), group.block)
+			bids = append(bids, bid)
+		}
+		scan.tombstones.PrefetchTombstones(service, scan.fs, bids)
 	}
 
 	for _, group := range groups {

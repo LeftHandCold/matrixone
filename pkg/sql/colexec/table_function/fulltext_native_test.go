@@ -164,17 +164,20 @@ func TestFilterLiveNativeDocStatesBatchesByBlock(t *testing.T) {
 	}
 	cache := newNativeDeleteCache()
 
-	live, err := filterLiveNativeDocStates(context.Background(), scan, cache, states)
+	live, err := filterLiveNativeDocStates(context.Background(), "svc1", scan, cache, states)
 	require.NoError(t, err)
 	require.Len(t, live, 2)
 	require.Equal(t, int64(1), live[0].pk)
 	require.Equal(t, int64(3), live[1].pk)
+	require.Equal(t, 1, tombstones.prefetchCalls)
+	require.Equal(t, 1, tombstones.lastPrefetchBidCount)
 	require.Equal(t, 1, tombstones.hasBlockCalls)
 	require.Equal(t, 1, tombstones.applyPersistedCalls)
 
-	live, err = filterLiveNativeDocStates(context.Background(), scan, cache, states)
+	live, err = filterLiveNativeDocStates(context.Background(), "svc1", scan, cache, states)
 	require.NoError(t, err)
 	require.Len(t, live, 2)
+	require.Equal(t, 2, tombstones.prefetchCalls)
 	require.Equal(t, 1, tombstones.hasBlockCalls)
 	require.Equal(t, 1, tombstones.applyPersistedCalls)
 }
@@ -184,6 +187,8 @@ type mockNativeTombstoner struct {
 	hasAnyTombstoneFile     bool
 	inMemDeleted            map[string]map[int64]struct{}
 	persistedDeleted        map[string]map[int64]struct{}
+	prefetchCalls           int
+	lastPrefetchBidCount    int
 	hasBlockCalls           int
 	applyPersistedCalls     int
 }
@@ -213,7 +218,9 @@ func (m *mockNativeTombstoner) HasBlockTombstone(
 }
 func (m *mockNativeTombstoner) MarshalBinaryWithBuffer(w *bytes.Buffer) error { return nil }
 func (m *mockNativeTombstoner) UnmarshalBinary(buf []byte) error              { return nil }
-func (m *mockNativeTombstoner) PrefetchTombstones(string, fileservice.FileService, []objectio.Blockid) {
+func (m *mockNativeTombstoner) PrefetchTombstones(_ string, _ fileservice.FileService, bid []objectio.Blockid) {
+	m.prefetchCalls++
+	m.lastPrefetchBidCount = len(bid)
 }
 func (m *mockNativeTombstoner) ApplyInMemTombstones(
 	bid *types.Blockid,

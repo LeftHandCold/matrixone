@@ -1,171 +1,197 @@
-# Native FTS 当前问题分析
+# Native FTS 当前问题分析（更新至 2026-04-20）
 
-基于 `fulltext_single_node_report_cn.md` 的测试结果和代码分析。
-
----
-
-## 1. 已修复的问题
-
-### 1.1 Boolean mode 大表报错（已修复）
-
-- 之前：`ERROR 20422: service not found`，>= 5000 行时触发
-- 现在：1M 行 boolean 查询正常通过
+基于 `fulltext_single_node_report_cn.md`、代码实现和最近的远端验证结果。
 
 ---
 
-## 2. 当前最严重的问题：大批量 UPDATE 后旧词残留
+## 1. 当前已经站住的部分
 
-### 2.1 现象
+### 1.1 默认配置与主链路功能
 
-从报告中的数据：
+当前远端环境下，以下能力已经稳定可用：
 
-| 操作 | 期望旧词命中 | 实际旧词命中 | 状态 |
-|------|----------:|----------:|------|
-| 100K persisted UPDATE + checkpoint | 0 | 53,277 | ❌ |
-| 100K tail UPDATE + checkpoint | 0 | 24,894 | ❌ |
+1. **默认配置可用**
+   - 不需要额外 `set global`；
+   - 省略 `WITH PARSER` 的 FULLTEXT DDL、建索引和查询都可以直接跑通。
+2. **查询主链路可用**
+   - `1M` 单机脚本三阶段通过；
+   - 自然语言、boolean、小 probe、mixed-coverage 都继续正确。
+3. **大 DML correctness 主链路已站住**
+   - `100k` tail update/delete 已恢复正确；
+   - `3M mixed update/delete` 在 checkpoint 前后都继续正确。
+4. **多 CN / proxy correctness 本轮已补验证**
+   - `10.222.1.50` 上的 `2CN + 1 proxy` 形态已经补跑；
+   - `proxy/CN1/CN2` 三入口在建索引、插入、update、delete、checkpoint 前后查询结果都保持一致。
 
-新词（`hotupdated` / `tailupdated`）都能正确返回 100,000，说明新版本文档已经进入索引。但旧词没有完全消失。
+### 1.2 当前代码状态
 
-### 2.2 根因分析
+到这一轮为止，代码主线状态可以概括为：
 
-UPDATE 在 MO 中的执行路径是 **DELETE old row + INSERT new row**。对于全文索引，涉及两个层面：
-
-**层面 1：v1 隐藏表维护（PostDML）**
-
-```go
-// postdml.go
-if postdml.PostDmlCtx.IsDelete {
-    sql = fmt.Sprintf("DELETE FROM %s WHERE doc_id IN (%s)", indextbl, values)
-    proc.Base.PostDmlSqlList.Append(sql)
-}
-if postdml.PostDmlCtx.IsInsert {
-    sql = fmt.Sprintf("INSERT INTO %s SELECT f.* FROM %s ...", indextbl, sourcetbl, ...)
-    proc.Base.PostDmlSqlList.Append(sql)
-}
-```
-
-UPDATE 会生成两条 PostDML SQL：先 DELETE 旧 token，再 INSERT 新 token。这些 SQL 在主 pipeline 完成后执行。
-
-**问题**：当 UPDATE 100K 行时，`DELETE FROM hidden_index WHERE doc_id IN (100000 个值)` 这条 SQL 可能因为 IN 列表过大而执行不完整或超时。如果 DELETE 没有完全执行，旧 token 就会残留在隐藏表中。
-
-**层面 2：native sidecar 路径**
-
-native 路径通过 tombstone 过滤旧版本。但 UPDATE 后：
-- 旧行被标记为 tombstone ✅
-- 新行写入 appendable object ✅
-- 旧 object 的 sidecar 中仍然包含旧行的 postings
-- 查询时 `isNativeDeleted` 应该过滤掉旧行
-
-**但是**：如果查询走的是混合路径（native + v1 fallback），native 部分正确过滤了旧行，但 v1 fallback 部分从隐藏表读到了残留的旧 token，就会出现旧词残留。
-
-### 2.3 验证推测
-
-报告中的关键线索：
-
-1. **残留量不是 100K，而是 53,277 和 24,894** — 说明部分旧 token 被成功删除了，但不是全部
-2. **checkpoint 后残留仍然存在** — 说明不是 flush 时序问题
-3. **DELETE 场景完全正常** — DELETE 只需要从隐藏表删除，不需要 INSERT 新 token，所以 PostDML 更简单
-4. **新词能查到 100K** — INSERT 新 token 的 PostDML 执行成功了
-
-**最可能的根因**：v1 的 PostDML `DELETE FROM hidden_index WHERE doc_id IN (...)` 在处理大批量 UPDATE 时，IN 列表被分批执行或部分失败，导致隐藏表中残留了部分旧 token。native sidecar 路径本身的 tombstone 过滤是正确的，但查询最终走的是混合路径，v1 部分的隐藏表残留污染了结果。
-
-### 2.4 建议修复方向
-
-1. **短期**：排查 PostDML 的 DELETE SQL 在大 IN 列表下是否有截断或分批问题
-2. **中期**：当 native 路径 `complete = true` 时，完全跳过 v1 fallback，不依赖隐藏表
-3. **长期**：去掉 v1 隐藏表维护，UPDATE/DELETE 完全依赖 native tombstone
+1. flush / merge / compaction 会生成 native sidecar；
+2. query-time tail segment 与 tombstone 过滤已接入；
+3. incomplete coverage 时仍保留 v1 fallback，当前仍是 **native 优先 + v1 兜底** 的混合架构；
+4. v4 sidecar、lazy decode、partial read、batched exact-term read、empty-directory fix、empty-sidecar guard 都已落地；
+5. runtime sidecar registry、checkpoint sidecar row、replay registry rebuild、GC registry-first delete closure、backup/restore aux-file closure 代码路径都已补齐。
 
 ---
 
-## 3. Sidecar 文件增量为 NA
+## 2. 已修复的关键问题
 
-### 3.1 现象
+以下问题当前都不再是“正在阻塞使用”的 active blocker：
 
-报告中所有阶段的 sidecar 增量都是 `NA`：
+| 问题 | 当前状态 |
+|------|----------|
+| Boolean mode 大表 `service not found` | 已修复 |
+| 省略 `WITH PARSER` 报 `invalid parser` | 已修复 |
+| fileservice `SHARED` / default fallback | 已修复 |
+| `flushTableTail` 最终可见 object 缺 sidecar | 已修复 |
+| 100k tail update/delete correctness | 已修复 |
+| data-first 索引后写入导致 `MATCH` 归零 | 已修复 |
+| 3M mixed residual delete / `rows_total=2982480` | 已修复 |
+| append-only persisted `MATCH=0` 延迟塌陷 | 本轮未复现 |
 
-```
-| *.fts.*.seg  | NA |
-| *.fts.locator | NA |
-```
-
-### 3.2 原因
-
-报告中 `MO_DATA_DIR` 标注为 `not provided`，说明测试脚本没有配置 MO 数据目录路径，无法扫描文件系统来统计 sidecar 文件增量。这不是 bug，只是测试配置缺失。
-
-### 3.3 建议
-
-提供 `MO_DATA_DIR` 后重新跑一次，确认 sidecar 文件确实在 flush/merge 后生成。或者通过 file service 的 API 来检查。
+这意味着：**当前最主要的风险已经不再是“明显的 correctness P0 还没查清”，而是治理闭环和性能收口。**
 
 ---
 
-## 4. 查询延迟分析
+## 3. 当前真正还没完成的问题
 
-### 4.1 数据
+### 3.1 P1：inspect / repair / reconcile 仍未完成
 
-从报告中提取的查询延迟：
+这是当前最值得继续推进的缺口。
 
-| 场景 | 数据量 | 命中量 | 延迟 |
-|------|--------|--------|------|
-| NL 查询 alpha | 1M | 1M | 956ms |
-| checkpoint 后 NL alpha | 1M | 1M | 1009ms |
-| 基线 hotupdate | 2M | 100K | 299ms |
-| 大 boolean +stablegamma | 2M | 500K | 544ms |
-| 查询 legacytoken | 600K | 400K | 337ms |
-| 查询 newtoken | 600K | 200K | 277ms |
+虽然系统现在已经有：
 
-### 4.2 分析
+- runtime sidecar registry
+- checkpoint sidecar metadata
+- replay registry rebuild
+- GC registry-first delete closure
+- backup/restore auxiliary file closure
 
-1. **checkpoint 前后延迟几乎相同**（956ms vs 1009ms）— 说明当前 native 路径和 v1 fallback 路径的查询延迟差距不大。这是因为 native 路径虽然跳过了 `runCountStar`，但仍然全量反序列化 sidecar 到内存 map。
-2. **延迟和命中量基本成正比** — 100K 命中 ~300ms，500K 命中 ~550ms，1M 命中 ~1000ms。说明瓶颈在结果集处理而非索引查找。
-3. **2M 表的 100K 命中查询（299ms）比 1M 表的 1M 命中查询（956ms）快很多** — 进一步证实瓶颈在结果集大小而非表大小。
+但还缺官方运维能力去回答和修复：
 
-### 4.3 优化方向
+1. 哪些 object **应该**有 sidecar；
+2. 哪些 locator 损坏；
+3. 哪些 registry entry 缺失；
+4. 哪些 sidecar 是 orphan；
+5. 如何对历史对象做 metadata backfill / reconcile。
 
-当前延迟的主要组成：
-- sidecar 全量反序列化（和 object 数量成正比）
-- postings 遍历和 tombstone 过滤（和命中量成正比）
-- 结果集聚合和打分（和命中量成正比）
+这块不补完，系统就还缺“可排障、可巡检、可修复”的治理闭环。
 
-最有效的优化是 **segment 按需加载**（只读目标 term 的 postings）和 **early top-k**（不需要遍历所有命中文档）。
+### 3.2 P1：backup / restore 仍缺远端实机演练
+
+backup/restore 对齐这条线的代码已经补上：
+
+- backup 会带上 sidecar / locator flat files；
+- checkpoint rewrite 会保 sidecar rows；
+- GC metadata copy 也会补 locator 扩展的 auxiliary closure。
+
+但这轮仍然**缺少远端 Linux 测试机上的真实 backup/restore drill**。  
+也就是说，代码链路已经补齐，但还没有把“恢复后 sidecar/locator 文件闭包 + 查询结果”在实机上再走一遍。
+
+### 3.3 P1：高命中 persisted query 性能还没收官
+
+当前性能结论已经比较清楚：
+
+1. **第一阶段（lazy term decode）收益最明确**
+   - `1M` 单机脚本里，native-ready persisted query `nativeprobe` 曾从 `306ms` 降到 `169ms`，约 **45%** 改善。
+2. **第二阶段（partial read）correctness 没问题，但收益不稳定**
+   - 瓶颈已从“整文件读”转成了“太多小 range read 的 round-trip 开销”。
+3. **第三阶段（batched exact-term read + guard）把 read path 做得更稳**
+   - correctness 已站住；
+   - 但高命中 query 在 `3M` 规模下仍大致是：
+     - `persistnew=350ms`
+     - `stablegamma=1221ms`
+     - `zzzyyyxxx=2340ms`
+     - `+stablegamma -persistnew=1547ms`
+
+所以当前性能问题的本质不是“读错了”，而是：
+
+> **读路径已经更稳定，但“高命中 persisted query 的端到端延迟”还没有被拉到理想水平。**
+
+### 3.4 P1：更长时间 distributed / soak / recovery 验证还不够
+
+这轮已经补上了 `2CN + 1 proxy` 远端验证，且没有打到新的 FULLTEXT correctness bug。  
+但如果目标是“更强生产信心”，还需要：
+
+1. 更长时间 soak；
+2. 节点重启 / replay / recovery 后的持续验证；
+3. backup/restore 后的验证；
+4. 更大规模 distributed workload 的持续回归。
 
 ---
 
-## 5. 其他观察
+## 4. 最新远端结论
 
-### 5.1 tail segment 已实现
+### 4.1 单机 / 默认配置
 
-代码中 `buildNativeTailSegment` 已经实现了 appendable tail 的 native 化——通过 `rel.Ranges` 读取 uncommitted/committed in-memory 数据，构建临时 segment。这解决了之前 review 中提到的"appendable object 无法走 native"的问题。
+- `1M` 单机脚本三阶段通过；
+- `1M` boolean probe 通过；
+- `3M mixed update/delete` checkpoint 前后继续正确；
+- 当前没有新的单机默认配置 correctness P0。
 
-tail segment 的 `applyTombstones = false`，因为 tail 数据是从 reader 直接读取的，已经经过了可见性过滤。
+### 4.2 2CN + 1 proxy
 
-### 5.2 混合查询已实现
+在 `10.222.1.50` 上：
 
-代码中 `incomplete` 标志和 `nativeOwned` 去重机制说明混合查询（native + v1）已经实现：
-- native 处理有 sidecar 的 persisted object + tail segment
-- 如果 `incomplete = true`（有 object 缺 sidecar），v1 处理剩余部分
-- `nativeOwned` 防止同一个文档被 native 和 v1 重复计算
+- proxy：`6001`
+- CN1：`16001`
+- CN2：`16002`
 
-这解决了之前 review 中提到的"fallback 判断过于保守"的问题。
+本轮补做的结论是：
 
-### 5.3 mixed-coverage 场景正确
+1. 省略 `WITH PARSER` 与显式 `WITH PARSER ngram` 在三入口都成功；
+2. `proxy` 上的三阶段 FULLTEXT 回归继续通过；
+3. 跨 CN 交叉流程（`CN1` 建表/更新、`CN2` 建索引、`proxy` 插入/删除）在三入口上 checkpoint 前后都一致；
+4. 更大的 `1M insert + 100k update + 50k delete` 多 CN case 也继续正确。
 
-旧数据（索引创建前已存在）和新数据（索引创建后插入）都能正确查询，说明 native + v1 混合路径在这个场景下工作正常。
+所以到这一轮为止，可以明确补充一句：
+
+> **当前没有新的“只在多 CN / proxy 形态下才暴露”的 FULLTEXT correctness bug。**
+
+### 4.3 proxy 的新增观察
+
+这轮顺手观察到一个现象：
+
+1. **串行短连接** 采样时，proxy 会出现明显的单边粘滞；
+2. **并发连接** 采样时，两台 CN 会正常分流。
+
+这更像 **proxy 路由策略 / 连接复用特征**，当前**不是 FULLTEXT correctness bug**，但会影响后续 proxy 压测口径。
 
 ---
 
-## 6. 问题优先级总结
+## 5. 当前商用判断
 
-| 优先级 | 问题 | 影响 | 状态 |
-|--------|------|------|------|
-| **P0** | 大批量 UPDATE 后旧词残留 | 正确性 | 未修复，最可能是 v1 PostDML DELETE 大 IN 列表问题 |
-| P1 | sidecar 全量反序列化 | 性能 | 未修复 |
-| P1 | postings 无压缩 | 存储/IO | 未修复 |
-| P1 | sidecar GC | 存储泄漏 | 未修复 |
-| P2 | BM25 统计未扣除 tombstone | 打分精度 | 未修复 |
+- 如果“商用”指的是 **灰度、试商用、POC、受控生产验证**，结合当前已经验证过的默认配置、`1M` 单机、`3M mixed update/delete` 和 **`2CN + 1 proxy` 远端验证** 来看，**可以**。
+- 如果“商用”指的是 **全场景成熟 GA**，当前还**不建议直接下这个结论**。
+
+差距现在主要不在 correctness P0，而在：
+
+1. `inspect / repair / reconcile` 还没完成；
+2. backup/restore 还缺远端实机 drill；
+3. 高命中 persisted query 的性能优化还没收官；
+4. distributed / soak / recovery 验证还不够长。
+
+更准确的表述应该是：
+
+> **当前已经进入“核心链路可灰度 / 可试商用”的阶段，但还不是“所有场景都可以直接宣称全面成熟商用 GA”的阶段。**
+
+---
+
+## 6. 当前优先级总结
+
+| 优先级 | 事项 | 影响 | 当前状态 |
+|--------|------|------|----------|
+| P1 | inspect / repair / reconcile | 稳定性 / 运维 | 进行中 |
+| P1 | backup / restore 远端实机演练 | 恢复 / 运维闭环 | 未完成 |
+| P1 | postings 压缩 / object-block pruning / early top-k | 查询性能 | 下一阶段主线 |
+| P1 | 多 CN / 分布式 / soak / recovery 验证 | 生产信心 | 部分完成，仍需继续 |
+| P2 | BM25 / 统计与 tombstone 的精细化治理 | 打分精度 | 可继续优化 |
 | ✅ | Boolean mode 大表报错 | 功能 | 已修复 |
-| ✅ | sidecar 失败阻塞 flush/merge | 稳定性 | 已修复 |
-| ✅ | 全局统计持久化 | 性能 | 已修复 |
-| ✅ | V3 extensible header | 格式演进 | 已修复 |
-| ✅ | appendable tail native 化 | 功能 | 已实现（buildNativeTailSegment） |
-| ✅ | 混合查询（native + v1） | 功能 | 已实现（nativeOwned 去重） |
-| ✅ | DELETE 大批量正确性 | 正确性 | 测试通过 |
+| ✅ | data-first 索引后写入导致 `MATCH` 归零 | 正确性 | 已修复 |
+| ✅ | 100k tail update/delete correctness | 正确性 | 已修复 |
+| ✅ | 3M mixed residual delete / `rows_total=2982480` | 正确性 | 已修复 |
+| ✅ | append-only persisted `MATCH=0` 延迟塌陷 | 正确性 | 本轮未复现 |
+| ✅ | native sidecar flush / merge / tail query 主路径 | 功能 | 已落地 |
+| ✅ | batched sidecar read + empty-sidecar guard | 读路径稳定性 | 远端验证已通过 |
+| ✅ | 2CN + 1 proxy 远端 correctness 验证 | 分布式信心 | 本轮已补通过 |
