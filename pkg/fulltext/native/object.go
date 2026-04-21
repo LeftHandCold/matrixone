@@ -76,6 +76,10 @@ type PersistedSidecarRelation interface {
 	) ([]engine.Reader, error)
 }
 
+type visibleObjectStatsRelation interface {
+	GetNonAppendableObjectStats(context.Context) ([]objectio.ObjectStats, error)
+}
+
 type rowIDIndexBatchAttrs struct {
 	rowIDIdx  int
 	pkIdx     int
@@ -368,6 +372,62 @@ func BackfillCommittedPersistedSidecars(
 	if err != nil {
 		return err
 	}
+	builders, err := buildPersistedSidecarBuilders(
+		ctx,
+		proc,
+		mp,
+		rel,
+		relData,
+		readAttrs,
+		colTypes,
+		tableDef,
+		indexDef,
+		pkType,
+		param,
+	)
+	if err != nil {
+		return err
+	}
+	if len(builders) == 0 {
+		fallbackRelData, ok, err := buildVisibleObjectRelData(ctx, rel, relData)
+		if err != nil {
+			return err
+		}
+		if ok && fallbackRelData != nil && fallbackRelData.DataCnt() > 0 {
+			builders, err = buildPersistedSidecarBuilders(
+				ctx,
+				proc,
+				mp,
+				rel,
+				fallbackRelData,
+				readAttrs,
+				colTypes,
+				tableDef,
+				indexDef,
+				pkType,
+				param,
+			)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return publishBuiltSidecars(ctx, fs, tableID, indexDef.IndexTableName, builders)
+}
+
+func buildPersistedSidecarBuilders(
+	ctx context.Context,
+	proc any,
+	mp *mpool.MPool,
+	rel PersistedSidecarRelation,
+	relData engine.RelData,
+	readAttrs []string,
+	colTypes []types.Type,
+	tableDef *plan.TableDef,
+	indexDef *plan.IndexDef,
+	pkType types.T,
+	param fulltext.FullTextParserParam,
+) (map[string]*objectSegmentBuilder, error) {
 	readers, err := rel.BuildReaders(
 		ctx,
 		proc,
@@ -380,7 +440,7 @@ func BackfillCommittedPersistedSidecars(
 		engine.FilterHint{},
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	builders := make(map[string]*objectSegmentBuilder)
@@ -394,7 +454,7 @@ func BackfillCommittedPersistedSidecars(
 		if err != nil {
 			readBatch.Clean(mp)
 			reader.Close()
-			return err
+			return nil, err
 		}
 		func() {
 			defer readBatch.Clean(mp)
@@ -421,10 +481,34 @@ func BackfillCommittedPersistedSidecars(
 			}
 		}()
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return publishBuiltSidecars(ctx, fs, tableID, indexDef.IndexTableName, builders)
+	return builders, nil
+}
+
+func buildVisibleObjectRelData(
+	ctx context.Context,
+	rel PersistedSidecarRelation,
+	baseRelData engine.RelData,
+) (engine.RelData, bool, error) {
+	visibleRel, ok := rel.(visibleObjectStatsRelation)
+	if !ok {
+		return nil, false, nil
+	}
+	stats, err := visibleRel.GetNonAppendableObjectStats(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(stats) == 0 {
+		return nil, true, nil
+	}
+	if baseRelData == nil {
+		return nil, true, nil
+	}
+	relData := baseRelData.BuildEmptyRelData(len(stats))
+	relData.AppendBlockInfoSlice(objectio.MultiObjectStatsToBlockInfoSlice(stats, false))
+	return relData, true, nil
 }
 
 func ReadPublishedSidecar(

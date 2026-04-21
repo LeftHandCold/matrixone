@@ -139,25 +139,69 @@ func (r *mockPersistedReader) SetBlockTop([]*pbplan.OrderBySpec, uint64) {}
 func (r *mockPersistedReader) SetFilterZM(objectio.ZoneMap)              {}
 
 type mockPersistedRelation struct {
-	readers []engine.Reader
+	readers         []engine.Reader
+	rangesData      engine.RelData
+	buildReadersFn  func(engine.RelData) ([]engine.Reader, error)
+	objectStatsList []objectio.ObjectStats
+}
+
+type mockRelData struct {
+	blocks objectio.BlockInfoSlice
+}
+
+func (m *mockRelData) GetType() engine.RelDataType              { return engine.RelDataBlockList }
+func (m *mockRelData) String() string                           { return "mockRelData" }
+func (m *mockRelData) MarshalBinary() ([]byte, error)           { return nil, nil }
+func (m *mockRelData) UnmarshalBinary([]byte) error             { return nil }
+func (m *mockRelData) AttachTombstones(engine.Tombstoner) error { return nil }
+func (m *mockRelData) GetTombstones() engine.Tombstoner         { return nil }
+func (m *mockRelData) DataSlice(begin, end int) engine.RelData {
+	return &mockRelData{blocks: objectio.BlockInfoSlice(m.blocks.Slice(begin, end))}
+}
+func (m *mockRelData) BuildEmptyRelData(preAllocSize int) engine.RelData {
+	return &mockRelData{blocks: objectio.MakeBlockInfoSlice(preAllocSize)}
+}
+func (m *mockRelData) DataCnt() int                 { return m.blocks.Len() }
+func (m *mockRelData) GetShardIDList() []uint64     { return nil }
+func (m *mockRelData) GetShardID(int) uint64        { return 0 }
+func (m *mockRelData) SetShardID(int, uint64)       {}
+func (m *mockRelData) AppendShardID(uint64)         {}
+func (m *mockRelData) Split(i int) []engine.RelData { return []engine.RelData{m} }
+func (m *mockRelData) GetBlockInfoSlice() objectio.BlockInfoSlice {
+	return objectio.BlockInfoSlice(m.blocks.GetAllBytes())
+}
+func (m *mockRelData) GetBlockInfo(i int) objectio.BlockInfo { return *m.blocks.Get(i) }
+func (m *mockRelData) SetBlockInfo(i int, blk *objectio.BlockInfo) {
+	copy(m.blocks.GetAllBytes()[i*objectio.BlockInfoSize:(i+1)*objectio.BlockInfoSize], objectio.EncodeBlockInfo(blk))
+}
+func (m *mockRelData) AppendBlockInfo(blk *objectio.BlockInfo) { m.blocks.AppendBlockInfo(blk) }
+func (m *mockRelData) AppendBlockInfoSlice(slice objectio.BlockInfoSlice) {
+	m.blocks.Append(slice.GetAllBytes())
 }
 
 func (r *mockPersistedRelation) Ranges(context.Context, engine.RangesParam) (engine.RelData, error) {
-	return nil, nil
+	return r.rangesData, nil
 }
 
 func (r *mockPersistedRelation) BuildReaders(
-	context.Context,
-	any,
-	*pbplan.Expr,
-	engine.RelData,
-	int,
-	int,
-	bool,
-	engine.TombstoneApplyPolicy,
-	engine.FilterHint,
+	_ context.Context,
+	_ any,
+	_ *pbplan.Expr,
+	relData engine.RelData,
+	_ int,
+	_ int,
+	_ bool,
+	_ engine.TombstoneApplyPolicy,
+	_ engine.FilterHint,
 ) ([]engine.Reader, error) {
+	if r.buildReadersFn != nil {
+		return r.buildReadersFn(relData)
+	}
 	return r.readers, nil
+}
+
+func (r *mockPersistedRelation) GetNonAppendableObjectStats(context.Context) ([]objectio.ObjectStats, error) {
+	return r.objectStatsList, nil
 }
 
 func TestObjectIndexerBuildAndReadSidecar(t *testing.T) {
@@ -354,6 +398,84 @@ func TestBackfillCommittedPersistedSidecars(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, int64(1), seg2.DocCount)
+}
+
+func TestBackfillCommittedPersistedSidecarsFallsBackToVisibleObjects(t *testing.T) {
+	ResetRuntimeSidecarRegistry()
+	defer ResetRuntimeSidecarRegistry()
+
+	fs, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	mp := mpool.MustNewZero()
+	obj1 := objectio.NewObjectid()
+	tableDef := &pbplan.TableDef{
+		Name: "docs",
+		Cols: []*pbplan.ColDef{
+			{Name: "id", Typ: planType(types.T_int64)},
+			{Name: "body", Typ: planType(types.T_varchar)},
+		},
+		Name2ColIndex: map[string]int32{
+			"id":   0,
+			"body": 1,
+		},
+		Pkey: &pbplan.PrimaryKeyDef{
+			PkeyColName: "id",
+			Names:       []string{"id"},
+		},
+	}
+	indexDef := &pbplan.IndexDef{
+		IndexName:       "idx_body",
+		IndexTableName:  "__idx_body",
+		IndexAlgo:       pkgcatalog.MOIndexFullTextAlgo.ToString(),
+		Parts:           []string{"body"},
+		IndexAlgoParams: `{"parser":"default"}`,
+	}
+	stats := objectio.NewObjectStatsWithObjectID(&obj1, false, false, true)
+	require.NoError(t, objectio.SetObjectStatsBlkCnt(stats, 1))
+	require.NoError(t, objectio.SetObjectStatsRowCnt(stats, 1))
+	rel := &mockPersistedRelation{
+		rangesData: &mockRelData{blocks: objectio.MakeBlockInfoSlice(0)},
+		buildReadersFn: func(relData engine.RelData) ([]engine.Reader, error) {
+			if relData == nil || relData.DataCnt() == 0 {
+				return []engine.Reader{&mockPersistedReader{}}, nil
+			}
+			return []engine.Reader{
+				&mockPersistedReader{
+					rows: []persistedRow{
+						{
+							rowID: objectio.NewRowIDWithObjectIDBlkNumAndRowID(obj1, 0, 1),
+							pk:    1,
+							body:  []byte("matrix origin native"),
+						},
+					},
+				},
+			}, nil
+		},
+		objectStatsList: []objectio.ObjectStats{*stats},
+	}
+
+	err = BackfillCommittedPersistedSidecars(
+		context.Background(),
+		nil,
+		mp,
+		rel,
+		fs,
+		42,
+		tableDef,
+		indexDef,
+	)
+	require.NoError(t, err)
+
+	objName := objectio.BuildObjectNameWithObjectID(&obj1)
+	locator, ok, err := ReadSidecarLocator(context.Background(), fs, objName.String())
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Len(t, locator.Entries, 1)
+
+	seg, ok, err := ReadPublishedSidecar(context.Background(), fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, int64(1), seg.DocCount)
 }
 
 func TestReadPublishedSidecarSkipsDeterministicMissWhenLocatorMissing(t *testing.T) {
