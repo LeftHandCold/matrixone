@@ -77,6 +77,10 @@ type PersistedSidecarRelation interface {
 }
 
 type visibleObjectStatsRelation interface {
+	GetVisibleObjectStats(context.Context) ([]objectio.ObjectStats, error)
+}
+
+type nonAppendableObjectStatsRelation interface {
 	GetNonAppendableObjectStats(context.Context) ([]objectio.ObjectStats, error)
 }
 
@@ -492,13 +496,26 @@ func buildVisibleObjectRelData(
 	rel PersistedSidecarRelation,
 	baseRelData engine.RelData,
 ) (engine.RelData, bool, error) {
-	visibleRel, ok := rel.(visibleObjectStatsRelation)
+	var (
+		stats []objectio.ObjectStats
+		err   error
+		ok    bool
+	)
+	if visibleRel, yes := rel.(visibleObjectStatsRelation); yes {
+		stats, err = visibleRel.GetVisibleObjectStats(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		ok = true
+	} else if visibleRel, yes := rel.(nonAppendableObjectStatsRelation); yes {
+		stats, err = visibleRel.GetNonAppendableObjectStats(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		ok = true
+	}
 	if !ok {
 		return nil, false, nil
-	}
-	stats, err := visibleRel.GetNonAppendableObjectStats(ctx)
-	if err != nil {
-		return nil, false, err
 	}
 	if len(stats) == 0 {
 		return nil, true, nil

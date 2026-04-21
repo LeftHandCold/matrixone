@@ -2523,6 +2523,27 @@ func (tbl *txnTable) GetNonAppendableObjectStats(ctx context.Context) ([]objecti
 	return objStats, nil
 }
 
+func (tbl *txnTable) GetVisibleObjectStats(ctx context.Context) ([]objectio.ObjectStats, error) {
+	snapshot := types.TimestampToTS(tbl.getTxn().op.SnapshotTS())
+	state, err := tbl.getPartitionState(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	objStats := make([]objectio.ObjectStats, 0, tbl.ApproxObjectsNum(ctx))
+	err = ForeachVisibleObjects(state, snapshot, func(obj objectio.ObjectEntry) error {
+		if obj.GetAppendable() {
+			return nil
+		}
+		objStats = append(objStats, obj.ObjectStats)
+		return nil
+	}, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	return objStats, nil
+}
+
 // Reset what?
 // TODO: txnTable should be stateless
 func (tbl *txnTable) Reset(op client.TxnOperator) error {

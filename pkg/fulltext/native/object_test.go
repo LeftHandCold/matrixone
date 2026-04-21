@@ -204,6 +204,10 @@ func (r *mockPersistedRelation) GetNonAppendableObjectStats(context.Context) ([]
 	return r.objectStatsList, nil
 }
 
+func (r *mockPersistedRelation) GetVisibleObjectStats(context.Context) ([]objectio.ObjectStats, error) {
+	return r.objectStatsList, nil
+}
+
 func TestObjectIndexerBuildAndReadSidecar(t *testing.T) {
 	schema := catalog.NewEmptySchema("fts_native_test")
 	require.NoError(t, schema.AppendPKCol("id", types.T_int64.ToType(), 0))
