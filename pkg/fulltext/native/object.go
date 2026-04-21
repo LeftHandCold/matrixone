@@ -18,10 +18,12 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"sort"
 	"strings"
 
 	pkgcatalog "github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -57,6 +59,33 @@ type resolvedIndex struct {
 	builder   *Builder
 	partIdxes []int
 	partTypes []types.T
+}
+
+type PersistedSidecarRelation interface {
+	Ranges(context.Context, engine.RangesParam) (engine.RelData, error)
+	BuildReaders(
+		ctx context.Context,
+		proc any,
+		expr *plan.Expr,
+		relData engine.RelData,
+		num int,
+		txnOffset int,
+		orderBy bool,
+		policy engine.TombstoneApplyPolicy,
+		filterHint engine.FilterHint,
+	) ([]engine.Reader, error)
+}
+
+type rowIDIndexBatchAttrs struct {
+	rowIDIdx  int
+	pkIdx     int
+	partIdxes []int
+	partTypes []types.T
+}
+
+type objectSegmentBuilder struct {
+	name    objectio.ObjectName
+	builder *Builder
 }
 
 func ExtractIndexDefinitions(schema *catalog.Schema) ([]IndexDefinition, error) {
@@ -254,8 +283,120 @@ func (o *ObjectIndexer) Write(
 	return published, nil
 }
 
+func BackfillCommittedPersistedSidecars(
+	ctx context.Context,
+	proc any,
+	mp *mpool.MPool,
+	rel PersistedSidecarRelation,
+	fs fileservice.FileService,
+	tableID uint64,
+	tableDef *plan.TableDef,
+	indexDef *plan.IndexDef,
+) error {
+	if rel == nil || mp == nil || fs == nil || tableDef == nil || indexDef == nil {
+		return nil
+	}
+	if indexDef.IndexTableName == "" || len(indexDef.Parts) == 0 {
+		return nil
+	}
+	param, err := parseIndexParam(indexDef)
+	if err != nil {
+		return err
+	}
+	if hasDatalinkPartInPlan(tableDef, indexDef.Parts) {
+		return nil
+	}
+
+	readAttrs, colTypes, pkType, err := buildRowIDIndexReadAttrs(tableDef, indexDef.Parts)
+	if err != nil {
+		return err
+	}
+	relData, err := rel.Ranges(ctx, engine.RangesParam{
+		PreAllocBlocks:     2,
+		TxnOffset:          0,
+		Policy:             engine.Policy_CollectCommittedPersistedData,
+		DontSupportRelData: false,
+	})
+	if err != nil {
+		return err
+	}
+	readers, err := rel.BuildReaders(
+		ctx,
+		proc,
+		nil,
+		relData,
+		1,
+		0,
+		false,
+		engine.Policy_CheckAll,
+		engine.FilterHint{},
+	)
+	if err != nil {
+		return err
+	}
+
+	builders := make(map[string]*objectSegmentBuilder)
+	for _, reader := range readers {
+		readBatch := batch.NewWithSize(len(readAttrs))
+		readBatch.SetAttributes(readAttrs)
+		for i := range readAttrs {
+			readBatch.Vecs[i] = vector.NewVec(colTypes[i])
+		}
+		resolved, err := resolveRowIDIndexBatchAttrs(readBatch, tableDef.Pkey.PkeyColName, indexDef.Parts)
+		if err != nil {
+			readBatch.Clean(mp)
+			reader.Close()
+			return err
+		}
+		func() {
+			defer readBatch.Clean(mp)
+			defer reader.Close()
+			for {
+				isEnd, readErr := reader.Read(ctx, readAttrs, nil, mp, readBatch)
+				if readErr != nil {
+					err = readErr
+					return
+				}
+				if isEnd {
+					return
+				}
+				if readBatch.RowCount() == 0 {
+					readBatch.CleanOnlyData()
+					continue
+				}
+				readErr = appendRowIDIndexBatch(builders, readBatch, resolved, pkType, param)
+				readBatch.CleanOnlyData()
+				if readErr != nil {
+					err = readErr
+					return
+				}
+			}
+		}()
+		if err != nil {
+			return err
+		}
+	}
+	return publishBuiltSidecars(ctx, fs, tableID, indexDef.IndexTableName, builders)
+}
+
+func ReadPublishedSidecar(
+	ctx context.Context,
+	fs fileservice.FileService,
+	objName objectio.ObjectName,
+	indexTableName string,
+) (*Segment, bool, error) {
+	filePath, exists, err := resolvePublishedSidecarPath(ctx, fs, objName.String(), indexTableName)
+	if err != nil || !exists {
+		return nil, false, err
+	}
+	return readSidecarFile(ctx, fs, filePath)
+}
+
 func ReadSidecar(ctx context.Context, fs fileservice.FileService, objName objectio.ObjectName, indexTableName string) (*Segment, bool, error) {
-	filePath := SidecarPath(objName.String(), indexTableName)
+	return readSidecarFile(ctx, fs, SidecarPath(objName.String(), indexTableName))
+}
+
+func readSidecarFile(ctx context.Context, fs fileservice.FileService, filePath string) (*Segment, bool, error) {
 	prefix, exists, err := readSidecarRange(ctx, fs, filePath, 0, int64(segmentPrefixLen))
 	if err != nil {
 		return nil, false, err
@@ -337,6 +478,44 @@ func ReadSidecar(ctx context.Context, fs fileservice.FileService, objName object
 	return seg, true, nil
 }
 
+func resolvePublishedSidecarPath(
+	ctx context.Context,
+	fs fileservice.FileService,
+	objectPath string,
+	indexTableName string,
+) (string, bool, error) {
+	if set, ok := LookupRuntimeSidecars(objectPath); ok {
+		if entry, ok := set.Entries[indexTableName]; ok && entry.SidecarPath != "" {
+			exists, err := statPathExists(ctx, fs, entry.SidecarPath)
+			if err != nil {
+				return "", false, err
+			}
+			if exists {
+				return entry.SidecarPath, true, nil
+			}
+		}
+	}
+
+	locator, exists, err := ReadSidecarLocator(ctx, fs, objectPath)
+	if err != nil || !exists {
+		return "", false, err
+	}
+	for _, entry := range locator.Entries {
+		if entry.IndexTable != indexTableName || entry.FilePath == "" {
+			continue
+		}
+		exists, err := statPathExists(ctx, fs, entry.FilePath)
+		if err != nil {
+			return "", false, err
+		}
+		if exists {
+			return entry.FilePath, true, nil
+		}
+		return "", false, nil
+	}
+	return "", false, nil
+}
+
 func readSidecarRange(
 	ctx context.Context,
 	fs fileservice.FileService,
@@ -387,6 +566,234 @@ func readSidecarRanges(
 		blobs[request.term] = vec.Entries[i].Data
 	}
 	return blobs, true, nil
+}
+
+func buildRowIDIndexReadAttrs(
+	tableDef *plan.TableDef,
+	parts []string,
+) ([]string, []types.Type, types.T, error) {
+	pkIdx, ok := tableDef.Name2ColIndex[tableDef.Pkey.PkeyColName]
+	if !ok {
+		return nil, nil, 0, moerr.NewInternalErrorNoCtx("native fulltext backfill missing primary key column")
+	}
+	pkType := types.T(tableDef.Cols[pkIdx].Typ.Id)
+	readAttrs := make([]string, 0, len(parts)+2)
+	colTypes := make([]types.Type, 0, len(parts)+2)
+	seen := make(map[string]struct{}, len(parts)+2)
+	appendAttr := func(name string, typ types.Type) {
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		readAttrs = append(readAttrs, name)
+		colTypes = append(colTypes, typ)
+	}
+	appendAttr(pkgcatalog.Row_ID, types.T_Rowid.ToType())
+	appendAttr(
+		tableDef.Pkey.PkeyColName,
+		types.New(
+			types.T(tableDef.Cols[pkIdx].Typ.Id),
+			tableDef.Cols[pkIdx].Typ.Width,
+			tableDef.Cols[pkIdx].Typ.Scale,
+		),
+	)
+	for _, part := range parts {
+		idx, ok := tableDef.Name2ColIndex[part]
+		if !ok {
+			return nil, nil, 0, moerr.NewInternalErrorNoCtx("native fulltext backfill missing indexed column")
+		}
+		appendAttr(
+			part,
+			types.New(
+				types.T(tableDef.Cols[idx].Typ.Id),
+				tableDef.Cols[idx].Typ.Width,
+				tableDef.Cols[idx].Typ.Scale,
+			),
+		)
+	}
+	return readAttrs, colTypes, pkType, nil
+}
+
+func resolveRowIDIndexBatchAttrs(
+	bat *batch.Batch,
+	pkName string,
+	parts []string,
+) (rowIDIndexBatchAttrs, error) {
+	attrMap := make(map[string]int, len(bat.Attrs))
+	for i, attr := range bat.Attrs {
+		attrMap[strings.ToLower(attr)] = i
+	}
+	rowIDIdx, ok := attrMap[strings.ToLower(pkgcatalog.Row_ID)]
+	if !ok {
+		return rowIDIndexBatchAttrs{}, moerr.NewInternalErrorNoCtx("native fulltext backfill missing rowid column in batch")
+	}
+	pkIdx, ok := attrMap[strings.ToLower(pkName)]
+	if !ok {
+		return rowIDIndexBatchAttrs{}, moerr.NewInternalErrorNoCtx("native fulltext backfill missing primary key column in batch")
+	}
+
+	partIdxes := make([]int, 0, len(parts))
+	partTypes := make([]types.T, 0, len(parts))
+	for _, part := range parts {
+		colIdx, ok := attrMap[strings.ToLower(part)]
+		if !ok {
+			return rowIDIndexBatchAttrs{}, moerr.NewInternalErrorNoCtx("native fulltext backfill missing indexed column in batch")
+		}
+		partIdxes = append(partIdxes, colIdx)
+		partTypes = append(partTypes, bat.Vecs[colIdx].GetType().Oid)
+	}
+
+	return rowIDIndexBatchAttrs{
+		rowIDIdx:  rowIDIdx,
+		pkIdx:     pkIdx,
+		partIdxes: partIdxes,
+		partTypes: partTypes,
+	}, nil
+}
+
+func appendRowIDIndexBatch(
+	builders map[string]*objectSegmentBuilder,
+	bat *batch.Batch,
+	resolved rowIDIndexBatchAttrs,
+	pkType types.T,
+	param fulltext.FullTextParserParam,
+) error {
+	if bat == nil || bat.RowCount() == 0 {
+		return nil
+	}
+	for row := 0; row < bat.RowCount(); row++ {
+		values, ok, err := collectIndexValues(bat, row, resolved.partIdxes, resolved.partTypes)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		rowID := vector.GetFixedAtNoTypeCheck[types.Rowid](bat.Vecs[resolved.rowIDIdx], row)
+		objName := objectio.BuildObjectNameWithObjectID(rowID.BorrowObjectID())
+		objKey := objName.String()
+		objectBuilder := builders[objKey]
+		if objectBuilder == nil {
+			objectBuilder = &objectSegmentBuilder{
+				name:    objName,
+				builder: NewBuilder(param, nil),
+			}
+			builders[objKey] = objectBuilder
+		}
+		pkBytes := types.EncodeValue(vector.GetAny(bat.Vecs[resolved.pkIdx], row, true), pkType)
+		if err := objectBuilder.builder.Add(Document{
+			Block:  rowID.GetBlockOffset(),
+			Row:    rowID.GetRowOffset(),
+			PK:     pkBytes,
+			Values: values,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func publishBuiltSidecars(
+	ctx context.Context,
+	fs fileservice.FileService,
+	tableID uint64,
+	indexTableName string,
+	builders map[string]*objectSegmentBuilder,
+) error {
+	if len(builders) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(builders))
+	for key := range builders {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		seg := builders[key].builder.Build()
+		if seg.DocCount == 0 {
+			continue
+		}
+		if _, err := publishSidecarSegment(ctx, fs, tableID, builders[key].name, indexTableName, seg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func publishSidecarSegment(
+	ctx context.Context,
+	fs fileservice.FileService,
+	tableID uint64,
+	objName objectio.ObjectName,
+	indexTableName string,
+	seg *Segment,
+) (PublishedSidecar, error) {
+	buf, err := seg.MarshalBinary()
+	if err != nil {
+		return PublishedSidecar{}, err
+	}
+	sidecarPath := SidecarPath(objName.String(), indexTableName)
+	if err := fs.Write(ctx, fileservice.IOVector{
+		FilePath: sidecarPath,
+		Entries: []fileservice.IOEntry{{
+			Offset: 0,
+			Size:   int64(len(buf)),
+			Data:   buf,
+		}},
+	}); err != nil {
+		return PublishedSidecar{}, err
+	}
+
+	locatorEntries := make(map[string]SidecarLocatorEntry)
+	locator, exists, err := ReadSidecarLocator(ctx, fs, objName.String())
+	if err != nil {
+		return PublishedSidecar{}, err
+	}
+	if exists {
+		for _, entry := range locator.Entries {
+			if entry.IndexTable == "" || entry.FilePath == "" {
+				continue
+			}
+			locatorEntries[entry.IndexTable] = entry
+		}
+	}
+	locatorEntries[indexTableName] = SidecarLocatorEntry{
+		IndexTable: indexTableName,
+		FilePath:   sidecarPath,
+	}
+	mergedLocatorEntries := make([]SidecarLocatorEntry, 0, len(locatorEntries))
+	for _, entry := range locatorEntries {
+		mergedLocatorEntries = append(mergedLocatorEntries, entry)
+	}
+	if err := WriteSidecarLocator(ctx, fs, objName.String(), mergedLocatorEntries); err != nil {
+		return PublishedSidecar{}, err
+	}
+
+	published := PublishedSidecar{
+		IndexTable:     indexTableName,
+		SidecarPath:    sidecarPath,
+		LocatorPath:    SidecarLocatorPath(objName.String()),
+		SegmentVersion: CurrentSegmentVersion,
+		DocCount:       seg.DocCount,
+		Flags:          SidecarFlagLocatorWritten,
+	}
+	mergedPublished := make(map[string]PublishedSidecar)
+	if set, ok := LookupRuntimeSidecars(objName.String()); ok {
+		if tableID == 0 {
+			tableID = set.TableID
+		}
+		for indexTable, entry := range set.Entries {
+			mergedPublished[indexTable] = entry
+		}
+	}
+	mergedPublished[indexTableName] = published
+	entries := make([]PublishedSidecar, 0, len(mergedPublished))
+	for _, entry := range mergedPublished {
+		entries = append(entries, entry)
+	}
+	PublishRuntimeSidecars(tableID, objName.String(), entries)
+	return published, nil
 }
 
 func AppendQueryBatch(
@@ -463,6 +870,19 @@ func containsDatalink(schema *catalog.Schema, parts []string) bool {
 			continue
 		}
 		if schema.ColDefs[colIdx].Type.Oid == types.T_datalink {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDatalinkPartInPlan(tableDef *plan.TableDef, parts []string) bool {
+	for _, part := range parts {
+		colIdx, ok := tableDef.Name2ColIndex[part]
+		if !ok {
+			continue
+		}
+		if types.T(tableDef.Cols[colIdx].Typ.Id) == types.T_datalink {
 			return true
 		}
 	}

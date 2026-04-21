@@ -214,7 +214,7 @@ func prepareNativeScan(
 			continue
 		}
 		delete(visible, nameStr)
-		seg, exists, err := ftnative.ReadSidecar(proc.Ctx, objectFS, name, indexTableName)
+		seg, exists, err := ftnative.ReadPublishedSidecar(proc.Ctx, objectFS, name, indexTableName)
 		if err != nil {
 			return nil, err
 		}

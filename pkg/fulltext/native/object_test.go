@@ -45,11 +45,13 @@ type recordingFS struct {
 	mu        sync.Mutex
 	readCalls int
 	readSizes []int64
+	readPaths []string
 }
 
 func (r *recordingFS) Read(ctx context.Context, vector *fileservice.IOVector) error {
 	r.mu.Lock()
 	r.readCalls++
+	r.readPaths = append(r.readPaths, vector.FilePath)
 	for _, entry := range vector.Entries {
 		r.readSizes = append(r.readSizes, entry.Size)
 	}
@@ -69,11 +71,18 @@ func (r *recordingFS) snapshotReadCalls() int {
 	return r.readCalls
 }
 
+func (r *recordingFS) snapshotReadPaths() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.readPaths...)
+}
+
 func (r *recordingFS) resetReadSizes() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.readCalls = 0
 	r.readSizes = nil
+	r.readPaths = nil
 }
 
 func (p *nativeMergeSortPool) GetVector(typ *types.Type) (*vector.Vector, func()) {
@@ -83,6 +92,72 @@ func (p *nativeMergeSortPool) GetVector(typ *types.Type) (*vector.Vector, func()
 
 func (p *nativeMergeSortPool) GetMPool() *mpool.MPool {
 	return p.pool.GetMPool()
+}
+
+type mockPersistedReader struct {
+	rows    []persistedRow
+	emitted bool
+}
+
+type persistedRow struct {
+	rowID types.Rowid
+	pk    int64
+	body  []byte
+}
+
+func (r *mockPersistedReader) Close() error { return nil }
+
+func (r *mockPersistedReader) Read(
+	_ context.Context,
+	_ []string,
+	_ *pbplan.Expr,
+	mp *mpool.MPool,
+	bat *batch.Batch,
+) (bool, error) {
+	if r.emitted {
+		return true, nil
+	}
+	for _, row := range r.rows {
+		if err := vector.AppendFixed(bat.Vecs[0], row.rowID, false, mp); err != nil {
+			return false, err
+		}
+		if err := vector.AppendFixed(bat.Vecs[1], row.pk, false, mp); err != nil {
+			return false, err
+		}
+		if err := vector.AppendBytes(bat.Vecs[2], row.body, false, mp); err != nil {
+			return false, err
+		}
+	}
+	bat.SetRowCount(len(r.rows))
+	r.emitted = true
+	return false, nil
+}
+
+func (r *mockPersistedReader) SetOrderBy([]*pbplan.OrderBySpec)          {}
+func (r *mockPersistedReader) GetOrderBy() []*pbplan.OrderBySpec         { return nil }
+func (r *mockPersistedReader) SetBlockTop([]*pbplan.OrderBySpec, uint64) {}
+func (r *mockPersistedReader) SetFilterZM(objectio.ZoneMap)              {}
+
+type mockPersistedRelation struct {
+	readers []engine.Reader
+}
+
+func (r *mockPersistedRelation) Ranges(context.Context, engine.RangesParam) (engine.RelData, error) {
+	return nil, nil
+}
+
+func (r *mockPersistedRelation) BuildReaders(
+	context.Context,
+	any,
+	*pbplan.Expr,
+	engine.RelData,
+	int,
+	int,
+	bool,
+	engine.TombstoneApplyPolicy,
+	engine.FilterHint,
+) ([]engine.Reader, error) {
+	return r.readers, nil
 }
 
 func TestObjectIndexerBuildAndReadSidecar(t *testing.T) {
@@ -176,6 +251,130 @@ func TestObjectIndexerBuildAndReadSidecar(t *testing.T) {
 	require.Len(t, locator.Entries, 1)
 	require.Equal(t, "__idx_body", locator.Entries[0].IndexTable)
 	require.Equal(t, SidecarPath(objName.String(), "__idx_body"), locator.Entries[0].FilePath)
+}
+
+func TestBackfillCommittedPersistedSidecars(t *testing.T) {
+	ResetRuntimeSidecarRegistry()
+	defer ResetRuntimeSidecarRegistry()
+
+	fs, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	mp := mpool.MustNewZero()
+	obj1 := objectio.NewObjectid()
+	obj2 := objectio.NewObjectid()
+	tableDef := &pbplan.TableDef{
+		Name: "docs",
+		Cols: []*pbplan.ColDef{
+			{Name: "id", Typ: planType(types.T_int64)},
+			{Name: "body", Typ: planType(types.T_varchar)},
+		},
+		Name2ColIndex: map[string]int32{
+			"id":   0,
+			"body": 1,
+		},
+		Pkey: &pbplan.PrimaryKeyDef{
+			PkeyColName: "id",
+			Names:       []string{"id"},
+		},
+	}
+	indexDef := &pbplan.IndexDef{
+		IndexName:       "idx_body",
+		IndexTableName:  "__idx_body",
+		IndexAlgo:       pkgcatalog.MOIndexFullTextAlgo.ToString(),
+		Parts:           []string{"body"},
+		IndexAlgoParams: `{"parser":"default"}`,
+	}
+	rel := &mockPersistedRelation{
+		readers: []engine.Reader{
+			&mockPersistedReader{
+				rows: []persistedRow{
+					{
+						rowID: objectio.NewRowIDWithObjectIDBlkNumAndRowID(obj1, 0, 1),
+						pk:    1,
+						body:  []byte("matrix origin native"),
+					},
+					{
+						rowID: objectio.NewRowIDWithObjectIDBlkNumAndRowID(obj1, 0, 2),
+						pk:    2,
+						body:  []byte("native sidecar"),
+					},
+					{
+						rowID: objectio.NewRowIDWithObjectIDBlkNumAndRowID(obj2, 1, 3),
+						pk:    3,
+						body:  []byte("matrix fulltext"),
+					},
+				},
+			},
+		},
+	}
+
+	err = BackfillCommittedPersistedSidecars(
+		context.Background(),
+		nil,
+		mp,
+		rel,
+		fs,
+		42,
+		tableDef,
+		indexDef,
+	)
+	require.NoError(t, err)
+
+	obj1Name := objectio.BuildObjectNameWithObjectID(&obj1)
+	obj2Name := objectio.BuildObjectNameWithObjectID(&obj2)
+
+	registry1, ok := LookupRuntimeSidecars(obj1Name.String())
+	require.True(t, ok)
+	require.Equal(t, uint64(42), registry1.TableID)
+	require.Contains(t, registry1.Entries, "__idx_body")
+
+	registry2, ok := LookupRuntimeSidecars(obj2Name.String())
+	require.True(t, ok)
+	require.Equal(t, uint64(42), registry2.TableID)
+	require.Contains(t, registry2.Entries, "__idx_body")
+
+	locator1, ok, err := ReadSidecarLocator(context.Background(), fs, obj1Name.String())
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Len(t, locator1.Entries, 1)
+	require.Equal(t, SidecarPath(obj1Name.String(), "__idx_body"), locator1.Entries[0].FilePath)
+
+	locator2, ok, err := ReadSidecarLocator(context.Background(), fs, obj2Name.String())
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Len(t, locator2.Entries, 1)
+	require.Equal(t, SidecarPath(obj2Name.String(), "__idx_body"), locator2.Entries[0].FilePath)
+
+	seg1, ok, err := ReadPublishedSidecar(context.Background(), fs, obj1Name, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, int64(2), seg1.DocCount)
+
+	seg2, ok, err := ReadPublishedSidecar(context.Background(), fs, obj2Name, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, int64(1), seg2.DocCount)
+}
+
+func TestReadPublishedSidecarSkipsDeterministicMissWhenLocatorMissing(t *testing.T) {
+	baseFS, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	fs := &recordingFS{FileService: baseFS}
+	objID := objectio.NewObjectid()
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+
+	seg, ok, err := ReadPublishedSidecar(context.Background(), fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Nil(t, seg)
+
+	paths := fs.snapshotReadPaths()
+	require.Equal(t, []string{SidecarLocatorPath(objName.String())}, paths)
+	require.NotContains(t, paths, SidecarPath(objName.String(), "__idx_body"))
+}
+
+func planType(oid types.T) pbplan.Type {
+	return pbplan.Type{Id: int32(oid)}
 }
 
 func TestReadSidecarV4UsesRangeReads(t *testing.T) {

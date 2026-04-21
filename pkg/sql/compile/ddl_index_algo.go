@@ -23,12 +23,16 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
 	"github.com/matrixorigin/matrixone/pkg/vectorindex"
 	"github.com/matrixorigin/matrixone/pkg/vectorindex/cache"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
+	"go.uber.org/zap"
 )
 
 const hnswIndexFlag = "experimental_hnsw_index"
@@ -116,7 +120,60 @@ func (s *Scope) handleMasterIndexTable(
 			return err
 		}
 	}
+	s.backfillFullTextSidecars(c, dbSource, qryDatabase, originalTableDef, indexDef)
 	return nil
+}
+
+func (s *Scope) backfillFullTextSidecars(
+	c *Compile,
+	dbSource engine.Database,
+	qryDatabase string,
+	originalTableDef *plan.TableDef,
+	indexDef *plan.IndexDef,
+) {
+	if c == nil || c.proc == nil || dbSource == nil || originalTableDef == nil || indexDef == nil {
+		return
+	}
+	rel, err := dbSource.Relation(c.proc.Ctx, originalTableDef.Name, nil)
+	if err != nil {
+		logutil.Error(
+			"native fulltext sidecar backfill skipped",
+			zap.String("database", qryDatabase),
+			zap.String("table", originalTableDef.Name),
+			zap.String("index_table", indexDef.IndexTableName),
+			zap.Error(err),
+		)
+		return
+	}
+	objectFS, err := colexec.GetObjectFSFromProc(c.proc)
+	if err != nil {
+		logutil.Error(
+			"native fulltext sidecar backfill skipped",
+			zap.String("database", qryDatabase),
+			zap.String("table", originalTableDef.Name),
+			zap.String("index_table", indexDef.IndexTableName),
+			zap.Error(err),
+		)
+		return
+	}
+	if err := ftnative.BackfillCommittedPersistedSidecars(
+		c.proc.Ctx,
+		c.proc,
+		c.proc.Mp(),
+		rel,
+		objectFS,
+		rel.GetTableID(c.proc.Ctx),
+		originalTableDef,
+		indexDef,
+	); err != nil {
+		logutil.Error(
+			"native fulltext sidecar backfill skipped",
+			zap.String("database", qryDatabase),
+			zap.String("table", originalTableDef.Name),
+			zap.String("index_table", indexDef.IndexTableName),
+			zap.Error(err),
+		)
+	}
 }
 
 func (s *Scope) handleFullTextIndexTable(
