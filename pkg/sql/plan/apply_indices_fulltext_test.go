@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildFullTextScanParamsDoesNotForceNativeOnly(t *testing.T) {
+func TestBuildFullTextScanParamsPreservesNonNativeOnlyForLegacyParams(t *testing.T) {
 	builder := &QueryBuilder{}
 	idx := &pbplan.IndexDef{
 		Parts:           []string{"body"},

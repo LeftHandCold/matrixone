@@ -16,6 +16,7 @@ package compile
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	mock_frontend "github.com/matrixorigin/matrixone/pkg/frontend/test"
+	"github.com/matrixorigin/matrixone/pkg/fulltext"
 	"github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/pb/lock"
 	plan2 "github.com/matrixorigin/matrixone/pkg/pb/plan"
@@ -95,6 +97,24 @@ func Test_lockIndexTable(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFullTextIndexNativeOnly(t *testing.T) {
+	require.False(t, fullTextIndexNativeOnly(nil))
+	require.False(t, fullTextIndexNativeOnly(&plan2.IndexDef{}))
+
+	param := fulltext.FullTextParserParam{
+		Implementation: fulltext.FullTextImplementationNative,
+		NativeOnlyMode: true,
+	}
+	buf, err := json.Marshal(param)
+	require.NoError(t, err)
+	require.True(t, fullTextIndexNativeOnly(&plan2.IndexDef{IndexAlgoParams: string(buf)}))
+
+	param.NativeOnlyMode = false
+	buf, err = json.Marshal(param)
+	require.NoError(t, err)
+	require.False(t, fullTextIndexNativeOnly(&plan2.IndexDef{IndexAlgoParams: string(buf)}))
 }
 
 func TestScope_CreateTable(t *testing.T) {

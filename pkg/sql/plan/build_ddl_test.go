@@ -17,17 +17,18 @@ package plan
 import (
 	"context"
 	"encoding/json"
-	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	moruntime "github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/fulltext"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/dialect"
@@ -282,6 +283,10 @@ func TestBuildFullTextIndexTable(t *testing.T) {
 	require.Len(t, createTable.TableDef.Indexes, 1)
 	require.Equal(t, tree.INDEX_TYPE_FULLTEXT.ToString(), createTable.TableDef.Indexes[0].IndexAlgo)
 	require.Equal(t, []string{"body"}, createTable.TableDef.Indexes[0].Parts)
+	var param fulltext.FullTextParserParam
+	require.NoError(t, json.Unmarshal([]byte(createTable.TableDef.Indexes[0].IndexAlgoParams), &param))
+	require.Equal(t, fulltext.FullTextImplementationNative, param.Implementation)
+	require.True(t, param.NativeOnlyMode)
 }
 
 func TestBuildCreateTable(t *testing.T) {

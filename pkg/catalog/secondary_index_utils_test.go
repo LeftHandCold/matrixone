@@ -41,3 +41,10 @@ func TestFullTextIndexParamsRejectInvalidParser(t *testing.T) {
 	}))
 	require.Error(t, err)
 }
+
+func TestIndexParamsStringToMapSupportsBoolValues(t *testing.T) {
+	params, err := IndexParamsStringToMap(`{"parser":"ngram","native_only":true}`)
+	require.NoError(t, err)
+	require.Equal(t, "ngram", params["parser"])
+	require.Equal(t, "true", params["native_only"])
+}

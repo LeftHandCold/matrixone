@@ -27,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/fulltext"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/sql/features"
@@ -1645,22 +1646,36 @@ func buildFullTextIndexParts(indexInfo *tree.FullTextIndex) []string {
 }
 
 func buildFullTextIndexParams(indexInfo *tree.FullTextIndex, extra map[string]string) (string, error) {
-	params := make(map[string]string)
+	param := fulltext.FullTextParserParam{
+		Implementation: fulltext.FullTextImplementationNative,
+		NativeOnlyMode: true,
+	}
 	if raw, err := catalog.IndexParamsToJsonString(indexInfo); err != nil {
 		return "", err
 	} else if raw != "" {
-		params, err = catalog.IndexParamsStringToMap(raw)
-		if err != nil {
+		if err := json.Unmarshal([]byte(raw), &param); err != nil {
 			return "", err
 		}
 	}
 	for k, v := range extra {
-		params[k] = v
+		switch strings.ToLower(k) {
+		case "parser":
+			param.Parser = v
+		case "implementation":
+			param.Implementation = v
+		case "native_only":
+			enabled, err := strconv.ParseBool(v)
+			if err != nil {
+				return "", err
+			}
+			param.NativeOnlyMode = enabled
+		}
 	}
-	if len(params) == 0 {
-		return "", nil
+	buf, err := json.Marshal(param)
+	if err != nil {
+		return "", err
 	}
-	return catalog.IndexParamsMapToJsonString(params)
+	return string(buf), nil
 }
 
 func buildFullTextIndexDef(indexInfo *tree.FullTextIndex, indexTableName, indexAlgoTableType string, indexParts []string, params string) *plan.IndexDef {
