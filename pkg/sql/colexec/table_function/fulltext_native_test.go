@@ -372,3 +372,55 @@ func TestCollectNativeAnchorLeafIndexes(t *testing.T) {
 	anchor = collectNativeAnchorLeafIndexes(patterns, false)
 	require.Empty(t, anchor)
 }
+
+func TestValidateNativeScanUsage(t *testing.T) {
+	nativeOnly := fulltext.FullTextParserParam{
+		Implementation: fulltext.FullTextImplementationNative,
+		NativeOnlyMode: true,
+	}
+	nativeFallback := fulltext.FullTextParserParam{
+		Implementation: fulltext.FullTextImplementationNative,
+	}
+
+	t.Run("unsupported pattern falls back when fallback allowed", func(t *testing.T) {
+		used, err := validateNativeScanUsage(context.Background(), nativeFallback, false, nil)
+		require.NoError(t, err)
+		require.False(t, used)
+	})
+
+	t.Run("unsupported pattern errors in native only mode", func(t *testing.T) {
+		used, err := validateNativeScanUsage(context.Background(), nativeOnly, false, nil)
+		require.ErrorContains(t, err, "native-only fulltext query pattern is not supported")
+		require.False(t, used)
+	})
+
+	t.Run("missing scan falls back when fallback allowed", func(t *testing.T) {
+		used, err := validateNativeScanUsage(context.Background(), nativeFallback, true, nil)
+		require.NoError(t, err)
+		require.False(t, used)
+	})
+
+	t.Run("missing scan errors in native only mode", func(t *testing.T) {
+		used, err := validateNativeScanUsage(context.Background(), nativeOnly, true, nil)
+		require.ErrorContains(t, err, "native-only fulltext query is unavailable")
+		require.False(t, used)
+	})
+
+	t.Run("incomplete scan falls back when fallback allowed", func(t *testing.T) {
+		used, err := validateNativeScanUsage(context.Background(), nativeFallback, true, &nativePreparedScan{complete: false})
+		require.NoError(t, err)
+		require.False(t, used)
+	})
+
+	t.Run("incomplete scan errors in native only mode", func(t *testing.T) {
+		used, err := validateNativeScanUsage(context.Background(), nativeOnly, true, &nativePreparedScan{complete: false})
+		require.ErrorContains(t, err, "native sidecars are incomplete")
+		require.False(t, used)
+	})
+
+	t.Run("complete scan uses native path", func(t *testing.T) {
+		used, err := validateNativeScanUsage(context.Background(), nativeOnly, true, &nativePreparedScan{complete: true})
+		require.NoError(t, err)
+		require.True(t, used)
+	})
+}

@@ -102,28 +102,28 @@ func fulltextIndexMatchNative(
 	s *fulltext.SearchAccum,
 	srctbl, tblname string,
 ) (bool, error) {
-	if !nativeQuerySupported(s) {
-		return false, nil
+	supported := nativeQuerySupported(s)
+	if !supported {
+		return validateNativeScanUsage(proc.Ctx, u.param, supported, nil)
 	}
 
 	scan, err := prepareNativeScan(proc, srctbl, tblname, u.param)
-	if err != nil || scan == nil {
+	if err != nil {
 		return false, err
 	}
-	if u.param.NativeOnly() {
-		scan.complete = true
+	used, err := validateNativeScanUsage(proc.Ctx, u.param, supported, scan)
+	if err != nil || !used {
+		return used, err
 	}
-	if scan.complete {
-		applyNativeSegmentStats(u, s, scan)
-	}
+	applyNativeSegmentStats(u, s, scan)
 
 	if s.Mode == int64(tree.FULLTEXT_DEFAULT) || s.Mode == int64(tree.FULLTEXT_NL) {
-		return scan.complete, populatePhraseCompat(u, proc, s, scan, s.Pattern)
+		return true, populatePhraseCompat(u, proc, s, scan, s.Pattern)
 	}
 	if len(s.Pattern) == 1 && s.Pattern[0].Operator == fulltext.PHRASE {
-		return scan.complete, populatePhraseCompat(u, proc, s, scan, s.Pattern[0].Children)
+		return true, populatePhraseCompat(u, proc, s, scan, s.Pattern[0].Children)
 	}
-	return scan.complete, populateBooleanNative(u, proc, s, scan)
+	return true, populateBooleanNative(u, proc, s, scan)
 }
 
 func nativeQuerySupported(s *fulltext.SearchAccum) bool {
@@ -161,6 +161,33 @@ func nativePatternSupported(p *fulltext.Pattern) bool {
 		}
 	}
 	return true
+}
+
+func validateNativeScanUsage(
+	ctx context.Context,
+	param fulltext.FullTextParserParam,
+	supported bool,
+	scan *nativePreparedScan,
+) (bool, error) {
+	if !supported {
+		if param.NativeOnly() {
+			return false, moerr.NewNotSupported(ctx, "native-only fulltext query pattern is not supported by the native path")
+		}
+		return false, nil
+	}
+	if scan == nil {
+		if param.NativeOnly() {
+			return false, moerr.NewNotSupported(ctx, "native-only fulltext query is unavailable for this index")
+		}
+		return false, nil
+	}
+	if !scan.complete {
+		if param.NativeOnly() {
+			return false, moerr.NewNotSupported(ctx, "native-only fulltext query cannot run because native sidecars are incomplete")
+		}
+		return false, nil
+	}
+	return true, nil
 }
 
 func prepareNativeScan(
