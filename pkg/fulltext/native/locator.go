@@ -116,10 +116,14 @@ func ExpandDeletePathsWithLocators(
 		appendUnique(objectPath)
 
 		locatorPath := SidecarLocatorPath(objectPath)
-		exists, err := statPathExists(ctx, fs, locatorPath)
+		locator, exists, err := ReadSidecarLocator(ctx, fs, objectPath)
+		if exists {
+			appendUnique(locatorPath)
+		}
 		if err != nil {
+			appendUnique(locatorPath)
 			logutil.Warn(
-				"[NATIVE-FTS-GC-LOCATOR-STAT-FAILED]",
+				"[NATIVE-FTS-GC-LOCATOR-READ-FAILED]",
 				zap.String("object", objectPath),
 				zap.String("locator", locatorPath),
 				zap.Error(err),
@@ -129,30 +133,8 @@ func ExpandDeletePathsWithLocators(
 		if !exists {
 			continue
 		}
-		appendUnique(locatorPath)
-
-		locator, _, err := ReadSidecarLocator(ctx, fs, objectPath)
-		if err != nil {
-			logutil.Warn(
-				"[NATIVE-FTS-GC-LOCATOR-READ-FAILED]",
-				zap.String("object", objectPath),
-				zap.String("locator", locatorPath),
-				zap.Error(err),
-			)
-			continue
-		}
 		for _, entry := range locator.Entries {
-			exists, err := statPathExists(ctx, fs, entry.FilePath)
-			if err != nil {
-				logutil.Warn(
-					"[NATIVE-FTS-GC-SIDECAR-STAT-FAILED]",
-					zap.String("object", objectPath),
-					zap.String("sidecar", entry.FilePath),
-					zap.Error(err),
-				)
-				continue
-			}
-			if exists {
+			if entry.FilePath != "" {
 				appendUnique(entry.FilePath)
 			}
 		}
@@ -184,14 +166,4 @@ func normalizeLocatorEntries(entries []SidecarLocatorEntry) []SidecarLocatorEntr
 		out = append(out, uniq[path])
 	}
 	return out
-}
-
-func statPathExists(ctx context.Context, fs fileservice.FileService, filePath string) (bool, error) {
-	if _, err := fs.StatFile(ctx, filePath); err != nil {
-		if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
 }

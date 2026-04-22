@@ -210,6 +210,10 @@ func (s *Segment) Lookup(term string) ([]Posting, error) {
 	return clonePostings(postings), nil
 }
 
+func (s *Segment) PrefetchTerms(terms []string) error {
+	return s.ensureTermsLoaded(terms)
+}
+
 func (s *Segment) LookupPrefix(prefix string) ([]Posting, error) {
 	terms := s.termNames()
 	matchedTerms := make([]string, 0, 8)

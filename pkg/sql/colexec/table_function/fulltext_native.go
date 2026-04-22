@@ -50,6 +50,10 @@ type nativePreparedScan struct {
 	totalTokens int64
 }
 
+type visibleObjectStatsRelation interface {
+	GetVisibleObjectStats(ctx context.Context) ([]objectio.ObjectStats, error)
+}
+
 type nativeObjectSegment struct {
 	key             string
 	name            objectio.ObjectName
@@ -198,7 +202,7 @@ func prepareNativeScan(
 		visible[info.ObjectName] = struct{}{}
 	}
 
-	stats, err := rel.GetNonAppendableObjectStats(proc.Ctx)
+	stats, err := getNativeVisibleObjectStats(proc.Ctx, rel)
 	if err != nil {
 		return nil, err
 	}
@@ -362,6 +366,9 @@ func populateBooleanNative(
 	}
 
 	for _, obj := range scan.objects {
+		if err := prefetchBooleanNativeTerms(obj.segment, leafs, phrases); err != nil {
+			return err
+		}
 		for idx, leaf := range leafs {
 			postings, err := nativeLookupLeaf(obj.segment, leaf)
 			if err != nil {
@@ -446,6 +453,46 @@ func populateBooleanNative(
 		markNativeOwned(u, state.pk)
 	}
 	return nil
+}
+
+func getNativeVisibleObjectStats(ctx context.Context, rel engine.Relation) ([]objectio.ObjectStats, error) {
+	if visibleRel, ok := rel.(visibleObjectStatsRelation); ok {
+		return visibleRel.GetVisibleObjectStats(ctx)
+	}
+	return rel.GetNonAppendableObjectStats(ctx)
+}
+
+func prefetchBooleanNativeTerms(
+	seg *ftnative.Segment,
+	leafs map[int32]*fulltext.Pattern,
+	phrases []*fulltext.Pattern,
+) error {
+	terms := make([]string, 0, len(leafs)+len(phrases)*2)
+	seen := make(map[string]struct{}, len(leafs)+len(phrases)*2)
+	appendTerm := func(term string) {
+		if term == "" {
+			return
+		}
+		if _, ok := seen[term]; ok {
+			return
+		}
+		seen[term] = struct{}{}
+		terms = append(terms, term)
+	}
+	for _, leaf := range leafs {
+		if leaf.Operator == fulltext.TEXT || leaf.Operator == fulltext.JOIN {
+			appendTerm(leaf.Text)
+		}
+	}
+	for _, phrase := range phrases {
+		for _, child := range phrase.Children {
+			appendTerm(child.Text)
+		}
+	}
+	if len(terms) == 0 {
+		return nil
+	}
+	return seg.PrefetchTerms(terms)
 }
 
 func markNativeOwned(u *fulltextState, pk any) {

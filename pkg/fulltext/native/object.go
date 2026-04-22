@@ -538,7 +538,16 @@ func ReadPublishedSidecar(
 	if err != nil || !exists {
 		return nil, false, err
 	}
-	return readSidecarFile(ctx, fs, filePath)
+	seg, exists, err := readSidecarFile(ctx, fs, filePath)
+	if err != nil {
+		return nil, false, err
+	}
+	if !exists {
+		markMissingSidecar(filePath)
+		return nil, false, nil
+	}
+	clearMissingSidecar(filePath)
+	return seg, true, nil
 }
 
 func ReadSidecar(ctx context.Context, fs fileservice.FileService, objName objectio.ObjectName, indexTableName string) (*Segment, bool, error) {
@@ -638,15 +647,7 @@ func resolvePublishedSidecarPath(
 			if hasMissingSidecar(entry.SidecarPath) {
 				return "", false, nil
 			}
-			exists, err := statPathExists(ctx, fs, entry.SidecarPath)
-			if err != nil {
-				return "", false, err
-			}
-			if exists {
-				clearMissingSidecar(entry.SidecarPath)
-				return entry.SidecarPath, true, nil
-			}
-			markMissingSidecar(entry.SidecarPath)
+			return entry.SidecarPath, true, nil
 		}
 	}
 
@@ -669,16 +670,7 @@ func resolvePublishedSidecarPath(
 		if hasMissingSidecar(entry.FilePath) {
 			return "", false, nil
 		}
-		exists, err := statPathExists(ctx, fs, entry.FilePath)
-		if err != nil {
-			return "", false, err
-		}
-		if exists {
-			clearMissingSidecar(entry.FilePath)
-			return entry.FilePath, true, nil
-		}
-		markMissingSidecar(entry.FilePath)
-		return "", false, nil
+		return entry.FilePath, true, nil
 	}
 	return "", false, nil
 }

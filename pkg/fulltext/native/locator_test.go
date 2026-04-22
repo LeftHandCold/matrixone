@@ -53,6 +53,7 @@ func TestExpandDeletePathsWithLocators(t *testing.T) {
 		"obj_001",
 		SidecarLocatorPath("obj_001"),
 		"obj_001.fts.a.seg",
+		"obj_001.fts.missing.seg",
 	}, expanded)
 }
 

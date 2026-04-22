@@ -683,6 +683,85 @@ func TestReadSidecarV4BatchesExactTermReads(t *testing.T) {
 	require.Equal(t, 4, fs.snapshotReadCalls())
 }
 
+func TestSegmentPrefetchTermsWarmsLazyPostings(t *testing.T) {
+	builder := NewBuilder(fulltext.FullTextParserParam{}, nil)
+	require.NoError(t, builder.Add(Document{
+		Block: 1,
+		Row:   1,
+		PK:    []byte("pk-1"),
+		Values: []fulltext.IndexValue{
+			{Text: "native stablegamma", Type: types.T_text},
+		},
+	}))
+	require.NoError(t, builder.Add(Document{
+		Block: 1,
+		Row:   2,
+		PK:    []byte("pk-2"),
+		Values: []fulltext.IndexValue{
+			{Text: "native stablegamma", Type: types.T_text},
+		},
+	}))
+
+	baseFS, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	fs := &recordingFS{FileService: baseFS}
+
+	objID := objectio.NewObjectid()
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+	buf, err := builder.Build().MarshalBinary()
+	require.NoError(t, err)
+	require.NoError(t, fs.Write(context.Background(), fileservice.IOVector{
+		FilePath: SidecarPath(objName.String(), "__idx_body"),
+		Entries: []fileservice.IOEntry{{
+			Offset: 0,
+			Size:   int64(len(buf)),
+			Data:   buf,
+		}},
+	}))
+
+	fs.resetReadSizes()
+	seg, ok, err := ReadSidecar(context.Background(), fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, 3, fs.snapshotReadCalls())
+
+	require.NoError(t, seg.PrefetchTerms([]string{"native", "stablegamma"}))
+	require.Equal(t, 4, fs.snapshotReadCalls())
+
+	matches, err := seg.SearchAll([]string{"native", "stablegamma"})
+	require.NoError(t, err)
+	require.Len(t, matches, 2)
+	require.Equal(t, 4, fs.snapshotReadCalls())
+}
+
+func TestReadPublishedSidecarMarksMissingAfterReadMiss(t *testing.T) {
+	ctx := context.Background()
+	baseFS, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	fs := &recordingFS{FileService: baseFS}
+	ResetRuntimeSidecarRegistry()
+	defer ResetRuntimeSidecarRegistry()
+
+	objID := objectio.NewObjectid()
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+	sidecarPath := SidecarPath(objName.String(), "__idx_body")
+	PublishRuntimeSidecars(1, objName.String(), []PublishedSidecar{{
+		IndexTable:     "__idx_body",
+		SidecarPath:    sidecarPath,
+		SegmentVersion: CurrentSegmentVersion,
+	}})
+
+	_, ok, err := ReadPublishedSidecar(ctx, fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Equal(t, 1, fs.snapshotReadCalls())
+
+	_, ok, err = ReadPublishedSidecar(ctx, fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Equal(t, 1, fs.snapshotReadCalls())
+}
+
 func TestObjectIndexerBuildAndReadSidecarWithNullMultiColumn(t *testing.T) {
 	schema := catalog.NewEmptySchema("fts_native_test_null_multi")
 	require.NoError(t, schema.AppendPKCol("id", types.T_int64.ToType(), 0))

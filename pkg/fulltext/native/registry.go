@@ -138,20 +138,21 @@ func ExpandDeletePathsWithSidecars(
 		out = append(out, path)
 	}
 
-	appendIfExists := func(kind, objectPath, filePath string) {
-		exists, err := statPathExists(ctx, fs, filePath)
-		if err != nil {
-			logutil.Warn(
-				"[NATIVE-FTS-REGISTRY-STAT-FAILED]",
+	appendIfPresent := func(kind, objectPath, filePath string) {
+		if filePath == "" {
+			return
+		}
+		appendUnique(filePath)
+		if kind == "locator" {
+			return
+		}
+		if hasMissingSidecar(filePath) {
+			logutil.Debug(
+				"[NATIVE-FTS-REGISTRY-SKIP-MISSING]",
 				zap.String("kind", kind),
 				zap.String("object", objectPath),
 				zap.String("path", filePath),
-				zap.Error(err),
 			)
-			return
-		}
-		if exists {
-			appendUnique(filePath)
 		}
 	}
 
@@ -166,8 +167,8 @@ func ExpandDeletePathsWithSidecars(
 		}
 		entries := sortedPublishedSidecars(set)
 		for _, entry := range entries {
-			appendIfExists("locator", objectPath, entry.LocatorPath)
-			appendIfExists("sidecar", objectPath, entry.SidecarPath)
+			appendIfPresent("locator", objectPath, entry.LocatorPath)
+			appendIfPresent("sidecar", objectPath, entry.SidecarPath)
 		}
 	}
 	return out
