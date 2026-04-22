@@ -98,7 +98,7 @@ type s3WriterDelegate struct {
 	isClusterBys   []bool
 
 	deleteBlockMap      []map[types.Blockid]*deleteBlockData
-	deleteBlockInfo     []*deleteBlockInfo
+	deleteBlockInfo     []map[string]*deleteBlockInfo
 	insertBlockInfo     []*batch.Batch
 	insertBlockRowCount []uint64
 
@@ -136,7 +136,7 @@ func newS3Writer(
 		schemaVersions: make([]uint32, 0, tableCount),
 		isClusterBys:   make([]bool, 0, tableCount),
 
-		deleteBlockInfo:     make([]*deleteBlockInfo, tableCount),
+		deleteBlockInfo:     make([]map[string]*deleteBlockInfo, tableCount),
 		insertBlockInfo:     make([]*batch.Batch, tableCount),
 		insertBlockRowCount: make([]uint64, tableCount),
 		deleteBlockMap:      make([]map[types.Blockid]*deleteBlockData, tableCount),
@@ -371,7 +371,6 @@ func (writer *s3WriterDelegate) prepareDeleteBatches(
 		writer.deleteBlockMap[idx] = make(map[types.Blockid]*deleteBlockData)
 	}
 	blockMap := writer.deleteBlockMap[idx]
-
 	for _, bat := range src {
 		rowIDVec := bat.GetVector(RowIDIdx)
 		nulls := rowIDVec.GetNulls()
@@ -612,21 +611,45 @@ func (writer *s3WriterDelegate) fillDeleteBlockInfo(
 	bat *batch.Batch,
 	rowCount int,
 ) (err error) {
-
+	// init buf
 	if writer.deleteBlockInfo[idx] == nil {
-		writer.deleteBlockInfo[idx] = &deleteBlockInfo{
-			bat: initBlockInfoBat(bat),
-		}
+		writer.deleteBlockInfo[idx] = make(map[string]*deleteBlockInfo, 1)
 	}
 
-	info := writer.deleteBlockInfo[idx]
+	row, area := vector.MustVarlenaRawData(bat.Vecs[0])
+	for j := range row {
+		stats := objectio.ObjectStats(row[j].GetByteSlice(area))
+		fileName := stats.ObjectLocation().String()
+		targetBloInfo := writer.deleteBlockInfo[idx][fileName]
+		if targetBloInfo == nil {
+			blockInfoBat := batch.NewWithSize(bat.VectorCount())
+			blockInfoBat.Attrs = bat.Attrs
+			for i := 0; i < bat.VectorCount(); i++ {
+				blockInfoBat.Vecs[i] = vector.NewVec(*bat.Vecs[i].GetType())
+			}
+			targetBloInfo = &deleteBlockInfo{
+				name: "",
+				bat:  blockInfoBat,
+			}
+			writer.deleteBlockInfo[idx][fileName] = targetBloInfo
+		}
 
-	stats := objectio.ObjectStats(bat.Vecs[0].GetBytesAt(0))
-	objId := stats.ObjectName().ObjectId()[:]
-	info.name = fmt.Sprintf("%s|%d", objId, deletion.FlushDeltaLoc)
-	info.rawRowCount += uint64(rowCount)
+		objId := stats.ObjectName().ObjectId()[:]
+		targetBloInfo.name = fmt.Sprintf("%s|%d", objId, deletion.FlushDeltaLoc)
+		targetBloInfo.rawRowCount += uint64(stats.Rows())
 
-	return appendVarlenaBatch(info.bat, bat, proc.GetMPool())
+		if err = vector.AppendBytes(
+			targetBloInfo.bat.Vecs[0],
+			stats.Marshal(),
+			false,
+			proc.GetMPool(),
+		); err != nil {
+			return err
+		}
+		targetBloInfo.bat.SetRowCount(targetBloInfo.bat.Vecs[0].Length())
+	}
+
+	return
 }
 
 func (writer *s3WriterDelegate) fillInsertBlockInfo(
@@ -692,12 +715,19 @@ func (writer *s3WriterDelegate) flushTailAndWriteToOutput(proc *process.Process,
 	mp := proc.GetMPool()
 
 	//write delete block info to workspace
-	for i, block := range writer.deleteBlockInfo {
-		// normal table
-		if block != nil && block.bat.RowCount() > 0 {
-			err = writer.addBatchToOutput(mp, actionDelete, i, block.rawRowCount, block.name, block.bat)
-			if err != nil {
-				return
+	for i, blockInfoMap := range writer.deleteBlockInfo {
+		keys := make([]string, 0, len(blockInfoMap))
+		for key := range blockInfoMap {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			block := blockInfoMap[key]
+			if block != nil && block.bat.RowCount() > 0 {
+				err = writer.addBatchToOutput(mp, actionDelete, i, block.rawRowCount, block.name, block.bat)
+				if err != nil {
+					return
+				}
 			}
 		}
 	}
@@ -752,10 +782,12 @@ func (writer *s3WriterDelegate) reset(proc *process.Process) (err error) {
 	for i := range writer.insertBlockRowCount {
 		writer.insertBlockRowCount[i] = 0
 	}
-	for _, block := range writer.deleteBlockInfo {
-		if block != nil {
-			block.bat.CleanOnlyData()
-			block.rawRowCount = 0
+	for _, blockInfoMap := range writer.deleteBlockInfo {
+		for key, block := range blockInfoMap {
+			if block != nil {
+				block.bat.Clean(proc.Mp())
+			}
+			delete(blockInfoMap, key)
 		}
 	}
 	for _, data := range writer.deleteBlockMap {
@@ -803,10 +835,11 @@ func (writer *s3WriterDelegate) free(proc *process.Process) (err error) {
 	}
 	writer.insertBlockInfo = nil
 	writer.insertBlockRowCount = nil
-
-	for _, info := range writer.deleteBlockInfo {
-		if info != nil {
-			info.bat.Clean(mp)
+	for _, blockInfoMap := range writer.deleteBlockInfo {
+		for _, blockInfo := range blockInfoMap {
+			if blockInfo != nil {
+				blockInfo.bat.Clean(proc.Mp())
+			}
 		}
 	}
 	writer.deleteBlockInfo = nil
@@ -894,7 +927,7 @@ func appendCfgToWriter(
 	writer.schemaVersions = append(writer.schemaVersions, tableDef.Version)
 	writer.isClusterBys = append(writer.isClusterBys, tableDef.ClusterBy != nil)
 	writer.deleteBlockMap[thisIdx] = make(map[types.Blockid]*deleteBlockData, 1)
-	writer.deleteBlockInfo[thisIdx] = nil
+	writer.deleteBlockInfo[thisIdx] = make(map[string]*deleteBlockInfo, 1)
 	writer.insertBlockInfo[thisIdx] = nil
 	writer.insertBlockRowCount[thisIdx] = 0
 }

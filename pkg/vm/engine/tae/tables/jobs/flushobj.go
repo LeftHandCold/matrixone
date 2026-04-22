@@ -21,6 +21,7 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
@@ -47,6 +48,16 @@ type flushObjTask struct {
 	partentTask string
 
 	done bool
+}
+
+func flushSidecarObjectName(taskName objectio.ObjectName, stats *objectio.ObjectStats) objectio.ObjectName {
+	if stats != nil {
+		objectName := stats.ObjectName()
+		if !objectName.Equal(objectio.ZeroObjectStats.ObjectName()) {
+			return objectName
+		}
+	}
+	return taskName
 }
 
 func NewFlushObjTask(
@@ -148,6 +159,33 @@ func (task *flushObjTask) Execute(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	task.stat = writer.GetObjectStats()
+	if !task.meta.IsTombstone {
+		schema := task.meta.GetSchema()
+		indexer, idxErr := ftnative.NewObjectIndexer(schema)
+		if idxErr != nil {
+			task.logNativeSidecarError("flush-init", idxErr)
+		} else {
+			sidecarObjectName := flushSidecarObjectName(task.name, &task.stat)
+			if !indexer.Empty() {
+				blockRows := make([]uint32, len(task.blocks))
+				for i, block := range task.blocks {
+					blockRows[i] = block.GetRows()
+				}
+				if idxErr = indexer.AddBatch(cnBatch, blockRows); idxErr != nil {
+					task.logNativeSidecarError("flush-add", idxErr)
+				} else {
+					published, writeErr := indexer.Write(ctx, task.fs, sidecarObjectName, task.stat.Rows())
+					if len(published) > 0 {
+						ftnative.PublishRuntimeSidecars(task.meta.GetTable().ID, sidecarObjectName.String(), published)
+					}
+					if writeErr != nil {
+						task.logNativeSidecarError("flush-write", writeErr)
+					}
+				}
+			}
+		}
+	}
 	ioT := time.Since(inst)
 	if time.Since(task.createAt) > SlowFlushIOTask {
 		logutil.Info(
@@ -181,4 +219,14 @@ func (task *flushObjTask) release() {
 	if task.data != nil {
 		task.data.Close()
 	}
+}
+
+func (task *flushObjTask) logNativeSidecarError(phase string, err error) {
+	logutil.Error(
+		"native fulltext sidecar skipped",
+		zap.String("phase", phase),
+		zap.String("table", task.meta.GetSchema().Name),
+		common.AnyField("obj", task.meta.ID().ShortStringEx()),
+		zap.Error(err),
+	)
 }

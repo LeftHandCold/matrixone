@@ -45,6 +45,13 @@ var (
 	postdml_flag bool = false
 )
 
+func multiTableDmlIndexKey(indexdef *plan.IndexDef) string {
+	if indexdef.IndexName != "" {
+		return indexdef.IndexName
+	}
+	return fmt.Sprintf("%s#%s", catalog.ToLower(indexdef.IndexAlgo), strings.Join(indexdef.Parts, ","))
+}
+
 var dmlPlanCtxPool = sync.Pool{
 	New: func() any {
 		return &dmlPlanCtx{}
@@ -938,14 +945,15 @@ func buildInsertPlansWithRelatedHiddenTable(
 			} else if indexdef.TableExist && catalog.IsIvfIndexAlgo(indexdef.IndexAlgo) {
 
 				// IVF indexDefs are aggregated and handled later
-				if _, ok := multiTableIndexes[indexdef.IndexName]; !ok {
-					multiTableIndexes[indexdef.IndexName] = &MultiTableIndex{
+				key := multiTableDmlIndexKey(indexdef)
+				if _, ok := multiTableIndexes[key]; !ok {
+					multiTableIndexes[key] = &MultiTableIndex{
 						IndexAlgo:       catalog.ToLower(indexdef.IndexAlgo),
 						IndexAlgoParams: indexdef.IndexAlgoParams,
 						IndexDefs:       make(map[string]*IndexDef),
 					}
 				}
-				multiTableIndexes[indexdef.IndexName].IndexDefs[catalog.ToLower(indexdef.IndexAlgoTableType)] = indexdef
+				multiTableIndexes[key].IndexDefs[catalog.ToLower(indexdef.IndexAlgoTableType)] = indexdef
 			} else if indexdef.TableExist && catalog.IsMasterIndexAlgo(indexdef.IndexAlgo) {
 
 				err = buildPreInsertMasterIndex(stmt, ctx, builder, bindCtx, objRef, tableDef, sourceStep, ifInsertFromUniqueColMap, indexdef, idx)
@@ -953,6 +961,18 @@ func buildInsertPlansWithRelatedHiddenTable(
 					return err
 				}
 
+			} else if indexdef.TableExist && catalog.IsFullTextIndexAlgo(indexdef.IndexAlgo) && indexdef.IndexAlgoTableType != "" {
+				if updateColLength > 0 {
+					continue
+				}
+				key := multiTableDmlIndexKey(indexdef)
+				if _, ok := multiTableIndexes[key]; !ok {
+					multiTableIndexes[key] = &MultiTableIndex{
+						IndexAlgo: catalog.ToLower(indexdef.IndexAlgo),
+						IndexDefs: make(map[string]*IndexDef),
+					}
+				}
+				multiTableIndexes[key].IndexDefs[catalog.ToLower(indexdef.IndexAlgoTableType)] = indexdef
 			} else if postdml_flag && indexdef.TableExist && catalog.IsFullTextIndexAlgo(indexdef.IndexAlgo) {
 				// TODO: choose either PostInsertFullTextIndex or PreInsertFullTextIndex
 				err = buildPostInsertFullTextIndex(stmt, ctx, builder, bindCtx, objRef, tableDef, updateColLength, sourceStep, ifInsertFromUniqueColMap, indexdef, idx)
@@ -964,7 +984,7 @@ func buildInsertPlansWithRelatedHiddenTable(
 		}
 
 		// TODO: choose either PostInsertFullTextIndex or PreInsertFullTextIndex
-		if !postdml_flag && indexdef.TableExist && catalog.IsFullTextIndexAlgo(indexdef.IndexAlgo) {
+		if !postdml_flag && indexdef.TableExist && catalog.IsFullTextIndexAlgo(indexdef.IndexAlgo) && indexdef.IndexAlgoTableType == "" {
 			err = buildPreInsertFullTextIndex(stmt, ctx, builder, bindCtx, objRef, tableDef, updateColLength, sourceStep, ifInsertFromUniqueColMap, indexdef, idx, updateColPosMap)
 			if err != nil {
 				return err
@@ -4346,19 +4366,29 @@ func buildDeleteIndexPlans(ctx CompilerContext, builder *QueryBuilder, bindCtx *
 
 			} else if indexdef.TableExist && catalog.IsIvfIndexAlgo(indexdef.IndexAlgo) {
 				// IVF indexDefs are aggregated and handled later
-				if _, ok := multiTableIndexes[indexdef.IndexName]; !ok {
-					multiTableIndexes[indexdef.IndexName] = &MultiTableIndex{
+				key := multiTableDmlIndexKey(indexdef)
+				if _, ok := multiTableIndexes[key]; !ok {
+					multiTableIndexes[key] = &MultiTableIndex{
 						IndexAlgo:       catalog.ToLower(indexdef.IndexAlgo),
 						IndexAlgoParams: indexdef.IndexAlgoParams,
 						IndexDefs:       make(map[string]*IndexDef),
 					}
 				}
-				multiTableIndexes[indexdef.IndexName].IndexDefs[catalog.ToLower(indexdef.IndexAlgoTableType)] = indexdef
+				multiTableIndexes[key].IndexDefs[catalog.ToLower(indexdef.IndexAlgoTableType)] = indexdef
 			} else if indexdef.TableExist && catalog.IsMasterIndexAlgo(indexdef.IndexAlgo) {
 				err = buildDeleteMasterIndex(ctx, builder, bindCtx, delCtx, indexdef, idx, typMap, posMap)
 				if err != nil {
 					return err
 				}
+			} else if indexdef.TableExist && catalog.IsFullTextIndexAlgo(indexdef.IndexAlgo) && indexdef.IndexAlgoTableType != "" {
+				key := multiTableDmlIndexKey(indexdef)
+				if _, ok := multiTableIndexes[key]; !ok {
+					multiTableIndexes[key] = &MultiTableIndex{
+						IndexAlgo: catalog.ToLower(indexdef.IndexAlgo),
+						IndexDefs: make(map[string]*IndexDef),
+					}
+				}
+				multiTableIndexes[key].IndexDefs[catalog.ToLower(indexdef.IndexAlgoTableType)] = indexdef
 			} else if indexdef.TableExist && catalog.IsFullTextIndexAlgo(indexdef.IndexAlgo) {
 				// TODO: choose either PostDeleteFullTextIndex or PreDeleteFullTextIndex
 				if postdml_flag {

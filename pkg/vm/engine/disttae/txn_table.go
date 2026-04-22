@@ -67,6 +67,15 @@ const (
 	AllColumns = "*"
 )
 
+func getObjectMetaFileService(fs fileservice.FileService) (fileservice.FileService, error) {
+	proc := &process.Process{
+		Base: &process.BaseProcess{
+			FileService: fs,
+		},
+	}
+	return colexec.GetObjectFSFromProc(proc)
+}
+
 var traceFilterExprInterval atomic.Uint64
 var traceFilterExprInterval2 atomic.Uint64
 
@@ -356,9 +365,7 @@ func (tbl *txnTable) MaxAndMinValues(ctx context.Context) ([][2]any, []uint8, er
 
 	var meta objectio.ObjectDataMeta
 	var objMeta objectio.ObjectMeta
-	fs, err := fileservice.Get[fileservice.FileService](
-		tbl.getTxn().proc.Base.FileService,
-		defines.SharedFileServiceName)
+	fs, err := getObjectMetaFileService(tbl.getTxn().proc.Base.FileService)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -441,9 +448,7 @@ func (tbl *txnTable) GetColumMetadataScanInfo(ctx context.Context, name string, 
 		}
 	}
 
-	fs, err := fileservice.Get[fileservice.FileService](
-		tbl.getTxn().proc.Base.FileService,
-		defines.SharedFileServiceName)
+	fs, err := getObjectMetaFileService(tbl.getTxn().proc.Base.FileService)
 	if err != nil {
 		return nil, err
 	}
@@ -2854,6 +2859,27 @@ func (tbl *txnTable) GetNonAppendableObjectStats(ctx context.Context) ([]objecti
 			if !sortKeyZM.IsInited() {
 				return nil
 			}
+		}
+		objStats = append(objStats, obj.ObjectStats)
+		return nil
+	}, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	return objStats, nil
+}
+
+func (tbl *txnTable) GetVisibleObjectStats(ctx context.Context) ([]objectio.ObjectStats, error) {
+	snapshot := types.TimestampToTS(tbl.getTxn().op.SnapshotTS())
+	state, err := tbl.getPartitionState(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	objStats := make([]objectio.ObjectStats, 0, tbl.ApproxObjectsNum(ctx))
+	err = ForeachVisibleObjects(state, snapshot, func(obj objectio.ObjectEntry) error {
+		if obj.GetAppendable() {
+			return nil
 		}
 		objStats = append(objStats, obj.ObjectStats)
 		return nil

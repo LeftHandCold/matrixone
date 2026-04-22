@@ -28,6 +28,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
@@ -35,6 +36,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sort"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
+	"go.uber.org/zap"
 )
 
 const (
@@ -175,8 +177,16 @@ func NewCNS3DataWriter(
 	writer := new(CNS3Writer)
 
 	sequms, attrTypes, attrs, sortKeyIdx, isPrimaryKey := GetSequmsAttrsSortKeyIdxFromTableDef(tableDef)
-
-	factor := ioutil.NewFSinkerImplFactory(sequms, sortKeyIdx, isPrimaryKey, false, tableDef.Version)
+	onBatchWritten, onObjectSynced := newNativeSidecarHooks(tableDef)
+	factor := ioutil.NewFSinkerImplFactoryWithHooks(
+		sequms,
+		sortKeyIdx,
+		isPrimaryKey,
+		false,
+		tableDef.Version,
+		onBatchWritten,
+		onObjectSynced,
+	)
 	if memoryThreshold < 0 {
 		memoryThreshold = WriteS3Threshold
 	}
@@ -207,6 +217,85 @@ func NewCNS3DataWriter(
 	writer.ResetBlockInfoBat()
 
 	return writer
+}
+
+func newNativeSidecarHooks(tableDef *plan.TableDef) (ioutil.BatchWrittenHook, ioutil.ObjectSyncedHook) {
+	if tableDef == nil {
+		return nil, nil
+	}
+	indexerProbe, err := ftnative.NewPlanObjectIndexer(tableDef)
+	if err != nil {
+		logNativeSidecarError("cn-s3-init", tableDef, err)
+		return nil, nil
+	}
+	if indexerProbe == nil || indexerProbe.Empty() {
+		return nil, nil
+	}
+
+	var (
+		indexer        *ftnative.ObjectIndexer
+		indexingClosed bool
+	)
+	reset := func() {
+		indexer = nil
+		indexingClosed = false
+	}
+	onBatchWritten := func(bat *batch.Batch, blockRows []uint32) error {
+		if indexingClosed {
+			return nil
+		}
+		if indexer == nil {
+			indexer, err = ftnative.NewPlanObjectIndexer(tableDef)
+			if err != nil {
+				logNativeSidecarError("cn-s3-init", tableDef, err)
+				indexingClosed = true
+				return nil
+			}
+			if indexer == nil || indexer.Empty() {
+				indexingClosed = true
+				return nil
+			}
+		}
+		if err := indexer.AddBatch(bat, blockRows); err != nil {
+			logNativeSidecarError("cn-s3-add", tableDef, err)
+			indexingClosed = true
+			indexer = nil
+		}
+		return nil
+	}
+	onObjectSynced := func(
+		ctx context.Context,
+		fs fileservice.FileService,
+		objName objectio.ObjectName,
+		rows uint32,
+	) error {
+		defer reset()
+		if indexingClosed || indexer == nil {
+			return nil
+		}
+		published, err := indexer.Write(ctx, fs, objName, rows)
+		if len(published) > 0 {
+			ftnative.PublishRuntimeSidecars(tableDef.TblId, objName.String(), published)
+		}
+		if err != nil {
+			logNativeSidecarError("cn-s3-write", tableDef, err)
+		}
+		return nil
+	}
+	return onBatchWritten, onObjectSynced
+}
+
+func logNativeSidecarError(phase string, tableDef *plan.TableDef, err error) {
+	if tableDef == nil || err == nil {
+		return
+	}
+	logutil.Error(
+		"native fulltext sidecar skipped",
+		zap.String("phase", phase),
+		zap.String("table", tableDef.Name),
+		zap.String("database", tableDef.DbName),
+		zap.Error(err),
+	)
 }
 
 func (w *CNS3Writer) Write(ctx context.Context, bat *batch.Batch) error {

@@ -17,11 +17,11 @@ package catalog
 import (
 	"testing"
 
+	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/stretchr/testify/require"
 )
 
 func TestIsIndexAsync(t *testing.T) {
-
 	var (
 		json string
 		err  error
@@ -46,4 +46,32 @@ func TestIsIndexAsync(t *testing.T) {
 	json = `{"async": 1}`
 	_, err = IsIndexAsync(json)
 	require.NotNil(t, err)
+}
+
+func TestFullTextIndexParamsAllowDefaultParser(t *testing.T) {
+	params, err := IndexParamsToJsonString(tree.NewFullTextIndex(nil, "ftidx", false, &tree.IndexOption{}))
+	require.NoError(t, err)
+	require.Empty(t, params)
+}
+
+func TestFullTextIndexParamsNormalizeExplicitParser(t *testing.T) {
+	params, err := IndexParamsToJsonString(tree.NewFullTextIndex(nil, "ftidx", false, &tree.IndexOption{
+		ParserName: "NGRAM",
+	}))
+	require.NoError(t, err)
+	require.Equal(t, `{"parser":"ngram"}`, params)
+}
+
+func TestFullTextIndexParamsRejectInvalidParser(t *testing.T) {
+	_, err := IndexParamsToJsonString(tree.NewFullTextIndex(nil, "ftidx", false, &tree.IndexOption{
+		ParserName: "bad_parser",
+	}))
+	require.Error(t, err)
+}
+
+func TestIndexParamsStringToMapSupportsBoolValues(t *testing.T) {
+	params, err := IndexParamsStringToMap(`{"parser":"ngram","native_only":true}`)
+	require.NoError(t, err)
+	require.Equal(t, "ngram", params["parser"])
+	require.Equal(t, "true", params["native_only"])
 }

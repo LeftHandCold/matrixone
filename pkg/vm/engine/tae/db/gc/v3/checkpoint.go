@@ -27,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/util/fault"
@@ -1239,6 +1240,9 @@ func (c *checkpointCleaner) tryGCAgainstGCKPLocked(
 	// TODO:Requires Physical Removal Policy
 	// Note: Data files are GC'ed normally even when backup protection is active.
 	// Only checkpoint metadata merge/delete is skipped (handled in mergeCheckpointFilesLocked).
+	baseObjectPaths := append([]string(nil), filesToGC...)
+	baseFilesToGC := len(filesToGC)
+	filesToGC = ftnative.ExpandDeletePathsWithSidecars(ctx, c.fs, filesToGC)
 	if err = c.deleter.DeleteMany(
 		ctx,
 		c.TaskNameLocked(),
@@ -1249,12 +1253,13 @@ func (c *checkpointCleaner) tryGCAgainstGCKPLocked(
 		v2.GCErrorIOErrorCounter.Inc()
 		return
 	}
+	ftnative.RemoveRuntimeSidecars(baseObjectPaths...)
 
 	// Record file deletion metrics
-	if len(filesToGC) > 0 {
+	if baseFilesToGC > 0 {
 		deleteStart := time.Now()
-		v2.GCDataFileDeletionCounter.Add(float64(len(filesToGC)))
-		v2.GCObjectDeletedCounter.Add(float64(len(filesToGC)))
+		v2.GCDataFileDeletionCounter.Add(float64(baseFilesToGC))
+		v2.GCObjectDeletedCounter.Add(float64(baseFilesToGC))
 		// Record delete duration
 		v2.GCCheckpointDeleteDurationHistogram.Observe(time.Since(deleteStart).Seconds())
 		v2.GCSnapshotDeleteDurationHistogram.Observe(time.Since(deleteStart).Seconds())

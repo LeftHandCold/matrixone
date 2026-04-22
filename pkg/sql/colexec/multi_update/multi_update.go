@@ -140,10 +140,9 @@ func (update *MultiUpdate) Prepare(proc *process.Process) error {
 		//do nothing
 	}
 
-	mainCtx := update.MultiUpdateCtx[0]
-	if len(mainCtx.DeleteCols) > 0 && len(mainCtx.InsertCols) > 0 {
+	if len(update.MultiUpdateCtx[0].DeleteCols) > 0 && len(update.MultiUpdateCtx[0].InsertCols) > 0 {
 		update.ctr.action = actionUpdate
-	} else if len(mainCtx.InsertCols) > 0 {
+	} else if len(update.MultiUpdateCtx[0].InsertCols) > 0 {
 		update.ctr.action = actionInsert
 	} else {
 		update.ctr.action = actionDelete

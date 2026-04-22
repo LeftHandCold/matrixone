@@ -29,6 +29,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
@@ -78,8 +79,11 @@ type mergeObjectsTask struct {
 	segmentID *objectio.Segmentid
 	num       uint16
 
-	arena      *objectio.WriteArena
-	tnDataBats []*containers.Batch // cached TN batch wrappers, one per merged object
+	arena                *objectio.WriteArena
+	tnDataBats           []*containers.Batch // cached TN batch wrappers, one per merged object
+	nativeIndexer        *ftnative.ObjectIndexer
+	nativeObjectFailed   bool
+	nativeIndexingClosed bool
 }
 
 func NewMergeObjectsTask(
@@ -162,6 +166,7 @@ func NewMergeObjectsTask(
 	if task.targetObjSize > 0 {
 		task.arena = objectio.GetArena(objectio.ArenaLarge)
 	}
+	task.resetNativeIndexer()
 	return
 }
 
@@ -199,6 +204,61 @@ func (task *mergeObjectsTask) GetObjectMaxBlocks() uint16 {
 
 func (task *mergeObjectsTask) GetTargetObjSize() uint32 {
 	return task.targetObjSize
+}
+
+func (task *mergeObjectsTask) OnBlockWritten(bat *batch.Batch, _ uint16) error {
+	if task.isTombstone || task.nativeIndexingClosed || task.nativeObjectFailed ||
+		task.nativeIndexer == nil || task.nativeIndexer.Empty() {
+		return nil
+	}
+	if err := task.nativeIndexer.AddBatch(bat, []uint32{uint32(bat.RowCount())}); err != nil {
+		task.nativeObjectFailed = true
+		task.logNativeSidecarError("merge-add", err)
+	}
+	return nil
+}
+
+func (task *mergeObjectsTask) OnObjectSynced(ctx context.Context, stats *objectio.ObjectStats) error {
+	defer task.resetNativeIndexer()
+	if task.isTombstone || task.nativeIndexingClosed || task.nativeObjectFailed ||
+		task.nativeIndexer == nil || task.nativeIndexer.Empty() {
+		return nil
+	}
+	published, err := task.nativeIndexer.Write(ctx, task.rt.Fs, stats.ObjectName(), stats.Rows())
+	if len(published) > 0 {
+		ftnative.PublishRuntimeSidecars(task.tid, stats.ObjectName().String(), published)
+	}
+	if err != nil {
+		task.nativeObjectFailed = true
+		task.logNativeSidecarError("merge-write", err)
+	}
+	return nil
+}
+
+func (task *mergeObjectsTask) resetNativeIndexer() {
+	task.nativeObjectFailed = false
+	if task.isTombstone || task.nativeIndexingClosed {
+		task.nativeIndexer = nil
+		return
+	}
+	indexer, err := ftnative.NewObjectIndexer(task.schema)
+	if err != nil {
+		task.nativeIndexer = nil
+		task.nativeIndexingClosed = true
+		task.logNativeSidecarError("merge-init", err)
+		return
+	}
+	task.nativeIndexer = indexer
+}
+
+func (task *mergeObjectsTask) logNativeSidecarError(phase string, err error) {
+	logutil.Error(
+		"native fulltext sidecar skipped",
+		zap.String("phase", phase),
+		zap.String("table", task.schema.Name),
+		common.AnyField("task", task.Name()),
+		zap.Error(err),
+	)
 }
 
 func (task *mergeObjectsTask) GetSortKeyPos() int {

@@ -20,15 +20,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	moruntime "github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/fulltext"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/dialect"
@@ -248,6 +248,47 @@ func TestBuildLockTables(t *testing.T) {
 	assert.NoError(t, err)
 	_, err = buildLockTables(stmt3.(*tree.LockTableStmt), ctx)
 	assert.Error(t, err)
+}
+
+func TestBuildFullTextIndexTable(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	ctx := NewMockCompilerContext2(ctrl)
+	ctx.EXPECT().GetContext().Return(context.Background()).AnyTimes()
+
+	createTable := &plan.CreateTable{TableDef: &TableDef{}}
+	colMap := map[string]*ColDef{
+		"id": {
+			Name: "id",
+			Typ: plan.Type{
+				Id: int32(types.T_int64),
+			},
+		},
+		"body": {
+			Name: "body",
+			Typ: plan.Type{
+				Id: int32(types.T_text),
+			},
+		},
+	}
+	indexInfos := []*tree.FullTextIndex{{
+		Name: "ft_idx",
+		KeyParts: []*tree.KeyPart{
+			tree.NewKeyPart(tree.NewUnresolvedColName("body"), 0, tree.DefaultDirection, nil),
+		},
+	}}
+
+	err := buildFullTextIndexTable(createTable, indexInfos, colMap, nil, "id", ctx)
+	require.NoError(t, err)
+	require.Len(t, createTable.IndexTables, 1)
+	require.Len(t, createTable.TableDef.Indexes, 1)
+	require.Equal(t, tree.INDEX_TYPE_FULLTEXT.ToString(), createTable.TableDef.Indexes[0].IndexAlgo)
+	require.Equal(t, []string{"body"}, createTable.TableDef.Indexes[0].Parts)
+	var param fulltext.FullTextParserParam
+	require.NoError(t, json.Unmarshal([]byte(createTable.TableDef.Indexes[0].IndexAlgoParams), &param))
+	require.Equal(t, fulltext.FullTextImplementationNative, param.Implementation)
+	require.True(t, param.NativeOnlyMode)
 }
 
 func TestBuildCreateTable(t *testing.T) {

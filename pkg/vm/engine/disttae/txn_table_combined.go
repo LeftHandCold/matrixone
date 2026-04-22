@@ -333,6 +333,33 @@ func (t *combinedTxnTable) GetNonAppendableObjectStats(ctx context.Context) ([]o
 	return stats, nil
 }
 
+func (t *combinedTxnTable) GetVisibleObjectStats(ctx context.Context) ([]objectio.ObjectStats, error) {
+	tables, err := t.tablesFunc()
+	if err != nil {
+		return nil, err
+	}
+
+	var stats []objectio.ObjectStats
+	for _, rel := range tables {
+		if visibleRel, ok := rel.(interface {
+			GetVisibleObjectStats(context.Context) ([]objectio.ObjectStats, error)
+		}); ok {
+			values, err := visibleRel.GetVisibleObjectStats(ctx)
+			if err != nil {
+				return nil, err
+			}
+			stats = append(stats, values...)
+			continue
+		}
+		values, err := rel.GetNonAppendableObjectStats(ctx)
+		if err != nil {
+			return nil, err
+		}
+		stats = append(stats, values...)
+	}
+	return stats, nil
+}
+
 func (t *combinedTxnTable) GetColumMetadataScanInfo(
 	ctx context.Context,
 	name string,

@@ -62,9 +62,11 @@ type fulltextState struct {
 	param            fulltext.FullTextParserParam
 	docLenMap        map[any]int32
 	docIDMap         map[any]any
+	nativeOwned      map[any]struct{}
 	minheap          vectorindex.SearchResultHeap
 	resbuf           []*vectorindex.SearchResultAnyKey
 	ranking          bool
+	statsLoaded      bool
 
 	// Serialized CBloomFilter bytes for reader-level doc_id filtering
 	fulltextBloomFilter []byte
@@ -102,8 +104,10 @@ func (u *fulltextState) resetRowState(proc *process.Process) {
 	u.aggcnt = nil
 	u.docLenMap = make(map[any]int32)
 	u.docIDMap = make(map[any]any)
+	u.nativeOwned = nil
 	u.minheap = nil
 	u.resbuf = nil
+	u.statsLoaded = false
 }
 
 func (u *fulltextState) free(tf *TableFunction, proc *process.Process, pipelineFailed bool, err error) {
@@ -638,16 +642,22 @@ func groupby(u *fulltextState, proc *process.Process, s *fulltext.SearchAccum) (
 	}
 	bat := res.Batches[0]
 
-	if len(bat.Vecs) > 3 {
+	if len(bat.Vecs) > 4 {
 		return false, moerr.NewInternalError(proc.Ctx, "output vector columns not match")
 	}
-	needSetDocLen := len(bat.Vecs) == 3
+	needSetDocLen := len(bat.Vecs) >= 3
+	hasTf := len(bat.Vecs) == 4
 
 	u.nrows += bat.RowCount()
+	phraseCompat := s.Mode == int64(tree.FULLTEXT_NL) || s.Pattern[0].Operator == fulltext.PHRASE
 
 	for i := 0; i < bat.RowCount(); i++ {
 		// doc_id any
 		doc_id := u.normalizeDocID(vector.GetAny(bat.Vecs[0], i, false))
+
+		if _, ok := u.nativeOwned[doc_id]; ok {
+			continue
+		}
 
 		if needSetDocLen {
 			docLen := vector.GetFixedAtWithTypeCheck[int32](bat.Vecs[2], i)
@@ -658,7 +668,7 @@ func groupby(u *fulltextState, proc *process.Process, s *fulltext.SearchAccum) (
 		widx := vector.GetFixedAtWithTypeCheck[int32](bat.Vecs[1], i)
 
 		var docvec []uint8
-		if s.Mode == int64(tree.FULLTEXT_NL) || s.Pattern[0].Operator == fulltext.PHRASE {
+		if phraseCompat {
 			// phrase search widx is dummy and fill in value 1 for all keywords
 			nwords := s.Nkeywords
 			addr, ok := u.agghtab[doc_id]
@@ -686,6 +696,17 @@ func groupby(u *fulltextState, proc *process.Process, s *fulltext.SearchAccum) (
 				u.agghtab[doc_id] = addr
 			}
 		} else {
+			tf := uint8(1)
+			if hasTf {
+				tf64 := vector.GetFixedAtWithTypeCheck[int64](bat.Vecs[3], i)
+				if tf64 > 255 {
+					tf = 255
+				} else if tf64 > 0 {
+					tf = uint8(tf64)
+				} else {
+					tf = 0
+				}
+			}
 
 			addr, ok := u.agghtab[doc_id]
 			if ok {
@@ -693,22 +714,26 @@ func groupby(u *fulltextState, proc *process.Process, s *fulltext.SearchAccum) (
 				if err != nil {
 					return false, err
 				}
-				if docvec[widx] < 255 {
-					// limit doc count to 255 to fit uint8
-					docvec[widx]++
-				}
 			} else {
 				//docvec = make([]uint8, s.Nkeywords)
 				addr, docvec, err = u.mpool.NewItem()
 				if err != nil {
 					return false, err
 				}
-				docvec[widx] = 1
 				u.agghtab[doc_id] = addr
+			}
+			wasZero := docvec[widx] == 0
+			if tf > 0 && docvec[widx] < 255 {
+				next := int(docvec[widx]) + int(tf)
+				if next > 255 {
+					docvec[widx] = 255
+				} else {
+					docvec[widx] = uint8(next)
+				}
 			}
 
 			// update only once per doc_id
-			if docvec[widx] == 1 {
+			if wasZero && tf > 0 {
 				u.aggcnt[widx]++
 			}
 
@@ -721,7 +746,7 @@ func groupby(u *fulltextState, proc *process.Process, s *fulltext.SearchAccum) (
 }
 
 // Run SQL to get number of records in source table
-func runCountStar(proc *process.Process, s *fulltext.SearchAccum) (executor.Result, error) {
+func runCountStar(proc *process.Process, s *fulltext.SearchAccum, _ ...fulltext.FullTextParserParam) (executor.Result, error) {
 	sqlFmt := countstar_sql
 	if s.ScoreAlgo == fulltext.ALGO_BM25 {
 		sqlFmt = countstar_avg_sql
@@ -792,18 +817,30 @@ func fulltextIndexMatch(
 		u.mpool = fulltext.NewFixedBytePool(proc, uint64(s.Nkeywords), 0, 0)
 		u.agghtab = make(map[any]uint64, 1024)
 		u.aggcnt = make([]int64, s.Nkeywords)
+		u.nativeOwned = make(map[any]struct{}, 1024)
+		u.sacc = s
+	}
 
-		// count(*) to get number of records in source table
-		res, err := runCountStar(proc, s)
+	if u.param.UseNative() {
+		used, err := fulltextIndexMatchNative(u, proc, u.sacc, srctbl, tblname)
 		if err != nil {
 			return err
 		}
+		if used {
+			return nil
+		}
+	}
 
-		u.sacc = s
-
+	if !u.statsLoaded {
+		// count(*) to get number of indexed records in source table
+		res, err := runCountStar(proc, u.sacc, u.param)
+		if err != nil {
+			return err
+		}
+		u.statsLoaded = true
 		opStats.BackgroundQueries = append(opStats.BackgroundQueries, res.LogicalPlan)
 
-		ok, err := runSingleKeywordTopK(u, proc, s)
+		ok, err := runSingleKeywordTopK(u, proc, u.sacc)
 		if err != nil {
 			return err
 		}

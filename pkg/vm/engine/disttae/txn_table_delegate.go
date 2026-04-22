@@ -915,6 +915,22 @@ func (tbl *txnTableDelegate) GetNonAppendableObjectStats(ctx context.Context) ([
 	return stats, nil
 }
 
+func (tbl *txnTableDelegate) GetVisibleObjectStats(ctx context.Context) ([]objectio.ObjectStats, error) {
+	if tbl.combined.is {
+		return tbl.combined.tbl.GetVisibleObjectStats(ctx)
+	}
+
+	is, err := tbl.isLocal()
+	if err != nil {
+		return nil, err
+	}
+	if is {
+		return tbl.origin.GetVisibleObjectStats(ctx)
+	}
+
+	return tbl.GetNonAppendableObjectStats(ctx)
+}
+
 func (tbl *txnTableDelegate) TableDefs(
 	ctx context.Context,
 ) ([]engine.TableDef, error) {
