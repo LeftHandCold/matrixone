@@ -333,3 +333,22 @@ func TestNativeLookupLeafJoinMatchesAllPlusTerms(t *testing.T) {
 	require.Equal(t, uint32(1), postings[0].Ref.Row)
 	require.Equal(t, uint32(2), postings[1].Ref.Row)
 }
+
+func TestCollectNativeNegativeLeafIndexes(t *testing.T) {
+	patterns, err := fulltext.ParsePattern("+alpha -reference", int64(tree.FULLTEXT_BOOLEAN))
+	require.NoError(t, err)
+	negative := collectNativeNegativeLeafIndexes(patterns)
+	require.Len(t, negative, 1)
+	require.Contains(t, negative, int32(1))
+
+	patterns, err = fulltext.ParsePattern("+alpha +stablegamma", int64(tree.FULLTEXT_BOOLEAN))
+	require.NoError(t, err)
+	negative = collectNativeNegativeLeafIndexes(patterns)
+	require.Empty(t, negative)
+
+	patterns, err = fulltext.ParsePattern("+(alpha beta) -gamma", int64(tree.FULLTEXT_BOOLEAN))
+	require.NoError(t, err)
+	negative = collectNativeNegativeLeafIndexes(patterns)
+	require.Len(t, negative, 1)
+	require.Contains(t, negative, int32(2))
+}

@@ -71,7 +71,13 @@ type nativeDocState struct {
 	counts          []uint16
 }
 
-type nativeDocSet map[string]struct{}
+type nativeDocKey struct {
+	segmentKey string
+	block      uint16
+	row        uint32
+}
+
+type nativeDocSet map[nativeDocKey]struct{}
 
 type nativeDeleteCache struct {
 	hasBlock map[string]bool
@@ -358,8 +364,9 @@ func populateBooleanNative(
 	leafs := make(map[int32]*fulltext.Pattern, s.Nkeywords)
 	phrases := make([]*fulltext.Pattern, 0, 4)
 	collectNativePatterns(s.Pattern, leafs, &phrases)
+	negativeLeafs := collectNativeNegativeLeafIndexes(s.Pattern)
 
-	docs := make(map[string]*nativeDocState, 1024)
+	docs := make(map[nativeDocKey]*nativeDocState, 1024)
 	leafSets := make(map[int32]nativeDocSet, len(leafs))
 	for i := 0; i < s.Nkeywords; i++ {
 		leafSets[int32(i)] = make(nativeDocSet)
@@ -375,25 +382,27 @@ func populateBooleanNative(
 				return err
 			}
 			for _, posting := range postings {
-				key := nativeRowKey(obj.key, posting.Ref)
-				state := docs[key]
-				if state == nil {
-					state = &nativeDocState{
-						pk:              decodeNativePK(posting.Ref.PK, scan.pkType),
-						docLen:          posting.DocLen,
-						ref:             posting.Ref,
-						obj:             obj.name,
-						segmentKey:      obj.key,
-						applyTombstones: obj.applyTombstones,
-						counts:          make([]uint16, s.Nkeywords),
+				key := makeNativeDocKey(obj.key, posting.Ref)
+				if _, negative := negativeLeafs[idx]; !negative {
+					state := docs[key]
+					if state == nil {
+						state = &nativeDocState{
+							pk:              decodeNativePK(posting.Ref.PK, scan.pkType),
+							docLen:          posting.DocLen,
+							ref:             posting.Ref,
+							obj:             obj.name,
+							segmentKey:      obj.key,
+							applyTombstones: obj.applyTombstones,
+							counts:          make([]uint16, s.Nkeywords),
+						}
+						docs[key] = state
 					}
-					docs[key] = state
+					tf := uint16(len(posting.Positions))
+					if tf == 0 {
+						tf = 1
+					}
+					state.counts[int(idx)] += tf
 				}
-				tf := uint16(len(posting.Positions))
-				if tf == 0 {
-					tf = 1
-				}
-				state.counts[int(idx)] += tf
 				leafSets[idx][key] = struct{}{}
 			}
 		}
@@ -420,7 +429,7 @@ func populateBooleanNative(
 				return err
 			}
 			for _, match := range matches {
-				phraseSets[phrase][nativeRowKey(obj.key, match.Ref)] = struct{}{}
+				phraseSets[phrase][makeNativeDocKey(obj.key, match.Ref)] = struct{}{}
 			}
 		}
 	}
@@ -514,6 +523,31 @@ func collectNativePatterns(patterns []*fulltext.Pattern, leafs map[int32]*fullte
 	}
 }
 
+func collectNativeNegativeLeafIndexes(patterns []*fulltext.Pattern) map[int32]struct{} {
+	negative := make(map[int32]struct{})
+	for _, p := range patterns {
+		if p.Operator != fulltext.MINUS || len(p.Children) == 0 {
+			continue
+		}
+		collectNativeLeafIndexes(p.Children[0], negative)
+	}
+	return negative
+}
+
+func collectNativeLeafIndexes(pattern *fulltext.Pattern, out map[int32]struct{}) {
+	if pattern == nil {
+		return
+	}
+	switch pattern.Operator {
+	case fulltext.TEXT, fulltext.STAR, fulltext.JOIN:
+		out[pattern.Index] = struct{}{}
+	default:
+		for _, child := range pattern.Children {
+			collectNativeLeafIndexes(child, out)
+		}
+	}
+}
+
 func nativeLookupLeaf(seg *ftnative.Segment, leaf *fulltext.Pattern) ([]ftnative.Posting, error) {
 	switch leaf.Operator {
 	case fulltext.TEXT:
@@ -558,11 +592,16 @@ type nativeJoinMatch struct {
 	tf     int
 }
 
+type nativeJoinDocKey struct {
+	block uint16
+	row   uint32
+}
+
 func nativeLookupJoin(seg *ftnative.Segment, leaf *fulltext.Pattern) ([]ftnative.Posting, error) {
 	if leaf == nil || len(leaf.Children) == 0 {
 		return nil, nil
 	}
-	var matches map[string]nativeJoinMatch
+	var matches map[nativeJoinDocKey]nativeJoinMatch
 	for i, child := range leaf.Children {
 		value := nativeJoinValuePattern(child)
 		if value == nil {
@@ -575,13 +614,13 @@ func nativeLookupJoin(seg *ftnative.Segment, leaf *fulltext.Pattern) ([]ftnative
 		if len(postings) == 0 {
 			return nil, nil
 		}
-		next := make(map[string]nativeJoinMatch, len(postings))
+		next := make(map[nativeJoinDocKey]nativeJoinMatch, len(postings))
 		for _, posting := range postings {
 			tf := len(posting.Positions)
 			if tf == 0 {
 				tf = 1
 			}
-			key := nativeRowKey("", posting.Ref)
+			key := nativeJoinDocKey{block: posting.Ref.Block, row: posting.Ref.Row}
 			if i == 0 {
 				next[key] = nativeJoinMatch{
 					ref:    posting.Ref,
@@ -602,11 +641,16 @@ func nativeLookupJoin(seg *ftnative.Segment, leaf *fulltext.Pattern) ([]ftnative
 			return nil, nil
 		}
 	}
-	keys := make([]string, 0, len(matches))
+	keys := make([]nativeJoinDocKey, 0, len(matches))
 	for key := range matches {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].block != keys[j].block {
+			return keys[i].block < keys[j].block
+		}
+		return keys[i].row < keys[j].row
+	})
 	postings := make([]ftnative.Posting, 0, len(keys))
 	for _, key := range keys {
 		match := matches[key]
@@ -1209,8 +1253,12 @@ func decodeNativePK(raw []byte, typ types.T) any {
 	return v
 }
 
-func nativeRowKey(objKey string, ref ftnative.RowRef) string {
-	return nativeBlockKey(objKey, ref.Block) + "#" + strconv.FormatUint(uint64(ref.Row), 10)
+func makeNativeDocKey(objKey string, ref ftnative.RowRef) nativeDocKey {
+	return nativeDocKey{
+		segmentKey: objKey,
+		block:      ref.Block,
+		row:        ref.Row,
+	}
 }
 
 func nativeBlockKey(objKey string, blk uint16) string {
