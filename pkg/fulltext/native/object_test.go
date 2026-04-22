@@ -631,6 +631,56 @@ func TestReadSidecarV4EmptySegmentSkipsZeroLengthDirectoryRead(t *testing.T) {
 	require.Equal(t, []int64{int64(segmentPrefixLen), int64(segmentHeaderLenV4)}, fs.snapshotReadSizes())
 }
 
+func TestPersistedSidecarBuildParallelism(t *testing.T) {
+	nilParallelism := persistedSidecarBuildParallelism(nil)
+	require.GreaterOrEqual(t, nilParallelism, 1)
+	require.LessOrEqual(t, nilParallelism, maxPersistedSidecarBuildReaders)
+
+	relData := &mockRelData{blocks: objectio.MakeBlockInfoSlice(2)}
+	require.Equal(t, 2, persistedSidecarBuildParallelism(relData))
+}
+
+func TestMergeObjectSegmentBuilders(t *testing.T) {
+	param := fulltext.FullTextParserParam{}
+	left := NewBuilder(param, nil)
+	right := NewBuilder(param, nil)
+
+	require.NoError(t, left.Add(Document{
+		Block: 0,
+		Row:   0,
+		PK:    types.EncodeValue(int64(1), types.T_int64),
+		Values: []fulltext.IndexValue{
+			{Text: "matrix origin"},
+		},
+	}))
+	require.NoError(t, right.Add(Document{
+		Block: 0,
+		Row:   1,
+		PK:    types.EncodeValue(int64(2), types.T_int64),
+		Values: []fulltext.IndexValue{
+			{Text: "matrix one"},
+		},
+	}))
+
+	objID := objectio.NewObjectid()
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+	key := objName.String()
+	dst := map[string]*objectSegmentBuilder{
+		key: &objectSegmentBuilder{name: objName, builder: left},
+	}
+	src := map[string]*objectSegmentBuilder{
+		key: &objectSegmentBuilder{name: objName, builder: right},
+	}
+
+	mergeObjectSegmentBuilders(dst, src)
+
+	seg := dst[key].builder.Build()
+	postings, err := seg.Lookup("matrix")
+	require.NoError(t, err)
+	require.Len(t, postings, 2)
+	require.Equal(t, int64(2), seg.DocCount)
+}
+
 func TestReadSidecarV4BatchesExactTermReads(t *testing.T) {
 	builder := NewBuilder(fulltext.FullTextParserParam{}, nil)
 	require.NoError(t, builder.Add(Document{

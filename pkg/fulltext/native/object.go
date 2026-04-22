@@ -18,8 +18,10 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	pkgcatalog "github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -95,6 +97,8 @@ type objectSegmentBuilder struct {
 	name    objectio.ObjectName
 	builder *Builder
 }
+
+const maxPersistedSidecarBuildReaders = 8
 
 func ExtractIndexDefinitions(schema *catalog.Schema) ([]IndexDefinition, error) {
 	if len(schema.Constraint) == 0 {
@@ -432,12 +436,13 @@ func buildPersistedSidecarBuilders(
 	pkType types.T,
 	param fulltext.FullTextParserParam,
 ) (map[string]*objectSegmentBuilder, error) {
+	parallelism := persistedSidecarBuildParallelism(relData)
 	readers, err := rel.BuildReaders(
 		ctx,
 		proc,
 		nil,
 		relData,
-		1,
+		parallelism,
 		0,
 		false,
 		engine.Policy_CheckAll,
@@ -448,47 +453,172 @@ func buildPersistedSidecarBuilders(
 	}
 
 	builders := make(map[string]*objectSegmentBuilder)
+	if len(readers) == 0 {
+		return builders, nil
+	}
+	if len(readers) == 1 {
+		readerBuilders, err := buildPersistedSidecarBuildersForReader(
+			ctx,
+			mp,
+			readers[0],
+			readAttrs,
+			colTypes,
+			tableDef,
+			indexDef,
+			pkType,
+			param,
+		)
+		if err != nil {
+			return nil, err
+		}
+		mergeObjectSegmentBuilders(builders, readerBuilders)
+		return builders, nil
+	}
+
+	type buildResult struct {
+		builders map[string]*objectSegmentBuilder
+		err      error
+	}
+	results := make(chan buildResult, len(readers))
+	var wg sync.WaitGroup
 	for _, reader := range readers {
-		readBatch := batch.NewWithSize(len(readAttrs))
-		readBatch.SetAttributes(readAttrs)
-		for i := range readAttrs {
-			readBatch.Vecs[i] = vector.NewVec(colTypes[i])
+		wg.Add(1)
+		go func(reader engine.Reader) {
+			defer wg.Done()
+			readerBuilders, readErr := buildPersistedSidecarBuildersForReader(
+				ctx,
+				mp,
+				reader,
+				readAttrs,
+				colTypes,
+				tableDef,
+				indexDef,
+				pkType,
+				param,
+			)
+			results <- buildResult{builders: readerBuilders, err: readErr}
+		}(reader)
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for result := range results {
+		if result.err != nil {
+			return nil, result.err
 		}
-		resolved, err := resolveRowIDIndexBatchAttrs(readBatch, tableDef.Pkey.PkeyColName, indexDef.Parts)
-		if err != nil {
-			readBatch.Clean(mp)
-			reader.Close()
-			return nil, err
-		}
-		func() {
-			defer readBatch.Clean(mp)
-			defer reader.Close()
-			for {
-				isEnd, readErr := reader.Read(ctx, readAttrs, nil, mp, readBatch)
-				if readErr != nil {
-					err = readErr
-					return
-				}
-				if isEnd {
-					return
-				}
-				if readBatch.RowCount() == 0 {
-					readBatch.CleanOnlyData()
-					continue
-				}
-				readErr = appendRowIDIndexBatch(builders, readBatch, resolved, pkType, param)
-				readBatch.CleanOnlyData()
-				if readErr != nil {
-					err = readErr
-					return
-				}
-			}
-		}()
-		if err != nil {
-			return nil, err
-		}
+		mergeObjectSegmentBuilders(builders, result.builders)
 	}
 	return builders, nil
+}
+
+func persistedSidecarBuildParallelism(relData engine.RelData) int {
+	parallelism := runtime.GOMAXPROCS(0)
+	if parallelism < 1 {
+		parallelism = 1
+	}
+	if parallelism > maxPersistedSidecarBuildReaders {
+		parallelism = maxPersistedSidecarBuildReaders
+	}
+	if relData != nil && relData.DataCnt() > 0 && parallelism > relData.DataCnt() {
+		parallelism = relData.DataCnt()
+	}
+	if parallelism < 1 {
+		parallelism = 1
+	}
+	return parallelism
+}
+
+func buildPersistedSidecarBuildersForReader(
+	ctx context.Context,
+	mp *mpool.MPool,
+	reader engine.Reader,
+	readAttrs []string,
+	colTypes []types.Type,
+	tableDef *plan.TableDef,
+	indexDef *plan.IndexDef,
+	pkType types.T,
+	param fulltext.FullTextParserParam,
+) (map[string]*objectSegmentBuilder, error) {
+	builders := make(map[string]*objectSegmentBuilder)
+	readBatch := batch.NewWithSize(len(readAttrs))
+	readBatch.SetAttributes(readAttrs)
+	for i := range readAttrs {
+		readBatch.Vecs[i] = vector.NewVec(colTypes[i])
+	}
+	resolved, err := resolveRowIDIndexBatchAttrs(readBatch, tableDef.Pkey.PkeyColName, indexDef.Parts)
+	if err != nil {
+		readBatch.Clean(mp)
+		reader.Close()
+		return nil, err
+	}
+	defer readBatch.Clean(mp)
+	defer reader.Close()
+
+	for {
+		isEnd, readErr := reader.Read(ctx, readAttrs, nil, mp, readBatch)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if isEnd {
+			return builders, nil
+		}
+		if readBatch.RowCount() == 0 {
+			readBatch.CleanOnlyData()
+			continue
+		}
+		readErr = appendRowIDIndexBatch(builders, readBatch, resolved, pkType, param)
+		readBatch.CleanOnlyData()
+		if readErr != nil {
+			return nil, readErr
+		}
+	}
+}
+
+func mergeObjectSegmentBuilders(dst, src map[string]*objectSegmentBuilder) {
+	for key, builder := range src {
+		if builder == nil {
+			continue
+		}
+		if existing := dst[key]; existing != nil {
+			mergeBuilder(existing.builder, builder.builder)
+			continue
+		}
+		dst[key] = builder
+	}
+}
+
+func mergeBuilder(dst, src *Builder) {
+	if dst == nil || src == nil {
+		return
+	}
+	dst.docCount += src.docCount
+	dst.tokenSum += src.tokenSum
+	for term, postingsByRow := range src.terms {
+		dstPostings := dst.terms[term]
+		if dstPostings == nil {
+			dstPostings = make(map[string]*postingBuilder, len(postingsByRow))
+			dst.terms[term] = dstPostings
+		}
+		for rowKey, posting := range postingsByRow {
+			if posting == nil {
+				continue
+			}
+			dstPostings[rowKey] = clonePostingBuilder(posting)
+		}
+	}
+}
+
+func clonePostingBuilder(src *postingBuilder) *postingBuilder {
+	if src == nil {
+		return nil
+	}
+	return &postingBuilder{
+		ref:       cloneRowRef(src.ref),
+		docLen:    src.docLen,
+		positions: append([]int32(nil), src.positions...),
+	}
 }
 
 func buildVisibleObjectRelData(
