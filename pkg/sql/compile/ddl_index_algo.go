@@ -120,7 +120,6 @@ func (s *Scope) handleMasterIndexTable(
 			return err
 		}
 	}
-	s.backfillFullTextSidecars(c, dbSource, qryDatabase, originalTableDef, indexDef)
 	return nil
 }
 
@@ -203,6 +202,7 @@ func (s *Scope) handleFullTextIndexTable(
 			return err
 		}
 	}
+	s.backfillFullTextSidecars(c, dbSource, qryDatabase, originalTableDef, indexDef)
 	return nil
 }
 
