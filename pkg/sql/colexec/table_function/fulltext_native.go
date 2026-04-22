@@ -364,6 +364,8 @@ func populateBooleanNative(
 	leafs := make(map[int32]*fulltext.Pattern, s.Nkeywords)
 	phrases := make([]*fulltext.Pattern, 0, 4)
 	collectNativePatterns(s.Pattern, leafs, &phrases)
+	hasPlus := s.PatternAnyPlus()
+	anchorLeafs := collectNativeAnchorLeafIndexes(s.Pattern, hasPlus)
 	negativeLeafs := collectNativeNegativeLeafIndexes(s.Pattern)
 
 	docs := make(map[nativeDocKey]*nativeDocState, 1024)
@@ -383,9 +385,14 @@ func populateBooleanNative(
 			}
 			for _, posting := range postings {
 				key := makeNativeDocKey(obj.key, posting.Ref)
+				_, isAnchorLeaf := anchorLeafs[idx]
 				if _, negative := negativeLeafs[idx]; !negative {
 					state := docs[key]
 					if state == nil {
+						if hasPlus && !isAnchorLeaf {
+							leafSets[idx][key] = struct{}{}
+							continue
+						}
 						state = &nativeDocState{
 							pk:              decodeNativePK(posting.Ref.PK, scan.pkType),
 							docLen:          posting.DocLen,
@@ -521,6 +528,15 @@ func collectNativePatterns(patterns []*fulltext.Pattern, leafs map[int32]*fullte
 			collectNativePatterns(p.Children, leafs, phrases)
 		}
 	}
+}
+
+func collectNativeAnchorLeafIndexes(patterns []*fulltext.Pattern, hasPlus bool) map[int32]struct{} {
+	if !hasPlus || len(patterns) == 0 {
+		return nil
+	}
+	anchor := make(map[int32]struct{})
+	collectNativeLeafIndexes(patterns[0], anchor)
+	return anchor
 }
 
 func collectNativeNegativeLeafIndexes(patterns []*fulltext.Pattern) map[int32]struct{} {

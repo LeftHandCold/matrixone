@@ -352,3 +352,23 @@ func TestCollectNativeNegativeLeafIndexes(t *testing.T) {
 	require.Len(t, negative, 1)
 	require.Contains(t, negative, int32(2))
 }
+
+func TestCollectNativeAnchorLeafIndexes(t *testing.T) {
+	patterns, err := fulltext.ParsePattern("+alpha +stablegamma", int64(tree.FULLTEXT_BOOLEAN))
+	require.NoError(t, err)
+	anchor := collectNativeAnchorLeafIndexes(patterns, true)
+	require.Len(t, anchor, 1)
+	require.Contains(t, anchor, int32(0))
+
+	patterns, err = fulltext.ParsePattern("+(alpha beta) +gamma", int64(tree.FULLTEXT_BOOLEAN))
+	require.NoError(t, err)
+	anchor = collectNativeAnchorLeafIndexes(patterns, true)
+	require.Len(t, anchor, 2)
+	require.Contains(t, anchor, int32(0))
+	require.Contains(t, anchor, int32(1))
+
+	patterns, err = fulltext.ParsePattern("alpha beta", int64(tree.FULLTEXT_BOOLEAN))
+	require.NoError(t, err)
+	anchor = collectNativeAnchorLeafIndexes(patterns, false)
+	require.Empty(t, anchor)
+}
