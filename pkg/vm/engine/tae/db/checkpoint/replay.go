@@ -26,6 +26,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
@@ -423,6 +424,15 @@ func (c *CkpReplayer) ReplayObjectlist(ctx context.Context, phase string) (err e
 	}
 
 	c.wg.Wait()
+	if err = c.replayFTSSidecarRegistry(ctx); err != nil {
+		logutil.Error(
+			"Replay-FTS-Sidecar-Registry",
+			zap.String("phase", phase),
+			zap.Duration("cost", time.Since(t0)),
+			zap.Error(err),
+		)
+		return
+	}
 	c.applyDuration += time.Since(t0)
 	r.source.Init(maxTS)
 	maxTableID, maxObjectCount := uint64(0), 0
@@ -444,6 +454,62 @@ func (c *CkpReplayer) ReplayObjectlist(ctx context.Context, phase string) (err e
 		zap.Int("read-count", c.readCount),
 	)
 	return
+}
+
+func (c *CkpReplayer) replayFTSSidecarRegistry(ctx context.Context) error {
+	type sidecarGroup struct {
+		tableID uint64
+		entries []ftnative.PublishedSidecar
+	}
+	ftnative.ResetRuntimeSidecarRegistry()
+	groups := make(map[string]*sidecarGroup)
+	for i, entry := range c.ckpEntries {
+		if entry == nil || entry.end.LT(&c.ckpReader.maxGlobalEnd) {
+			continue
+		}
+		reader := c.ckpReader.readers[i]
+		if reader == nil {
+			continue
+		}
+		if err := reader.ForEachFTSSidecarRow(
+			ctx,
+			func(
+				_ uint32,
+				_ uint64,
+				tid uint64,
+				objectStats objectio.ObjectStats,
+				_ types.TS,
+				_ types.TS,
+				indexTable, sidecarPath, locatorPath string,
+				segmentVersion uint32,
+				docCount int64,
+				flags uint16,
+				_ types.Rowid,
+			) error {
+				objectName := objectStats.ObjectName().String()
+				group, ok := groups[objectName]
+				if !ok {
+					group = &sidecarGroup{tableID: tid}
+					groups[objectName] = group
+				}
+				group.entries = append(group.entries, ftnative.PublishedSidecar{
+					IndexTable:     indexTable,
+					SidecarPath:    sidecarPath,
+					LocatorPath:    locatorPath,
+					SegmentVersion: segmentVersion,
+					DocCount:       docCount,
+					Flags:          flags | ftnative.SidecarFlagReplayed,
+				})
+				return nil
+			},
+		); err != nil {
+			return err
+		}
+	}
+	for objectName, group := range groups {
+		ftnative.PublishRuntimeSidecars(group.tableID, objectName, group.entries)
+	}
+	return nil
 }
 
 func (c *CkpReplayer) Submit(tid uint64, replayFn func()) {

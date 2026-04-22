@@ -30,6 +30,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
@@ -715,10 +716,28 @@ func (task *flushTableTailTask) mergeAObjs(ctx context.Context, isTombstone bool
 	} else if schema.HasSortKey() {
 		writer.SetSortKey(uint16(schema.GetSingleSortKeyIdx()))
 	}
-	for _, bat := range writtenBatches {
-		_, err = writer.WriteBatch(bat)
+
+	var nativeIndexer *ftnative.ObjectIndexer
+	nativeIndexingClosed := isTombstone
+	if !isTombstone {
+		nativeIndexer, err = ftnative.NewObjectIndexer(schema)
 		if err != nil {
-			return err
+			task.logNativeSidecarError("flush-tail-init", err)
+			nativeIndexingClosed = true
+		} else if nativeIndexer.Empty() {
+			nativeIndexingClosed = true
+		}
+	}
+	for _, bat := range writtenBatches {
+		block, blockErr := writer.WriteBatch(bat)
+		if blockErr != nil {
+			return blockErr
+		}
+		if !nativeIndexingClosed && nativeIndexer != nil {
+			if err = nativeIndexer.AddBatch(bat, []uint32{block.GetRows()}); err != nil {
+				task.logNativeSidecarError("flush-tail-add", err)
+				nativeIndexingClosed = true
+			}
 		}
 	}
 	_, _, err = writer.Sync(ctx)
@@ -739,6 +758,15 @@ func (task *flushTableTailTask) mergeAObjs(ctx context.Context, isTombstone bool
 	stats := objectio.NewObjectStatsWithObjectID(&objID, false, sorted, false)
 	writerStats := writer.Stats()
 	objectio.SetObjectStats(stats, &writerStats)
+	if !nativeIndexingClosed && nativeIndexer != nil {
+		published, writeErr := nativeIndexer.Write(ctx, task.rt.Fs, stats.ObjectName(), stats.Rows())
+		if len(published) > 0 {
+			ftnative.PublishRuntimeSidecars(task.rel.GetMeta().(*catalog.TableEntry).ID, stats.ObjectName().String(), published)
+		}
+		if writeErr != nil {
+			task.logNativeSidecarError("flush-tail-write", writeErr)
+		}
+	}
 	// create new object to hold merged blocks
 	var createdObjectHandle handle.Object
 	if isTombstone {
@@ -898,6 +926,16 @@ func releaseTasks(taskName string, subtasks []*flushObjTask, err error) {
 	for _, subTask := range subtasks {
 		subTask.release()
 	}
+}
+
+func (task *flushTableTailTask) logNativeSidecarError(phase string, err error) {
+	logutil.Error(
+		"native fulltext sidecar skipped",
+		zap.String("phase", phase),
+		zap.String("table", task.schema.Name),
+		common.AnyField("task", task.Name()),
+		zap.Error(err),
+	)
 }
 
 // For unit test

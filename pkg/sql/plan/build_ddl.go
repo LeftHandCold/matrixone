@@ -27,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/fulltext"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/sql/features"
@@ -1584,22 +1585,7 @@ func getRefAction(typ tree.ReferenceOptionType) plan.ForeignKeyDef_RefAction {
 	}
 }
 
-// buildFullTextIndexTable create a secondary table with schema (doc_id, word, pos) cluster by (word)
-//
-// with the following schema
-// create __mo_secondary_xxx (
-//
-//	doc_id src_pk_type,
-//	word varchar,
-//	pos int,
-//	cluster by (word)
-//
-// )
-func buildFullTextIndexTable(createTable *plan.CreateTable, indexInfos []*tree.FullTextIndex, colMap map[string]*ColDef, existedIndexes []*plan.IndexDef, pkeyName string, ctx CompilerContext) error {
-	if pkeyName == "" || pkeyName == catalog.FakePrimaryKeyColName {
-		return moerr.NewInternalErrorNoCtx("primary key cannot be empty for fulltext index")
-	}
-
+func validateFullTextIndexInfos(indexInfos []*tree.FullTextIndex, colMap map[string]*ColDef, existedIndexes []*plan.IndexDef, ctx CompilerContext) error {
 	// check duplicate index
 	if len(existedIndexes) > 0 {
 		for _, existedIndex := range existedIndexes {
@@ -1627,7 +1613,6 @@ func buildFullTextIndexTable(createTable *plan.CreateTable, indexInfos []*tree.F
 	}
 
 	for _, indexInfo := range indexInfos {
-		// fulltext only support char, varchar and text
 		for _, keyPart := range indexInfo.KeyParts {
 			nameOrigin := keyPart.ColName.ColNameOrigin()
 			name := keyPart.ColName.ColName()
@@ -1641,60 +1626,108 @@ func buildFullTextIndexTable(createTable *plan.CreateTable, indexInfos []*tree.F
 			}
 		}
 
-		// check parser
-		var parsername string
 		if indexInfo.IndexOption != nil && indexInfo.IndexOption.ParserName != "" {
-			// set parser ngram
-			parsername = strings.ToLower(indexInfo.IndexOption.ParserName)
+			parsername := strings.ToLower(indexInfo.IndexOption.ParserName)
 			if parsername != "ngram" && parsername != "default" && parsername != "json" && parsername != "json_value" {
 				return moerr.NewNotSupported(ctx.GetContext(), fmt.Sprintf("Fulltext parser %s not supported", parsername))
 			}
 		}
 	}
 
+	return nil
+}
+
+func buildFullTextIndexParts(indexInfo *tree.FullTextIndex) []string {
+	indexParts := make([]string, 0, len(indexInfo.KeyParts))
+	for _, keyPart := range indexInfo.KeyParts {
+		indexParts = append(indexParts, keyPart.ColName.ColName())
+	}
+	return indexParts
+}
+
+func buildFullTextIndexParams(indexInfo *tree.FullTextIndex, extra map[string]string) (string, error) {
+	param := fulltext.FullTextParserParam{
+		Implementation: fulltext.FullTextImplementationNative,
+		NativeOnlyMode: true,
+	}
+	if raw, err := catalog.IndexParamsToJsonString(indexInfo); err != nil {
+		return "", err
+	} else if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &param); err != nil {
+			return "", err
+		}
+	}
+	for k, v := range extra {
+		switch strings.ToLower(k) {
+		case "parser":
+			param.Parser = v
+		case "implementation":
+			param.Implementation = v
+		case "native_only":
+			enabled, err := strconv.ParseBool(v)
+			if err != nil {
+				return "", err
+			}
+			param.NativeOnlyMode = enabled
+		}
+	}
+	buf, err := json.Marshal(param)
+	if err != nil {
+		return "", err
+	}
+	return string(buf), nil
+}
+
+func buildFullTextIndexDef(indexInfo *tree.FullTextIndex, indexTableName, indexAlgoTableType string, indexParts []string, params string) *plan.IndexDef {
+	indexDef := &plan.IndexDef{
+		Unique:             false,
+		IndexName:          indexInfo.Name,
+		IndexTableName:     indexTableName,
+		IndexAlgo:          tree.INDEX_TYPE_FULLTEXT.ToString(),
+		IndexAlgoTableType: indexAlgoTableType,
+		Parts:              indexParts,
+		TableExist:         true,
+		IndexAlgoParams:    params,
+	}
+	if indexInfo.IndexOption != nil {
+		if indexInfo.IndexOption.ParserName != "" {
+			indexDef.Option = &plan.IndexOption{ParserName: indexInfo.IndexOption.ParserName, NgramTokenSize: int32(3)}
+		}
+		if indexInfo.IndexOption.Comment != "" {
+			indexDef.Comment = indexInfo.IndexOption.Comment
+		}
+	}
+	return indexDef
+}
+
+func buildFullTextIndexTable(createTable *plan.CreateTable, indexInfos []*tree.FullTextIndex, colMap map[string]*ColDef, existedIndexes []*plan.IndexDef, pkeyName string, ctx CompilerContext) error {
+	if pkeyName == "" || pkeyName == catalog.FakePrimaryKeyColName {
+		return moerr.NewInternalErrorNoCtx("primary key cannot be empty for fulltext index")
+	}
+
+	if err := validateFullTextIndexInfos(indexInfos, colMap, existedIndexes, ctx); err != nil {
+		return err
+	}
+
+	return buildFullTextIndexTableV1(createTable, indexInfos, colMap, pkeyName, ctx)
+}
+
+func buildFullTextIndexTableV1(createTable *plan.CreateTable, indexInfos []*tree.FullTextIndex, colMap map[string]*ColDef, pkeyName string, ctx CompilerContext) error {
 	for _, indexInfo := range indexInfos {
-
-		// create index definition
-		indexDef := &plan.IndexDef{}
-
 		indexTableName, err := util.BuildIndexTableName(ctx.GetContext(), false)
 		if err != nil {
 			return err
 		}
 
-		indexParts := make([]string, 0)
-		for _, keyPart := range indexInfo.KeyParts {
-			name := keyPart.ColName.ColName()
-			indexParts = append(indexParts, name)
+		indexParts := buildFullTextIndexParts(indexInfo)
+		params, err := buildFullTextIndexParams(indexInfo, nil)
+		if err != nil {
+			return err
 		}
+		indexDef := buildFullTextIndexDef(indexInfo, indexTableName, "", indexParts, params)
 
-		indexDef.Unique = false
-		indexDef.IndexName = indexInfo.Name
-		indexDef.IndexTableName = indexTableName
-		indexDef.IndexAlgo = tree.INDEX_TYPE_FULLTEXT.ToString()
-		indexDef.IndexAlgoTableType = ""
-		indexDef.Parts = indexParts
-		indexDef.TableExist = true
-		if indexInfo.IndexOption != nil {
-			if indexInfo.IndexOption.ParserName != "" {
-				indexDef.Option = &plan.IndexOption{ParserName: indexInfo.IndexOption.ParserName, NgramTokenSize: int32(3)}
-				indexDef.IndexAlgoParams, err = catalog.IndexParamsToJsonString(indexInfo)
-				if err != nil {
-					return err
-				}
-			}
-			if indexInfo.IndexOption.Comment != "" {
-				indexDef.Comment = indexInfo.IndexOption.Comment
-			}
-		}
+		tableDef := &TableDef{Name: indexTableName}
 
-		// create fulltext index hidden table definition
-		// doc_id, pos, word
-		tableDef := &TableDef{
-			Name: indexTableName,
-		}
-
-		// foreign primary key column
 		keyName := catalog.FullTextIndex_TabCol_Id
 		colDef := &ColDef{
 			Name: keyName,
@@ -1712,7 +1745,6 @@ func buildFullTextIndexTable(createTable *plan.CreateTable, indexInfos []*tree.F
 		}
 		tableDef.Cols = append(tableDef.Cols, colDef)
 
-		// position (int32)
 		keyName = catalog.FullTextIndex_TabCol_Position
 		colDef = &ColDef{
 			Name: keyName,
@@ -1730,7 +1762,6 @@ func buildFullTextIndexTable(createTable *plan.CreateTable, indexInfos []*tree.F
 		}
 		tableDef.Cols = append(tableDef.Cols, colDef)
 
-		// word (varchar)
 		keyName = catalog.FullTextIndex_TabCol_Word
 		colDef = &ColDef{
 			Name: keyName,
@@ -1772,27 +1803,16 @@ func buildFullTextIndexTable(createTable *plan.CreateTable, indexInfos []*tree.F
 			PkeyColName: keyName,
 		}
 
-		tableDef.ClusterBy = &ClusterByDef{
-			Name: "word",
-		}
-
-		properties := []*plan.Property{
-			{
-				Key:   catalog.SystemRelAttr_Kind,
-				Value: catalog.SystemIndexRel,
-			},
-		}
+		tableDef.ClusterBy = &ClusterByDef{Name: "word"}
+		properties := []*plan.Property{{Key: catalog.SystemRelAttr_Kind, Value: catalog.SystemIndexRel}}
 		tableDef.Defs = append(tableDef.Defs, &plan.TableDef_DefType{
 			Def: &plan.TableDef_DefType_Properties{
-				Properties: &plan.PropertiesDef{
-					Properties: properties,
-				},
-			}})
+				Properties: &plan.PropertiesDef{Properties: properties},
+			},
+		})
 
-		// append to createTable.IndexTables and createTable.TableDef
 		createTable.IndexTables = append(createTable.IndexTables, tableDef)
 		createTable.TableDef.Indexes = append(createTable.TableDef.Indexes, indexDef)
-
 	}
 	return nil
 }

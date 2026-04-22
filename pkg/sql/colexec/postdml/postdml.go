@@ -15,12 +15,14 @@ package postdml
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/fulltext"
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
@@ -32,6 +34,13 @@ var (
 	fulltextDeleteSqlFmt    = "DELETE FROM %s WHERE doc_id IN (%s)"
 	fulltextDeleteAllSqlFmt = "DELETE FROM %s"
 )
+
+func qualifyFullTextTableName(dbname, tblname string) string {
+	if strings.Contains(tblname, ".") || strings.Contains(tblname, "`") {
+		return tblname
+	}
+	return fmt.Sprintf("`%s`.`%s`", dbname, tblname)
+}
 
 func (postdml *PostDml) String(buf *bytes.Buffer) {
 	buf.WriteString(opName)
@@ -104,6 +113,19 @@ func (postdml *PostDml) runPostDml(proc *process.Process, result vm.CallResult) 
 	if postdml.PostDmlCtx.FullText != nil {
 		ftctx := postdml.PostDmlCtx.FullText
 
+		// In native-only mode, skip v1 hidden-table maintenance entirely.
+		// UPDATE/DELETE correctness is handled by MO-native tombstones;
+		// INSERT visibility is handled by sidecar generation on flush.
+		var param fulltext.FullTextParserParam
+		if ftctx.AlgoParams != "" {
+			if err := json.Unmarshal([]byte(ftctx.AlgoParams), &param); err != nil {
+				return err
+			}
+		}
+		if param.NativeOnly() {
+			return nil
+		}
+
 		dbname := postdml.PostDmlCtx.Ref.GetSchemaName()
 
 		alias := "src"
@@ -118,15 +140,11 @@ func (postdml *PostDml) runPostDml(proc *process.Process, result vm.CallResult) 
 
 		if postdml.PostDmlCtx.IsDelete {
 			var sql string
-			// append Delete SQL
 			if postdml.PostDmlCtx.IsDeleteWithoutFilters {
-				// delete all
 				sql = fmt.Sprintf(fulltextDeleteAllSqlFmt, indextbl)
 			} else {
 				sql = fmt.Sprintf(fulltextDeleteSqlFmt, indextbl, values)
 			}
-
-			//logutil.Infof("POST DELETE SQL : %s", sql)
 			proc.Base.PostDmlSqlList.Append(sql)
 		}
 
@@ -134,7 +152,6 @@ func (postdml *PostDml) runPostDml(proc *process.Process, result vm.CallResult) 
 			sql := fmt.Sprintf(fulltextInsertSqlFmt, indextbl, sourcetbl, alias,
 				ftctx.AlgoParams, pkcolname, strings.Join(parts, ", "),
 				pkcolname, values)
-			//logutil.Infof("POST INSERT SQL : %s", sql)
 			proc.Base.PostDmlSqlList.Append(sql)
 		}
 	}

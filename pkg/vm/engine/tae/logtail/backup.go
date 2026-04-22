@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -301,6 +302,94 @@ func GetCheckpointReader(
 	return reader, nil
 }
 
+type BackupFlatFile struct {
+	Path     string
+	CreateTS types.TS
+	DropTS   types.TS
+	NeedCopy bool
+}
+
+func LoadCheckpointFTSFiles(
+	ctx context.Context,
+	ckpReader *CKPReader,
+	baseTS *types.TS,
+) ([]*BackupFlatFile, error) {
+	if ckpReader == nil {
+		return nil, nil
+	}
+	files := make(map[string]*BackupFlatFile)
+	needCopy := func(createAt, deletedAt types.TS) bool {
+		if baseTS == nil || baseTS.IsEmpty() {
+			return true
+		}
+		commitAt := createAt
+		if !deletedAt.IsEmpty() {
+			commitAt = deletedAt
+		}
+		return createAt.GE(baseTS) || commitAt.GE(baseTS)
+	}
+	appendFile := func(path string, createAt, deletedAt types.TS, shouldCopy bool) {
+		if path == "" {
+			return
+		}
+		entry, ok := files[path]
+		if !ok {
+			files[path] = &BackupFlatFile{
+				Path:     path,
+				CreateTS: createAt,
+				DropTS:   deletedAt,
+				NeedCopy: shouldCopy,
+			}
+			return
+		}
+		if entry.CreateTS.IsEmpty() || createAt.LT(&entry.CreateTS) {
+			entry.CreateTS = createAt
+		}
+		if deletedAt.IsEmpty() {
+			entry.DropTS = types.TS{}
+		} else if entry.DropTS.IsEmpty() || entry.DropTS.LT(&deletedAt) {
+			entry.DropTS = deletedAt
+		}
+		entry.NeedCopy = entry.NeedCopy || shouldCopy
+	}
+	if err := ckpReader.ForEachFTSSidecarRow(
+		ctx,
+		func(
+			_ uint32,
+			_ uint64,
+			_ uint64,
+			_ objectio.ObjectStats,
+			createAt, deletedAt types.TS,
+			_ string,
+			sidecarPath, locatorPath string,
+			_ uint32,
+			_ int64,
+			_ uint16,
+			_ types.Rowid,
+		) error {
+			copyNow := needCopy(createAt, deletedAt)
+			appendFile(sidecarPath, createAt, deletedAt, copyNow)
+			appendFile(locatorPath, createAt, deletedAt, copyNow)
+			return nil
+		},
+	); err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	out := make([]*BackupFlatFile, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, files[path])
+	}
+	return out, nil
+}
+
 func addObjectToObjectData(
 	stats *objectio.ObjectStats,
 	isABlk bool,
@@ -420,6 +509,104 @@ func appendValToBatch(
 	}
 	if err = vector.AppendFixed(
 		dst.Vecs[ckputil.TableObjectsAttr_DeleteTS_Idx], delete, false, mp,
+	); err != nil {
+		return
+	}
+	if err = appendEmptyFTSSidecarColumns(dst, mp); err != nil {
+		return
+	}
+	dst.SetRowCount(dst.Vecs[0].Length())
+	return
+}
+
+func appendFTSSidecarValToBatch(
+	account uint32,
+	db, tbl uint64,
+	id objectio.ObjectStats,
+	create, delete types.TS,
+	indexTable, sidecarPath, locatorPath string,
+	segmentVersion uint32,
+	docCount int64,
+	flags uint16,
+	encoder *types.Packer,
+	dst *batch.Batch,
+	mp *mpool.MPool,
+) (err error) {
+	if err = vector.AppendFixed(
+		dst.Vecs[ckputil.TableObjectsAttr_Accout_Idx], account, false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendFixed(
+		dst.Vecs[ckputil.TableObjectsAttr_DB_Idx], db, false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendFixed(
+		dst.Vecs[ckputil.TableObjectsAttr_Table_Idx], tbl, false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendBytes(
+		dst.Vecs[ckputil.TableObjectsAttr_ID_Idx], id[:], false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendFixed(
+		dst.Vecs[ckputil.TableObjectsAttr_ObjectType_Idx], ckputil.ObjectType_FTSSidecar, false, mp,
+	); err != nil {
+		return
+	}
+	encoder.Reset()
+	ckputil.EncodeCluser(
+		encoder,
+		tbl,
+		ckputil.ObjectType_FTSSidecar,
+		id.ObjectName().ObjectId(),
+		delete.IsEmpty(),
+	)
+	if err = vector.AppendBytes(
+		dst.Vecs[ckputil.TableObjectsAttr_Cluster_Idx], encoder.Bytes(), false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendFixed(
+		dst.Vecs[ckputil.TableObjectsAttr_CreateTS_Idx], create, false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendFixed(
+		dst.Vecs[ckputil.TableObjectsAttr_DeleteTS_Idx], delete, false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendBytes(
+		dst.Vecs[ckputil.TableObjectsAttr_FTSIndexTable_Idx], []byte(indexTable), false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendBytes(
+		dst.Vecs[ckputil.TableObjectsAttr_FTSSidecarPath_Idx], []byte(sidecarPath), false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendBytes(
+		dst.Vecs[ckputil.TableObjectsAttr_FTSLocatorPath_Idx], []byte(locatorPath), false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendFixed(
+		dst.Vecs[ckputil.TableObjectsAttr_FTSSegmentVersion_Idx], segmentVersion, false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendFixed(
+		dst.Vecs[ckputil.TableObjectsAttr_FTSDocCount_Idx], docCount, false, mp,
+	); err != nil {
+		return
+	}
+	if err = vector.AppendFixed(
+		dst.Vecs[ckputil.TableObjectsAttr_FTSFlags_Idx], flags, false, mp,
 	); err != nil {
 		return
 	}
@@ -800,9 +987,45 @@ func ReWriteCheckpointAndBlockFromKey(
 		common.CheckpointAllocator, dstFs, ioutil.WithMemorySizeThreshold(DefaultCheckpointSize))
 	encoder := types.NewPacker()
 	defer encoder.Close()
+	appendSidecarMeta := func(dst *batch.Batch) error {
+		return ckpReader.ForEachFTSSidecarRow(
+			ctx,
+			func(
+				account uint32,
+				dbid, tid uint64,
+				objectStats objectio.ObjectStats,
+				create, delete types.TS,
+				indexTable, sidecarPath, locatorPath string,
+				segmentVersion uint32,
+				docCount int64,
+				flags uint16,
+				_ types.Rowid,
+			) error {
+				return appendFTSSidecarValToBatch(
+					account,
+					dbid,
+					tid,
+					objectStats,
+					create,
+					delete,
+					indexTable,
+					sidecarPath,
+					locatorPath,
+					segmentVersion,
+					docCount,
+					flags,
+					encoder,
+					dst,
+					common.CheckpointAllocator,
+				)
+			},
+		)
+	}
 	if len(insertObjBatch) > 0 {
 		objectInfoMeta := ckputil.NewObjectListBatch()
 		tombstoneInfoMeta := ckputil.NewObjectListBatch()
+		sidecarMeta := ckputil.NewObjectListBatch()
+		defer sidecarMeta.Clean(common.CheckpointAllocator)
 		infoInsert := make(map[int]*objData, 0)
 		infoInsertTombstone := make(map[int]*objData, 0)
 		for tid := range insertObjBatch {
@@ -870,11 +1093,24 @@ func ReWriteCheckpointAndBlockFromKey(
 
 		initCkpBatch(ckputil.ObjectType_Data, objectInfoMeta, infoInsert)
 		initCkpBatch(ckputil.ObjectType_Tombstone, tombstoneInfoMeta, infoInsertTombstone)
-		dataSinker.Write(ctx, objectInfoMeta)
-		dataSinker.Write(ctx, tombstoneInfoMeta)
+		if err = appendSidecarMeta(sidecarMeta); err != nil {
+			return nil, nil, nil, err
+		}
+		if objectInfoMeta.RowCount() > 0 {
+			dataSinker.Write(ctx, objectInfoMeta)
+		}
+		if tombstoneInfoMeta.RowCount() > 0 {
+			dataSinker.Write(ctx, tombstoneInfoMeta)
+		}
+		if sidecarMeta.RowCount() > 0 {
+			dataSinker.Write(ctx, sidecarMeta)
+		}
 
 	} else {
 		dest := ckputil.NewObjectListBatch()
+		defer dest.Clean(common.CheckpointAllocator)
+		sidecarMeta := ckputil.NewObjectListBatch()
+		defer sidecarMeta.Clean(common.CheckpointAllocator)
 		ckpReader.ForEachRow(
 			ctx,
 			func(
@@ -891,7 +1127,15 @@ func ReWriteCheckpointAndBlockFromKey(
 				return nil
 			},
 		)
-		dataSinker.Write(ctx, dest)
+		if err = appendSidecarMeta(sidecarMeta); err != nil {
+			return nil, nil, nil, err
+		}
+		if dest.RowCount() > 0 {
+			dataSinker.Write(ctx, dest)
+		}
+		if sidecarMeta.RowCount() > 0 {
+			dataSinker.Write(ctx, sidecarMeta)
+		}
 	}
 	newData := NewCheckpointDataWithSinker(dataSinker, common.CheckpointAllocator)
 	location, checkpointFiles, err := newData.Sync(

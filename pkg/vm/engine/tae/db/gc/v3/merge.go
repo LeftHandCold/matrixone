@@ -122,7 +122,7 @@ func MergeCheckpoint(
 		default:
 		}
 		var objectBatch *batch.Batch
-		if objectBatch, err = data.GetCheckpointData(ctx); err != nil {
+		if objectBatch, err = data.GetRawCheckpointData(ctx); err != nil {
 			return
 		}
 		defer objectBatch.Clean(common.CheckpointAllocator)
@@ -220,7 +220,75 @@ func appendValToBatchForObjectListBatch(src, dst *batch.Batch, row int, mp *mpoo
 	vector.AppendFixed(dst.Vecs[ckputil.TableObjectsAttr_DeleteTS_Idx], deleteAt, false, mp)
 	cluster := src.Vecs[ckputil.TableObjectsAttr_Cluster_Idx].GetBytesAt(row)
 	vector.AppendBytes(dst.Vecs[ckputil.TableObjectsAttr_Cluster_Idx], cluster, false, mp)
+	appendNullableBytesToObjectListBatch(
+		src.Vecs[ckputil.TableObjectsAttr_FTSIndexTable_Idx],
+		dst.Vecs[ckputil.TableObjectsAttr_FTSIndexTable_Idx],
+		row,
+		mp,
+	)
+	appendNullableBytesToObjectListBatch(
+		src.Vecs[ckputil.TableObjectsAttr_FTSSidecarPath_Idx],
+		dst.Vecs[ckputil.TableObjectsAttr_FTSSidecarPath_Idx],
+		row,
+		mp,
+	)
+	appendNullableBytesToObjectListBatch(
+		src.Vecs[ckputil.TableObjectsAttr_FTSLocatorPath_Idx],
+		dst.Vecs[ckputil.TableObjectsAttr_FTSLocatorPath_Idx],
+		row,
+		mp,
+	)
+	appendNullableFixedToObjectListBatch(
+		src.Vecs[ckputil.TableObjectsAttr_FTSSegmentVersion_Idx],
+		dst.Vecs[ckputil.TableObjectsAttr_FTSSegmentVersion_Idx],
+		row,
+		mp,
+	)
+	appendNullableInt64ToObjectListBatch(
+		src.Vecs[ckputil.TableObjectsAttr_FTSDocCount_Idx],
+		dst.Vecs[ckputil.TableObjectsAttr_FTSDocCount_Idx],
+		row,
+		mp,
+	)
+	appendNullableUint16ToObjectListBatch(
+		src.Vecs[ckputil.TableObjectsAttr_FTSFlags_Idx],
+		dst.Vecs[ckputil.TableObjectsAttr_FTSFlags_Idx],
+		row,
+		mp,
+	)
 	dst.SetRowCount(dst.Vecs[0].Length())
+}
+
+func appendNullableBytesToObjectListBatch(src, dst *vector.Vector, row int, mp *mpool.MPool) {
+	if src.IsNull(uint64(row)) {
+		vector.AppendBytes(dst, nil, true, mp)
+		return
+	}
+	vector.AppendBytes(dst, src.GetBytesAt(row), false, mp)
+}
+
+func appendNullableFixedToObjectListBatch(src, dst *vector.Vector, row int, mp *mpool.MPool) {
+	if src.IsNull(uint64(row)) {
+		vector.AppendFixed(dst, uint32(0), true, mp)
+		return
+	}
+	vector.AppendFixed(dst, vector.GetFixedAtNoTypeCheck[uint32](src, row), false, mp)
+}
+
+func appendNullableInt64ToObjectListBatch(src, dst *vector.Vector, row int, mp *mpool.MPool) {
+	if src.IsNull(uint64(row)) {
+		vector.AppendFixed(dst, int64(0), true, mp)
+		return
+	}
+	vector.AppendFixed(dst, vector.GetFixedAtNoTypeCheck[int64](src, row), false, mp)
+}
+
+func appendNullableUint16ToObjectListBatch(src, dst *vector.Vector, row int, mp *mpool.MPool) {
+	if src.IsNull(uint64(row)) {
+		vector.AppendFixed(dst, uint16(0), true, mp)
+		return
+	}
+	vector.AppendFixed(dst, vector.GetFixedAtNoTypeCheck[uint16](src, row), false, mp)
 }
 func getCheckpointLocation(
 	ctx context.Context,

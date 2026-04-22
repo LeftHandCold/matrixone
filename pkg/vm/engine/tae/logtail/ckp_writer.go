@@ -25,6 +25,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/ckputil"
@@ -218,8 +219,154 @@ func collectObjectBatch(
 			return
 		}
 	}
+	if err = appendEmptyFTSSidecarColumns(data, mp); err != nil {
+		return
+	}
 	data.SetRowCount(data.Vecs[0].Length())
+	if err = collectFTSSidecarRows(data, srcObjectEntry, isObjectTombstone, encoder, mp); err != nil {
+		return
+	}
 	return
+}
+
+func appendEmptyFTSSidecarColumns(data *batch.Batch, mp *mpool.MPool) error {
+	if err := vector.AppendBytes(
+		data.Vecs[ckputil.TableObjectsAttr_FTSIndexTable_Idx], nil, true, mp,
+	); err != nil {
+		return err
+	}
+	if err := vector.AppendBytes(
+		data.Vecs[ckputil.TableObjectsAttr_FTSSidecarPath_Idx], nil, true, mp,
+	); err != nil {
+		return err
+	}
+	if err := vector.AppendBytes(
+		data.Vecs[ckputil.TableObjectsAttr_FTSLocatorPath_Idx], nil, true, mp,
+	); err != nil {
+		return err
+	}
+	if err := vector.AppendFixed(
+		data.Vecs[ckputil.TableObjectsAttr_FTSSegmentVersion_Idx], uint32(0), true, mp,
+	); err != nil {
+		return err
+	}
+	if err := vector.AppendFixed(
+		data.Vecs[ckputil.TableObjectsAttr_FTSDocCount_Idx], int64(0), true, mp,
+	); err != nil {
+		return err
+	}
+	return vector.AppendFixed(
+		data.Vecs[ckputil.TableObjectsAttr_FTSFlags_Idx], uint16(0), true, mp,
+	)
+}
+
+func collectFTSSidecarRows(
+	data *batch.Batch,
+	srcObjectEntry *catalog.ObjectEntry,
+	isObjectTombstone bool,
+	encoder *types.Packer,
+	mp *mpool.MPool,
+) (err error) {
+	if srcObjectEntry.IsTombstone {
+		return nil
+	}
+	sidecarSet, ok := ftnative.LookupRuntimeSidecars(srcObjectEntry.ObjectStats.ObjectName().String())
+	if !ok || len(sidecarSet.Entries) == 0 {
+		return nil
+	}
+	accountID := srcObjectEntry.GetTable().GetDB().GetTenantID()
+	dbID := srcObjectEntry.GetTable().GetDB().ID
+	tableID := srcObjectEntry.GetTable().ID
+	appendDeleteTS := func() error {
+		if !isObjectTombstone {
+			return vector.AppendFixed(
+				data.Vecs[ckputil.TableObjectsAttr_DeleteTS_Idx], types.TS{}, false, mp,
+			)
+		}
+		return vector.AppendFixed(
+			data.Vecs[ckputil.TableObjectsAttr_DeleteTS_Idx], srcObjectEntry.DeletedAt, false, mp,
+		)
+	}
+	for _, sidecar := range sidecarSet.Entries {
+		if err = vector.AppendFixed(
+			data.Vecs[ckputil.TableObjectsAttr_Accout_Idx], accountID, false, mp,
+		); err != nil {
+			return err
+		}
+		if err = vector.AppendFixed(
+			data.Vecs[ckputil.TableObjectsAttr_DB_Idx], dbID, false, mp,
+		); err != nil {
+			return err
+		}
+		if err = vector.AppendFixed(
+			data.Vecs[ckputil.TableObjectsAttr_Table_Idx], tableID, false, mp,
+		); err != nil {
+			return err
+		}
+		if err = vector.AppendFixed(
+			data.Vecs[ckputil.TableObjectsAttr_ObjectType_Idx], ckputil.ObjectType_FTSSidecar, false, mp,
+		); err != nil {
+			return err
+		}
+		if err = vector.AppendBytes(
+			data.Vecs[ckputil.TableObjectsAttr_ID_Idx], srcObjectEntry.ObjectStats[:], false, mp,
+		); err != nil {
+			return err
+		}
+		if err = vector.AppendFixed(
+			data.Vecs[ckputil.TableObjectsAttr_CreateTS_Idx], srcObjectEntry.CreatedAt, false, mp,
+		); err != nil {
+			return err
+		}
+		if err = appendDeleteTS(); err != nil {
+			return err
+		}
+		encoder.Reset()
+		ckputil.EncodeCluser(
+			encoder,
+			tableID,
+			ckputil.ObjectType_FTSSidecar,
+			srcObjectEntry.ID(),
+			isObjectTombstone,
+		)
+		if err = vector.AppendBytes(
+			data.Vecs[ckputil.TableObjectsAttr_Cluster_Idx], encoder.Bytes(), false, mp,
+		); err != nil {
+			return err
+		}
+		if err = vector.AppendBytes(
+			data.Vecs[ckputil.TableObjectsAttr_FTSIndexTable_Idx], []byte(sidecar.IndexTable), false, mp,
+		); err != nil {
+			return err
+		}
+		if err = vector.AppendBytes(
+			data.Vecs[ckputil.TableObjectsAttr_FTSSidecarPath_Idx], []byte(sidecar.SidecarPath), false, mp,
+		); err != nil {
+			return err
+		}
+		if err = vector.AppendBytes(
+			data.Vecs[ckputil.TableObjectsAttr_FTSLocatorPath_Idx], []byte(sidecar.LocatorPath), false, mp,
+		); err != nil {
+			return err
+		}
+		if err = vector.AppendFixed(
+			data.Vecs[ckputil.TableObjectsAttr_FTSSegmentVersion_Idx], sidecar.SegmentVersion, false, mp,
+		); err != nil {
+			return err
+		}
+		if err = vector.AppendFixed(
+			data.Vecs[ckputil.TableObjectsAttr_FTSDocCount_Idx], sidecar.DocCount, false, mp,
+		); err != nil {
+			return err
+		}
+		if err = vector.AppendFixed(
+			data.Vecs[ckputil.TableObjectsAttr_FTSFlags_Idx], sidecar.Flags, false, mp,
+		); err != nil {
+			return err
+		}
+		data.SetRowCount(data.Vecs[0].Length())
+	}
+	return nil
 }
 
 type CheckpointData_V2 struct {

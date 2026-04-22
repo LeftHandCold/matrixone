@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -27,8 +28,10 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/mergeutil"
+	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -100,6 +103,87 @@ func TestSetStatsCNCreated(t *testing.T) {
 	require.Equal(t, uint32(1), stats[0].BlkCnt())
 	require.Equal(t, uint32(bat.Vecs[0].Length()), stats[0].Rows())
 
+}
+
+func TestCNS3DataWriterWritesNativeSidecar(t *testing.T) {
+	ftnative.ResetRuntimeSidecarRegistry()
+	defer ftnative.ResetRuntimeSidecarRegistry()
+
+	proc := testutil.NewProc(t)
+	ctx := proc.Ctx
+	fs, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+
+	tableDef := &plan.TableDef{
+		TblId:   42,
+		Name:    "docs",
+		DbName:  "db",
+		Version: 1,
+		Cols: []*plan.ColDef{
+			{
+				Name:   "id",
+				Typ:    plan.Type{Id: int32(types.T_int64)},
+				Seqnum: 0,
+			},
+			{
+				Name:   "body",
+				Typ:    plan.Type{Id: int32(types.T_varchar)},
+				Seqnum: 1,
+			},
+		},
+		Name2ColIndex: map[string]int32{
+			"id":   0,
+			"body": 1,
+		},
+		Pkey: &plan.PrimaryKeyDef{
+			PkeyColName: "id",
+			Names:       []string{"id"},
+		},
+		Indexes: []*plan.IndexDef{{
+			IndexName:       "idx_body",
+			IndexTableName:  "__idx_body",
+			IndexAlgo:       catalog.MOIndexFullTextAlgo.ToString(),
+			Parts:           []string{"body"},
+			IndexAlgoParams: `{"parser":"default"}`,
+		}},
+	}
+
+	idVec := vector.NewVec(types.T_int64.ToType())
+	bodyVec := vector.NewVec(types.T_varchar.ToType())
+	defer idVec.Free(proc.GetMPool())
+	defer bodyVec.Free(proc.GetMPool())
+	require.NoError(t, vector.AppendFixed[int64](idVec, 1, false, proc.GetMPool()))
+	require.NoError(t, vector.AppendFixed[int64](idVec, 2, false, proc.GetMPool()))
+	require.NoError(t, vector.AppendBytes(bodyVec, []byte("matrixone native search"), false, proc.GetMPool()))
+	require.NoError(t, vector.AppendBytes(bodyVec, []byte("native fulltext sidecar"), false, proc.GetMPool()))
+
+	bat := batch.NewWithSize(2)
+	bat.Attrs = []string{"id", "body"}
+	bat.Vecs[0] = idVec
+	bat.Vecs[1] = bodyVec
+	bat.SetRowCount(2)
+
+	writer := NewCNS3DataWriter(proc.Mp(), fs, tableDef, -1, false)
+	defer writer.Close()
+	require.NoError(t, writer.Write(ctx, bat))
+	stats, err := writer.Sync(ctx)
+	require.NoError(t, err)
+	require.Len(t, stats, 1)
+
+	objName := stats[0].ObjectName()
+	locator, ok, err := ftnative.ReadSidecarLocator(ctx, fs, objName.String())
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Len(t, locator.Entries, 1)
+	require.Equal(t, "__idx_body", locator.Entries[0].IndexTable)
+
+	seg, ok, err := ftnative.ReadSidecar(ctx, fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, int64(2), seg.DocCount)
+	postings, err := seg.Lookup("native")
+	require.NoError(t, err)
+	require.Len(t, postings, 2)
 }
 
 func TestMergeSortBatches(t *testing.T) {
@@ -588,5 +672,45 @@ func TestGetSharedFSFromProc(t *testing.T) {
 		fs, err := GetSharedFSFromProc(proc)
 		require.NotNil(t, err)
 		require.Nil(t, fs)
+	}
+}
+
+func TestGetObjectFSFromProc(t *testing.T) {
+	{
+		proc := testutil.NewProc(t)
+		fs, err := GetObjectFSFromProc(proc)
+		require.NoError(t, err)
+		require.NotNil(t, fs)
+		require.Equal(t, defines.SharedFileServiceName, fs.Name())
+	}
+
+	{
+		local, err := fileservice.NewMemoryFS(defines.LocalFileServiceName, fileservice.DisabledCacheConfig, nil)
+		require.NoError(t, err)
+		bus, err := fileservice.NewFileServices("", local)
+		require.NoError(t, err)
+
+		proc := &process.Process{
+			Base: &process.BaseProcess{
+				FileService: bus,
+			},
+		}
+		fs, err := GetObjectFSFromProc(proc)
+		require.NoError(t, err)
+		require.Equal(t, defines.LocalFileServiceName, fs.Name())
+	}
+
+	{
+		local, err := fileservice.NewMemoryFS(defines.LocalFileServiceName, fileservice.DisabledCacheConfig, nil)
+		require.NoError(t, err)
+
+		proc := &process.Process{
+			Base: &process.BaseProcess{
+				FileService: local,
+			},
+		}
+		fs, err := GetObjectFSFromProc(proc)
+		require.NoError(t, err)
+		require.Same(t, local, fs)
 	}
 }

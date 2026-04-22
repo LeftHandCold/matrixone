@@ -165,10 +165,22 @@ func IndexParamsMapToJsonString(res map[string]string) (string, error) {
 
 // IndexParamsStringToMap used by buildShowCreateTable and restoreDDL
 func IndexParamsStringToMap(indexParams string) (map[string]string, error) {
-	var result map[string]string
-	err := json.Unmarshal([]byte(indexParams), &result)
-	if err != nil {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(indexParams), &raw); err != nil {
 		return nil, err
+	}
+	result := make(map[string]string, len(raw))
+	for key, value := range raw {
+		switch v := value.(type) {
+		case string:
+			result[key] = v
+		case bool:
+			result[key] = strconv.FormatBool(v)
+		case float64:
+			result[key] = strconv.FormatFloat(v, 'f', -1, 64)
+		default:
+			return nil, moerr.NewInternalErrorNoCtxf("unsupported index param value type for %s", key)
+		}
 	}
 	return result, nil
 }
@@ -179,6 +191,9 @@ func fullTextIndexParamsToMap(def *tree.FullTextIndex) (map[string]string, error
 	// fulltext index here
 	if def.IndexOption != nil {
 		parsername := strings.ToLower(def.IndexOption.ParserName)
+		if parsername == "" {
+			return res, nil
+		}
 		if parsername != "ngram" && parsername != "default" && parsername != "json" && parsername != "json_value" {
 			return nil, moerr.NewInternalErrorNoCtx(fmt.Sprintf("invalid parser %s", parsername))
 		}
