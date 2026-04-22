@@ -28,6 +28,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/fulltext"
 	ftnative "github.com/matrixorigin/matrixone/pkg/fulltext/native"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/stretchr/testify/require"
 )
@@ -258,4 +259,77 @@ func filterMockDeletedRows(rows []int64, deleted map[int64]struct{}) []int64 {
 		out = append(out, row)
 	}
 	return out
+}
+
+func TestNativeLookupLeafJoinMatchesAllPlusTerms(t *testing.T) {
+	builder := ftnative.NewBuilder(fulltext.FullTextParserParam{}, nil)
+	require.NoError(t, builder.Add(ftnative.Document{
+		Block: 1,
+		Row:   1,
+		PK:    []byte("pk-1"),
+		Values: []fulltext.IndexValue{
+			{Text: "alpha stablegamma nativeprobe orange", Type: types.T_text},
+		},
+	}))
+	require.NoError(t, builder.Add(ftnative.Document{
+		Block: 1,
+		Row:   2,
+		PK:    []byte("pk-2"),
+		Values: []fulltext.IndexValue{
+			{Text: "alpha nativeprobe orange", Type: types.T_text},
+		},
+	}))
+	require.NoError(t, builder.Add(ftnative.Document{
+		Block: 1,
+		Row:   3,
+		PK:    []byte("pk-3"),
+		Values: []fulltext.IndexValue{
+			{Text: "stablegamma reference", Type: types.T_text},
+		},
+	}))
+	require.NoError(t, builder.Add(ftnative.Document{
+		Block: 1,
+		Row:   4,
+		PK:    []byte("pk-4"),
+		Values: []fulltext.IndexValue{
+			{Text: "alpha stablegamma", Type: types.T_text},
+		},
+	}))
+	seg := builder.Build()
+
+	patterns, err := fulltext.ParsePattern("+alpha +stablegamma", int64(tree.FULLTEXT_BOOLEAN))
+	require.NoError(t, err)
+	leafs := make(map[int32]*fulltext.Pattern)
+	var phrases []*fulltext.Pattern
+	collectNativePatterns(patterns, leafs, &phrases)
+	require.Len(t, leafs, 1)
+
+	var join *fulltext.Pattern
+	for _, leaf := range leafs {
+		join = leaf
+	}
+	require.NotNil(t, join)
+	require.Equal(t, fulltext.JOIN, join.Operator)
+
+	require.NoError(t, prefetchBooleanNativeTerms(seg, leafs, phrases))
+	postings, err := nativeLookupLeaf(seg, join)
+	require.NoError(t, err)
+	require.Len(t, postings, 2)
+	require.Equal(t, uint32(1), postings[0].Ref.Row)
+	require.Equal(t, uint32(4), postings[1].Ref.Row)
+
+	patterns, err = fulltext.ParsePattern("+alpha +nativeprobe +orange", int64(tree.FULLTEXT_BOOLEAN))
+	require.NoError(t, err)
+	leafs = make(map[int32]*fulltext.Pattern)
+	phrases = nil
+	collectNativePatterns(patterns, leafs, &phrases)
+	require.Len(t, leafs, 1)
+	for _, leaf := range leafs {
+		join = leaf
+	}
+	postings, err = nativeLookupLeaf(seg, join)
+	require.NoError(t, err)
+	require.Len(t, postings, 2)
+	require.Equal(t, uint32(1), postings[0].Ref.Row)
+	require.Equal(t, uint32(2), postings[1].Ref.Row)
 }

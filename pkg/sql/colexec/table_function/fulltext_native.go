@@ -480,9 +480,7 @@ func prefetchBooleanNativeTerms(
 		terms = append(terms, term)
 	}
 	for _, leaf := range leafs {
-		if leaf.Operator == fulltext.TEXT || leaf.Operator == fulltext.JOIN {
-			appendTerm(leaf.Text)
-		}
+		collectNativeLeafExactTerms(leaf, appendTerm)
 	}
 	for _, phrase := range phrases {
 		for _, child := range phrase.Children {
@@ -518,14 +516,107 @@ func collectNativePatterns(patterns []*fulltext.Pattern, leafs map[int32]*fullte
 
 func nativeLookupLeaf(seg *ftnative.Segment, leaf *fulltext.Pattern) ([]ftnative.Posting, error) {
 	switch leaf.Operator {
-	case fulltext.TEXT, fulltext.JOIN:
+	case fulltext.TEXT:
 		return seg.Lookup(leaf.Text)
 	case fulltext.STAR:
 		prefix := strings.TrimSuffix(leaf.Text, "*")
 		return seg.LookupPrefix(prefix)
+	case fulltext.JOIN:
+		return nativeLookupJoin(seg, leaf)
 	default:
 		return nil, nil
 	}
+}
+
+func collectNativeLeafExactTerms(leaf *fulltext.Pattern, appendTerm func(string)) {
+	if leaf == nil {
+		return
+	}
+	switch leaf.Operator {
+	case fulltext.TEXT:
+		appendTerm(leaf.Text)
+	case fulltext.JOIN:
+		for _, child := range leaf.Children {
+			collectNativeLeafExactTerms(nativeJoinValuePattern(child), appendTerm)
+		}
+	}
+}
+
+func nativeJoinValuePattern(pattern *fulltext.Pattern) *fulltext.Pattern {
+	if pattern == nil {
+		return nil
+	}
+	if pattern.Operator == fulltext.PLUS && len(pattern.Children) == 1 {
+		return pattern.Children[0]
+	}
+	return pattern
+}
+
+type nativeJoinMatch struct {
+	ref    ftnative.RowRef
+	docLen int32
+	tf     int
+}
+
+func nativeLookupJoin(seg *ftnative.Segment, leaf *fulltext.Pattern) ([]ftnative.Posting, error) {
+	if leaf == nil || len(leaf.Children) == 0 {
+		return nil, nil
+	}
+	var matches map[string]nativeJoinMatch
+	for i, child := range leaf.Children {
+		value := nativeJoinValuePattern(child)
+		if value == nil {
+			return nil, nil
+		}
+		postings, err := nativeLookupLeaf(seg, value)
+		if err != nil {
+			return nil, err
+		}
+		if len(postings) == 0 {
+			return nil, nil
+		}
+		next := make(map[string]nativeJoinMatch, len(postings))
+		for _, posting := range postings {
+			tf := len(posting.Positions)
+			if tf == 0 {
+				tf = 1
+			}
+			key := nativeRowKey("", posting.Ref)
+			if i == 0 {
+				next[key] = nativeJoinMatch{
+					ref:    posting.Ref,
+					docLen: posting.DocLen,
+					tf:     tf,
+				}
+				continue
+			}
+			prev, ok := matches[key]
+			if !ok {
+				continue
+			}
+			prev.tf += tf
+			next[key] = prev
+		}
+		matches = next
+		if len(matches) == 0 {
+			return nil, nil
+		}
+	}
+	keys := make([]string, 0, len(matches))
+	for key := range matches {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	postings := make([]ftnative.Posting, 0, len(keys))
+	for _, key := range keys {
+		match := matches[key]
+		postings = append(postings, ftnative.Posting{
+			Ref:       match.ref,
+			DocLen:    match.docLen,
+			Positions: make([]int32, match.tf),
+		})
+	}
+	return postings, nil
 }
 
 func nativeCandidateSet(
