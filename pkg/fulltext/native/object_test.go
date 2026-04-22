@@ -813,6 +813,61 @@ func TestReadPublishedSidecarMarksMissingAfterReadMiss(t *testing.T) {
 	require.Equal(t, 1, fs.snapshotReadCalls())
 }
 
+func TestReadPublishedSidecarCachesPositiveReads(t *testing.T) {
+	ctx := context.Background()
+	baseFS, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	fs := &recordingFS{FileService: baseFS}
+	ResetRuntimeSidecarRegistry()
+	defer ResetRuntimeSidecarRegistry()
+
+	objID := objectio.NewObjectid()
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+	sidecarPath := SidecarPath(objName.String(), "__idx_body")
+
+	builder := NewBuilder(fulltext.FullTextParserParam{}, nil)
+	require.NoError(t, builder.Add(Document{
+		Block: 1,
+		Row:   1,
+		PK:    []byte("pk-1"),
+		Values: []fulltext.IndexValue{
+			{Text: "native stablegamma", Type: types.T_text},
+		},
+	}))
+	buf, err := builder.Build().MarshalBinary()
+	require.NoError(t, err)
+	require.NoError(t, fs.Write(ctx, fileservice.IOVector{
+		FilePath: sidecarPath,
+		Entries: []fileservice.IOEntry{{
+			Offset: 0,
+			Size:   int64(len(buf)),
+			Data:   buf,
+		}},
+	}))
+	PublishRuntimeSidecars(1, objName.String(), []PublishedSidecar{{
+		IndexTable:     "__idx_body",
+		SidecarPath:    sidecarPath,
+		SegmentVersion: CurrentSegmentVersion,
+	}})
+
+	seg, ok, err := ReadPublishedSidecar(ctx, fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	postings, err := seg.Lookup("native")
+	require.NoError(t, err)
+	require.Len(t, postings, 1)
+	readCallsAfterFirst := fs.snapshotReadCalls()
+	require.Greater(t, readCallsAfterFirst, 0)
+
+	seg, ok, err = ReadPublishedSidecar(ctx, fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	postings, err = seg.Lookup("native")
+	require.NoError(t, err)
+	require.Len(t, postings, 1)
+	require.Equal(t, readCallsAfterFirst, fs.snapshotReadCalls())
+}
+
 func TestObjectIndexerBuildAndReadSidecarWithNullMultiColumn(t *testing.T) {
 	schema := catalog.NewEmptySchema("fts_native_test_null_multi")
 	require.NoError(t, schema.AppendPKCol("id", types.T_int64.ToType(), 0))

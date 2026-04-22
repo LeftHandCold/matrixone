@@ -685,6 +685,9 @@ func ReadSidecar(ctx context.Context, fs fileservice.FileService, objName object
 }
 
 func readSidecarFile(ctx context.Context, fs fileservice.FileService, filePath string) (*Segment, bool, error) {
+	if seg, ok := lookupCachedSidecar(filePath); ok {
+		return seg, true, nil
+	}
 	prefix, exists, err := readSidecarRange(ctx, fs, filePath, 0, int64(segmentPrefixLen))
 	if err != nil {
 		return nil, false, err
@@ -743,6 +746,7 @@ func readSidecarFile(ctx context.Context, fs fileservice.FileService, filePath s
 			}
 			return blobs, nil
 		}
+		cacheSidecar(filePath, seg)
 		return seg, true, nil
 	}
 
@@ -763,6 +767,7 @@ func readSidecarFile(ctx context.Context, fs fileservice.FileService, filePath s
 	if err != nil {
 		return nil, false, err
 	}
+	cacheSidecar(filePath, seg)
 	return seg, true, nil
 }
 

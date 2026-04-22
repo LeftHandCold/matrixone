@@ -69,6 +69,15 @@ var globalMissingSidecarCache = &missingSidecarCache{
 	sidecars: make(map[string]struct{}),
 }
 
+type sidecarSegmentCache struct {
+	sync.RWMutex
+	segments map[string]*Segment
+}
+
+var globalSidecarSegmentCache = &sidecarSegmentCache{
+	segments: make(map[string]*Segment),
+}
+
 func PublishRuntimeSidecars(tableID uint64, objectName string, entries []PublishedSidecar) {
 	normalized := normalizePublishedSidecars(entries)
 	if objectName == "" || len(normalized) == 0 {
@@ -79,6 +88,7 @@ func PublishRuntimeSidecars(tableID uint64, objectName string, entries []Publish
 	entryMap := make(map[string]PublishedSidecar, len(normalized))
 	for _, entry := range normalized {
 		entryMap[entry.IndexTable] = entry
+		clearCachedSidecar(entry.SidecarPath)
 	}
 	globalSidecarRegistry.objects[objectName] = ObjectSidecarSet{
 		TableID:    tableID,
@@ -108,6 +118,11 @@ func RemoveRuntimeSidecars(objectNames ...string) {
 	globalSidecarRegistry.Lock()
 	defer globalSidecarRegistry.Unlock()
 	for _, objectName := range objectNames {
+		if set, ok := globalSidecarRegistry.objects[objectName]; ok {
+			for _, entry := range set.Entries {
+				clearCachedSidecar(entry.SidecarPath)
+			}
+		}
 		delete(globalSidecarRegistry.objects, objectName)
 		clearMissingLocator(objectName)
 	}
@@ -118,6 +133,7 @@ func ResetRuntimeSidecarRegistry() {
 	defer globalSidecarRegistry.Unlock()
 	globalSidecarRegistry.objects = make(map[string]ObjectSidecarSet)
 	resetMissingSidecarCache()
+	resetCachedSidecarCache()
 }
 
 func ExpandDeletePathsWithSidecars(
@@ -235,6 +251,40 @@ func sortedPublishedSidecars(set ObjectSidecarSet) []PublishedSidecar {
 		out = append(out, set.Entries[key])
 	}
 	return out
+}
+
+func lookupCachedSidecar(filePath string) (*Segment, bool) {
+	if filePath == "" {
+		return nil, false
+	}
+	globalSidecarSegmentCache.RLock()
+	defer globalSidecarSegmentCache.RUnlock()
+	seg, ok := globalSidecarSegmentCache.segments[filePath]
+	return seg, ok
+}
+
+func cacheSidecar(filePath string, seg *Segment) {
+	if filePath == "" || seg == nil {
+		return
+	}
+	globalSidecarSegmentCache.Lock()
+	defer globalSidecarSegmentCache.Unlock()
+	globalSidecarSegmentCache.segments[filePath] = seg
+}
+
+func clearCachedSidecar(filePath string) {
+	if filePath == "" {
+		return
+	}
+	globalSidecarSegmentCache.Lock()
+	defer globalSidecarSegmentCache.Unlock()
+	delete(globalSidecarSegmentCache.segments, filePath)
+}
+
+func resetCachedSidecarCache() {
+	globalSidecarSegmentCache.Lock()
+	defer globalSidecarSegmentCache.Unlock()
+	globalSidecarSegmentCache.segments = make(map[string]*Segment)
 }
 
 func objectPathFromSidecar(sidecarPath string) string {
