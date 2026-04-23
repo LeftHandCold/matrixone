@@ -395,6 +395,16 @@ func (builder *QueryBuilder) clearProjectGuard(projID int32) {
 	delete(builder.projectSpecialGuards, projID)
 }
 
+func (builder *QueryBuilder) projectGuardKinds(projID int32) specialIndexKind {
+	if builder == nil || builder.projectSpecialGuards == nil || len(builder.projectSpecialGuards) == 0 {
+		return specialIndexKindFullText | specialIndexKindVector
+	}
+	if guard, ok := builder.projectSpecialGuards[projID]; ok {
+		return guard.kinds
+	}
+	return 0
+}
+
 func (builder *QueryBuilder) isScanProtected(scanID int32) bool {
 	if builder == nil || builder.protectedScans == nil {
 		return false
@@ -553,8 +563,9 @@ func getColSeqFromColDef(tblCol *plan.ColDef) string {
 
 func (builder *QueryBuilder) applyIndicesForProject(nodeID int32, projNode *plan.Node, colRefCnt map[[2]int32]int, idxColMap map[[2]int32]*plan.Expr) (int32, error) {
 	defer builder.clearProjectGuard(projNode.NodeId)
+	guardKinds := builder.projectGuardKinds(projNode.NodeId)
 	// FullText
-	{
+	if guardKinds&specialIndexKindFullText != 0 {
 		// support the followings:
 		// 1. project -> scan
 		// 2. project -> sort -> scan
@@ -615,35 +626,37 @@ func (builder *QueryBuilder) applyIndicesForProject(nodeID int32, projNode *plan
 	// 1. Vector Index Check
 	// Handle Queries like
 	// SELECT id,embedding FROM tbl ORDER BY l2_distance(embedding, "[1,2,3]") LIMIT 10;
-	if vecCtx := builder.buildVectorSortContext(projNode); vecCtx != nil {
-		multiTableIndexes := builder.collectVectorIndexes(vecCtx.scanNode)
-		if len(multiTableIndexes) == 0 {
-			return nodeID, nil
-		}
+	if guardKinds&specialIndexKindVector != 0 {
+		if vecCtx := builder.buildVectorSortContext(projNode); vecCtx != nil {
+			multiTableIndexes := builder.collectVectorIndexes(vecCtx.scanNode)
+			if len(multiTableIndexes) == 0 {
+				return nodeID, nil
+			}
 
-		var multiTableIndexKeys []string
-		for key := range multiTableIndexes {
-			multiTableIndexKeys = append(multiTableIndexKeys, key)
-		}
+			var multiTableIndexKeys []string
+			for key := range multiTableIndexes {
+				multiTableIndexKeys = append(multiTableIndexKeys, key)
+			}
 
-		for _, multiTableIndexKey := range multiTableIndexKeys {
-			multiTableIndex := multiTableIndexes[multiTableIndexKey]
-			switch multiTableIndex.IndexAlgo {
-			case catalog.MoIndexIvfFlatAlgo.ToString():
-				newNodeID, err := builder.applyIndicesForSortUsingIvfflat(nodeID, vecCtx, multiTableIndex, colRefCnt, idxColMap)
-				if err != nil || newNodeID != nodeID {
-					return newNodeID, err
-				}
+			for _, multiTableIndexKey := range multiTableIndexKeys {
+				multiTableIndex := multiTableIndexes[multiTableIndexKey]
+				switch multiTableIndex.IndexAlgo {
+				case catalog.MoIndexIvfFlatAlgo.ToString():
+					newNodeID, err := builder.applyIndicesForSortUsingIvfflat(nodeID, vecCtx, multiTableIndex, colRefCnt, idxColMap)
+					if err != nil || newNodeID != nodeID {
+						return newNodeID, err
+					}
 
-			case catalog.MoIndexHnswAlgo.ToString():
-				newNodeID, err := builder.applyIndicesForSortUsingHnsw(nodeID, vecCtx, multiTableIndex)
-				if err != nil || newNodeID != nodeID {
-					return newNodeID, err
+				case catalog.MoIndexHnswAlgo.ToString():
+					newNodeID, err := builder.applyIndicesForSortUsingHnsw(nodeID, vecCtx, multiTableIndex)
+					if err != nil || newNodeID != nodeID {
+						return newNodeID, err
+					}
 				}
 			}
-		}
 
-		builder.stabilizeExactVectorSort(vecCtx)
+			builder.stabilizeExactVectorSort(vecCtx)
+		}
 	}
 END0:
 	// 2. Regular Index Check
