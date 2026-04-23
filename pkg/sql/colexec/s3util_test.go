@@ -685,6 +685,25 @@ func TestGetObjectFSFromProc(t *testing.T) {
 	{
 		local, err := fileservice.NewMemoryFS(defines.LocalFileServiceName, fileservice.DisabledCacheConfig, nil)
 		require.NoError(t, err)
+		defaultFS, err := fileservice.NewMemoryFS("object", fileservice.DisabledCacheConfig, nil)
+		require.NoError(t, err)
+		bus, err := fileservice.NewFileServices("object", local, defaultFS)
+		require.NoError(t, err)
+
+		proc := &process.Process{
+			Base: &process.BaseProcess{
+				FileService: bus,
+			},
+		}
+		fs, err := GetObjectFSFromProc(proc)
+		require.NoError(t, err)
+		require.Same(t, bus, fs)
+		require.Equal(t, "object", fs.Name())
+	}
+
+	{
+		local, err := fileservice.NewMemoryFS(defines.LocalFileServiceName, fileservice.DisabledCacheConfig, nil)
+		require.NoError(t, err)
 		bus, err := fileservice.NewFileServices("", local)
 		require.NoError(t, err)
 

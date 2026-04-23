@@ -133,6 +133,12 @@ func GetObjectFSFromProc(proc *process.Process) (fileservice.FileService, error)
 		return nil, err
 	}
 
+	if proc != nil {
+		if fs := proc.GetFileService(); fs != nil && fs.Name() != "" {
+			return fs, nil
+		}
+	}
+
 	local, localErr := getNamedFSFromProc(proc, defines.LocalFileServiceName)
 	if localErr == nil {
 		return local, nil
@@ -141,11 +147,6 @@ func GetObjectFSFromProc(proc *process.Process) (fileservice.FileService, error)
 		return nil, localErr
 	}
 
-	if proc != nil {
-		if fs := proc.GetFileService(); fs != nil && fs.Name() != "" {
-			return fs, nil
-		}
-	}
 	return nil, err
 }
 
