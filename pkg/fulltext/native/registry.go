@@ -260,7 +260,10 @@ func lookupCachedSidecar(filePath string) (*Segment, bool) {
 	globalSidecarSegmentCache.RLock()
 	defer globalSidecarSegmentCache.RUnlock()
 	seg, ok := globalSidecarSegmentCache.segments[filePath]
-	return seg, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneSegment(seg), true
 }
 
 func cacheSidecar(filePath string, seg *Segment) {

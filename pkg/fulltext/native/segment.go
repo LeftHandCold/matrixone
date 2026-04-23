@@ -711,6 +711,36 @@ func clonePostings(postings []Posting) []Posting {
 	return out
 }
 
+func cloneSegment(seg *Segment) *Segment {
+	if seg == nil {
+		return nil
+	}
+	seg.mu.RLock()
+	defer seg.mu.RUnlock()
+
+	out := &Segment{
+		Terms:           make(map[string][]Posting, len(seg.Terms)),
+		DocCount:        seg.DocCount,
+		TokenSum:        seg.TokenSum,
+		lazyData:        seg.lazyData,
+		lazyLoader:      seg.lazyLoader,
+		lazyBatchLoader: seg.lazyBatchLoader,
+	}
+	if len(seg.termOrder) > 0 {
+		out.termOrder = append([]string(nil), seg.termOrder...)
+	}
+	if len(seg.lazyTerms) > 0 {
+		out.lazyTerms = make(map[string]segmentTermMeta, len(seg.lazyTerms))
+		for term, meta := range seg.lazyTerms {
+			out.lazyTerms[term] = meta
+		}
+	}
+	for term, postings := range seg.Terms {
+		out.Terms[term] = clonePostings(postings)
+	}
+	return out
+}
+
 func sortPostings(postings []Posting) {
 	sort.Slice(postings, func(i, j int) bool {
 		if postings[i].Ref.Block != postings[j].Ref.Block {
