@@ -207,10 +207,7 @@ func nativeTrySingleKeywordTopK(
 		sr.Distance *= idfSq
 		results = append(results, sr)
 	}
-	u.resbuf = make([]*vectorindex.SearchResultAnyKey, 0, len(results))
-	for i := len(results) - 1; i >= 0; i-- {
-		u.resbuf = append(u.resbuf, results[i])
-	}
+	u.resbuf = results
 	return true, nil
 }
 

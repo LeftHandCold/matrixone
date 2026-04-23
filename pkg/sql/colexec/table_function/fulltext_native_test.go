@@ -83,9 +83,9 @@ func TestNativeTrySingleKeywordTopKFiltersDeletes(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Len(t, u.resbuf, 2)
-	require.Equal(t, "pk-1", u.resbuf[0].Id)
-	require.Equal(t, "pk-3", u.resbuf[1].Id)
-	require.Greater(t, u.resbuf[0].Distance, u.resbuf[1].Distance)
+	require.Equal(t, "pk-3", u.resbuf[0].Id)
+	require.Equal(t, "pk-1", u.resbuf[1].Id)
+	require.Less(t, u.resbuf[0].Distance, u.resbuf[1].Distance)
 }
 
 func TestAppendNativeTailBatchUsesRealRowIDs(t *testing.T) {

@@ -684,9 +684,39 @@ func ReadSidecar(ctx context.Context, fs fileservice.FileService, objName object
 	return readSidecarFile(ctx, fs, SidecarPath(objName.String(), indexTableName))
 }
 
+func bindSegmentLazyReaders(seg *Segment, ctx context.Context, fs fileservice.FileService, filePath string) *Segment {
+	if seg == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	seg.lazyLoader = func(offset, size int64) ([]byte, error) {
+		data, exists, err := readSidecarRange(ctx, fs, filePath, offset, size)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, moerr.NewFileNotFoundNoCtx(filePath)
+		}
+		return data, nil
+	}
+	seg.lazyBatchLoader = func(requests []segmentTermLoadRequest) (map[string][]byte, error) {
+		blobs, exists, err := readSidecarRanges(ctx, fs, filePath, requests)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, moerr.NewFileNotFoundNoCtx(filePath)
+		}
+		return blobs, nil
+	}
+	return seg
+}
+
 func readSidecarFile(ctx context.Context, fs fileservice.FileService, filePath string) (*Segment, bool, error) {
 	if seg, ok := lookupCachedSidecar(filePath); ok {
-		return seg, true, nil
+		return bindSegmentLazyReaders(seg, ctx, fs, filePath), true, nil
 	}
 	prefix, exists, err := readSidecarRange(ctx, fs, filePath, 0, int64(segmentPrefixLen))
 	if err != nil {
@@ -726,29 +756,8 @@ func readSidecarFile(ctx context.Context, fs fileservice.FileService, filePath s
 		if err := indexSegmentDirectoryV4(dirBytes, header.TermCount, seg); err != nil {
 			return nil, false, err
 		}
-		lazyReadCtx := context.Background()
-		seg.lazyLoader = func(offset, size int64) ([]byte, error) {
-			data, exists, err := readSidecarRange(lazyReadCtx, fs, filePath, offset, size)
-			if err != nil {
-				return nil, err
-			}
-			if !exists {
-				return nil, moerr.NewFileNotFoundNoCtx(filePath)
-			}
-			return data, nil
-		}
-		seg.lazyBatchLoader = func(requests []segmentTermLoadRequest) (map[string][]byte, error) {
-			blobs, exists, err := readSidecarRanges(lazyReadCtx, fs, filePath, requests)
-			if err != nil {
-				return nil, err
-			}
-			if !exists {
-				return nil, moerr.NewFileNotFoundNoCtx(filePath)
-			}
-			return blobs, nil
-		}
 		cacheSidecar(filePath, seg)
-		return seg, true, nil
+		return bindSegmentLazyReaders(cloneSegment(seg), ctx, fs, filePath), true, nil
 	}
 
 	vec := &fileservice.IOVector{

@@ -308,10 +308,14 @@ func (builder *QueryBuilder) collectSpecialIndexGuards(nodeID int32) {
 	node := builder.qry.Nodes[nodeID]
 	if node.NodeType == plan.Node_PROJECT {
 		if scanIDs := builder.detectFullTextGuard(node); len(scanIDs) > 0 {
-			builder.registerProjectGuard(node.NodeId, specialIndexKindFullText, scanIDs)
+			if !builder.areScansAlreadyGuardedByKind(scanIDs, specialIndexKindFullText) {
+				builder.registerProjectGuard(node.NodeId, specialIndexKindFullText, scanIDs)
+			}
 		}
 		if scanIDs := builder.detectVectorGuard(node); len(scanIDs) > 0 {
-			builder.registerProjectGuard(node.NodeId, specialIndexKindVector, scanIDs)
+			if !builder.areScansAlreadyGuardedByKind(scanIDs, specialIndexKindVector) {
+				builder.registerProjectGuard(node.NodeId, specialIndexKindVector, scanIDs)
+			}
 		}
 	}
 
@@ -343,6 +347,28 @@ func (builder *QueryBuilder) registerProjectGuard(projID int32, kind specialInde
 		}
 		builder.protectedScans[scanID]++
 	}
+}
+
+func (builder *QueryBuilder) areScansAlreadyGuardedByKind(scanIDs []int32, kind specialIndexKind) bool {
+	if builder == nil || builder.projectSpecialGuards == nil || len(scanIDs) == 0 {
+		return false
+	}
+	for _, scanID := range scanIDs {
+		guarded := false
+		for _, guard := range builder.projectSpecialGuards {
+			if guard.kinds&kind == 0 {
+				continue
+			}
+			if containsInt32(guard.scanNodeIDs, scanID) {
+				guarded = true
+				break
+			}
+		}
+		if !guarded {
+			return false
+		}
+	}
+	return true
 }
 
 func (builder *QueryBuilder) clearProjectGuard(projID int32) {

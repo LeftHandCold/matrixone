@@ -27,6 +27,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func makeFullTextMatchExpr(relPos, colPos int32, colName, pattern string) *planpb.Expr {
+	return &planpb.Expr{
+		Expr: &planpb.Expr_F{F: &planpb.Function{
+			Func: &planpb.ObjectRef{ObjName: "fulltext_match"},
+			Args: []*planpb.Expr{
+				{
+					Expr: &planpb.Expr_Lit{Lit: &planpb.Literal{
+						Value: &planpb.Literal_Sval{Sval: pattern},
+					}},
+				},
+				{
+					Expr: &planpb.Expr_Lit{Lit: &planpb.Literal{
+						Value: &planpb.Literal_I64Val{I64Val: 0},
+					}},
+				},
+				{
+					Expr: &planpb.Expr_Col{Col: &planpb.ColRef{
+						RelPos: relPos,
+						ColPos: colPos,
+						Name:   colName,
+					}},
+				},
+			},
+		}},
+	}
+}
+
 func TestSuspendScanProtection_RestoresExactCount(t *testing.T) {
 	builder := NewQueryBuilder(planpb.Query_SELECT, NewMockCompilerContext(true), false, true)
 	const scanID int32 = 42
@@ -101,6 +128,76 @@ func TestWithSuspendedScanProtection_RestoresAfterPanic(t *testing.T) {
 
 	assert.True(t, recovered)
 	assert.Equal(t, 2, builder.protectedScans[scanID])
+}
+
+func TestCollectSpecialIndexGuardsSkipsNestedDuplicateFullTextGuard(t *testing.T) {
+	builder := NewQueryBuilder(planpb.Query_SELECT, NewMockCompilerContext(true), false, true)
+
+	scanNode := &planpb.Node{
+		NodeType:    planpb.Node_TABLE_SCAN,
+		NodeId:      4,
+		BindingTags: []int32{1},
+		TableDef: &planpb.TableDef{
+			Pkey: &planpb.PrimaryKeyDef{PkeyColName: "id"},
+			Name2ColIndex: map[string]int32{
+				"id":      0,
+				"content": 1,
+			},
+			Cols: []*planpb.ColDef{
+				{Name: "id", Typ: planpb.Type{Id: 1}},
+				{Name: "content", Typ: planpb.Type{Id: 2}},
+			},
+			Indexes: []*planpb.IndexDef{{
+				IndexAlgo: "fulltext",
+				Parts:     []string{"content"},
+			}},
+		},
+		FilterList: []*planpb.Expr{
+			makeFullTextMatchExpr(1, 1, "content", "nativeprobe"),
+		},
+	}
+	innerProj := &planpb.Node{
+		NodeType: planpb.Node_PROJECT,
+		NodeId:   3,
+		Children: []int32{4},
+		ProjectList: []*planpb.Expr{
+			{
+				Expr: &planpb.Expr_Col{Col: &planpb.ColRef{RelPos: 1, ColPos: 0, Name: "id"}},
+			},
+			makeFullTextMatchExpr(1, 1, "content", "nativeprobe"),
+		},
+	}
+	sortNode := &planpb.Node{
+		NodeType: planpb.Node_SORT,
+		NodeId:   2,
+		Children: []int32{3},
+		OrderBy: []*planpb.OrderBySpec{{
+			Expr: &planpb.Expr{
+				Expr: &planpb.Expr_Col{Col: &planpb.ColRef{RelPos: 2, ColPos: 1}},
+			},
+			Flag: planpb.OrderBySpec_DESC,
+		}},
+	}
+	outerProj := &planpb.Node{
+		NodeType: planpb.Node_PROJECT,
+		NodeId:   1,
+		Children: []int32{2},
+		ProjectList: []*planpb.Expr{
+			{
+				Expr: &planpb.Expr_Col{Col: &planpb.ColRef{RelPos: 2, ColPos: 0}},
+			},
+			{
+				Expr: &planpb.Expr_Col{Col: &planpb.ColRef{RelPos: 2, ColPos: 1}},
+			},
+		},
+	}
+	builder.qry.Nodes = []*planpb.Node{nil, outerProj, sortNode, innerProj, scanNode}
+
+	builder.collectSpecialIndexGuards(1)
+
+	require.Contains(t, builder.projectSpecialGuards, int32(1))
+	require.NotContains(t, builder.projectSpecialGuards, int32(3))
+	require.Equal(t, 1, builder.protectedScans[scanNode.NodeId])
 }
 
 func TestCalculatePostFilterOverFetchFactor(t *testing.T) {
