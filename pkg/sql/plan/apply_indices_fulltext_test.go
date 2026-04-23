@@ -113,6 +113,37 @@ func TestCanElideFullTextSourceJoinForPkAndScoreProjection(t *testing.T) {
 	require.Equal(t, int32(0), pkCol.ColPos)
 }
 
+func TestReplaceProjectionFullTextMatchWithScore(t *testing.T) {
+	projNode := &pbplan.Node{
+		ProjectList: []*pbplan.Expr{
+			{
+				Expr: &pbplan.Expr_F{F: &pbplan.Function{
+					Func: &pbplan.ObjectRef{ObjName: "fulltext_match"},
+				}},
+			},
+		},
+	}
+	nodes := []*pbplan.Node{
+		nil,
+		{
+			BindingTags: []int32{7},
+			TableDef: &pbplan.TableDef{
+				Cols: []*pbplan.ColDef{
+					{Name: "doc_id", Typ: pbplan.Type{Id: 1}},
+					{Name: "score", Typ: pbplan.Type{Id: 3}},
+				},
+			},
+		},
+	}
+
+	replaceProjectionFullTextMatchWithScore(projNode, []int32{0}, []int32{1}, nodes)
+
+	scoreCol := projNode.ProjectList[0].GetCol()
+	require.NotNil(t, scoreCol)
+	require.Equal(t, int32(7), scoreCol.RelPos)
+	require.Equal(t, int32(1), scoreCol.ColPos)
+}
+
 func TestCanElideFullTextSourceJoinRejectsOtherSourceColumns(t *testing.T) {
 	scanNode := &pbplan.Node{
 		BindingTags: []int32{1},

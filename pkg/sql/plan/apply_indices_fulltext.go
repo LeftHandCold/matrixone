@@ -70,6 +70,8 @@ func (builder *QueryBuilder) applyIndicesForProjectionUsingFullTextIndex(nodeID 
 		return -1, err
 	}
 
+	replaceProjectionFullTextMatchWithScore(projNode, projids, proj_node_ids, builder.qry.Nodes)
+
 	if sortNode != nil {
 		queryChildID := idxID
 		if ftNodeID, ok := uniqueFullTextNodeID(filter_node_ids, proj_node_ids); ok {
@@ -145,21 +147,6 @@ func (builder *QueryBuilder) applyIndicesForProjectionUsingFullTextIndex(nodeID 
 		scanNode.Offset = nil
 
 		projNode.Children[0] = sortByID
-	}
-
-	// replace the project with ColRef
-	for i, id := range proj_node_ids {
-		idx := projids[i]
-		ftnode := builder.qry.Nodes[id]
-		projNode.ProjectList[idx] = &Expr{
-			Typ: ftnode.TableDef.Cols[1].Typ, // score column
-			Expr: &plan.Expr_Col{
-				Col: &plan.ColRef{
-					RelPos: ftnode.BindingTags[0],
-					ColPos: 1, // score column
-				},
-			},
-		}
 	}
 	return nodeID, nil
 }
@@ -243,6 +230,22 @@ func buildFullTextJoinElisionMap(scanNode *plan.Node, pkPos int32, ftNode *plan.
 		{scanNode.BindingTags[0], pkPos}: docExpr,
 		{ftTag, 0}:                       docExpr,
 		{ftTag, 1}:                       scoreExpr,
+	}
+}
+
+func replaceProjectionFullTextMatchWithScore(projNode *plan.Node, projids, projNodeIDs []int32, nodes []*plan.Node) {
+	for i, id := range projNodeIDs {
+		idx := projids[i]
+		ftnode := nodes[id]
+		projNode.ProjectList[idx] = &Expr{
+			Typ: ftnode.TableDef.Cols[1].Typ, // score column
+			Expr: &plan.Expr_Col{
+				Col: &plan.ColRef{
+					RelPos: ftnode.BindingTags[0],
+					ColPos: 1, // score column
+				},
+			},
+		}
 	}
 }
 
