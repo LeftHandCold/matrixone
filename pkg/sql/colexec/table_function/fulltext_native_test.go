@@ -33,6 +33,61 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNativeTrySingleKeywordTopKFiltersDeletes(t *testing.T) {
+	builder := ftnative.NewBuilder(fulltext.FullTextParserParam{}, nil)
+	require.NoError(t, builder.Add(ftnative.Document{
+		Block: 1,
+		Row:   1,
+		PK:    []byte("pk-1"),
+		Values: []fulltext.IndexValue{
+			{Text: "alpha alpha alpha", Type: types.T_text},
+		},
+	}))
+	require.NoError(t, builder.Add(ftnative.Document{
+		Block: 1,
+		Row:   2,
+		PK:    []byte("pk-2"),
+		Values: []fulltext.IndexValue{
+			{Text: "alpha alpha", Type: types.T_text},
+		},
+	}))
+	require.NoError(t, builder.Add(ftnative.Document{
+		Block: 1,
+		Row:   3,
+		PK:    []byte("pk-3"),
+		Values: []fulltext.IndexValue{
+			{Text: "alpha", Type: types.T_text},
+		},
+	}))
+
+	objID := objectio.NewObjectid()
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+	bid := objectio.NewBlockidWithObjectID(objName.ObjectId(), 1)
+	scan := &nativePreparedScan{
+		pkType:      types.T_varchar,
+		objects:     []nativeObjectSegment{{key: objName.String(), name: objName, segment: builder.Build(), applyTombstones: true}},
+		tombstones:  &mockNativeTombstoner{hasAnyTombstoneFile: true, persistedDeleted: map[string]map[int64]struct{}{bid.String(): {2: {}}}},
+		totalDocs:   3,
+		totalTokens: 6,
+	}
+
+	s, err := fulltext.NewSearchAccum("`db`.`docs`", "`db`.`__idx`", "alpha", int64(tree.FULLTEXT_NL), "", fulltext.ALGO_TFIDF)
+	require.NoError(t, err)
+	u := &fulltextState{
+		limit: 2,
+	}
+	applyNativeSegmentStats(u, s, scan)
+
+	proc := newFTTestProcess(t, mpool.MustNewZero(), fulltext.ALGO_TFIDF)
+	ok, err := nativeTrySingleKeywordTopK(u, proc, s, scan)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Len(t, u.resbuf, 2)
+	require.Equal(t, "pk-1", u.resbuf[0].Id)
+	require.Equal(t, "pk-3", u.resbuf[1].Id)
+	require.Greater(t, u.resbuf[0].Distance, u.resbuf[1].Distance)
+}
+
 func TestAppendNativeTailBatchUsesRealRowIDs(t *testing.T) {
 	mp := mpool.MustNewZero()
 

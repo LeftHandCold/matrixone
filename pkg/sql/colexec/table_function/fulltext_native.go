@@ -15,7 +15,9 @@
 package table_function
 
 import (
+	"container/heap"
 	"context"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +35,7 @@ import (
 	pbplan "github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
+	"github.com/matrixorigin/matrixone/pkg/vectorindex"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
@@ -116,6 +119,10 @@ func fulltextIndexMatchNative(
 		return used, err
 	}
 	applyNativeSegmentStats(u, s, scan)
+	ok, err := nativeTrySingleKeywordTopK(u, proc, s, scan)
+	if err != nil || ok {
+		return true, err
+	}
 
 	if s.Mode == int64(tree.FULLTEXT_DEFAULT) || s.Mode == int64(tree.FULLTEXT_NL) {
 		return true, populatePhraseCompat(u, proc, s, scan, s.Pattern)
@@ -124,6 +131,136 @@ func fulltextIndexMatchNative(
 		return true, populatePhraseCompat(u, proc, s, scan, s.Pattern[0].Children)
 	}
 	return true, populateBooleanNative(u, proc, s, scan)
+}
+
+func nativeTrySingleKeywordTopK(
+	u *fulltextState,
+	proc *process.Process,
+	s *fulltext.SearchAccum,
+	scan *nativePreparedScan,
+) (bool, error) {
+	leaf, ok := nativeSingleKeywordTopKPattern(s)
+	if !ok || u.limit == 0 || u.ranking || scan == nil {
+		return false, nil
+	}
+
+	hits := make(vectorindex.SearchResultHeap, 0, u.limit)
+	heap.Init(&hits)
+	cache := newNativeDeleteCache()
+	nmatch := int64(0)
+
+	for _, obj := range scan.objects {
+		postings, err := nativeLookupLeaf(obj.segment, leaf)
+		if err != nil {
+			return false, err
+		}
+		if len(postings) == 0 {
+			continue
+		}
+
+		states := make([]*nativeDocState, 0, len(postings))
+		for _, posting := range postings {
+			tf := len(posting.Positions)
+			if tf == 0 {
+				tf = 1
+			}
+			if tf > math.MaxUint16 {
+				tf = math.MaxUint16
+			}
+			states = append(states, &nativeDocState{
+				pk:              decodeNativePK(posting.Ref.PK, scan.pkType),
+				docLen:          posting.DocLen,
+				ref:             posting.Ref,
+				obj:             obj.name,
+				segmentKey:      obj.key,
+				applyTombstones: obj.applyTombstones,
+				counts:          []uint16{uint16(tf)},
+			})
+		}
+
+		liveStates, err := filterLiveNativeDocStates(proc.Ctx, proc.GetService(), scan, cache, states)
+		if err != nil {
+			return false, err
+		}
+		nmatch += int64(len(liveStates))
+		for _, state := range liveStates {
+			rawScore := nativeSingleKeywordRawScore(s.ScoreAlgo, state.counts[0], state.docLen, s.AvgDocLen)
+			if len(hits) >= int(u.limit) {
+				if hits[0].GetDistance() < rawScore {
+					hits[0] = &vectorindex.SearchResultAnyKey{Id: state.pk, Distance: rawScore}
+					heap.Fix(&hits, 0)
+				}
+				continue
+			}
+			heap.Push(&hits, &vectorindex.SearchResultAnyKey{Id: state.pk, Distance: rawScore})
+		}
+	}
+
+	if nmatch == 0 || s.Nrow == 0 || hits.Len() == 0 {
+		return true, nil
+	}
+
+	idfSq := nativeIDFSq(s.Nrow, nmatch)
+	results := make([]*vectorindex.SearchResultAnyKey, 0, hits.Len())
+	for hits.Len() > 0 {
+		sr := heap.Pop(&hits).(*vectorindex.SearchResultAnyKey)
+		sr.Distance *= idfSq
+		results = append(results, sr)
+	}
+	u.resbuf = make([]*vectorindex.SearchResultAnyKey, 0, len(results))
+	for i := len(results) - 1; i >= 0; i-- {
+		u.resbuf = append(u.resbuf, results[i])
+	}
+	return true, nil
+}
+
+func nativeSingleKeywordTopKPattern(s *fulltext.SearchAccum) (*fulltext.Pattern, bool) {
+	if s == nil {
+		return nil, false
+	}
+	if s.Mode != int64(tree.FULLTEXT_NL) && s.Mode != int64(tree.FULLTEXT_DEFAULT) {
+		return nil, false
+	}
+	if len(s.Pattern) != 1 {
+		return nil, false
+	}
+	p := s.Pattern[0]
+	switch p.Operator {
+	case fulltext.TEXT, fulltext.STAR:
+		return p, true
+	case fulltext.PLUS:
+		if len(p.Children) == 1 {
+			switch p.Children[0].Operator {
+			case fulltext.TEXT, fulltext.STAR:
+				return p.Children[0], true
+			}
+		}
+	}
+	return nil, false
+}
+
+func nativeSingleKeywordRawScore(algo fulltext.FullTextScoreAlgo, tf uint16, docLen int32, avgDocLen float64) float64 {
+	termFreq := float64(tf)
+	if termFreq <= 0 {
+		termFreq = 1
+	}
+	switch algo {
+	case fulltext.ALGO_BM25:
+		if avgDocLen <= 0 {
+			return termFreq
+		}
+		return termFreq * (fulltext.BM25_K1 + 1) / (termFreq + fulltext.BM25_K1*(1-fulltext.BM25_B+fulltext.BM25_B*(float64(docLen)/avgDocLen)))
+	default:
+		return termFreq
+	}
+}
+
+func nativeIDFSq(totalDocs, matchedDocs int64) float64 {
+	if totalDocs <= 0 || matchedDocs <= 0 {
+		return 0
+	}
+	idf := math.Log10(float64(totalDocs) / float64(matchedDocs))
+	return idf * idf
 }
 
 func nativeQuerySupported(s *fulltext.SearchAccum) bool {
