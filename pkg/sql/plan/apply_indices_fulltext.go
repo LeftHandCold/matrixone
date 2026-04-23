@@ -71,7 +71,15 @@ func (builder *QueryBuilder) applyIndicesForProjectionUsingFullTextIndex(nodeID 
 	}
 
 	if sortNode != nil {
-		sortNode.Children[0] = idxID
+		queryChildID := idxID
+		if ftNodeID, ok := uniqueFullTextNodeID(filter_node_ids, proj_node_ids); ok {
+			ftnode := builder.qry.Nodes[ftNodeID]
+			if canElideFullTextSourceJoin(projNode, sortNode, scanNode, ftnode) {
+				applyFullTextSourceJoinElision(projNode, sortNode, scanNode, ftnode)
+				queryChildID = ftNodeID
+			}
+		}
+		sortNode.Children[0] = queryChildID
 
 	} else {
 
@@ -115,9 +123,18 @@ func (builder *QueryBuilder) applyIndicesForProjectionUsingFullTextIndex(nodeID 
 			})
 		}
 
+		queryChildID := idxID
+		if ftNodeID, ok := uniqueFullTextNodeID(filter_node_ids, proj_node_ids); ok {
+			ftnode := builder.qry.Nodes[ftNodeID]
+			if canElideFullTextSourceJoin(projNode, nil, scanNode, ftnode) {
+				applyFullTextSourceJoinElision(projNode, nil, scanNode, ftnode)
+				queryChildID = ftNodeID
+			}
+		}
+
 		sortByID := builder.appendNode(&plan.Node{
 			NodeType: plan.Node_SORT,
-			Children: []int32{idxID},
+			Children: []int32{queryChildID},
 			OrderBy:  orderByScore,
 			Limit:    DeepCopyExpr(scanNode.Limit),
 			Offset:   DeepCopyExpr(scanNode.Offset),
@@ -147,6 +164,99 @@ func (builder *QueryBuilder) applyIndicesForProjectionUsingFullTextIndex(nodeID 
 	return nodeID, nil
 }
 
+func uniqueFullTextNodeID(filterNodeIDs, projNodeIDs []int32) (int32, bool) {
+	seen := make(map[int32]struct{}, len(filterNodeIDs)+len(projNodeIDs))
+	for _, id := range filterNodeIDs {
+		seen[id] = struct{}{}
+	}
+	for _, id := range projNodeIDs {
+		seen[id] = struct{}{}
+	}
+	if len(seen) != 1 {
+		return 0, false
+	}
+	for id := range seen {
+		return id, true
+	}
+	return 0, false
+}
+
+func canElideFullTextSourceJoin(projNode, sortNode, scanNode, ftNode *plan.Node) bool {
+	if projNode == nil || scanNode == nil || ftNode == nil {
+		return false
+	}
+	if len(scanNode.FilterList) > 0 {
+		return false
+	}
+	pkPos, ok := scanNode.TableDef.Name2ColIndex[scanNode.TableDef.Pkey.PkeyColName]
+	if !ok {
+		return false
+	}
+	projMap := buildFullTextJoinElisionMap(scanNode, pkPos, ftNode)
+	for _, expr := range projNode.ProjectList {
+		if !exprUsesOnlyMappedCols(expr, projMap) {
+			return false
+		}
+	}
+	if sortNode != nil {
+		for _, orderBy := range sortNode.OrderBy {
+			if !exprUsesOnlyMappedCols(orderBy.Expr, projMap) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func applyFullTextSourceJoinElision(projNode, sortNode, scanNode, ftNode *plan.Node) {
+	pkPos := scanNode.TableDef.Name2ColIndex[scanNode.TableDef.Pkey.PkeyColName]
+	projMap := buildFullTextJoinElisionMap(scanNode, pkPos, ftNode)
+	replaceColumnsForExprList(projNode.ProjectList, projMap)
+	if sortNode != nil {
+		for i := range sortNode.OrderBy {
+			sortNode.OrderBy[i].Expr = replaceColumnsForExpr(sortNode.OrderBy[i].Expr, projMap)
+		}
+	}
+}
+
+func buildFullTextJoinElisionMap(scanNode *plan.Node, pkPos int32, ftNode *plan.Node) map[[2]int32]*plan.Expr {
+	ftTag := ftNode.BindingTags[0]
+	docExpr := &plan.Expr{
+		Typ: ftNode.TableDef.Cols[0].Typ,
+		Expr: &plan.Expr_Col{
+			Col: &plan.ColRef{
+				RelPos: ftTag,
+				ColPos: 0,
+			},
+		},
+	}
+	scoreExpr := &plan.Expr{
+		Typ: ftNode.TableDef.Cols[1].Typ,
+		Expr: &plan.Expr_Col{
+			Col: &plan.ColRef{
+				RelPos: ftTag,
+				ColPos: 1,
+			},
+		},
+	}
+	return map[[2]int32]*plan.Expr{
+		{scanNode.BindingTags[0], pkPos}: docExpr,
+		{ftTag, 0}:                       docExpr,
+		{ftTag, 1}:                       scoreExpr,
+	}
+}
+
+func canElideFullTextCountStarJoin(aggNode, scanNode *plan.Node) bool {
+	if aggNode == nil || scanNode == nil {
+		return false
+	}
+	if len(scanNode.FilterList) > 0 || len(aggNode.GroupBy) > 0 || len(aggNode.AggList) != 1 {
+		return false
+	}
+	fn := aggNode.AggList[0].GetF()
+	return fn != nil && strings.EqualFold(fn.Func.ObjName, "starcount")
+}
+
 // mysql> explain select count(*) from src where match(title, body) against('d');
 // +----------------------------------------------------------------+
 // | TP QURERY PLAN                                                 |
@@ -171,13 +281,17 @@ func (builder *QueryBuilder) applyIndicesForAggUsingFullTextIndex(nodeID int32, 
 
 	eqmap := make(map[int32]int32)
 
-	idxID, _, _, err := builder.applyJoinFullTextIndices(nodeID, projNode, scanNode,
+	idxID, filterNodeIDs, projNodeIDs, err := builder.applyJoinFullTextIndices(nodeID, projNode, scanNode,
 		filterids, filterIndexDefs, projids, projIndexDefs, eqmap, colRefCnt, idxColMap)
 	if err != nil {
 		return -1, err
 	}
 
-	aggNode.Children[0] = idxID
+	childID := idxID
+	if ftNodeID, ok := uniqueFullTextNodeID(filterNodeIDs, projNodeIDs); ok && canElideFullTextCountStarJoin(aggNode, scanNode) {
+		childID = ftNodeID
+	}
+	aggNode.Children[0] = childID
 
 	return nodeID, nil
 }

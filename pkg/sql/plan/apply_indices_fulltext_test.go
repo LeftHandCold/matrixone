@@ -58,3 +58,124 @@ func TestBuildFullTextScanParamsPreservesExplicitNativeOnly(t *testing.T) {
 	require.Equal(t, "ngram", param.Parser)
 	require.Equal(t, []string{"body"}, param.Parts)
 }
+
+func TestCanElideFullTextSourceJoinForPkAndScoreProjection(t *testing.T) {
+	scanNode := &pbplan.Node{
+		BindingTags: []int32{1},
+		TableDef: &pbplan.TableDef{
+			Pkey: &pbplan.PrimaryKeyDef{PkeyColName: "id"},
+			Name2ColIndex: map[string]int32{
+				"id":      0,
+				"content": 1,
+			},
+			Cols: []*pbplan.ColDef{
+				{Name: "id", Typ: pbplan.Type{Id: 1}},
+				{Name: "content", Typ: pbplan.Type{Id: 2}},
+			},
+		},
+	}
+	ftNode := &pbplan.Node{
+		BindingTags: []int32{2},
+		TableDef: &pbplan.TableDef{
+			Cols: []*pbplan.ColDef{
+				{Name: "doc_id", Typ: pbplan.Type{Id: 1}},
+				{Name: "score", Typ: pbplan.Type{Id: 3}},
+			},
+		},
+	}
+	projNode := &pbplan.Node{
+		ProjectList: []*pbplan.Expr{
+			{
+				Typ:  pbplan.Type{Id: 1},
+				Expr: &pbplan.Expr_Col{Col: &pbplan.ColRef{RelPos: 1, ColPos: 0}},
+			},
+			{
+				Typ:  pbplan.Type{Id: 3},
+				Expr: &pbplan.Expr_Col{Col: &pbplan.ColRef{RelPos: 2, ColPos: 1}},
+			},
+		},
+	}
+	sortNode := &pbplan.Node{
+		OrderBy: []*pbplan.OrderBySpec{{
+			Expr: &pbplan.Expr{
+				Typ:  pbplan.Type{Id: 3},
+				Expr: &pbplan.Expr_Col{Col: &pbplan.ColRef{RelPos: 2, ColPos: 1}},
+			},
+		}},
+	}
+
+	require.True(t, canElideFullTextSourceJoin(projNode, sortNode, scanNode, ftNode))
+	applyFullTextSourceJoinElision(projNode, sortNode, scanNode, ftNode)
+
+	pkCol := projNode.ProjectList[0].GetCol()
+	require.NotNil(t, pkCol)
+	require.Equal(t, int32(2), pkCol.RelPos)
+	require.Equal(t, int32(0), pkCol.ColPos)
+}
+
+func TestCanElideFullTextSourceJoinRejectsOtherSourceColumns(t *testing.T) {
+	scanNode := &pbplan.Node{
+		BindingTags: []int32{1},
+		TableDef: &pbplan.TableDef{
+			Pkey: &pbplan.PrimaryKeyDef{PkeyColName: "id"},
+			Name2ColIndex: map[string]int32{
+				"id":      0,
+				"content": 1,
+			},
+			Cols: []*pbplan.ColDef{
+				{Name: "id", Typ: pbplan.Type{Id: 1}},
+				{Name: "content", Typ: pbplan.Type{Id: 2}},
+			},
+		},
+	}
+	ftNode := &pbplan.Node{
+		BindingTags: []int32{2},
+		TableDef: &pbplan.TableDef{
+			Cols: []*pbplan.ColDef{
+				{Name: "doc_id", Typ: pbplan.Type{Id: 1}},
+				{Name: "score", Typ: pbplan.Type{Id: 3}},
+			},
+		},
+	}
+	projNode := &pbplan.Node{
+		ProjectList: []*pbplan.Expr{
+			{
+				Typ:  pbplan.Type{Id: 2},
+				Expr: &pbplan.Expr_Col{Col: &pbplan.ColRef{RelPos: 1, ColPos: 1}},
+			},
+			{
+				Typ:  pbplan.Type{Id: 3},
+				Expr: &pbplan.Expr_Col{Col: &pbplan.ColRef{RelPos: 2, ColPos: 1}},
+			},
+		},
+	}
+
+	require.False(t, canElideFullTextSourceJoin(projNode, nil, scanNode, ftNode))
+}
+
+func TestCanElideFullTextCountStarJoin(t *testing.T) {
+	scanNode := &pbplan.Node{}
+	aggNode := &pbplan.Node{
+		AggList: []*pbplan.Expr{{
+			Expr: &pbplan.Expr_F{F: &pbplan.Function{
+				Func: &pbplan.ObjectRef{ObjName: "starcount"},
+			}},
+		}},
+	}
+	require.True(t, canElideFullTextCountStarJoin(aggNode, scanNode))
+
+	scanNode.FilterList = []*pbplan.Expr{{}}
+	require.False(t, canElideFullTextCountStarJoin(aggNode, scanNode))
+	scanNode.FilterList = nil
+
+	aggNode.GroupBy = []*pbplan.Expr{{}}
+	require.False(t, canElideFullTextCountStarJoin(aggNode, scanNode))
+	aggNode.GroupBy = nil
+
+	aggNode.AggList[0] = &pbplan.Expr{
+		Expr: &pbplan.Expr_F{F: &pbplan.Function{
+			Func: &pbplan.ObjectRef{ObjName: "count"},
+		}},
+	}
+	require.False(t, canElideFullTextCountStarJoin(aggNode, scanNode))
+}
