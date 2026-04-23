@@ -868,6 +868,62 @@ func TestReadPublishedSidecarCachesPositiveReads(t *testing.T) {
 	require.Equal(t, readCallsAfterFirst, fs.snapshotReadCalls())
 }
 
+func TestReadPublishedSidecarCacheSurvivesCanceledContext(t *testing.T) {
+	baseFS, err := fileservice.NewMemoryFS("memory", fileservice.DisabledCacheConfig, nil)
+	require.NoError(t, err)
+	fs := &recordingFS{FileService: baseFS}
+	ResetRuntimeSidecarRegistry()
+	defer ResetRuntimeSidecarRegistry()
+
+	objID := objectio.NewObjectid()
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+	sidecarPath := SidecarPath(objName.String(), "__idx_body")
+
+	builder := NewBuilder(fulltext.FullTextParserParam{}, nil)
+	require.NoError(t, builder.Add(Document{
+		Block: 1,
+		Row:   1,
+		PK:    []byte("pk-1"),
+		Values: []fulltext.IndexValue{
+			{Text: "native stablegamma", Type: types.T_text},
+		},
+	}))
+	buf, err := builder.Build().MarshalBinary()
+	require.NoError(t, err)
+	require.NoError(t, fs.Write(context.Background(), fileservice.IOVector{
+		FilePath: sidecarPath,
+		Entries: []fileservice.IOEntry{{
+			Offset: 0,
+			Size:   int64(len(buf)),
+			Data:   buf,
+		}},
+	}))
+	PublishRuntimeSidecars(1, objName.String(), []PublishedSidecar{{
+		IndexTable:     "__idx_body",
+		SidecarPath:    sidecarPath,
+		SegmentVersion: CurrentSegmentVersion,
+	}})
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	seg, ok, err := ReadPublishedSidecar(ctx1, fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	postings, err := seg.Lookup("native")
+	require.NoError(t, err)
+	require.Len(t, postings, 1)
+	cancel1()
+
+	seg, ok, err = ReadPublishedSidecar(context.Background(), fs, objName, "__idx_body")
+	require.NoError(t, err)
+	require.True(t, ok)
+	postings, err = seg.Lookup("stablegamma")
+	require.NoError(t, err)
+	require.Len(t, postings, 1)
+	matches, err := seg.SearchAll([]string{"native", "stablegamma"})
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
+}
+
 func TestObjectIndexerBuildAndReadSidecarWithNullMultiColumn(t *testing.T) {
 	schema := catalog.NewEmptySchema("fts_native_test_null_multi")
 	require.NoError(t, schema.AppendPKCol("id", types.T_int64.ToType(), 0))

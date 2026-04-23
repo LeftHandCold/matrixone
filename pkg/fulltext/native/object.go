@@ -726,8 +726,9 @@ func readSidecarFile(ctx context.Context, fs fileservice.FileService, filePath s
 		if err := indexSegmentDirectoryV4(dirBytes, header.TermCount, seg); err != nil {
 			return nil, false, err
 		}
+		lazyReadCtx := context.Background()
 		seg.lazyLoader = func(offset, size int64) ([]byte, error) {
-			data, exists, err := readSidecarRange(ctx, fs, filePath, offset, size)
+			data, exists, err := readSidecarRange(lazyReadCtx, fs, filePath, offset, size)
 			if err != nil {
 				return nil, err
 			}
@@ -737,7 +738,7 @@ func readSidecarFile(ctx context.Context, fs fileservice.FileService, filePath s
 			return data, nil
 		}
 		seg.lazyBatchLoader = func(requests []segmentTermLoadRequest) (map[string][]byte, error) {
-			blobs, exists, err := readSidecarRanges(ctx, fs, filePath, requests)
+			blobs, exists, err := readSidecarRanges(lazyReadCtx, fs, filePath, requests)
 			if err != nil {
 				return nil, err
 			}
