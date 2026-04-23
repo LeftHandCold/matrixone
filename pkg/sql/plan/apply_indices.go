@@ -16,7 +16,6 @@ package plan
 
 import (
 	"fmt"
-	"reflect"
 	"slices"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
@@ -459,7 +458,63 @@ func redundantChildSort(parent, child *plan.Node) bool {
 	if len(child.SendMsgList) > 0 || len(child.RecvMsgList) > 0 {
 		return false
 	}
-	return reflect.DeepEqual(parent.OrderBy, child.OrderBy)
+	return orderBySpecsEqual(parent.OrderBy, child.OrderBy)
+}
+
+func orderBySpecsEqual(lhs, rhs []*plan.OrderBySpec) bool {
+	if len(lhs) != len(rhs) {
+		return false
+	}
+	for i := range lhs {
+		if lhs[i].Flag != rhs[i].Flag || lhs[i].Collation != rhs[i].Collation {
+			return false
+		}
+		if !exprSemanticallyEqual(lhs[i].Expr, rhs[i].Expr) {
+			return false
+		}
+	}
+	return true
+}
+
+func exprSemanticallyEqual(lhs, rhs *plan.Expr) bool {
+	if lhs == nil || rhs == nil {
+		return lhs == rhs
+	}
+	switch l := lhs.Expr.(type) {
+	case *plan.Expr_Col:
+		r, ok := rhs.Expr.(*plan.Expr_Col)
+		return ok && l.Col.RelPos == r.Col.RelPos && l.Col.ColPos == r.Col.ColPos
+	case *plan.Expr_Lit:
+		r, ok := rhs.Expr.(*plan.Expr_Lit)
+		if !ok {
+			return false
+		}
+		return fmt.Sprintf("%v", l.Lit) == fmt.Sprintf("%v", r.Lit)
+	case *plan.Expr_F:
+		r, ok := rhs.Expr.(*plan.Expr_F)
+		if !ok || l.F.Func.ObjName != r.F.Func.ObjName || len(l.F.Args) != len(r.F.Args) {
+			return false
+		}
+		for i := range l.F.Args {
+			if !exprSemanticallyEqual(l.F.Args[i], r.F.Args[i]) {
+				return false
+			}
+		}
+		return true
+	case *plan.Expr_List:
+		r, ok := rhs.Expr.(*plan.Expr_List)
+		if !ok || len(l.List.List) != len(r.List.List) {
+			return false
+		}
+		for i := range l.List.List {
+			if !exprSemanticallyEqual(l.List.List[i], r.List.List[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return fmt.Sprintf("%v", lhs) == fmt.Sprintf("%v", rhs)
+	}
 }
 
 func (builder *QueryBuilder) pruneRedundantSorts(nodeID int32) {
