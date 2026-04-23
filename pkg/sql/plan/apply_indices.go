@@ -16,6 +16,7 @@ package plan
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
@@ -440,6 +441,39 @@ func containsInt32(list []int32, target int32) bool {
 		}
 	}
 	return false
+}
+
+func redundantChildSort(parent, child *plan.Node) bool {
+	if parent == nil || child == nil {
+		return false
+	}
+	if parent.NodeType != plan.Node_SORT || child.NodeType != plan.Node_SORT {
+		return false
+	}
+	if len(parent.Children) != 1 || len(child.Children) != 1 {
+		return false
+	}
+	if child.Limit != nil || child.Offset != nil || child.RankOption != nil {
+		return false
+	}
+	if len(child.SendMsgList) > 0 || len(child.RecvMsgList) > 0 {
+		return false
+	}
+	return reflect.DeepEqual(parent.OrderBy, child.OrderBy)
+}
+
+func (builder *QueryBuilder) pruneRedundantSorts(nodeID int32) {
+	node := builder.qry.Nodes[nodeID]
+	for _, childID := range node.Children {
+		builder.pruneRedundantSorts(childID)
+	}
+	if node.NodeType != plan.Node_SORT || len(node.Children) != 1 {
+		return
+	}
+	child := builder.qry.Nodes[node.Children[0]]
+	if redundantChildSort(node, child) {
+		node.Children[0] = child.Children[0]
+	}
 }
 
 func (builder *QueryBuilder) applyIndices(nodeID int32, colRefCnt map[[2]int32]int, idxColMap map[[2]int32]*plan.Expr) (int32, error) {

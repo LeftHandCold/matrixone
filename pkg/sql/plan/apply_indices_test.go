@@ -200,6 +200,64 @@ func TestCollectSpecialIndexGuardsSkipsNestedDuplicateFullTextGuard(t *testing.T
 	require.Equal(t, 1, builder.protectedScans[scanNode.NodeId])
 }
 
+func TestPruneRedundantSortsRemovesIdenticalChildSort(t *testing.T) {
+	builder := NewQueryBuilder(planpb.Query_SELECT, NewMockCompilerContext(true), false, true)
+	scan := &planpb.Node{NodeType: planpb.Node_TABLE_SCAN, NodeId: 3}
+	inner := &planpb.Node{
+		NodeType: planpb.Node_SORT,
+		NodeId:   2,
+		Children: []int32{3},
+		OrderBy: []*planpb.OrderBySpec{{
+			Expr: &planpb.Expr{Expr: &planpb.Expr_Col{Col: &planpb.ColRef{RelPos: 1, ColPos: 1}}},
+			Flag: planpb.OrderBySpec_DESC,
+		}},
+	}
+	outer := &planpb.Node{
+		NodeType: planpb.Node_SORT,
+		NodeId:   1,
+		Children: []int32{2},
+		OrderBy: []*planpb.OrderBySpec{{
+			Expr: &planpb.Expr{Expr: &planpb.Expr_Col{Col: &planpb.ColRef{RelPos: 1, ColPos: 1}}},
+			Flag: planpb.OrderBySpec_DESC,
+		}},
+		Limit: &planpb.Expr{Expr: &planpb.Expr_Lit{Lit: &planpb.Literal{Value: &planpb.Literal_U64Val{U64Val: 30}}}},
+	}
+	builder.qry.Nodes = []*planpb.Node{nil, outer, inner, scan}
+
+	builder.pruneRedundantSorts(1)
+
+	require.Equal(t, []int32{3}, outer.Children)
+}
+
+func TestPruneRedundantSortsKeepsChildSortWithLimit(t *testing.T) {
+	builder := NewQueryBuilder(planpb.Query_SELECT, NewMockCompilerContext(true), false, true)
+	scan := &planpb.Node{NodeType: planpb.Node_TABLE_SCAN, NodeId: 3}
+	inner := &planpb.Node{
+		NodeType: planpb.Node_SORT,
+		NodeId:   2,
+		Children: []int32{3},
+		OrderBy: []*planpb.OrderBySpec{{
+			Expr: &planpb.Expr{Expr: &planpb.Expr_Col{Col: &planpb.ColRef{RelPos: 1, ColPos: 1}}},
+			Flag: planpb.OrderBySpec_DESC,
+		}},
+		Limit: &planpb.Expr{Expr: &planpb.Expr_Lit{Lit: &planpb.Literal{Value: &planpb.Literal_U64Val{U64Val: 10}}}},
+	}
+	outer := &planpb.Node{
+		NodeType: planpb.Node_SORT,
+		NodeId:   1,
+		Children: []int32{2},
+		OrderBy: []*planpb.OrderBySpec{{
+			Expr: &planpb.Expr{Expr: &planpb.Expr_Col{Col: &planpb.ColRef{RelPos: 1, ColPos: 1}}},
+			Flag: planpb.OrderBySpec_DESC,
+		}},
+	}
+	builder.qry.Nodes = []*planpb.Node{nil, outer, inner, scan}
+
+	builder.pruneRedundantSorts(1)
+
+	require.Equal(t, []int32{2}, outer.Children)
+}
+
 func TestCalculatePostFilterOverFetchFactor(t *testing.T) {
 	tests := []struct {
 		name          string

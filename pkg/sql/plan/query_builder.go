@@ -2145,6 +2145,7 @@ func (builder *QueryBuilder) createQuery() (*Query, error) {
 		if err != nil {
 			return nil, err
 		}
+		builder.pruneRedundantSorts(rootID)
 		ReCalcNodeStats(rootID, builder, true, false, false)
 
 		builder.generateRuntimeFilters(rootID)
