@@ -29,9 +29,6 @@ const (
 	RangeLeftOpen = iota + math.MaxInt16
 	RangeRightOpen
 	RangeBothOpen
-	PrefixRangeLeftOpen
-	PrefixRangeRightOpen
-	PrefixRangeBothOpen
 )
 
 type BasePKFilter struct {
@@ -54,13 +51,10 @@ func (b *BasePKFilter) String() string {
 		RangeLeftOpen:           "range_left_open",
 		RangeRightOpen:          "range_right_open",
 		RangeBothOpen:           "range_both_open",
-		PrefixRangeLeftOpen:     "prefix_range_left_open",
-		PrefixRangeRightOpen:    "prefix_range_right_open",
-		PrefixRangeBothOpen:     "prefix_range_both_open",
 		function.EQUAL:          "equal",
 		function.IN:             "in",
 		function.BETWEEN:        "between",
-		function.PREFIX_EQ:      "prefix_eq",
+		function.PREFIX_EQ:      "prefix_in",
 		function.PREFIX_IN:      "prefix_in",
 		function.PREFIX_BETWEEN: "prefix_between",
 	}
@@ -311,10 +305,12 @@ func ConstructBasePKFilter(
 
 		case "in_range":
 			ok, oid, vals := evalValue(expr, exprImpl, tblDef, false, tblDef.Pkey.PkeyColName)
-			if !ok || len(vals) < 3 || len(vals[2]) == 0 {
+			if !ok || len(vals) < 3 || len(vals[2]) < 1 {
 				return
 			}
-			switch vals[2][0] {
+			filter.Valid = true
+			flag := vals[2][0]
+			switch flag {
 			case 0:
 				filter.Op = function.BETWEEN
 			case 1:
@@ -326,7 +322,6 @@ func ConstructBasePKFilter(
 			default:
 				return
 			}
-			filter.Valid = true
 			filter.LB = vals[0]
 			filter.UB = vals[1]
 			filter.Oid = oid
@@ -355,22 +350,11 @@ func ConstructBasePKFilter(
 
 		case "prefix_in_range":
 			ok, oid, vals := evalValue(expr, exprImpl, tblDef, false, tblDef.Pkey.PkeyColName)
-			if !ok || len(vals) < 3 || len(vals[2]) == 0 {
-				return
-			}
-			switch vals[2][0] {
-			case 0:
-				filter.Op = function.PREFIX_BETWEEN
-			case 1:
-				filter.Op = PrefixRangeLeftOpen
-			case 2:
-				filter.Op = PrefixRangeRightOpen
-			case 3:
-				filter.Op = PrefixRangeBothOpen
-			default:
+			if !ok {
 				return
 			}
 			filter.Valid = true
+			filter.Op = function.PREFIX_BETWEEN
 			filter.LB = vals[0]
 			filter.UB = vals[1]
 			filter.Oid = oid
