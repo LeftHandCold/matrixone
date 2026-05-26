@@ -73,7 +73,7 @@ var traceFilterExprInterval2 atomic.Uint64
 // pkCheckSemaphore limits concurrent PK conflict I/O in PKPersistedBetween to prevent
 // mpool explosion when many transactions simultaneously check primary key conflicts.
 var pkCheckSemaphore = make(chan struct{}, 16)
-var pkConflictReadPolicy fileservice.Policy = fileservice.SkipFullFilePreloads
+var pkConflictReadPolicy fileservice.Policy = fileservice.Policy(0)
 
 const maxChangedObjectsForIO = 64
 const maxCandidateBlksForIO = 32
@@ -907,7 +907,7 @@ func (tbl *txnTable) countSingleTombstoneObject(
 			var release func()
 			// cnCreated=true because uncommitted tombstones are always CN-created
 			if _, release, readErr = ioutil.ReadDeletes(
-				ctx, blk.MetaLoc[:], fs, true, persistedDeletes, nil, fileservice.GetFileServicePolicy(ctx),
+				ctx, blk.MetaLoc[:], fs, true, persistedDeletes, nil,
 			); readErr != nil {
 				return false
 			}
@@ -2861,7 +2861,7 @@ func tombstonePKExistsInRange(
 				return false, err
 			}
 			readDeletesStart := time.Now()
-			_, dataRelease, err := ioutil.ReadDeletes(ctx, loc, fs, isCNCreated, tombVectors, &pkType, pkConflictReadPolicy)
+			_, dataRelease, err := ioutil.ReadDeletes(ctx, loc, fs, isCNCreated, tombVectors, &pkType)
 			if err != nil {
 				logPKCheckDebugIfSlow(
 					"tombstonePKExistsInRange.read-deletes.read",
