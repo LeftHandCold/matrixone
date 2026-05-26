@@ -77,6 +77,7 @@ var pkConflictReadPolicy fileservice.Policy = fileservice.SkipFullFilePreloads
 
 const maxChangedObjectsForIO = 64
 const maxCandidateBlksForIO = 32
+const pkCheckDebugSlowDuration = time.Second
 
 func acquirePKCheckSemaphore(ctx context.Context) (func(), error) {
 	select {
@@ -85,6 +86,46 @@ func acquirePKCheckSemaphore(ctx context.Context) (func(), error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func acquirePKCheckSemaphoreDebug(
+	ctx context.Context,
+	stage string,
+	tableID uint64,
+	tableName string,
+	fields ...zap.Field,
+) (func(), error) {
+	start := time.Now()
+	release, err := acquirePKCheckSemaphore(ctx)
+	logPKCheckDebugIfSlow(stage+".semaphore", time.Since(start), tableID, tableName, err, fields...)
+	return release, err
+}
+
+func logPKCheckDebugIfSlow(
+	stage string,
+	duration time.Duration,
+	tableID uint64,
+	tableName string,
+	err error,
+	fields ...zap.Field,
+) {
+	if duration < pkCheckDebugSlowDuration && err == nil {
+		return
+	}
+	logFields := make([]zap.Field, 0, len(fields)+6)
+	logFields = append(logFields,
+		zap.String("stage", stage),
+		zap.Duration("duration", duration),
+		zap.Uint64("table-id", tableID),
+		zap.String("table", tableName),
+		zap.Int("pk-semaphore-len", len(pkCheckSemaphore)),
+		zap.Int("pk-semaphore-cap", cap(pkCheckSemaphore)),
+	)
+	logFields = append(logFields, fields...)
+	if err != nil {
+		logFields = append(logFields, zap.Error(err))
+	}
+	logutil.Warn("pk-check-debug slow path", logFields...)
 }
 
 func shouldBailoutOnChangedObjects(cnt int) bool {
@@ -2509,6 +2550,22 @@ func (tbl *txnTable) PKPersistedBetween(
 
 	//only check data objects.
 	delObjs, cObjs := p.GetChangedObjsBetween(from.Next(), types.MaxTs())
+	pkCheckDebugStart := time.Now()
+	defer func() {
+		logPKCheckDebugIfSlow(
+			"PKPersistedBetween.total",
+			time.Since(pkCheckDebugStart),
+			tbl.tableId,
+			tbl.tableName,
+			err,
+			zap.Bool("changed", changed),
+			zap.Bool("check-tombstone", checkTombstone),
+			zap.Int("keys", keys.Length()),
+			zap.Int("changed-objs", len(cObjs)),
+			zap.Int("deleted-objs", len(delObjs)),
+			zap.Int("candidate-blocks", len(candidateBlks)),
+		)
+	}()
 
 	// Under high-concurrency workloads (e.g., 1000 TPCC terminals), many transactions
 	// write to the same table, producing many changed objects. Only inserted objects
@@ -2536,17 +2593,40 @@ func (tbl *txnTable) PKPersistedBetween(
 			var objMeta objectio.ObjectMeta
 			location := obj.Location()
 
-			semRelease, err := acquirePKCheckSemaphore(ctx)
+			semRelease, err := acquirePKCheckSemaphoreDebug(
+				ctx,
+				"PKPersistedBetween.metadata",
+				tbl.tableId,
+				tbl.tableName,
+				zap.String("object-location", location.String()),
+			)
 			if err != nil {
 				return err
 			}
 			// load object metadata
+			metaLoadStart := time.Now()
 			if objMeta, err2 = objectio.FastLoadObjectMeta(
 				ctx, &location, false, fs,
 			); err2 != nil {
+				logPKCheckDebugIfSlow(
+					"PKPersistedBetween.metadata.load",
+					time.Since(metaLoadStart),
+					tbl.tableId,
+					tbl.tableName,
+					err2,
+					zap.String("object-location", location.String()),
+				)
 				semRelease()
 				return
 			}
+			logPKCheckDebugIfSlow(
+				"PKPersistedBetween.metadata.load",
+				time.Since(metaLoadStart),
+				tbl.tableId,
+				tbl.tableName,
+				nil,
+				zap.String("object-location", location.String()),
+			)
 
 			// reset bloom filter to nil for each object
 			meta = objMeta.MustDataMeta()
@@ -2563,12 +2643,29 @@ func (tbl *txnTable) PKPersistedBetween(
 			bf = nil
 			//fake pk has no bf
 			if !isFakePK {
+				bfLoadStart := time.Now()
 				if bf, err2 = objectio.LoadBFWithMeta(
 					ctx, meta, location, fs,
 				); err2 != nil {
+					logPKCheckDebugIfSlow(
+						"PKPersistedBetween.bloom-filter.load",
+						time.Since(bfLoadStart),
+						tbl.tableId,
+						tbl.tableName,
+						err2,
+						zap.String("object-location", location.String()),
+					)
 					semRelease()
 					return
 				}
+				logPKCheckDebugIfSlow(
+					"PKPersistedBetween.bloom-filter.load",
+					time.Since(bfLoadStart),
+					tbl.tableId,
+					tbl.tableName,
+					nil,
+					zap.String("object-location", location.String()),
+				)
 			}
 			semRelease()
 
@@ -2652,10 +2749,19 @@ func (tbl *txnTable) PKPersistedBetween(
 		v2.TxnPKChangeCheckIOCounter.Inc()
 
 		for _, blk := range candidateBlks {
-			semRelease, err := acquirePKCheckSemaphore(ctx)
+			blkLoc := blk.MetaLocation()
+			semRelease, err := acquirePKCheckSemaphoreDebug(
+				ctx,
+				"PKPersistedBetween.load-columns",
+				tbl.tableId,
+				tbl.tableName,
+				zap.String("block-location", blkLoc.String()),
+				zap.Int("candidate-blocks", len(candidateBlks)),
+			)
 			if err != nil {
 				return false, err
 			}
+			loadColumnsStart := time.Now()
 			dataRelease, err := ioutil.LoadColumns(
 				ctx,
 				[]uint16{uint16(pkSeq)},
@@ -2667,9 +2773,27 @@ func (tbl *txnTable) PKPersistedBetween(
 				pkConflictReadPolicy,
 			)
 			if err != nil {
+				logPKCheckDebugIfSlow(
+					"PKPersistedBetween.load-columns.read",
+					time.Since(loadColumnsStart),
+					tbl.tableId,
+					tbl.tableName,
+					err,
+					zap.String("block-location", blkLoc.String()),
+					zap.Int("candidate-blocks", len(candidateBlks)),
+				)
 				semRelease()
 				return true, err
 			}
+			logPKCheckDebugIfSlow(
+				"PKPersistedBetween.load-columns.read",
+				time.Since(loadColumnsStart),
+				tbl.tableId,
+				tbl.tableName,
+				nil,
+				zap.String("block-location", blkLoc.String()),
+				zap.Int("candidate-blocks", len(candidateBlks)),
+			)
 
 			searchFunc := filter.DecideSearchFunc(blk.IsSorted())
 			if searchFunc == nil {
@@ -2725,15 +2849,41 @@ func tombstonePKExistsInRange(
 				vecCount = 2
 			}
 			tombVectors := containers.NewVectors(vecCount)
-			semRelease, err := acquirePKCheckSemaphore(ctx)
+			semRelease, err := acquirePKCheckSemaphoreDebug(
+				ctx,
+				"tombstonePKExistsInRange.read-deletes",
+				0,
+				"",
+				zap.String("tombstone-location", loc.String()),
+				zap.Uint32("tombstone-blocks", obj.BlkCnt()),
+			)
 			if err != nil {
 				return false, err
 			}
+			readDeletesStart := time.Now()
 			_, dataRelease, err := ioutil.ReadDeletes(ctx, loc, fs, isCNCreated, tombVectors, &pkType, pkConflictReadPolicy)
 			if err != nil {
+				logPKCheckDebugIfSlow(
+					"tombstonePKExistsInRange.read-deletes.read",
+					time.Since(readDeletesStart),
+					0,
+					"",
+					err,
+					zap.String("tombstone-location", loc.String()),
+					zap.Uint32("tombstone-blocks", obj.BlkCnt()),
+				)
 				semRelease()
 				return true, nil
 			}
+			logPKCheckDebugIfSlow(
+				"tombstonePKExistsInRange.read-deletes.read",
+				time.Since(readDeletesStart),
+				0,
+				"",
+				nil,
+				zap.String("tombstone-location", loc.String()),
+				zap.Uint32("tombstone-blocks", obj.BlkCnt()),
+			)
 			pkVec := tombVectors[1]
 			hits := searchKeys(&pkVec)
 			dataRelease()

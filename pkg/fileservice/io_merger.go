@@ -90,7 +90,14 @@ func (i *IOMerger) Merge(key IOMergeKey, maxWaitDuration time.Duration) (done fu
 	t0 := time.Now()
 	return func() {
 		defer func() {
-			metric.IOMergerDurationInitiate.Observe(time.Since(t0).Seconds())
+			duration := time.Since(t0)
+			metric.IOMergerDurationInitiate.Observe(duration.Seconds())
+			if duration > slowIOWaitDuration {
+				logutil.Warn("io merger initiated io took too long",
+					zap.Any("duration", duration),
+					zap.Any("key", key),
+				)
+			}
 		}()
 		i.flying.Delete(key)
 		close(ch)
