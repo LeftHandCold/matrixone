@@ -282,8 +282,16 @@ func dedupLoad(ctx context.Context, key mataCacheKey, load func() ([]byte, error
 	metaLoadMu.Lock()
 	if call, ok := metaLoadCalls[key]; ok {
 		metaLoadMu.Unlock()
+		t0 := time.Now()
 		select {
 		case <-call.done:
+			if cost := time.Since(t0); cost > 10*time.Second {
+				logutil.Warn("tpcc-24535-debug objectio dedup wait slow",
+					zap.Duration("cost", cost),
+					zap.Any("key", key),
+					zap.Error(call.err),
+				)
+			}
 			if v, ok := metaCache.Get(ctx, key); ok {
 				return v, nil
 			}
@@ -292,6 +300,11 @@ func dedupLoad(ctx context.Context, key mataCacheKey, load func() ([]byte, error
 			}
 			return call.val, nil
 		case <-ctx.Done():
+			logutil.Warn("tpcc-24535-debug objectio dedup wait canceled",
+				zap.Duration("cost", time.Since(t0)),
+				zap.Any("key", key),
+				zap.Error(ctx.Err()),
+			)
 			return nil, ctx.Err()
 		}
 	}
@@ -307,7 +320,16 @@ func dedupLoad(ctx context.Context, key mataCacheKey, load func() ([]byte, error
 		metaLoadMu.Unlock()
 	}()
 
+	t0 := time.Now()
 	call.val, call.err = load()
+	if cost := time.Since(t0); cost > 10*time.Second {
+		logutil.Warn("tpcc-24535-debug objectio dedup load slow",
+			zap.Duration("cost", cost),
+			zap.Any("key", key),
+			zap.Int("bytes", len(call.val)),
+			zap.Error(call.err),
+		)
+	}
 	if call.err == nil {
 		metaCache.Set(ctx, key, call.val, int64(len(call.val)))
 	}

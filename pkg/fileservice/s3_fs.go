@@ -510,8 +510,23 @@ func (s *S3FS) Read(ctx context.Context, vector *IOVector) (err error) {
 	stats := statistic.StatsInfoFromContext(ctx)
 	ioStart := time.Now()
 	defer func() {
-		stats.AddIOAccessTimeConsumption(time.Since(ioStart))
-		metric.FSReadDurationTotal.Observe(time.Since(ioStart).Seconds())
+		cost := time.Since(ioStart)
+		stats.AddIOAccessTimeConsumption(cost)
+		metric.FSReadDurationTotal.Observe(cost.Seconds())
+		if cost > slowIOWaitDuration {
+			min, max, readFull := vector.readRange()
+			logutil.Warn("tpcc-24535-debug s3fs read slow",
+				zap.Duration("cost", cost),
+				zap.String("file", vector.FilePath),
+				zap.Uint64("policy", uint64(vector.Policy)),
+				zap.Bool("skipFullFilePreloads", vector.Policy.Any(SkipFullFilePreloads)),
+				zap.Bool("readFullObject", readFull),
+				zap.Int("entries", len(vector.Entries)),
+				zap.Int64("min", ptrValueForDebug(min, -1)),
+				zap.Int64("max", ptrValueForDebug(max, -1)),
+				zap.Error(err),
+			)
+		}
 	}()
 
 	if err := ctx.Err(); err != nil {
@@ -535,7 +550,15 @@ func (s *S3FS) Read(ctx context.Context, vector *IOVector) (err error) {
 		LogEvent(ctx, str_read_vector_Caches_begin)
 		err := readCache(ctx, cache, vector)
 		LogEvent(ctx, str_read_vector_Caches_end)
-		metric.FSReadDurationReadVectorCache.Observe(time.Since(t0).Seconds())
+		cost := time.Since(t0)
+		metric.FSReadDurationReadVectorCache.Observe(cost.Seconds())
+		if cost > slowIOWaitDuration {
+			logutil.Warn("tpcc-24535-debug vector cache read slow",
+				zap.Duration("cost", cost),
+				zap.String("file", vector.FilePath),
+				zap.Uint64("policy", uint64(vector.Policy)),
+			)
+		}
 		if err != nil {
 			return err
 		}
@@ -562,7 +585,15 @@ read_memory_cache:
 		LogEvent(ctx, str_read_memory_cache_Caches_begin)
 		err := readCache(ctx, s.memCache, vector)
 		LogEvent(ctx, str_read_memory_cache_Caches_end)
-		metric.FSReadDurationReadMemoryCache.Observe(time.Since(t0).Seconds())
+		cost := time.Since(t0)
+		metric.FSReadDurationReadMemoryCache.Observe(cost.Seconds())
+		if cost > slowIOWaitDuration {
+			logutil.Warn("tpcc-24535-debug memory cache read slow",
+				zap.Duration("cost", cost),
+				zap.String("file", vector.FilePath),
+				zap.Uint64("policy", uint64(vector.Policy)),
+			)
+		}
 		if err != nil {
 			return err
 		}
@@ -594,7 +625,15 @@ read_disk_cache:
 		}
 		err := readCache(ctx, s.diskCache, vector)
 		LogEvent(ctx, str_read_disk_cache_Caches_end)
-		metric.FSReadDurationReadDiskCache.Observe(time.Since(t0).Seconds())
+		cost := time.Since(t0)
+		metric.FSReadDurationReadDiskCache.Observe(cost.Seconds())
+		if cost > slowIOWaitDuration {
+			logutil.Warn("tpcc-24535-debug disk cache read slow",
+				zap.Duration("cost", cost),
+				zap.String("file", vector.FilePath),
+				zap.Uint64("policy", uint64(vector.Policy)),
+			)
+		}
 		if err != nil {
 			return err
 		}
@@ -636,7 +675,15 @@ read_disk_cache:
 		LogEvent(ctx, str_read_remote_cache_Caches_begin)
 		err := readCache(ctx, s.remoteCache, vector)
 		LogEvent(ctx, str_read_remote_cache_Caches_end)
-		metric.FSReadDurationReadRemoteCache.Observe(time.Since(t0).Seconds())
+		cost := time.Since(t0)
+		metric.FSReadDurationReadRemoteCache.Observe(cost.Seconds())
+		if cost > slowIOWaitDuration {
+			logutil.Warn("tpcc-24535-debug remote cache read slow",
+				zap.Duration("cost", cost),
+				zap.String("file", vector.FilePath),
+				zap.Uint64("policy", uint64(vector.Policy)),
+			)
+		}
 		if err != nil {
 			return err
 		}
@@ -683,7 +730,21 @@ read_disk_cache:
 	if err := s.read(ctx, vector); err != nil {
 		return err
 	}
-	metric.FSReadDurationS3Read.Observe(time.Since(s3ReadStart).Seconds())
+	s3ReadCost := time.Since(s3ReadStart)
+	metric.FSReadDurationS3Read.Observe(s3ReadCost.Seconds())
+	if s3ReadCost > slowIOWaitDuration {
+		min, max, readFull := vector.readRange()
+		logutil.Warn("tpcc-24535-debug s3 backend read slow",
+			zap.Duration("cost", s3ReadCost),
+			zap.String("file", vector.FilePath),
+			zap.Uint64("policy", uint64(vector.Policy)),
+			zap.Bool("skipFullFilePreloads", vector.Policy.Any(SkipFullFilePreloads)),
+			zap.Bool("readFullObject", readFull),
+			zap.Int64("s3ReadBytes", s3ReadBytes),
+			zap.Int64("min", ptrValueForDebug(min, -1)),
+			zap.Int64("max", ptrValueForDebug(max, -1)),
+		)
+	}
 	// Record S3 read size (all bytes read from S3)
 	if s3ReadBytes > 0 {
 		perfcounter.Update(ctx, func(counter *perfcounter.CounterSet) {
@@ -692,6 +753,13 @@ read_disk_cache:
 	}
 
 	return nil
+}
+
+func ptrValueForDebug(v *int64, nilValue int64) int64 {
+	if v == nil {
+		return nilValue
+	}
+	return *v
 }
 
 func (s *S3FS) ReadCache(ctx context.Context, vector *IOVector) (err error) {

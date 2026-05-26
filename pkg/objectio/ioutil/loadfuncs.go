@@ -17,6 +17,7 @@ package ioutil
 import (
 	"context"
 	"math"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -26,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
+	"go.uber.org/zap"
 )
 
 func LoadColumnsData(
@@ -38,6 +40,19 @@ func LoadColumnsData(
 	m *mpool.MPool,
 	policy fileservice.Policy,
 ) (dataMeta objectio.ObjectDataMeta, release func(), err error) {
+	t0 := time.Now()
+	defer func() {
+		if cost := time.Since(t0); cost > 10*time.Second {
+			logutil.Warn("tpcc-24535-debug load columns data slow",
+				zap.Duration("cost", cost),
+				zap.String("location", location.String()),
+				zap.Uint64("policy", uint64(policy)),
+				zap.Bool("skipFullFilePreloads", policy.Any(fileservice.SkipFullFilePreloads)),
+				zap.Uint16s("columns", columns),
+				zap.Error(err),
+			)
+		}
+	}()
 	name := location.Name().UnsafeString()
 	var meta objectio.ObjectMeta
 	var vectors fileservice.IOVector

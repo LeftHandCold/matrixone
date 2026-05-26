@@ -79,10 +79,20 @@ const maxChangedObjectsForIO = 64
 const maxCandidateBlksForIO = 32
 
 func acquirePKCheckSemaphore(ctx context.Context) (func(), error) {
+	t0 := time.Now()
 	select {
 	case pkCheckSemaphore <- struct{}{}:
+		if cost := time.Since(t0); cost > 10*time.Second {
+			logutil.Warn("tpcc-24535-debug pk semaphore acquire slow",
+				zap.Duration("cost", cost),
+			)
+		}
 		return func() { <-pkCheckSemaphore }, nil
 	case <-ctx.Done():
+		logutil.Warn("tpcc-24535-debug pk semaphore acquire canceled",
+			zap.Duration("cost", time.Since(t0)),
+			zap.Error(ctx.Err()),
+		)
 		return nil, ctx.Err()
 	}
 }
@@ -2491,9 +2501,31 @@ func (tbl *txnTable) PKPersistedBetween(
 ) (changed bool, err error) {
 
 	v2.TxnPKChangeCheckTotalCounter.Inc()
+	debugStart := time.Now()
+	var (
+		debugMetaReads       int
+		debugBFReads         int
+		debugLoadColumnReads int
+		debugTombstoneReads  int
+		debugCandidateBlocks int
+	)
 	defer func() {
 		if err != nil && changed {
 			v2.TxnPKChangeCheckChangedCounter.Inc()
+		}
+		if cost := time.Since(debugStart); cost > 10*time.Second {
+			logutil.Warn("tpcc-24535-debug pk persisted between slow",
+				zap.Duration("cost", cost),
+				zap.String("table", tbl.tableName),
+				zap.Int("changedObjects", debugMetaReads),
+				zap.Int("bfReads", debugBFReads),
+				zap.Int("candidateBlocks", debugCandidateBlocks),
+				zap.Int("loadColumnReads", debugLoadColumnReads),
+				zap.Int("tombstoneReads", debugTombstoneReads),
+				zap.Bool("checkTombstone", checkTombstone),
+				zap.Bool("changed", changed),
+				zap.Error(err),
+			)
 		}
 	}()
 	ctx := tbl.proc.Load().Ctx
@@ -2547,6 +2579,7 @@ func (tbl *txnTable) PKPersistedBetween(
 				semRelease()
 				return
 			}
+			debugMetaReads++
 
 			// reset bloom filter to nil for each object
 			meta = objMeta.MustDataMeta()
@@ -2569,6 +2602,7 @@ func (tbl *txnTable) PKPersistedBetween(
 					semRelease()
 					return
 				}
+				debugBFReads++
 			}
 			semRelease()
 
@@ -2595,6 +2629,7 @@ func (tbl *txnTable) PKPersistedBetween(
 					blk.SetFlagByObjStats(&obj.ObjectStats)
 
 					candidateBlks[blk.BlockID] = &blk
+					debugCandidateBlocks = len(candidateBlks)
 					return true
 				}, obj.ObjectStats)
 
@@ -2666,6 +2701,7 @@ func (tbl *txnTable) PKPersistedBetween(
 				tbl.proc.Load().GetMPool(),
 				pkConflictReadPolicy,
 			)
+			debugLoadColumnReads++
 			if err != nil {
 				semRelease()
 				return true, err
@@ -2687,7 +2723,8 @@ func (tbl *txnTable) PKPersistedBetween(
 	if checkTombstone {
 		pkDef := tbl.tableDef.Cols[tbl.primaryIdx]
 		pkType := plan2.ExprType2Type(&pkDef.Typ)
-		return tombstonePKExistsInRange(ctx, p, from, keys, pkType, fs)
+		changed, err = tombstonePKExistsInRange(ctx, p, from, keys, pkType, fs, &debugTombstoneReads)
+		return changed, err
 	}
 	return false, nil
 }
@@ -2702,6 +2739,7 @@ func tombstonePKExistsInRange(
 	keys *vector.Vector,
 	pkType types.Type,
 	fs fileservice.FileService,
+	debugReads *int,
 ) (bool, error) {
 	tombObjs := p.GetChangedTombstoneObjsBetween(from)
 	if len(tombObjs) == 0 {
@@ -2730,6 +2768,9 @@ func tombstonePKExistsInRange(
 				return false, err
 			}
 			_, dataRelease, err := ioutil.ReadDeletes(ctx, loc, fs, isCNCreated, tombVectors, &pkType, pkConflictReadPolicy)
+			if debugReads != nil {
+				*debugReads++
+			}
 			if err != nil {
 				semRelease()
 				return true, nil

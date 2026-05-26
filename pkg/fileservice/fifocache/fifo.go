@@ -19,15 +19,19 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/fileservice/fscache"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
+	"go.uber.org/zap"
 	"golang.org/x/sys/cpu"
 )
 
 const (
-	numShards               = 256
-	pressureEvictBatchItems = 64
-	pressureEvictBatchBytes = 64 << 20
+	numShards                  = 256
+	pressureEvictBatchItems    = 64
+	pressureEvictBatchBytes    = 64 << 20
+	slowFifoEvictDebugDuration = 10 * time.Second
 )
 
 // Cache implements an in-memory cache with FIFO-based eviction
@@ -507,27 +511,66 @@ func (c *Cache[K, V]) EvictWithWait(ctx context.Context, capacityCut int64) int6
 	if capacityCut < 0 {
 		capacityCut = 0
 	}
+	start := time.Now()
+	batches := 0
 	for {
 		select {
 		case <-ctx.Done():
+			logutil.Warn("tpcc-24535-debug fifo evict with wait canceled",
+				zap.Duration("cost", time.Since(start)),
+				zap.Int("batches", batches),
+				zap.Int64("capacityCut", capacityCut),
+				zap.Int64("used", c.used()),
+				zap.Error(ctx.Err()),
+			)
 			return c.used()
 		default:
 		}
 		pendingPostEvicts, used, evicted := c.evictBatch(&capacityCut)
+		batches++
 		c.runPendingPostEvicts(ctx, pendingPostEvicts)
 		target := c.capacity() - capacityCut
 		if target < 0 {
 			target = 0
 		}
 		if used <= target || !evicted {
+			if cost := time.Since(start); cost > slowFifoEvictDebugDuration {
+				logutil.Warn("tpcc-24535-debug fifo evict with wait slow",
+					zap.Duration("cost", cost),
+					zap.Int("batches", batches),
+					zap.Int64("capacityCut", capacityCut),
+					zap.Int64("used", used),
+					zap.Int64("target", target),
+					zap.Bool("lastBatchEvicted", evicted),
+				)
+			}
 			return used
 		}
 	}
 }
 
 func (c *Cache[K, V]) evictBatch(capacityCut *int64) (pending []_PendingPostEvict[K, V], used int64, evicted bool) {
+	lockStart := time.Now()
 	c.queueLock.Lock()
+	if cost := time.Since(lockStart); cost > slowFifoEvictDebugDuration {
+		logutil.Warn("tpcc-24535-debug fifo evict batch waited queue lock",
+			zap.Duration("cost", cost),
+			zap.Int64("capacityCut", *capacityCut),
+			zap.Int64("used", c.used1+c.used2),
+		)
+	}
+	batchStart := time.Now()
 	defer c.queueLock.Unlock()
+	defer func() {
+		if cost := time.Since(batchStart); cost > slowFifoEvictDebugDuration {
+			logutil.Warn("tpcc-24535-debug fifo evict batch slow under queue lock",
+				zap.Duration("cost", cost),
+				zap.Int("pending", len(pending)),
+				zap.Int64("used", used),
+				zap.Bool("evicted", evicted),
+			)
+		}
+	}()
 
 	var (
 		pendingBytes int64
