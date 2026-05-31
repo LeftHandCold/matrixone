@@ -772,6 +772,16 @@ func (s *S3FS) read(ctx context.Context, vector *IOVector) (err error) {
 		}, nil
 	}
 
+	if readFullObject && s.shouldStreamFullObjectToDiskCache(vector) {
+		done, err := s.readFullObjectToDiskCacheStreaming(ctx, vector, path.File, getReader)
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+	}
+
 	// a function to get data lazily
 	var contentBytes []byte
 	var contentErr error
@@ -982,6 +992,172 @@ func (s *S3FS) read(ctx context.Context, vector *IOVector) (err error) {
 		}
 	}
 
+	return nil
+}
+
+func (s *S3FS) shouldStreamFullObjectToDiskCache(vector *IOVector) bool {
+	if s.diskCache == nil || vector.Policy.Any(SkipDiskCacheWrites) {
+		return false
+	}
+	for i := range vector.Entries {
+		entry := &vector.Entries[i]
+		if entry.done {
+			continue
+		}
+		if entry.Size == 0 {
+			return false
+		}
+		if entry.WriterForRead != nil || entry.ReadCloserForRead != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *S3FS) readFullObjectToDiskCacheStreaming(
+	ctx context.Context,
+	vector *IOVector,
+	file string,
+	getReader func(context.Context, *int64, *int64) (io.ReadCloser, error),
+) (done bool, err error) {
+	reader, err := getReader(ctx, ptrTo[int64](0), nil)
+	if err != nil {
+		return true, err
+	}
+	stream := newFullObjectDiskCacheReader(reader, vector)
+
+	t0 := time.Now()
+	LogEvent(ctx, str_disk_cache_setfile_begin)
+	err = s.diskCache.SetFile(ctx, vector.FilePath, func(context.Context) (io.ReadCloser, error) {
+		stream.opened = true
+		return stream, nil
+	})
+	LogEvent(ctx, str_disk_cache_setfile_end)
+	metric.FSReadDurationSetCachedData.Observe(time.Since(t0).Seconds())
+	if err != nil {
+		return true, err
+	}
+	if !stream.opened {
+		return false, nil
+	}
+	if stream.err != nil {
+		return true, stream.err
+	}
+	if !stream.eof {
+		return false, nil
+	}
+
+	return true, stream.fillVector(ctx, s, file)
+}
+
+type fullObjectDiskCacheReader struct {
+	reader   io.ReadCloser
+	vector   *IOVector
+	captures []fullObjectEntryCapture
+	offset   int64
+	opened   bool
+	eof      bool
+	err      error
+}
+
+type fullObjectEntryCapture struct {
+	index  int
+	offset int64
+	size   int64
+	data   bytes.Buffer
+}
+
+func newFullObjectDiskCacheReader(reader io.ReadCloser, vector *IOVector) *fullObjectDiskCacheReader {
+	ret := &fullObjectDiskCacheReader{
+		reader: reader,
+		vector: vector,
+	}
+	for i := range vector.Entries {
+		entry := &vector.Entries[i]
+		if entry.done {
+			continue
+		}
+		ret.captures = append(ret.captures, fullObjectEntryCapture{
+			index:  i,
+			offset: entry.Offset,
+			size:   entry.Size,
+		})
+	}
+	return ret
+}
+
+func (r *fullObjectDiskCacheReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.capture(p[:n])
+		r.offset += int64(n)
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		r.err = err
+	}
+	if errors.Is(err, io.EOF) {
+		r.eof = true
+	}
+	return n, err
+}
+
+func (r *fullObjectDiskCacheReader) Close() error {
+	return r.reader.Close()
+}
+
+func (r *fullObjectDiskCacheReader) capture(chunk []byte) {
+	chunkStart := r.offset
+	chunkEnd := chunkStart + int64(len(chunk))
+	for i := range r.captures {
+		capture := &r.captures[i]
+		start := max(capture.offset, chunkStart)
+		end := chunkEnd
+		if capture.size >= 0 {
+			end = min(capture.offset+capture.size, chunkEnd)
+		}
+		if start >= end {
+			continue
+		}
+		_, _ = capture.data.Write(chunk[start-chunkStart : end-chunkStart])
+	}
+}
+
+func (r *fullObjectDiskCacheReader) fillVector(
+	ctx context.Context,
+	allocator CacheDataAllocator,
+	file string,
+) error {
+	for i := range r.captures {
+		capture := &r.captures[i]
+		entry := r.vector.Entries[capture.index]
+		if entry.Size == 0 {
+			return moerr.NewEmptyRangeNoCtx(file)
+		}
+
+		data := capture.data.Bytes()
+		if capture.size >= 0 {
+			if int64(len(data)) < capture.size {
+				return moerr.NewUnexpectedEOFNoCtx(file)
+			}
+		} else {
+			if len(data) == 0 {
+				return moerr.NewEmptyRangeNoCtx(file)
+			}
+			entry.Size = int64(len(data))
+		}
+
+		if int64(len(entry.Data)) < entry.Size {
+			entry.Data = data
+		} else {
+			copy(entry.Data, data)
+		}
+
+		if err := entry.setCachedData(ctx, allocator); err != nil {
+			return err
+		}
+		r.vector.Entries[capture.index] = entry
+	}
+	metric.FSReadS3Counter.Add(float64(len(r.captures)))
 	return nil
 }
 
