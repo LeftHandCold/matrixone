@@ -1,0 +1,190 @@
+// Copyright 2021 Matrix Origin
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package compile
+
+import (
+	"reflect"
+
+	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+	"github.com/matrixorigin/matrixone/pkg/vm"
+)
+
+var (
+	planExprPtrType   = reflect.TypeOf((*plan.Expr)(nil))
+	operatorBaseType  = reflect.TypeOf(vm.OperatorBase{})
+	operatorBasePType = reflect.TypeOf((*vm.OperatorBase)(nil))
+)
+
+type argExpressionsGetter interface {
+	GetArgExpressions() []*plan.Expr
+}
+
+type lockRowsExpressionsGetter interface {
+	GetLockRowsExpressions() []*plan.Expr
+}
+
+func scopeContainsVarExpr(s *Scope) bool {
+	if s == nil {
+		return false
+	}
+	if sourceContainsVarExpr(s.DataSource) {
+		return true
+	}
+
+	found := false
+	if s.RootOp != nil {
+		_ = vm.HandleAllOp(s.RootOp, func(_ vm.Operator, op vm.Operator) error {
+			if operatorContainsVarExpr(op) {
+				found = true
+			}
+			return nil
+		})
+		if found {
+			return true
+		}
+	}
+
+	for _, pre := range s.PreScopes {
+		if scopeContainsVarExpr(pre) {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceContainsVarExpr(source *Source) bool {
+	if source == nil {
+		return false
+	}
+	return containsVarExpr(source.FilterExpr) ||
+		containsVarExprInValue(reflect.ValueOf(source.FilterList), nil) ||
+		containsVarExprInValue(reflect.ValueOf(source.BlockFilterList), nil) ||
+		containsVarExprInValue(reflect.ValueOf(source.RuntimeFilterSpecs), nil) ||
+		containsVarExprInValue(reflect.ValueOf(source.OrderBy), nil) ||
+		containsVarExprInValue(reflect.ValueOf(source.BlockOrderBy), nil)
+}
+
+func operatorContainsVarExpr(op vm.Operator) bool {
+	return containsVarExprInValue(reflect.ValueOf(op), nil)
+}
+
+func containsVarExpr(expr *plan.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	if _, ok := expr.Expr.(*plan.Expr_V); ok {
+		return true
+	}
+	return containsVarExprInValue(reflect.ValueOf(expr.Expr), nil)
+}
+
+func containsVarExprInValue(v reflect.Value, seen map[uintptr]struct{}) bool {
+	if !v.IsValid() {
+		return false
+	}
+
+	if v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return false
+		}
+		return containsVarExprInValue(v.Elem(), seen)
+	}
+
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return false
+		}
+		if v.Type() == planExprPtrType {
+			return containsVarExpr(v.Interface().(*plan.Expr))
+		}
+		if containsVarExprInHiddenExpressions(v) {
+			return true
+		}
+		if seen == nil {
+			seen = make(map[uintptr]struct{})
+		}
+		ptr := v.Pointer()
+		if _, ok := seen[ptr]; ok {
+			return false
+		}
+		seen[ptr] = struct{}{}
+		return containsVarExprInValue(v.Elem(), seen)
+	}
+
+	switch v.Kind() {
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			if containsVarExprInValue(v.Index(i), seen) {
+				return true
+			}
+		}
+	case reflect.Map:
+		iter := v.MapRange()
+		for iter.Next() {
+			if containsVarExprInValue(iter.Key(), seen) || containsVarExprInValue(iter.Value(), seen) {
+				return true
+			}
+		}
+	case reflect.Struct:
+		if v.Type() == operatorBaseType || v.Type() == operatorBasePType {
+			return false
+		}
+		if containsVarExprInHiddenExpressions(v) {
+			return true
+		}
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Type().Field(i)
+			if !field.IsExported() || field.Name == "OperatorBase" {
+				continue
+			}
+			if containsVarExprInValue(v.Field(i), seen) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func containsVarExprInHiddenExpressions(v reflect.Value) bool {
+	if !v.IsValid() {
+		return false
+	}
+	if v.CanInterface() {
+		if containsVarExprInExpressionGetters(v.Interface()) {
+			return true
+		}
+	}
+	if v.Kind() != reflect.Pointer && v.CanAddr() && v.Addr().CanInterface() {
+		if containsVarExprInExpressionGetters(v.Addr().Interface()) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsVarExprInExpressionGetters(value any) bool {
+	if getter, ok := value.(argExpressionsGetter); ok {
+		if containsVarExprInValue(reflect.ValueOf(getter.GetArgExpressions()), nil) {
+			return true
+		}
+	}
+	if getter, ok := value.(lockRowsExpressionsGetter); ok {
+		if containsVarExprInValue(reflect.ValueOf(getter.GetLockRowsExpressions()), nil) {
+			return true
+		}
+	}
+	return false
+}
