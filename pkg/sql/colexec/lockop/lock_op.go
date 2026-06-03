@@ -1111,6 +1111,16 @@ func (lockOp *LockOp) AddLockTargetWithMode(
 	return lockOp
 }
 
+func (lockOp *LockOp) GetLockRowsExpressions() []*plan.Expr {
+	exprs := make([]*plan.Expr, 0, len(lockOp.targets))
+	for i := range lockOp.targets {
+		if lockOp.targets[i].lockRows != nil {
+			exprs = append(exprs, lockOp.targets[i].lockRows)
+		}
+	}
+	return exprs
+}
+
 // LockTable lock all table, used for delete, truncate and drop table
 func (lockOp *LockOp) LockTable(
 	tableID uint64,
