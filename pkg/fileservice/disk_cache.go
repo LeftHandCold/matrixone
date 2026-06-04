@@ -340,9 +340,7 @@ func (d *DiskCache) Read(
 				}
 			} else {
 				// open file
-				if d.isUpdating(diskPath) {
-					return nil
-				}
+				d.waitUpdateComplete(ctx, diskPath)
 				LogEvent(ctx, str_disk_cache_file_open_begin)
 				diskFile, err := os.Open(diskPath)
 				LogEvent(ctx, str_disk_cache_file_open_end)

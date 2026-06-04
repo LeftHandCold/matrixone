@@ -654,18 +654,6 @@ read_disk_cache:
 		LogEvent(ctx, str_ioMerger_Merge_begin)
 		startLock := time.Now()
 		mergeKey := vector.ioMergeKey()
-		if skipFullObjectRead, err := s.shouldSkipFullObjectDiskCacheForUpdating(vector); err != nil {
-			return err
-		} else if skipFullObjectRead {
-			mergeKey = vector.ioMergeKeyForMinimalRange()
-			forceMinimalRangeRead = true
-		}
-		if mergeKey.FullObject &&
-			vector.canBypassFullObjectMergeWait() &&
-			s.ioMerger.IsMerging(mergeKey) {
-			mergeKey = vector.ioMergeKeyForMinimalRange()
-			forceMinimalRangeRead = true
-		}
 		done, wait := s.ioMerger.Merge(mergeKey, maxIOWaitDuration)
 		if done != nil {
 			defer done()
@@ -757,7 +745,7 @@ func (s *S3FS) read(ctx context.Context, vector *IOVector, forceMinimalRangeRead
 	}
 
 	min, max, readFullObject := vector.readRange()
-	if readFullObject && (forceMinimalRangeRead || s.isFullObjectDiskCacheUpdating(vector.FilePath, path.File)) {
+	if readFullObject && forceMinimalRangeRead {
 		min, max = vector.readMinimalRange()
 		readFullObject = false
 	}
