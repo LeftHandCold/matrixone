@@ -680,6 +680,35 @@ func TestS3FSFullObjectDiskCacheFillDoesNotRetainWholeObjectBuffer(t *testing.T)
 	assert.Equal(t, int64(1), pcSet.FileService.S3.Get.Load())
 	assert.Equal(t, int64(1), pcSet.FileService.Cache.Disk.Hit.Load())
 	hitVec.Release()
+
+	err = fs.Write(ctx, IOVector{
+		FilePath: "foo/baz",
+		Entries: []IOEntry{
+			{
+				Size: int64(len(data)),
+				Data: data,
+			},
+		},
+		Policy: SkipDiskCache | SkipMemoryCache,
+	})
+	assert.Nil(t, err)
+
+	cacheVec := &IOVector{
+		FilePath: "foo/baz",
+		Entries: []IOEntry{
+			{
+				Offset:      23456,
+				Size:        13,
+				ToCacheData: CacheOriginalData,
+			},
+		},
+	}
+	err = fs.Read(ctx, cacheVec)
+	assert.Nil(t, err)
+	assert.NotNil(t, cacheVec.Entries[0].CachedData)
+	assert.Equal(t, data[23456:23469], cacheVec.Entries[0].CachedData.Bytes())
+	assert.Nil(t, cacheVec.Entries[0].Data)
+	cacheVec.Release()
 }
 
 func TestS3FSRangeReadSkipsFullObjectDiskCacheUpdate(t *testing.T) {

@@ -44,6 +44,8 @@ var slowIOWaitDuration = time.Second * 10
 
 var maxIOWaitDuration = time.Minute
 
+var shortIOWaitDuration = time.Millisecond * 200
+
 func (i *IOMerger) makeWaitFunc(key IOMergeKey, ch chan struct{}, maxWaitDuration time.Duration) func() {
 	metric.IOMergerCounterWait.Add(1)
 	return func() {
@@ -51,14 +53,23 @@ func (i *IOMerger) makeWaitFunc(key IOMergeKey, ch chan struct{}, maxWaitDuratio
 		defer func() {
 			metric.IOMergerDurationWait.Observe(time.Since(t0).Seconds())
 		}()
+		deadline := time.Now().Add(maxWaitDuration)
 		for {
-			timer := time.NewTimer(slowIOWaitDuration)
+			waitDuration := slowIOWaitDuration
+			if maxWaitDuration > 0 {
+				remaining := time.Until(deadline)
+				if remaining <= 0 {
+					return
+				}
+				waitDuration = min(waitDuration, remaining)
+			}
+			timer := time.NewTimer(waitDuration)
 			select {
 			case <-ch:
 				timer.Stop()
 				return
 			case <-timer.C:
-				if time.Since(t0) > maxWaitDuration {
+				if maxWaitDuration > 0 && !time.Now().Before(deadline) {
 					// don't wait too long
 					// number of I/O requests may increase, but we don't want to hurt latencies too much.
 					return

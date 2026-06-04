@@ -654,7 +654,11 @@ read_disk_cache:
 		LogEvent(ctx, str_ioMerger_Merge_begin)
 		startLock := time.Now()
 		mergeKey := vector.ioMergeKey()
-		done, wait := s.ioMerger.Merge(mergeKey, maxIOWaitDuration)
+		waitDuration := maxIOWaitDuration
+		if mergeKey.FullObject {
+			waitDuration = shortIOWaitDuration
+		}
+		done, wait := s.ioMerger.Merge(mergeKey, waitDuration)
 		if done != nil {
 			defer done()
 			stats.AddS3FSReadIOMergerTimeConsumption(time.Since(startLock))
@@ -667,6 +671,10 @@ read_disk_cache:
 			stats.AddS3FSReadIOMergerTimeConsumption(time.Since(startLock))
 			metric.FSReadDurationIOMerger.Observe(time.Since(startLock).Seconds())
 			LogEvent(ctx, str_ioMerger_Merge_end)
+			if mergeKey.FullObject && s.ioMerger.IsMerging(mergeKey) {
+				forceMinimalRangeRead = true
+				goto read_s3
+			}
 			if mayReadMemoryCache {
 				goto read_memory_cache
 			} else {
@@ -675,6 +683,7 @@ read_disk_cache:
 		}
 	}
 
+read_s3:
 	// Count bytes that will be read from S3 (entries that are not done yet)
 	var s3ReadBytes int64
 	for _, entry := range vector.Entries {
@@ -1191,6 +1200,9 @@ func (r *fullObjectDiskCacheReader) fillVector(
 
 		if err := entry.setCachedData(ctx, allocator); err != nil {
 			return err
+		}
+		if entry.CachedData != nil && entry.ReadCloserForRead == nil {
+			entry.Data = nil
 		}
 		r.vector.Entries[capture.index] = entry
 	}
