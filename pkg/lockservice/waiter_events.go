@@ -292,6 +292,11 @@ func (mw *waiterEvents) checkOrphan(v checkOrphan) {
 			mw.logger.Warn("found stale remote lock without bind heartbeat",
 				zap.String("bind", v.lt.bind.DebugString()),
 				bytesArrayField("txns", [][]byte{h.TxnID}))
+			randomSleepIssue25126Hook(mw.logger,
+				issue25126HookStaleBindUnlockRandomSleep,
+				zap.String("bind", v.lt.bind.DebugString()),
+				zap.String("key", hex.EncodeToString(v.key)),
+				bytesArrayField("txns", [][]byte{h.TxnID}))
 			_ = mw.unlock(context.Background(), h.TxnID, timestamp.Timestamp{})
 			continue
 		}
@@ -299,6 +304,11 @@ func (mw *waiterEvents) checkOrphan(v checkOrphan) {
 		// can release the lock that the remote transaction has placed on the current cn.
 		if !mw.txnHolder.isValidRemoteTxn(h) {
 			mw.logger.Warn("found orphans txns",
+				bytesArrayField("txns", [][]byte{h.TxnID}))
+			randomSleepIssue25126Hook(mw.logger,
+				issue25126HookOrphanUnlockRandomSleep,
+				zap.String("bind", v.lt.bind.DebugString()),
+				zap.String("key", hex.EncodeToString(v.key)),
 				bytesArrayField("txns", [][]byte{h.TxnID}))
 			// ignore error. If failed will retry until lock removed
 			_ = mw.unlock(context.Background(), h.TxnID, timestamp.Timestamp{})

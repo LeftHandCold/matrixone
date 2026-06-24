@@ -25,6 +25,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/morpc"
 	pb "github.com/matrixorigin/matrixone/pkg/pb/lock"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zapcore"
@@ -880,4 +881,59 @@ func TestCanUnlockRemoteTxnWithNotifyFoundCommitting(t *testing.T) {
 		func(txn pb.WaitTxn) (bool, error) { return true, nil },
 	).(*mapBasedTxnHolder)
 	require.False(t, hold.canUnlockRemoteTxn(pb.WaitTxn{TxnID: []byte{1}, CreatedOn: "s0"}))
+}
+
+func TestIssue25126ForceInvalidRemoteTxnHook(t *testing.T) {
+	fault.Enable()
+	t.Cleanup(func() {
+		fault.Disable()
+	})
+	require.NoError(t, fault.AddFaultPoint(
+		context.Background(),
+		issue25126HookValidTxnForceInvalid,
+		":::",
+		"return",
+		0,
+		"",
+		false))
+
+	validTxnCalled := false
+	hold := newMapBasedTxnHandler(
+		"s1",
+		getLogger(""),
+		newFixedSlicePool(16),
+		func(sid string) (bool, error) { return false, nil },
+		func(ot []pb.OrphanTxn) ([][]byte, error) { return nil, nil },
+		func(txn pb.WaitTxn) (bool, error) {
+			validTxnCalled = true
+			return true, nil
+		},
+	).(*mapBasedTxnHolder)
+	require.False(t, hold.isValidRemoteTxn(pb.WaitTxn{TxnID: []byte{1}, CreatedOn: "s0"}))
+	require.False(t, validTxnCalled)
+}
+
+func TestIssue25126CannotCommitForceUnlockHook(t *testing.T) {
+	fault.Enable()
+	t.Cleanup(func() {
+		fault.Disable()
+	})
+	require.NoError(t, fault.AddFaultPoint(
+		context.Background(),
+		issue25126HookCannotCommitForceUnlock,
+		":::",
+		"return",
+		0,
+		"",
+		false))
+
+	hold := newMapBasedTxnHandler(
+		"s1",
+		getLogger(""),
+		newFixedSlicePool(16),
+		func(sid string) (bool, error) { return false, nil },
+		func(ot []pb.OrphanTxn) ([][]byte, error) { return [][]byte{{1}}, nil },
+		func(txn pb.WaitTxn) (bool, error) { return true, nil },
+	).(*mapBasedTxnHolder)
+	require.True(t, hold.canUnlockRemoteTxn(pb.WaitTxn{TxnID: []byte{1}, CreatedOn: "s0"}))
 }

@@ -37,6 +37,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/util/list"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
+	"go.uber.org/zap"
 )
 
 // WithWait setup wait func to wait some condition ready
@@ -999,6 +1000,17 @@ func (h *mapBasedTxnHolder) isValidRemoteTxn(txn pb.WaitTxn) bool {
 		return true
 	}
 
+	randomSleepIssue25126Hook(h.logger,
+		issue25126HookValidTxnRandomSleep,
+		zap.String("created-on", txn.CreatedOn),
+		zap.String("txn", fmt.Sprintf("%x", txn.TxnID)))
+	if _, _, ok := triggerIssue25126Hook(h.logger,
+		issue25126HookValidTxnForceInvalid,
+		zap.String("created-on", txn.CreatedOn),
+		zap.String("txn", fmt.Sprintf("%x", txn.TxnID))); ok {
+		return false
+	}
+
 	valid, err := h.validTxn(txn)
 	if err == nil {
 		return valid
@@ -1021,10 +1033,26 @@ func (h *mapBasedTxnHolder) canUnlockRemoteTxn(txn pb.WaitTxn) bool {
 		},
 	}
 
+	fields := []zap.Field{
+		zap.String("created-on", txn.CreatedOn),
+		zap.String("txn", fmt.Sprintf("%x", txn.TxnID)),
+	}
+	randomSleepIssue25126Hook(h.logger, issue25126HookCannotCommitRandomSleep, fields...)
+
 	committing, err := h.notify(cannotCommit)
 	if err != nil {
+		if _, _, ok := triggerIssue25126Hook(h.logger,
+			issue25126HookCannotCommitForceUnlock,
+			append(fields, zap.Error(err))...); ok {
+			return true
+		}
 		// any error, we cannot determine that the txn is safe to unlock.
 		return false
+	}
+	if _, _, ok := triggerIssue25126Hook(h.logger,
+		issue25126HookCannotCommitForceUnlock,
+		append(fields, zap.Int("committing-count", len(committing)))...); ok {
+		return true
 	}
 	// the target txn is safe to unlock only when TN confirms it is not committing.
 	return len(committing) == 0
