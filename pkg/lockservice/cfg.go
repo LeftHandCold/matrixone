@@ -27,7 +27,7 @@ var (
 	defaultMaxFixedSliceSize      = 1 << 20 * 10 // 10mb
 	defaultKeepRemoteLockDuration = time.Second
 	defaultKeepBindTimeout        = time.Second * 10
-	defaultRemoteLockTimeout      = time.Second * 8
+	defaultRemoteLockTimeout      = time.Minute * 10
 	defaultRemoteTxnTimeout       = time.Second * 10
 )
 

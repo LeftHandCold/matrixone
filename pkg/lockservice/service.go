@@ -37,10 +37,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/util/list"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
-	"go.uber.org/zap"
 )
-
-const issue25126ForceUnlockCommitting = false
 
 // WithWait setup wait func to wait some condition ready
 func WithWait(wait func()) Option {
@@ -1028,18 +1025,6 @@ func (h *mapBasedTxnHolder) canUnlockRemoteTxn(txn pb.WaitTxn) bool {
 	if err != nil {
 		// any error, we cannot determine that the txn is safe to unlock.
 		return false
-	}
-	if len(committing) > 0 {
-		h.logger.Warn("issue25126 cannot commit returned committing txn",
-			zap.String("created-on", txn.CreatedOn),
-			zap.String("txn", fmt.Sprintf("%x", txn.TxnID)),
-			zap.Int("committing-count", len(committing)))
-		if issue25126ForceUnlockCommitting {
-			h.logger.Warn("issue25126 force unlock committing txn",
-				zap.String("created-on", txn.CreatedOn),
-				zap.String("txn", fmt.Sprintf("%x", txn.TxnID)))
-			return true
-		}
 	}
 	// the target txn is safe to unlock only when TN confirms it is not committing.
 	return len(committing) == 0

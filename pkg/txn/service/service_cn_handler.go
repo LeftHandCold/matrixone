@@ -17,9 +17,7 @@ package service
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"math"
-	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -40,28 +38,7 @@ var (
 	prepareIgnoreErrorCodes = map[uint16]struct{}{
 		moerr.ErrTxnNotFound: {},
 	}
-
-	issue25126CommitSleepCounter atomic.Uint64
 )
-
-const (
-	// Repro-only knob for issue 25126. This intentionally stretches the window
-	// after the lock table allocator marks the txn as committing.
-	issue25126CommitSleepAfterValidDuration = 12 * time.Second
-	issue25126CommitSleepEvery              = uint64(1)
-)
-
-func issue25126CommitSleepAfterValid() (time.Duration, uint64, bool) {
-	if issue25126CommitSleepAfterValidDuration <= 0 || issue25126CommitSleepEvery == 0 {
-		return 0, 0, false
-	}
-
-	seq := issue25126CommitSleepCounter.Add(1)
-	if seq%issue25126CommitSleepEvery != 0 {
-		return 0, seq, false
-	}
-	return issue25126CommitSleepAfterValidDuration, seq, true
-}
 
 func (s *service) Read(ctx context.Context, request *txn.TxnRequest, response *txn.TxnResponse) error {
 	s.waitRecoveryCompleted()
@@ -236,14 +213,6 @@ func (s *service) Commit(ctx context.Context, request *txn.TxnRequest, response 
 			response.CommitResponse.InvalidLockTables = invalidBinds
 			response.TxnError = txn.WrapError(moerr.NewLockTableBindChanged(ctx), 0)
 			return nil
-		}
-		if duration, seq, ok := issue25126CommitSleepAfterValid(); ok {
-			s.logger.Warn("issue25126 sleep after lock allocator valid",
-				zap.String("txn", hex.EncodeToString(request.Txn.ID)),
-				zap.String("lock-service", request.Txn.LockService),
-				zap.Uint64("seq", seq),
-				zap.Duration("duration", duration))
-			time.Sleep(duration)
 		}
 	}
 
