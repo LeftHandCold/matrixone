@@ -805,6 +805,20 @@ func TestValidTxnWithInvalidRemoteTxn(t *testing.T) {
 	require.False(t, hold.isValidRemoteTxn(pb.WaitTxn{TxnID: []byte{1}, CreatedOn: "s0"}))
 }
 
+func TestValidTxnWithInvalidRemoteTxnAndNotifyFoundCommittingWithoutError(t *testing.T) {
+	hold := newMapBasedTxnHandler(
+		"s1",
+		getLogger(""),
+		newFixedSlicePool(16),
+		func(sid string) (bool, error) { return false, nil },
+		func(ot []pb.OrphanTxn) ([][]byte, error) { return [][]byte{{1}}, nil },
+		func(txn pb.WaitTxn) (bool, error) {
+			return false, nil
+		},
+	).(*mapBasedTxnHolder)
+	require.True(t, hold.isValidRemoteTxn(pb.WaitTxn{TxnID: []byte{1}, CreatedOn: "s0"}))
+}
+
 func TestValidTxnWithInvalidRemoteTxnAndNotifyOK(t *testing.T) {
 	hold := newMapBasedTxnHandler(
 		"s1",
@@ -898,19 +912,24 @@ func TestIssue25126ForceInvalidRemoteTxnHook(t *testing.T) {
 		false))
 
 	validTxnCalled := false
+	notifyCalled := false
 	hold := newMapBasedTxnHandler(
 		"s1",
 		getLogger(""),
 		newFixedSlicePool(16),
 		func(sid string) (bool, error) { return false, nil },
-		func(ot []pb.OrphanTxn) ([][]byte, error) { return nil, nil },
+		func(ot []pb.OrphanTxn) ([][]byte, error) {
+			notifyCalled = true
+			return [][]byte{{1}}, nil
+		},
 		func(txn pb.WaitTxn) (bool, error) {
 			validTxnCalled = true
 			return true, nil
 		},
 	).(*mapBasedTxnHolder)
-	require.False(t, hold.isValidRemoteTxn(pb.WaitTxn{TxnID: []byte{1}, CreatedOn: "s0"}))
-	require.False(t, validTxnCalled)
+	require.True(t, hold.isValidRemoteTxn(pb.WaitTxn{TxnID: []byte{1}, CreatedOn: "s0"}))
+	require.True(t, validTxnCalled)
+	require.True(t, notifyCalled)
 }
 
 func TestIssue25126CannotCommitForceUnlockHook(t *testing.T) {

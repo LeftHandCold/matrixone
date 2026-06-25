@@ -1000,20 +1000,30 @@ func (h *mapBasedTxnHolder) isValidRemoteTxn(txn pb.WaitTxn) bool {
 		return true
 	}
 
-	randomSleepIssue25126Hook(h.logger,
-		issue25126HookValidTxnRandomSleep,
+	fields := []zap.Field{
 		zap.String("created-on", txn.CreatedOn),
-		zap.String("txn", fmt.Sprintf("%x", txn.TxnID)))
-	if _, _, ok := triggerIssue25126Hook(h.logger,
-		issue25126HookValidTxnForceInvalid,
-		zap.String("created-on", txn.CreatedOn),
-		zap.String("txn", fmt.Sprintf("%x", txn.TxnID))); ok {
-		return false
+		zap.String("txn", fmt.Sprintf("%x", txn.TxnID)),
 	}
+	randomSleepIssue25126Hook(h.logger, issue25126HookValidTxnRandomSleep, fields...)
 
 	valid, err := h.validTxn(txn)
+	if _, _, ok := triggerIssue25126Hook(h.logger, issue25126HookValidTxnForceInvalid, fields...); ok {
+		valid = false
+		err = nil
+	}
 	if err == nil {
-		return valid
+		if valid {
+			return true
+		}
+		// Missing from the remote CN active list does not prove the txn is safe
+		// to unlock. A commit response can be lost after TN has committed it, so
+		// require the allocator to confirm the txn cannot be committing before
+		// waiter orphan cleanup releases the lock with an empty commit timestamp.
+		if h.canUnlockRemoteTxn(txn) {
+			return false
+		}
+		h.logger.Warn("remote txn is not active but cannot be confirmed safe to unlock", fields...)
+		return true
 	}
 	logValidTxnFailed(h.logger, txn, err)
 	if isRetryError(err) {
