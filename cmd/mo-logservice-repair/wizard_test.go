@@ -219,6 +219,34 @@ func TestStableHAKeeperAddressesForApplyRanksCleanupStoresLast(t *testing.T) {
 	}
 }
 
+func TestK8sWorkloadResourceForStoreUsesExplicitTemplate(t *testing.T) {
+	plan := &repairPlan{
+		K8s: &k8sPlanSettings{
+			WorkloadResourceTemplate: "statefulset/default-log-{ordinal}",
+		},
+	}
+	store := planStore{UUID: "00000000-0000-0000-0000-000000000003"}
+	got, err := k8sWorkloadResourceForStore(plan, store)
+	if err != nil {
+		t.Fatalf("render workload resource: %v", err)
+	}
+	if got != "statefulset/default-log-3" {
+		t.Fatalf("unexpected workload resource: %s", got)
+	}
+}
+
+func TestK8sWorkloadResourceForStoreRequiresKindName(t *testing.T) {
+	plan := &repairPlan{
+		K8s: &k8sPlanSettings{
+			WorkloadResourceTemplate: "default-log-{ordinal}",
+		},
+	}
+	store := planStore{UUID: "00000000-0000-0000-0000-000000000003"}
+	if _, err := k8sWorkloadResourceForStore(plan, store); err == nil {
+		t.Fatalf("expected invalid workload resource template error")
+	}
+}
+
 func TestValidateNoDuplicateLocalShardsCatchesOtherShardResidue(t *testing.T) {
 	dir := t.TempDir()
 	if err := writeLogMetadata(filepath.Join(dir, logMetadataFilename), metadata.LogStore{
@@ -579,10 +607,10 @@ func TestBuildK8sActionsPVCJobUsesOfflineCleanup(t *testing.T) {
 		joined += action.Command + "\n"
 	}
 	for _, want := range []string{
-		"scale deployment/'log-1' --replicas=0",
+		"scale 'deployment/log-1' --replicas=0",
 		"pvc 'log-1-data'",
 		"local clean-replica --files-only",
-		"scale deployment/'log-1' --replicas=1",
+		"scale 'deployment/log-1' --replicas=1",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("expected %q in pvc-job actions: %s", want, joined)

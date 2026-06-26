@@ -43,38 +43,40 @@ const (
 )
 
 type wizardOptions struct {
-	mode                   string
-	baseDir                string
-	confDir                string
-	shardID                uint64
-	shardIDSet             bool
-	shards                 string
-	addresses              string
-	output                 string
-	planPath               string
-	apply                  bool
-	yes                    bool
-	timeout                time.Duration
-	moServicePath          string
-	namespace              string
-	kubeContext            string
-	kubectlPath            string
-	k8sLogSelector         string
-	pvcMountPath           string
-	pvcDataDir             string
-	repairImage            string
-	repairBinary           string
-	deploymentID           uint64
-	manualServiceControl   bool
-	autoRestartPods        bool
-	executionMode          string
-	resume                 bool
-	podReadyTimeout        time.Duration
-	cleanupTimeout         time.Duration
-	heartbeatTimeout       time.Duration
-	hakeeperTimeout        time.Duration
-	pvcNameTemplate        string
-	deploymentNameTemplate string
+	mode                     string
+	baseDir                  string
+	confDir                  string
+	shardID                  uint64
+	shardIDSet               bool
+	shards                   string
+	addresses                string
+	output                   string
+	planPath                 string
+	apply                    bool
+	yes                      bool
+	timeout                  time.Duration
+	moServicePath            string
+	namespace                string
+	kubeContext              string
+	kubectlPath              string
+	k8sLogSelector           string
+	pvcMountPath             string
+	pvcDataDir               string
+	repairImage              string
+	repairBinary             string
+	deploymentID             uint64
+	manualServiceControl     bool
+	autoRestartPods          bool
+	executionMode            string
+	resume                   bool
+	podReadyTimeout          time.Duration
+	cleanupTimeout           time.Duration
+	heartbeatTimeout         time.Duration
+	hakeeperTimeout          time.Duration
+	pvcNameTemplate          string
+	deploymentNameTemplate   string
+	workloadResourceTemplate string
+	workloadContainerName    string
 }
 
 type repairPlan struct {
@@ -107,18 +109,20 @@ type localPlanSettings struct {
 }
 
 type k8sPlanSettings struct {
-	Kubectl                string `json:"kubectl"`
-	LogSelector            string `json:"logSelector,omitempty"`
-	PVCMountPath           string `json:"pvcMountPath"`
-	PVCLogServiceDataDir   string `json:"pvcLogServiceDataDir"`
-	RepairImage            string `json:"repairImage"`
-	RepairBinary           string `json:"repairBinary"`
-	DeploymentID           uint64 `json:"deploymentID,omitempty"`
-	DeploymentIDRequired   bool   `json:"deploymentIDRequired,omitempty"`
-	HAKeeperPortForwarded  bool   `json:"hakeeperPortForwarded,omitempty"`
-	ExecutionMode          string `json:"executionMode,omitempty"`
-	PVCNameTemplate        string `json:"pvcNameTemplate,omitempty"`
-	DeploymentNameTemplate string `json:"deploymentNameTemplate,omitempty"`
+	Kubectl                  string `json:"kubectl"`
+	LogSelector              string `json:"logSelector,omitempty"`
+	PVCMountPath             string `json:"pvcMountPath"`
+	PVCLogServiceDataDir     string `json:"pvcLogServiceDataDir"`
+	RepairImage              string `json:"repairImage"`
+	RepairBinary             string `json:"repairBinary"`
+	DeploymentID             uint64 `json:"deploymentID,omitempty"`
+	DeploymentIDRequired     bool   `json:"deploymentIDRequired,omitempty"`
+	HAKeeperPortForwarded    bool   `json:"hakeeperPortForwarded,omitempty"`
+	ExecutionMode            string `json:"executionMode,omitempty"`
+	PVCNameTemplate          string `json:"pvcNameTemplate,omitempty"`
+	DeploymentNameTemplate   string `json:"deploymentNameTemplate,omitempty"`
+	WorkloadResourceTemplate string `json:"workloadResourceTemplate,omitempty"`
+	WorkloadContainerName    string `json:"workloadContainerName,omitempty"`
 }
 
 type planShard struct {
@@ -380,7 +384,7 @@ func runRecover(mode string, args []string) error {
 		prompt := "Proceed with online recovery; the CLI will not backup LogService data"
 		switch {
 		case opts.mode == modeK8s && opts.executionMode == executionPVCJob:
-			prompt += " and will scale listed LogService deployments, run PVC cleanup jobs, then restart them"
+			prompt += " and will stop listed LogService workloads one at a time, run PVC cleanup jobs, then restart them"
 		case opts.mode == modeLocal || opts.manualServiceControl || !opts.autoRestartPods:
 			prompt += " and expects you to stop/start listed LogService pods/processes"
 		default:
@@ -395,7 +399,7 @@ func runRecover(mode string, args []string) error {
 		}
 		confirmPrompt := "This writes HAKeeper repair state and expects you to restart listed LogService pods/processes. Type APPLY to continue"
 		if opts.mode == modeK8s && opts.executionMode == executionPVCJob {
-			confirmPrompt = "This writes HAKeeper repair state, scales LogService deployments, and edits PVC data using cleanup jobs. Type APPLY to continue"
+			confirmPrompt = "This writes HAKeeper repair state, scales LogService workloads one at a time, and edits PVC data using cleanup jobs. Type APPLY to continue"
 		}
 		confirm, err := askLine(confirmPrompt)
 		if err != nil {
@@ -487,6 +491,8 @@ func parseWizardFlags(name string, args []string) (wizardOptions, error) {
 	fs.DurationVar(&opts.hakeeperTimeout, "hakeeper-timeout", 0, "HAKeeper RPC timeout; defaults to --timeout")
 	fs.StringVar(&opts.pvcNameTemplate, "pvc-name-template", "log-%d-data", "k8s pvc-job mode: PVC name template for a store ordinal; supports %d, {ordinal}, {store}, {short}")
 	fs.StringVar(&opts.deploymentNameTemplate, "deployment-name-template", "log-%d", "k8s pvc-job mode: deployment name template for a store ordinal; supports %d, {ordinal}, {store}, {short}")
+	fs.StringVar(&opts.workloadResourceTemplate, "workload-resource-template", "", "k8s pvc-job mode: workload resource template to stop/start per store, for example deployment/log-%d or statefulset/default-log-{ordinal}; supports %d, {ordinal}, {store}, {short}")
+	fs.StringVar(&opts.workloadContainerName, "workload-container", "log", "k8s pvc-job mode: container name to update with --repair-image when restarting workloads")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
@@ -671,24 +677,26 @@ func buildK8sRepairPlan(opts wizardOptions) (*repairPlan, error) {
 		HAKeeperAddresses: splitAddresses(opts.addresses),
 		ApplySupported:    false,
 		K8s: &k8sPlanSettings{
-			Kubectl:                kubectl,
-			LogSelector:            opts.k8sLogSelector,
-			PVCMountPath:           opts.pvcMountPath,
-			PVCLogServiceDataDir:   opts.pvcDataDir,
-			RepairImage:            opts.repairImage,
-			RepairBinary:           opts.repairBinary,
-			DeploymentID:           opts.deploymentID,
-			DeploymentIDRequired:   opts.deploymentID == 0,
-			ExecutionMode:          opts.executionMode,
-			PVCNameTemplate:        opts.pvcNameTemplate,
-			DeploymentNameTemplate: opts.deploymentNameTemplate,
+			Kubectl:                  kubectl,
+			LogSelector:              opts.k8sLogSelector,
+			PVCMountPath:             opts.pvcMountPath,
+			PVCLogServiceDataDir:     opts.pvcDataDir,
+			RepairImage:              opts.repairImage,
+			RepairBinary:             opts.repairBinary,
+			DeploymentID:             opts.deploymentID,
+			DeploymentIDRequired:     opts.deploymentID == 0,
+			ExecutionMode:            opts.executionMode,
+			PVCNameTemplate:          opts.pvcNameTemplate,
+			DeploymentNameTemplate:   opts.deploymentNameTemplate,
+			WorkloadResourceTemplate: opts.workloadResourceTemplate,
+			WorkloadContainerName:    opts.workloadContainerName,
 		},
 		Warnings: []string{
 			"k8s recover writes HAKeeper repair state only; it does not back up PVCs",
 		},
 	}
 	if opts.executionMode == executionPVCJob {
-		plan.Warnings = append(plan.Warnings, "k8s pvc-job recover scales rebuild deployments to 0 and edits mounted PVC data using cleanup jobs")
+		plan.Warnings = append(plan.Warnings, "k8s pvc-job recover stops one rebuild workload at a time and edits mounted PVC data using cleanup jobs")
 	} else {
 		plan.Warnings = append(plan.Warnings, "k8s recover prints exact pod restart commands and waits for startup cleanup logs before unblock")
 	}
@@ -968,9 +976,9 @@ func buildK8sActions(plan *repairPlan) []planAction {
 			continue
 		}
 		if k != nil && k.ExecutionMode == executionPVCJob {
-			deployment, err := k8sDeploymentNameForStore(plan, store)
+			workload, err := k8sWorkloadResourceForStore(plan, store)
 			if err != nil {
-				deployment = "<logservice-deployment-for-" + store.UUID + ">"
+				workload = "<logservice-workload-for-" + store.UUID + ">"
 			}
 			pvc, err := k8sPVCNameForStore(plan, store)
 			if err != nil {
@@ -978,9 +986,9 @@ func buildK8sActions(plan *repairPlan) []planAction {
 			}
 			actions = append(actions, planAction{
 				Type:        "k8s-scale-down-logservice",
-				Description: "Stop the LogService deployment before offline PVC cleanup.",
+				Description: "Stop the LogService workload before offline PVC cleanup.",
 				Store:       store.UUID,
-				Command:     fmt.Sprintf("%s -n %s scale deployment/%s --replicas=0", kubectl, namespace, shellQuote(deployment)),
+				Command:     fmt.Sprintf("%s -n %s scale %s --replicas=0", kubectl, namespace, shellQuote(workload)),
 			})
 			for _, replicaID := range store.CleanupReplicas {
 				actions = append(actions, planAction{
@@ -1004,9 +1012,9 @@ func buildK8sActions(plan *repairPlan) []planAction {
 			}
 			actions = append(actions, planAction{
 				Type:        "k8s-scale-up-logservice",
-				Description: "Restart the cleaned LogService deployment after PVC cleanup has been verified.",
+				Description: "Restart the cleaned LogService workload after PVC cleanup has been verified.",
 				Store:       store.UUID,
-				Command:     fmt.Sprintf("%s -n %s scale deployment/%s --replicas=1", kubectl, namespace, shellQuote(deployment)),
+				Command:     fmt.Sprintf("%s -n %s scale %s --replicas=1", kubectl, namespace, shellQuote(workload)),
 			})
 			actions = append(actions, planAction{
 				Type:        "hakeeper-unblock",
@@ -1929,58 +1937,50 @@ func applyK8sPVCJobRecoveryPlans(ctx context.Context, plans []*repairPlan, opts 
 		stdoutln("step 1: resume with existing HAKeeper repair state")
 	}
 
-	stdoutln("step 2: scale rebuild LogService deployments to 0")
+	stdoutln("step 2: stop, clean, and restart one LogService workload at a time")
 	for _, store := range restartStores {
-		deployment, err := k8sDeploymentNameForStore(plans[0], store)
+		workload, err := k8sWorkloadResourceForStore(plans[0], store)
 		if err != nil {
 			return err
 		}
-		stdoutf("scale deployment/%s to 0 for store %s\n", deployment, store.UUID)
-		if _, err := runKubectl(ctx, plans[0], "scale", "deployment/"+deployment, "--replicas=0"); err != nil {
-			return fmt.Errorf("scale deployment/%s to 0: %w", deployment, err)
+		stdoutf("scale %s to 0 for store %s\n", workload, store.UUID)
+		if _, err := runKubectl(ctx, plans[0], "scale", workload, "--replicas=0"); err != nil {
+			return fmt.Errorf("scale %s to 0: %w", workload, err)
 		}
 		if err := waitForK8sStorePodsGone(ctx, plans[0], store, podReadyTimeout); err != nil {
 			return err
 		}
-	}
 
-	stdoutln("step 3: run offline PVC cleanup jobs")
-	for _, store := range restartStores {
 		storeTasks := cleanupTasksForStore(tasks, store.UUID)
 		if len(storeTasks) == 0 {
 			continue
 		}
+		stdoutln("step 3: run offline PVC cleanup job")
 		if err := runK8sPVCCleanupJob(ctx, plans[0], store, storeTasks, cleanupTimeout); err != nil {
 			return err
 		}
-	}
 
-	stdoutln("step 4: clear startup cleanup requests while rebuild stores remain blocked")
-	if err := refreshRepairStatesWithoutStartupCleanup(ctx, plans, hakeeperTimeout); err != nil {
-		return err
-	}
-
-	stdoutln("step 5: restart cleaned LogService deployments")
-	for _, store := range restartStores {
-		deployment, err := k8sDeploymentNameForStore(plans[0], store)
-		if err != nil {
-			return err
-		}
 		if plans[0].K8s != nil && plans[0].K8s.RepairImage != "" {
-			stdoutf("set deployment/%s image to %s for store %s\n", deployment, plans[0].K8s.RepairImage, store.UUID)
-			if _, err := runKubectl(ctx, plans[0], "set", "image", "deployment/"+deployment, "log="+plans[0].K8s.RepairImage); err != nil {
-				return fmt.Errorf("set image deployment/%s for store %s: %w", deployment, store.UUID, err)
+			container := k8sWorkloadContainerName(plans[0])
+			stdoutf("set %s container %s image to %s for store %s\n", workload, container, plans[0].K8s.RepairImage, store.UUID)
+			if _, err := runKubectl(ctx, plans[0], "set", "image", workload, container+"="+plans[0].K8s.RepairImage); err != nil {
+				return fmt.Errorf("set image %s for store %s: %w", workload, store.UUID, err)
 			}
 		}
-		stdoutf("scale deployment/%s to 1 for store %s\n", deployment, store.UUID)
-		if _, err := runKubectl(ctx, plans[0], "scale", "deployment/"+deployment, "--replicas=1"); err != nil {
-			return fmt.Errorf("scale deployment/%s to 1: %w", deployment, err)
+		stdoutf("scale %s to 1 for store %s\n", workload, store.UUID)
+		if _, err := runKubectl(ctx, plans[0], "scale", workload, "--replicas=1"); err != nil {
+			return fmt.Errorf("scale %s to 1: %w", workload, err)
 		}
 		pod, err := waitForK8sStorePodReady(ctx, plans[0], store, "", podReadyTimeout)
 		if err != nil {
 			return err
 		}
 		stdoutf("store %s ready in pod %s\n", store.UUID, pod.Metadata.Name)
+	}
+
+	stdoutln("step 4: clear startup cleanup requests while rebuild stores remain blocked")
+	if err := refreshRepairStatesWithoutStartupCleanup(ctx, plans, hakeeperTimeout); err != nil {
+		return err
 	}
 
 	return finishK8sPVCJobRecovery(ctx, plans, hakeeperTimeout, heartbeatTimeout)
@@ -2591,6 +2591,31 @@ func k8sDeploymentNameForStore(plan *repairPlan, store planStore) (string, error
 	return renderK8sStoreTemplate(template, store)
 }
 
+func k8sWorkloadResourceForStore(plan *repairPlan, store planStore) (string, error) {
+	if plan != nil && plan.K8s != nil && plan.K8s.WorkloadResourceTemplate != "" {
+		resource, err := renderK8sStoreTemplate(plan.K8s.WorkloadResourceTemplate, store)
+		if err != nil {
+			return "", err
+		}
+		if !strings.Contains(resource, "/") {
+			return "", fmt.Errorf("workload resource template must render to kind/name, got %q", resource)
+		}
+		return resource, nil
+	}
+	deployment, err := k8sDeploymentNameForStore(plan, store)
+	if err != nil {
+		return "", err
+	}
+	return "deployment/" + deployment, nil
+}
+
+func k8sWorkloadContainerName(plan *repairPlan) string {
+	if plan != nil && plan.K8s != nil && plan.K8s.WorkloadContainerName != "" {
+		return plan.K8s.WorkloadContainerName
+	}
+	return "log"
+}
+
 func k8sPVCNameForStore(plan *repairPlan, store planStore) (string, error) {
 	template := "log-%d-data"
 	if plan != nil && plan.K8s != nil && plan.K8s.PVCNameTemplate != "" {
@@ -2625,10 +2650,17 @@ func renderK8sStoreTemplate(template string, store planStore) (string, error) {
 func logStoreOrdinal(uuid string) (int, bool) {
 	short := shortStoreID(uuid)
 	idx := strings.LastIndex(short, "d")
-	if idx < 0 || idx == len(short)-1 {
-		return 0, false
+	if idx >= 0 && idx < len(short)-1 {
+		value, err := strconv.Atoi(short[idx+1:])
+		if err == nil {
+			return value, true
+		}
 	}
-	value, err := strconv.Atoi(short[idx+1:])
+	trimmed := strings.TrimLeft(short, "0")
+	if trimmed == "" {
+		return 0, true
+	}
+	value, err := strconv.Atoi(trimmed)
 	if err != nil {
 		return 0, false
 	}
