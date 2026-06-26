@@ -77,6 +77,7 @@ type wizardOptions struct {
 	deploymentNameTemplate   string
 	workloadResourceTemplate string
 	workloadContainerName    string
+	forceTargetCleanup       bool
 }
 
 type repairPlan struct {
@@ -493,6 +494,7 @@ func parseWizardFlags(name string, args []string) (wizardOptions, error) {
 	fs.StringVar(&opts.deploymentNameTemplate, "deployment-name-template", "log-%d", "k8s pvc-job mode: deployment name template for a store ordinal; supports %d, {ordinal}, {store}, {short}")
 	fs.StringVar(&opts.workloadResourceTemplate, "workload-resource-template", "", "k8s pvc-job mode: workload resource template to stop/start per store, for example deployment/log-%d or statefulset/default-log-{ordinal}; supports %d, {ordinal}, {store}, {short}")
 	fs.StringVar(&opts.workloadContainerName, "workload-container", "log", "k8s pvc-job mode: container name to update with --repair-image when restarting workloads")
+	fs.BoolVar(&opts.forceTargetCleanup, "force-target-cleanup", false, "k8s pvc-job mode: rebuild non-source target stores to purge PVC shard residue that is not reported in HAKeeper heartbeats")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
@@ -870,6 +872,10 @@ func buildK8sPlanStore(
 				cleanupReplicas = append(cleanupReplicas, replicaID)
 			}
 		}
+		if opts.forceTargetCleanup && opts.executionMode == executionPVCJob && uuid != sourceStore && targetReplicaID != 0 {
+			cleanupReplicas = append(cleanupReplicas, targetReplicaID)
+		}
+		cleanupReplicas = uniqueUint64s(cleanupReplicas)
 		if len(cleanupReplicas) > 0 {
 			role = "cleanup"
 		}

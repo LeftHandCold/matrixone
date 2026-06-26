@@ -422,6 +422,34 @@ func TestBuildK8sPlanStoreRebuildsDirtyTarget(t *testing.T) {
 	}
 }
 
+func TestBuildK8sPlanStorePVCJobCleansHealthyTarget(t *testing.T) {
+	shard := logpb.LogShardInfo{
+		ShardID:  1,
+		Replicas: map[uint64]string{262146: "store-d02", 282826: "store-d01"},
+		Epoch:    602,
+		LeaderID: 262146,
+	}
+	store := buildK8sPlanStore(1, shard, "store-d01", "store-d02", logpb.LogStoreInfo{
+		RaftAddress:   "store-d01-raft:32000",
+		GossipAddress: "store-d01-gossip:32002",
+		Replicas:      []logpb.LogReplicaInfo{{LogShardInfo: shard, ReplicaID: 282826}},
+	}, true, wizardOptions{
+		executionMode:      executionPVCJob,
+		forceTargetCleanup: true,
+		pvcDataDir:         "/repair-pvc/logservice-data",
+		deploymentID:       8850055262063090202,
+	})
+	if store.Role != "cleanup" {
+		t.Fatalf("unexpected role: %s", store.Role)
+	}
+	if len(store.CleanupReplicas) != 1 || store.CleanupReplicas[0] != 282826 {
+		t.Fatalf("unexpected cleanup replicas: %v", store.CleanupReplicas)
+	}
+	if !store.NeedsStopAndStart {
+		t.Fatalf("expected target store cleanup to stop and restart")
+	}
+}
+
 func TestChooseK8sRepairShardUsesSourceHeartbeatMembership(t *testing.T) {
 	hakeeperShard := logpb.LogShardInfo{
 		ShardID:  1,
