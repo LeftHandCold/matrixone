@@ -1019,6 +1019,12 @@ func getColData(bat *batch.Batch, line []csvparser.Field, rowIdx int, param *Ext
 	}
 
 	if param.ParallelLoad {
+		switch id {
+		case types.T_array_float32:
+			return appendArrayField[float32](vec, field.Val, mp)
+		case types.T_array_float64:
+			return appendArrayField[float64](vec, field.Val, mp)
+		}
 		err := vector.AppendBytes(vec, []byte(field.Val), false, mp)
 		if err != nil {
 			return err
@@ -1435,6 +1441,21 @@ func getColData(bat *batch.Batch, line []csvparser.Field, rowIdx int, param *Ext
 		return moerr.NewInternalErrorf(param.Ctx, "the value type %d is not support now", param.Cols[rowIdx].Typ.Id)
 	}
 	return nil
+}
+
+func appendArrayField[T types.RealNumbers](vec *vector.Vector, val string, mp *mpool.MPool) error {
+	capacity := int(vec.GetType().Width)
+	if capacity == types.MaxArrayDimension {
+		capacity = 16
+	}
+	arr, err := types.StringToArrayWithCapacity[T](val, capacity)
+	if err != nil {
+		return err
+	}
+	if int(vec.GetType().Width) != types.MaxArrayDimension && int(vec.GetType().Width) != len(arr) {
+		return moerr.NewArrayDefMismatchNoCtx(int(vec.GetType().Width), len(arr))
+	}
+	return vector.AppendBytes(vec, types.ArrayToBytes[T](arr), false, mp)
 }
 
 func parseLoadDataYear(field csvparser.Field) (types.MoYear, error) {

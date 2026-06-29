@@ -79,37 +79,80 @@ func ArraysToString[T RealNumbers](input [][]T, sep string) string {
 }
 
 func StringToArray[T RealNumbers](str string) ([]T, error) {
-	input := strings.ReplaceAll(str, " ", "")
+	return StringToArrayWithCapacity[T](str, 16)
+}
 
-	if !(strings.HasPrefix(input, "[") && strings.HasSuffix(input, "]")) {
+func StringToArrayWithCapacity[T RealNumbers](str string, capacity int) ([]T, error) {
+	start := skipArraySpaces(str, 0)
+	if start >= len(str) || str[start] != '[' {
 		return nil, moerr.NewInternalErrorNoCtxf("malformed vector input: %s", str)
 	}
 
-	if len(input) == 2 {
-		// We don't handle empty vector like "[]"
-		return nil, moerr.NewInternalErrorNoCtxf("malformed vector input: %s", str)
+	i := start + 1
+	if capacity < 0 || capacity > MaxArrayDimension {
+		capacity = 16
 	}
+	result := make([]T, 0, capacity)
+	needValue := true
+	for {
+		i = skipArraySpaces(str, i)
+		if i >= len(str) {
+			return nil, moerr.NewInternalErrorNoCtxf("malformed vector input: %s", str)
+		}
+		if str[i] == ']' {
+			if needValue {
+				if len(result) > 0 {
+					_, err := stringToT[T]("")
+					return nil, err
+				}
+				return nil, moerr.NewInternalErrorNoCtxf("malformed vector input: %s", str)
+			}
+			i++
+			i = skipArraySpaces(str, i)
+			if i != len(str) {
+				return nil, moerr.NewInternalErrorNoCtxf("malformed vector input: %s", str)
+			}
+			return result, nil
+		}
+		if len(result) >= MaxArrayDimension {
+			return nil, moerr.NewInternalErrorNoCtxf("typeLen is over the MaxVectorLen: %v", MaxArrayDimension)
+		}
 
-	// remove "[" and "]"
-	input = input[1 : len(input)-1]
-
-	numStrs := strings.Split(input, ",")
-	if len(numStrs) > MaxArrayDimension {
-		return nil, moerr.NewInternalErrorNoCtxf("typeLen is over the MaxVectorLen: %v", MaxArrayDimension)
-	}
-	result := make([]T, len(numStrs))
-
-	var t T
-	var err error
-	for i, numStr := range numStrs {
-		t, err = stringToT[T](numStr)
+		tokenStart := i
+		for i < len(str) && str[i] != ',' && str[i] != ']' {
+			i++
+		}
+		token := compactArrayNumber(str[tokenStart:i])
+		t, err := stringToT[T](token)
 		if err != nil {
 			return nil, err
 		}
-		result[i] = t
-	}
+		result = append(result, t)
+		needValue = false
 
-	return result, nil
+		if i >= len(str) {
+			return nil, moerr.NewInternalErrorNoCtxf("malformed vector input: %s", str)
+		}
+		if str[i] == ',' {
+			i++
+			needValue = true
+			continue
+		}
+	}
+}
+
+func skipArraySpaces(str string, i int) int {
+	for i < len(str) && str[i] == ' ' {
+		i++
+	}
+	return i
+}
+
+func compactArrayNumber(str string) string {
+	if !strings.Contains(str, " ") {
+		return str
+	}
+	return strings.ReplaceAll(str, " ", "")
 }
 
 // StringToArrayToBytes convert "[1,2,3]" --> []float32{1.0,2.0,3.0} --> []bytes{11,33...}

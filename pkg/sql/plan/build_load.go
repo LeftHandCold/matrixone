@@ -851,6 +851,11 @@ func makeCastExpr(stmt *tree.Load, fileName string, tableDef *TableDef, node *pl
 	for i := 0; i < len(tableDef.Cols); i++ {
 		typ := node.ProjectList[i].Typ
 		expr := node.ProjectList[i].Expr
+		switch types.T(typ.Id) {
+		case types.T_array_float32, types.T_array_float64:
+			ret = append(ret, node.ProjectList[i])
+			continue
+		}
 		planExpr := &plan.Expr{
 			Typ:  *stringTyp,
 			Expr: expr,
