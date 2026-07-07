@@ -40,6 +40,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/util/address"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/logtailreplay"
 	taeLogtail "github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
@@ -84,6 +85,8 @@ const (
 	defaultRPCReadTimeout = time.Second * 30
 
 	logTag = "[logtail-consumer]"
+
+	fjCNLogtailNotifyBeforeApply = "fj/cn/logtail_notify_before_apply"
 )
 
 type SubscribeState int32
@@ -2246,6 +2249,24 @@ func (cmd *cmdToConsumeLog) action(ctx context.Context, e *Engine, ctrl *routine
 		ctrl.cmdLogPool.Put(cmd)
 	}()
 	response := cmd.log
+	notifiedBeforeApply := false
+	if cmd.notifyApplied {
+		if sleepSeconds, _, ok := fault.TriggerFault(fjCNLogtailNotifyBeforeApply); ok {
+			e.pClient.receivedLogTailTime.updateTimestamp(ctrl.routineId, cmd.applied, cmd.receiveAt)
+			notifiedBeforeApply = true
+			if sleepSeconds > 0 {
+				logutil.Warn(
+					"logtail.consumer.fault.notify.before.apply",
+					zap.String("fault-point", fjCNLogtailNotifyBeforeApply),
+					zap.Int("routine-id", ctrl.routineId),
+					zap.Duration("sleep", time.Duration(sleepSeconds)*time.Second),
+					zap.Any("table", response.GetTable()),
+					zap.String("applied", cmd.applied.DebugString()),
+				)
+				time.Sleep(time.Duration(sleepSeconds) * time.Second)
+			}
+		}
+	}
 	if err := e.consumeUpdateLogTail(ctx, response, true, cmd.receiveAt, cmd.applied); err != nil {
 		return err
 	}
@@ -2253,7 +2274,7 @@ func (cmd *cmdToConsumeLog) action(ctx context.Context, e *Engine, ctrl *routine
 	if table != nil {
 		e.pClient.subscribed.clearTablePendingUpdate(table.DbId, table.TbId, cmd.applied)
 	}
-	if cmd.notifyApplied {
+	if cmd.notifyApplied && !notifiedBeforeApply {
 		e.pClient.receivedLogTailTime.updateTimestamp(ctrl.routineId, cmd.applied, cmd.receiveAt)
 	}
 	return nil
