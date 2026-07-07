@@ -87,6 +87,7 @@ const (
 	logTag = "[logtail-consumer]"
 
 	fjCNLogtailNotifyBeforeApply = "fj/cn/logtail_notify_before_apply"
+	fjCNLogtailWaitPendingUpdate = "fj/cn/logtail_wait_pending_update"
 )
 
 type SubscribeState int32
@@ -438,6 +439,7 @@ func (c *PushClient) canServeTableSnapshotNoWait(
 	// known pending update and the current state has not applied up to the
 	// statement snapshot yet.
 	if c.subscribed.hasPendingUpdate(dbId, tblId) {
+		fault.TriggerFault(fjCNLogtailWaitPendingUpdate)
 		return false, true
 	}
 	return true, false
