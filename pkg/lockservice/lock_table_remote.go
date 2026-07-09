@@ -28,6 +28,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	pb "github.com/matrixorigin/matrixone/pkg/pb/lock"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"go.uber.org/zap"
@@ -333,6 +334,16 @@ func (l *remoteLockTable) doUnlock(
 	txn *activeTxn,
 	commitTS timestamp.Timestamp,
 	mutations ...pb.ExtraMutation) error {
+	if !commitTS.IsEmpty() {
+		if _, _, ok := fault.TriggerFault("fj/lockservice/drop_commit_unlock"); ok {
+			l.logger.Warn("fault injection: drop remote commit unlock",
+				zap.String("txn-id", hex.EncodeToString(txn.txnID)),
+				zap.String("commit-ts", commitTS.DebugString()),
+				zap.String("bind", l.bind.DebugString()))
+			return moerr.NewInternalErrorNoCtx("fault injection: drop remote commit unlock")
+		}
+	}
+
 	ctx, cancel := context.WithTimeoutCause(context.Background(), defaultRPCTimeout, moerr.CauseDoUnlock)
 	defer cancel()
 

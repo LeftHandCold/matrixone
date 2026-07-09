@@ -34,6 +34,7 @@ import (
 	pb "github.com/matrixorigin/matrixone/pkg/pb/lock"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/txn/clock"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"github.com/matrixorigin/matrixone/pkg/util/list"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
@@ -997,6 +998,11 @@ func (h *mapBasedTxnHolder) getTimeoutRemoveTxn(
 func (h *mapBasedTxnHolder) isValidRemoteTxn(txn pb.WaitTxn) bool {
 	if txn.CreatedOn == h.serviceID {
 		return true
+	}
+	if _, _, ok := fault.TriggerFault("fj/lockservice/force_remote_txn_invalid"); ok {
+		h.logger.Warn("fault injection: force remote txn invalid",
+			bytesArrayField("txns", [][]byte{txn.TxnID}))
+		return false
 	}
 
 	valid, err := h.validTxn(txn)
