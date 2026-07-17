@@ -338,6 +338,12 @@ DisableError: false,
 disable-span = false
 ```
 
+在 `mo-service -launch` 单进程同时启动 Log/TN/CN 的模式下，motrace 是进程级单例，
+第一个启动的服务（当前 launch 顺序通常是 Log）决定该进程的 tracer。诊断 opt-in 必须让
+首个服务的有效配置包含 `disable-span=false`；只修改后启动的 CN 配置不会重新初始化 tracer。
+独立进程部署则应在需要启用 Span 的相应进程上显式设置。这个注意事项只影响诊断 opt-in，
+不影响无配置时默认关闭 Span。
+
 旧版 camelCase `disableSpan=false` 无法表达“覆盖新的 true 默认值”，因为旧 bool 字段不能
 区分“未配置”和“显式 false”。需要临时启用 Span 的环境应使用当前 kebab-case 字段。
 
@@ -465,6 +471,40 @@ go tool pprof -top cpu.pb.gz
 - `git diff --check` 通过。
 
 这些验证证明配置传播和 collector 注册边界成立，但不能替代 workload 级严格 A/B。
+
+#### 50 机器端到端验证（2026-07-17）
+
+在 `mo@10.222.1.50` 上使用独立 worktree
+`/home/mo/matrixone-disable-span` 检出 `codex/default-disable-span@966cba0de4`，执行
+`make build` 成功。二进制 `-version` 显示 branch 和 commit 与本次改动一致。
+
+默认关闭组直接使用仓库 `etc/launch/launch.toml`，其中没有 `disable-span` 配置。单机
+Log/TN/CN 启动成功后，执行唯一标记的 DDL/DML/DQL 和一条预期失败 SQL，等待 exporter
+flush，系统表计数如下：
+
+| 表 | 操作前 | 操作后 | 结论 |
+|---|---:|---:|---|
+| `system.statement_info` | 200 | 580 | StatementInfo 持续写入；成功 insert 和失败 SQL 均可查到 |
+| `system.rawlog` | 1554 | 2068 | 日志 exporter 持续写入 |
+| `system.error_info` | 0 | 1 | 预期失败 SQL 以错误码 20303 写入 |
+| `system.span_info` | 0 | 0 | 默认未产生 Span 记录 |
+
+mutex profile 使用 `-mutex-profile-fraction=1`，两组都执行相同的 1,000,000 次主键
+point select、128 并发：
+
+| 组 | Span 状态 | mysqlslap 单次耗时 | mutex profile 中 `IsMOCtledSpan` |
+|---|---|---:|---:|
+| 默认组 | 配置文件无 `disable-span`，代码默认关闭 | 11.629s | 精确 focus 无样本；profile 总 delay 10.27s |
+| 显式启用组 | `/tmp` 中首个 Log service 配置 `disable-span=false` | 12.013s | 7046.69ms，占 profile 总 delay 37.00% |
+
+显式启用组的锁栈同时包含 `MOTracer.Start`、`MOSpan.End/NeedRecord`、frontend/compile/txn
+调用方，与图 1 的归因一致；默认组在存在其他 mutex 样本的前提下完全没有该栈，证明新默认
+确实切断了目标热点，而不是因为 profiler 未启用。
+
+上述耗时各只有一次运行，不能把 11.629s 与 12.013s 的差值当作正式性能收益；正式发布
+仍需按照本节前述方法至少重复三次并报告中位数、波动、QPS/p99 和 CPU/op。远端 profile
+保留为 `/tmp/mo-span-default-disabled-mutex-1m.pb.gz` 和
+`/tmp/mo-span-enabled-global-mutex-1m.pb.gz`。
 
 ### 阶段 2：根据 A/B 结果决定是否继续优化
 
