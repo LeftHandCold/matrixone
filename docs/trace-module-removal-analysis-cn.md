@@ -32,6 +32,13 @@
 - **代码默认值应改为 `DisableSpan=true`，而不是要求每个环境修改配置文件。**正式启动
   入口通过默认构造器自动关闭 Span，使 `trace.Start` 走 Noop 快路径；同时保持
   `DisableTrace=false`、`DisableError=false`，继续保留 Statement、日志和错误 exporter。
+- **50 机器上的真实旧/新二进制受控 A/B 已确认正向作用。**在相同配置、同源数据、
+  相同预热和 128 并发 point-select 样本下，关闭 profiler 的 ABBA 测试各测 10 轮，
+  修改后平均 QPS 提升约 2.61%；修改前 `IsMOCtledSpan` 占 mutex delay 的
+  40.58%～43.77%，修改后精确 focus 无样本。
+- **该 A/B 不证明图 4 的 50%～60% 或三种 workload 的收益幅度。**单轮耗时范围仍有
+  重叠，且缺少图 4 的原始数据集、脚本和 profile，所以当前只能确认受控 point-select
+  样本方向稳定为正，不能承诺所有 workload 都提升 2.61%。
 - **无锁改造不是本次默认关闭 Span 的上线前置条件。**只有未来需要在生产重新启用 Span，
   或诊断 opt-in 场景也必须承受高并发负载时，才需要将受控 Span 状态改为原子不可变快照。
 - 如果产品最终确认不需要 Span，应该先拆分 `motrace` 中的 Statement/Statistic/Exporter，
@@ -470,7 +477,8 @@ go tool pprof -top cpu.pb.gz
 - `pkg/config` 构建通过；相关三个包 `go vet` 通过；
 - `git diff --check` 通过。
 
-这些验证证明配置传播和 collector 注册边界成立，但不能替代 workload 级严格 A/B。
+这些本地验证证明配置传播和 collector 注册边界成立；下述 50 机器旧/新二进制测试进一步
+完成了一组受控 point-select workload 的严格 A/B。
 
 #### 50 机器端到端验证（2026-07-17）
 
@@ -489,8 +497,10 @@ flush，系统表计数如下：
 | `system.error_info` | 0 | 1 | 预期失败 SQL 以错误码 20303 写入 |
 | `system.span_info` | 0 | 0 | 默认未产生 Span 记录 |
 
-mutex profile 使用 `-mutex-profile-fraction=1`，两组都执行相同的 1,000,000 次主键
-point select、128 并发：
+##### 同一修改后二进制的开关隔离实验
+
+先使用同一个 `966cba0de4` 二进制做开关隔离。mutex profile 使用
+`-mutex-profile-fraction=1`，两组都执行相同的 1,000,000 次主键 point select、128 并发：
 
 | 组 | Span 状态 | mysqlslap 单次耗时 | mutex profile 中 `IsMOCtledSpan` |
 |---|---|---:|---:|
@@ -501,10 +511,69 @@ point select、128 并发：
 调用方，与图 1 的归因一致；默认组在存在其他 mutex 样本的前提下完全没有该栈，证明新默认
 确实切断了目标热点，而不是因为 profiler 未启用。
 
-上述耗时各只有一次运行，不能把 11.629s 与 12.013s 的差值当作正式性能收益；正式发布
-仍需按照本节前述方法至少重复三次并报告中位数、波动、QPS/p99 和 CPU/op。远端 profile
-保留为 `/tmp/mo-span-default-disabled-mutex-1m.pb.gz` 和
+上述实验只能证明 Span 开关能隔离目标锁路径，不是“修改前代码 vs 修改后代码”的严格
+二进制 A/B，也不能把单次 11.629s 与 12.013s 的差值当作正式性能收益。profile 保留为
+`/tmp/mo-span-default-disabled-mutex-1m.pb.gz` 和
 `/tmp/mo-span-enabled-global-mutex-1m.pb.gz`。
+
+##### 修改前后真实二进制 A/B
+
+随后从同一代码基线分别完整构建：
+
+- 修改前：`6b1ad0c32b`；
+- 修改后：`966cba0de4`。
+
+控制变量如下：
+
+- 两个二进制均由 50 机器同一 Go/CGo 工具链执行 `make build`；
+- 两边使用同一份未配置 `disable-span` 的仓库 launch/TOML，四个配置文件 SHA-256
+  逐一相同；
+- 每个测量进程使用从同一停止状态复制的独立数据目录，内容汇总 SHA-256 均为
+  `4b032fe38c49e1ada660e94f3664e467445fdb2440be8025363750ba26cfa852`；
+- workload 均为读取同一行的主键 point select，128 并发；
+- 每个进程先执行 200,000 次预热，再执行 5 轮、每轮 1,000,000 次查询；
+- 使用 ABBA 顺序：旧 -> 新 -> 新 -> 旧，每一块都重新启动并使用独立同源数据副本；
+- 吞吐测试不启用 mutex profiler；锁路径验证另行使用
+  `-mutex-profile-fraction=1`，避免把 profiler 开销混入性能结论。
+
+关闭 mutex profiler 的吞吐结果：
+
+| 顺序块 | 修改前平均值 | 修改前范围 | 修改后平均值 | 修改后范围 | 时间下降 |
+|---|---:|---:|---:|---:|---:|
+| 旧 -> 新 | 12.515s | 11.993–13.010s | 12.275s | 11.881–12.659s | 1.92% |
+| 新 -> 旧 | 12.676s | 12.250–13.073s | 12.276s | 11.855–12.726s | 3.16% |
+| 两块合并 | 12.5955s | - | 12.2755s | - | 2.54% |
+
+按每轮 1,000,000 次查询换算，合并平均吞吐从约 79,393 QPS 提升到 81,463 QPS，
+提升约 2.61%。两个相反运行顺序块的方向均为正，修改后两个块的平均值分别为
+12.275s 和 12.276s，结果一致性较好；但单轮范围仍有重叠，因此不能外推为所有 workload
+都稳定提升 2.61%。
+
+开启 mutex profiler 的锁证据：
+
+| 二进制 | 第 1 块 `IsMOCtledSpan` | 第 2 块 `IsMOCtledSpan` |
+|---|---:|---:|
+| 修改前 `6b1ad0c32b` | 61.412s，占总 delay 43.77% | 54.117s，占总 delay 40.58% |
+| 修改后 `966cba0de4` | 精确 focus 无样本 | 精确 focus 无样本 |
+
+修改后再次执行唯一成功 Statement 和预期失败 SQL，exporter flush 前后：
+
+- `system.statement_info`：10619 -> 10922，并能查询到成功和失败的唯一标记 SQL；
+- `system.rawlog`：18643 -> 18709；
+- `system.error_info`：17 -> 18，错误码为 20303；
+- `system.span_info`：3 -> 3，没有新增 Span。初始 3 条来自此前显式启用 Span 的隔离实验。
+
+因此可以确认：相对于修改前默认行为，本次代码默认值修改在这组受控 point-select workload
+上产生了可重复的正向吞吐作用，消除了目标锁竞争，同时没有关闭 Statement、日志和错误
+记录。该结论不等价于已经复现图 4 的 point_select/read_only/insert 原始三组数据；若要对
+图 4 的具体百分比做发布承诺，仍需取得其原始数据集和压测脚本后按相同方法重复。
+
+真实二进制 profile 保留为：
+
+- `/tmp/mo-ab-old-6b1ad0c32b-mutex.pb.gz`；
+- `/tmp/mo-ab-old-6b1ad0c32b-pass2-mutex.pb.gz`；
+- `/tmp/mo-ab-new-966cba0de4-mutex.pb.gz`；
+- `/tmp/mo-ab-new-966cba0de4-pass2-mutex.pb.gz`。
 
 ### 阶段 2：根据 A/B 结果决定是否继续优化
 
@@ -674,8 +743,11 @@ trace/motrace 为 CGo-transitive，使用仓库确定性 wrapper：
 
 1. **接受“`IsMOCtledSpan` 全局锁是明确热点”的判断。**
 2. **否决“trace 占 50%～60% CPU”及“直接删除无影响”的推导。**
-3. **将 `DisableSpan=true` 设为代码默认值，不要求部署环境修改配置文件，并进行严格 A/B。**
-4. **验收必须确认 StatementInfo、日志和错误记录语义及数据量不回退；CU 不作为本次决策门槛。**
+3. **接受将 `DisableSpan=true` 设为代码默认值，不要求部署环境修改配置文件。**50 机器
+   受控 point-select 严格 A/B 已显示平均 QPS 正向提升约 2.61%，且目标锁栈消失；该数值
+   不得外推为图 4 全部 workload 的发布承诺。
+4. **StatementInfo、日志和错误记录的功能验收已通过；CU 不作为本次决策门槛。**扩大灰度时
+   仍需持续观察数据量、错误率和 exporter 队列。
 5. **无锁 Span 改造降为条件项。**只有未来需要重新启用 Span 或诊断场景存在高并发要求时再实施。
 6. **整个 trace/motrace 模块当前不得直接删除。**如需退役，只能在完成能力拆分、消费者
    审计、协议兼容和 schema deprecation 后分阶段进行。
