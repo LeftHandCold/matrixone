@@ -62,10 +62,9 @@ func TestObservabilityParameters_SetDefaultValues1(t *testing.T) {
 		{
 			name: "longQueryTime_0_enableAggr_200ms",
 			prepare: func() *ObservabilityParameters {
-				cfg := &ObservabilityParameters{
-					LongQueryTime:          0.0,
-					DisableStmtAggregation: false,
-				}
+				cfg := NewObservabilityParameters()
+				cfg.LongQueryTime = 0.0
+				cfg.DisableStmtAggregation = false
 				cfg.SelectAggThreshold.UnmarshalText([]byte("200ms"))
 				return cfg
 			},
@@ -76,7 +75,7 @@ func TestObservabilityParameters_SetDefaultValues1(t *testing.T) {
 				require.Equal(t, false, cfg.DisableMetric)
 				require.Equal(t, false, cfg.DisableTrace)
 				require.Equal(t, false, cfg.DisableError)
-				require.Equal(t, false, cfg.DisableSpan)
+				require.Equal(t, true, cfg.DisableSpan)
 			},
 		},
 		{
@@ -241,6 +240,17 @@ func TestObservabilityParameters_SetDefaultValues1(t *testing.T) {
 			tt.check(t, cfg)
 		})
 	}
+}
+
+func TestNewObservabilityParametersDisablesOnlySpansByDefault(t *testing.T) {
+	cfg := NewObservabilityParameters()
+
+	// DisableTrace gates StatementInfo plus the log and error exporters, so it
+	// must remain false when spans are disabled by default.
+	require.True(t, cfg.DisableSpan)
+	require.False(t, cfg.DisableTrace)
+	require.False(t, cfg.DisableError)
+	require.False(t, cfg.DisableMetric)
 }
 
 func TestOBCUConfig_SetDefaultValues(t *testing.T) {
