@@ -280,6 +280,8 @@ func (s *Scope) SetOperatorInfoRecursively(cb func() int32) {
 //	3. run itself.
 //	4. listen to all running pipelines, once any error occurs, stop the NormalMergeRun asap.
 func (s *Scope) MergeRun(c *Compile) error {
+	logIssue25816ScopeDiagnostic("merge-run-enter", s, c.addr, "")
+	logIssue25816ScopeRemoteReceivers("merge-run-remote-receiver", s, c.addr)
 	if s.ScopeAnalyzer == nil {
 		s.ScopeAnalyzer = NewScopeAnalyzer()
 	}
@@ -306,6 +308,15 @@ func (s *Scope) MergeRun(c *Compile) error {
 		wg.Add(1)
 
 		scope := s.PreScopes[i]
+		logIssue25816ScopeDiagnostic(
+			"merge-run-launch-prescope",
+			scope,
+			c.addr,
+			"parent_scope=%p prescope_ordinal=%d",
+			s,
+			i,
+		)
+		logIssue25816ScopeRemoteReceivers("merge-run-prescope-remote-receiver", scope, c.addr)
 
 		submitPreScope := ants.Submit(
 			func() {
@@ -419,6 +430,8 @@ func cleanPipelineWitchStartFail(sp *Scope, fail error, isPrepare bool) {
 
 // RemoteRun send the scope to a remote node for execution.
 func (s *Scope) RemoteRun(c *Compile) error {
+	logIssue25816ScopeDiagnostic("remote-run-enter", s, c.addr, "")
+	logIssue25816ScopeRemoteReceivers("remote-run-remote-receiver", s, c.addr)
 	if s.ScopeAnalyzer == nil {
 		s.ScopeAnalyzer = NewScopeAnalyzer()
 	}
@@ -426,12 +439,15 @@ func (s *Scope) RemoteRun(c *Compile) error {
 	defer s.ScopeAnalyzer.Stop()
 
 	if err := validateRemoteRunAddress(s.NodeInfo.Addr, c.addr); err != nil {
+		logIssue25816ScopeDiagnostic("remote-run-invalid-address", s, c.addr, "err=%v", err)
 		return s.failRemoteRunBeforeStart(c, err)
 	}
 	if s.ipAddrMatch(c.addr) {
+		logIssue25816ScopeDiagnostic("remote-run-local-address-fallback", s, c.addr, "")
 		return s.MergeRun(c)
 	}
 	if err := s.holdAnyCannotRemoteOperator(); err != nil {
+		logIssue25816ScopeDiagnostic("remote-run-unsupported-operator", s, c.addr, "err=%v", err)
 		return s.failRemoteRunBeforeStart(c, err)
 	}
 
@@ -446,8 +462,10 @@ func (s *Scope) RemoteRun(c *Compile) error {
 	// we should avoid to generate this format pipeline, or do a suitable conversion for the dispatch operator,
 	// or refactor the dispatch operator for no need to know a receiver is local or remote.
 	if !checkPipelineStandaloneExecutableAtRemote(s) {
+		logIssue25816ScopeDiagnostic("remote-run-not-standalone-local-fallback", s, c.addr, "")
 		return s.MergeRun(c)
 	}
+	logIssue25816ScopeDiagnostic("remote-run-send-remote", s, c.addr, "")
 	runtime.ServiceRuntime(s.Proc.GetService()).Logger().
 		Debug("remote run pipeline",
 			zap.String("local-address", c.addr),
@@ -994,6 +1012,16 @@ func (s *Scope) sendNotifyMessageWithFactoryAndWait(
 		wg.Add(1)
 
 		op := &s.RemoteReceivRegInfos[i]
+		logIssue25816ScopeDiagnostic(
+			"notify-launch",
+			s,
+			"",
+			"remote_receiver_ordinal=%d receiver_idx=%d receiver_uuid=%s receiver_from_addr=%s",
+			i,
+			op.Idx,
+			op.Uuid.String(),
+			op.FromAddr,
+		)
 		fromAddr := op.FromAddr
 		receiverIdx := op.Idx
 		uuid := op.Uuid[:]

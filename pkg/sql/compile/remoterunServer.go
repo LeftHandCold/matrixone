@@ -318,7 +318,7 @@ func handlePipelineMessage(receiver *messageReceiverOnServer) error {
 		runCompile.scopes = []*Scope{s}
 		runCompile.InitPipelineContextToExecuteQuery()
 
-		registrations, err := registerRemoteDispatchReceivers(s)
+		registrations, err := registerRemoteDispatchReceivers(s, runCompile.addr)
 		if err != nil {
 			return err
 		}
@@ -378,14 +378,14 @@ func (r *remoteDispatchReceiverRegistrations) rollback(err error) {
 	r.cleanup()
 }
 
-func registerRemoteDispatchReceivers(s *Scope) (*remoteDispatchReceiverRegistrations, error) {
-	return registerDispatchReceivers([]*Scope{s}, func(*Scope) dispatchReceiverRegistrationMode {
+func registerRemoteDispatchReceivers(s *Scope, localAddr string) (*remoteDispatchReceiverRegistrations, error) {
+	return registerDispatchReceivers([]*Scope{s}, "remote-server", localAddr, func(*Scope) dispatchReceiverRegistrationMode {
 		return registerDispatchReceiverTree
 	})
 }
 
 func registerLocalDispatchReceivers(scopes []*Scope, localAddr string) (*remoteDispatchReceiverRegistrations, error) {
-	return registerDispatchReceivers(scopes, func(s *Scope) dispatchReceiverRegistrationMode {
+	return registerDispatchReceivers(scopes, "local-compile", localAddr, func(s *Scope) dispatchReceiverRegistrationMode {
 		if s.Magic != Remote || s.ipAddrMatch(localAddr) {
 			return registerDispatchReceiverTree
 		}
@@ -416,6 +416,8 @@ const (
 
 func registerDispatchReceivers(
 	scopes []*Scope,
+	origin string,
+	localAddr string,
 	registrationMode func(*Scope) dispatchReceiverRegistrationMode,
 ) (*remoteDispatchReceiverRegistrations, error) {
 	registrations := &remoteDispatchReceiverRegistrations{}
@@ -432,6 +434,15 @@ func registerDispatchReceivers(
 		}
 		visitedScopes[s] = struct{}{}
 		mode := registrationMode(s)
+		logIssue25816ScopeDiagnostic(
+			"dispatch-registration-scope-visit",
+			s,
+			localAddr,
+			"registration_origin=%s registration_mode=%d",
+			origin,
+			mode,
+		)
+		logIssue25816ScopeRemoteReceivers("dispatch-registration-scope-receiver", s, localAddr)
 		if mode == skipDispatchReceivers {
 			return nil
 		}
@@ -444,6 +455,14 @@ func registerDispatchReceivers(
 				return nil
 			}
 			visitedDispatches[d] = struct{}{}
+			logIssue25816DispatchRegistrationVisit(
+				"dispatch-registration-visit",
+				s,
+				localAddr,
+				d,
+				origin,
+				mode,
+			)
 			if s.Proc == nil {
 				return moerr.NewInternalErrorNoCtx("cannot register remote receiver without its scope process")
 			}

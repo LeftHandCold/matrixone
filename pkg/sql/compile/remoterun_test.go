@@ -1579,7 +1579,7 @@ func TestRegisterRemoteDispatchReceiversUsesOwningScopeProcess(t *testing.T) {
 	nested := &Scope{Magic: Normal, Proc: nestedProc, RootOp: dispatchOp}
 	root := &Scope{Magic: Merge, Proc: rootProc, PreScopes: []*Scope{nested}}
 
-	registrations, err := registerRemoteDispatchReceivers(root)
+	registrations, err := registerRemoteDispatchReceivers(root, "remote-cn:6002")
 	require.NoError(t, err)
 	defer registrations.cleanup()
 	registeredProc, _, ok := colexec.GetServer("").GetProcByUuid(uid, false)
@@ -3058,6 +3058,33 @@ func TestRemoteDispatchReceiveTraceTerminationEvent(t *testing.T) {
 			require.Equal(t, test.wantEvent, test.trace.terminationEvent(test.end, test.bat, test.err))
 		})
 	}
+}
+
+func TestIssue25816ScopeDiagnosticSnapshot(t *testing.T) {
+	d := dispatch.NewArgument()
+	s := &Scope{
+		Magic:  Remote,
+		RootOp: d,
+		NodeInfo: engine.Node{
+			Id:   "remote-cn-id",
+			Addr: "remote-cn:6002",
+			Mcpu: 3,
+		},
+		PreScopes: []*Scope{{Magic: Normal}},
+		RemoteReceivRegInfos: []RemoteReceivRegInfo{
+			{Idx: 2, Uuid: uuid.MustParse("018f49e4-bc5e-7b58-a8c8-4a57e37f8901"), FromAddr: "source-cn:6002"},
+		},
+	}
+
+	snapshot := newIssue25816ScopeDiagnosticSnapshot(s, "local-cn:6002")
+	require.Equal(t, "Remote", snapshot.magic)
+	require.Equal(t, "remote-cn-id", snapshot.nodeID)
+	require.Equal(t, "remote-cn:6002", snapshot.nodeAddr)
+	require.Equal(t, "local-cn:6002", snapshot.localAddr)
+	require.Equal(t, 3, snapshot.mcpu)
+	require.Equal(t, "*dispatch.Dispatch", snapshot.rootType)
+	require.Equal(t, 1, snapshot.preScopeCount)
+	require.Equal(t, 1, snapshot.remoteReceiverCount)
 }
 
 func Test_checkPipelineStandaloneExecutableAtRemote(t *testing.T) {
