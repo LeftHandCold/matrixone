@@ -138,8 +138,26 @@ func (dispatch *Dispatch) AdoptCleanupState(from *Dispatch) {
 	if dispatch == nil || from == nil {
 		return
 	}
+	logIssue25816DispatchOperatorDiagnostic(
+		"adopt-cleanup-state-start",
+		dispatch,
+		nil,
+		"from_dispatch=%p from_ctr=%p target_ctr=%p",
+		from,
+		from.ctr,
+		dispatch.ctr,
+	)
 	dispatch.ctr = from.ctr
 	from.ctr = nil
+	logIssue25816DispatchOperatorDiagnostic(
+		"adopt-cleanup-state-done",
+		dispatch,
+		nil,
+		"from_dispatch=%p from_ctr=%p target_ctr=%p",
+		from,
+		from.ctr,
+		dispatch.ctr,
+	)
 }
 
 // sendTerminalSignalsToLocalRegs sends terminalSignal to each local receiver.
@@ -218,6 +236,14 @@ func sendAbortSignalsToFailedLocalRegs(ctx context.Context, proc *process.Proces
 }
 
 func (dispatch *Dispatch) Reset(proc *process.Process, pipelineFailed bool, err error) {
+	logIssue25816DispatchOperatorDiagnostic(
+		"reset-start",
+		dispatch,
+		proc,
+		"pipeline_failed=%t err=%v",
+		pipelineFailed,
+		err,
+	)
 	terminalSignal := process.BuildCleanupSignal(pipelineFailed, err)
 	terminalErr := terminalSignal.TerminalErr()
 
@@ -288,6 +314,14 @@ func (dispatch *Dispatch) Reset(proc *process.Process, pipelineFailed bool, err 
 		}
 	}
 	dispatch.ctr = nil
+	logIssue25816DispatchOperatorDiagnostic(
+		"reset-done",
+		dispatch,
+		proc,
+		"pipeline_failed=%t err=%v",
+		pipelineFailed,
+		err,
+	)
 }
 
 // CleanupDeferredSpool reclaims spool cache memory after the paired Merge

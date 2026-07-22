@@ -3019,6 +3019,47 @@ func TestReceiveMessageFromCnServerIfDispatch_PreservesCleanupOnOriginalRoot(t *
 	}
 }
 
+func TestRemoteDispatchReceiveTraceTerminationEvent(t *testing.T) {
+	tests := []struct {
+		name      string
+		trace     remoteDispatchReceiveTrace
+		end       bool
+		bat       *batch.Batch
+		err       error
+		wantEvent string
+	}{
+		{
+			name:      "remote end before first dispatch execution",
+			trace:     remoteDispatchReceiveTrace{},
+			end:       true,
+			wantEvent: "receiver-end-before-first-exec",
+		},
+		{
+			name:      "remote end after dispatch execution",
+			trace:     remoteDispatchReceiveTrace{batchCount: 1, execCount: 1},
+			end:       true,
+			wantEvent: "receiver-end-after-exec",
+		},
+		{
+			name:      "remote receive error before first dispatch execution",
+			trace:     remoteDispatchReceiveTrace{},
+			err:       moerr.NewInternalErrorNoCtx("receive failed"),
+			wantEvent: "receiver-error-before-first-exec",
+		},
+		{
+			name:      "remote stream returned nil batch without end",
+			trace:     remoteDispatchReceiveTrace{},
+			wantEvent: "receiver-nil-batch-before-first-exec",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.wantEvent, test.trace.terminationEvent(test.end, test.bat, test.err))
+		})
+	}
+}
+
 func Test_checkPipelineStandaloneExecutableAtRemote(t *testing.T) {
 	proc := testutil.NewProcess(t)
 	proc.Base.TxnOperator = fakeTxnOperator{}

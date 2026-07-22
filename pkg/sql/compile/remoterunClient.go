@@ -271,38 +271,133 @@ func receiveMessageFromCnServerIfDispatch(s *Scope, sender *messageSenderOnClien
 	var bat *batch.Batch
 	var end bool
 	var err error
+	trace := remoteDispatchReceiveTrace{}
 
 	arg := s.RootOp.(*dispatch.Dispatch)
+	logIssue25816RemoteDispatchDiagnostic(
+		s.Proc,
+		"receiver-start",
+		"scope=%p original_dispatch=%p remote_reg_count=%d",
+		s,
+		arg,
+		len(arg.RemoteRegs),
+	)
 	fakeValueScanOperator := value_scan.NewArgument()
 	if err = fakeValueScanOperator.Prepare(s.Proc); err != nil {
 		return err
 	}
 	dispatchRunner := buildRemoteDispatchReceiverRoot(arg, fakeValueScanOperator)
+	logIssue25816RemoteDispatchDiagnostic(
+		s.Proc,
+		"receiver-clone-created",
+		"scope=%p original_dispatch=%p runner_dispatch=%p",
+		s,
+		arg,
+		dispatchRunner,
+	)
 	dispatchRunner.AdoptCleanupState(arg)
 	defer func() {
+		logIssue25816RemoteDispatchDiagnostic(
+			s.Proc,
+			"receiver-defer-start",
+			"scope=%p original_dispatch=%p runner_dispatch=%p batch_count=%d exec_count=%d err=%v",
+			s,
+			arg,
+			dispatchRunner,
+			trace.batchCount,
+			trace.execCount,
+			err,
+		)
 		arg.AdoptCleanupState(dispatchRunner)
 		dispatchRunner.Release()
 		fakeValueScanOperator.Free(s.Proc, err != nil, err)
 		fakeValueScanOperator.Batchs = nil
 		fakeValueScanOperator.Release()
+		logIssue25816RemoteDispatchDiagnostic(
+			s.Proc,
+			"receiver-defer-done",
+			"scope=%p original_dispatch=%p batch_count=%d exec_count=%d err=%v",
+			s,
+			arg,
+			trace.batchCount,
+			trace.execCount,
+			err,
+		)
 	}()
 
 	if err = dispatchRunner.Prepare(s.Proc); err != nil {
 		return err
 	}
+	logIssue25816RemoteDispatchDiagnostic(
+		s.Proc,
+		"receiver-runner-prepared",
+		"scope=%p original_dispatch=%p runner_dispatch=%p",
+		s,
+		arg,
+		dispatchRunner,
+	)
 	dispatchAnalyze := dispatchRunner.GetOperatorBase().OpAnalyzer
 
 	mp := s.Proc.Mp()
 	for {
+		if trace.batchCount == 0 {
+			logIssue25816RemoteDispatchDiagnostic(
+				s.Proc,
+				"receiver-wait-first-batch-start",
+				"scope=%p original_dispatch=%p runner_dispatch=%p remote_addr=%s",
+				s,
+				arg,
+				dispatchRunner,
+				s.NodeInfo.Addr,
+			)
+		}
 		bat, end, err = sender.receiveBatch()
 		if err != nil || end || bat == nil {
+			logIssue25816RemoteDispatchDiagnostic(
+				s.Proc,
+				trace.terminationEvent(end, bat, err),
+				"scope=%p original_dispatch=%p runner_dispatch=%p batch_count=%d exec_count=%d end=%t batch_nil=%t err=%v",
+				s,
+				arg,
+				dispatchRunner,
+				trace.batchCount,
+				trace.execCount,
+				end,
+				bat == nil,
+				err,
+			)
 			return err
+		}
+		trace.batchCount++
+		if trace.batchCount == 1 {
+			logIssue25816RemoteDispatchDiagnostic(
+				s.Proc,
+				"receiver-first-batch",
+				"scope=%p original_dispatch=%p runner_dispatch=%p row_count=%d",
+				s,
+				arg,
+				dispatchRunner,
+				bat.RowCount(),
+			)
 		}
 
 		dispatchAnalyze.Network(bat)
 		fakeValueScanOperator.Batchs = append(fakeValueScanOperator.Batchs, bat)
 
 		result, errCall := vm.Exec(dispatchRunner, s.Proc)
+		trace.execCount++
+		if trace.execCount == 1 {
+			logIssue25816RemoteDispatchDiagnostic(
+				s.Proc,
+				"receiver-first-exec-done",
+				"scope=%p original_dispatch=%p runner_dispatch=%p status=%d err=%v",
+				s,
+				arg,
+				dispatchRunner,
+				result.Status,
+				errCall,
+			)
+		}
 		bat.Clean(mp)
 		if errCall != nil || result.Status == vm.ExecStop {
 			return errCall

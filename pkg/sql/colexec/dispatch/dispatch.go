@@ -135,14 +135,18 @@ func (dispatch *Dispatch) Call(proc *process.Process) (vm.CallResult, error) {
 
 	whichToSend := result.Batch
 	if result.Batch == nil {
+		logIssue25816DispatchOperatorDiagnostic("call-child-nil", dispatch, proc, "")
 		// A remote dispatch must attach every receiver even when its child
 		// produces no batches. Otherwise an early NotRegistered response can
 		// outlive this pipeline: cleanup removes the registration before the
 		// client's next retry, which then waits until query cancellation.
 		if dispatch.ctr.isRemote && !dispatch.ctr.prepared {
+			logIssue25816DispatchOperatorDiagnostic("call-wait-remote-start", dispatch, proc, "")
 			if _, err = dispatch.waitRemoteRegsReady(proc); err != nil {
+				logIssue25816DispatchOperatorDiagnostic("call-wait-remote-error", dispatch, proc, "err=%v", err)
 				return result, err
 			}
+			logIssue25816DispatchOperatorDiagnostic("call-wait-remote-done", dispatch, proc, "")
 		}
 		result.Status = vm.ExecStop
 		printShuffleResult(dispatch)
@@ -230,6 +234,14 @@ func (r *RemoteReceiverRegistration) Cleanup() {
 	if r == nil {
 		return
 	}
+	logIssue25816DispatchOperatorDiagnostic(
+		"registration-cleanup-start",
+		r.dispatch,
+		r.proc,
+		"owner_ctr=%p owner_remote_info=%p",
+		r.ctr,
+		r.ch,
+	)
 	r.server.RemoveUuidsOwned(r.uuids, r.ch)
 	if r.dispatch.ctr == r.ctr && r.ctr.remoteProc == r.proc && r.ctr.remoteInfo == r.ch {
 		r.ctr.remoteInfo = nil
@@ -237,6 +249,14 @@ func (r *RemoteReceiverRegistration) Cleanup() {
 		r.ctr.remoteReceivers = nil
 		r.ctr.prepared = false
 	}
+	logIssue25816DispatchOperatorDiagnostic(
+		"registration-cleanup-done",
+		r.dispatch,
+		r.proc,
+		"owner_ctr=%p owner_remote_info=%p",
+		r.ctr,
+		r.ch,
+	)
 }
 
 // RegisterRemoteReceivers publishes remote receiver UUIDs before the dispatch
@@ -250,7 +270,9 @@ func (dispatch *Dispatch) RegisterRemoteReceivers(proc *process.Process) error {
 // cleanup handle. A nil handle means an earlier traversal already registered
 // this dispatch.
 func (dispatch *Dispatch) RegisterRemoteReceiversWithHandle(proc *process.Process) (*RemoteReceiverRegistration, error) {
+	logIssue25816DispatchOperatorDiagnostic("registration-start", dispatch, proc, "")
 	if len(dispatch.RemoteRegs) == 0 {
+		logIssue25816DispatchOperatorDiagnostic("registration-skip-no-remote", dispatch, proc, "")
 		return nil, nil
 	}
 	if dispatch.ctr == nil {
@@ -258,26 +280,38 @@ func (dispatch *Dispatch) RegisterRemoteReceiversWithHandle(proc *process.Proces
 	}
 	alreadyRegistered := dispatch.ctr.remoteInfo != nil
 	if err := dispatch.prepareRemote(proc); err != nil {
+		logIssue25816DispatchOperatorDiagnostic("registration-error", dispatch, proc, "err=%v", err)
 		return nil, err
 	}
 	if alreadyRegistered {
+		logIssue25816DispatchOperatorDiagnostic("registration-reused", dispatch, proc, "")
 		return nil, nil
 	}
 	uuids := make([]uuid.UUID, 0, len(dispatch.RemoteRegs))
 	for i := range dispatch.RemoteRegs {
 		uuids = append(uuids, dispatch.RemoteRegs[i].Uuid)
 	}
-	return &RemoteReceiverRegistration{
+	registration := &RemoteReceiverRegistration{
 		dispatch: dispatch,
 		ctr:      dispatch.ctr,
 		proc:     proc,
 		ch:       dispatch.ctr.remoteInfo,
 		uuids:    uuids,
 		server:   dispatch.ctr.server,
-	}, nil
+	}
+	logIssue25816DispatchOperatorDiagnostic(
+		"registration-published",
+		dispatch,
+		proc,
+		"owner_ctr=%p owner_remote_info=%p",
+		registration.ctr,
+		registration.ch,
+	)
+	return registration, nil
 }
 
 func (dispatch *Dispatch) prepareRemote(proc *process.Process) error {
+	logIssue25816DispatchOperatorDiagnostic("prepare-remote-start", dispatch, proc, "")
 	server := colexec.GetServer(proc.GetService())
 	if server == nil {
 		return moerr.NewInternalErrorf(proc.Ctx, "colexec server is not initialized for CN %s", proc.GetService())
@@ -314,6 +348,7 @@ func (dispatch *Dispatch) prepareRemote(proc *process.Process) error {
 			registered = append(registered, rr.Uuid)
 		}
 	}
+	logIssue25816DispatchOperatorDiagnostic("prepare-remote-done", dispatch, proc, "new_registration=%t", needRegister)
 	return nil
 }
 

@@ -189,7 +189,25 @@ func handlePipelineMessage(receiver *messageReceiverOnServer) error {
 
 	switch receiver.messageTyp {
 	case pipeline.Method_PrepareDoneNotifyMessage:
+		logIssue25816RemoteDispatchDiagnostic(
+			nil,
+			"notify-attach-start",
+			"receiver=%p uuid=%s message_id=%d",
+			receiver,
+			receiver.messageUuid.String(),
+			receiver.messageId,
+		)
 		dispatchProc, dispatchNotifyCh, err := receiver.GetProcByUuid(receiver.messageUuid)
+		logIssue25816RemoteDispatchDiagnostic(
+			dispatchProc,
+			"notify-attach-result",
+			"receiver=%p uuid=%s message_id=%d notify_channel=%p err=%v",
+			receiver,
+			receiver.messageUuid.String(),
+			receiver.messageId,
+			dispatchNotifyCh,
+			err,
+		)
 		if err != nil {
 			return err
 		}
@@ -212,17 +230,40 @@ func handlePipelineMessage(receiver *messageReceiverOnServer) error {
 		receiver.colexecServer.RecordDispatchPipeline(receiver.clientSession, receiver.messageId, infoToDispatchOperator)
 
 		succeed := false
+		logIssue25816RemoteDispatchDiagnostic(
+			dispatchProc,
+			"notify-channel-send-start",
+			"receiver=%p uuid=%s message_id=%d notify_channel=%p wrap_cs=%p",
+			receiver,
+			receiver.messageUuid.String(),
+			receiver.messageId,
+			dispatchNotifyCh,
+			infoToDispatchOperator,
+		)
 		select {
 		case dispatchNotifyCh <- infoToDispatchOperator:
 			succeed = true
+			logIssue25816RemoteDispatchDiagnostic(
+				dispatchProc,
+				"notify-channel-send-done",
+				"receiver=%p uuid=%s message_id=%d notify_channel=%p wrap_cs=%p",
+				receiver,
+				receiver.messageUuid.String(),
+				receiver.messageId,
+				dispatchNotifyCh,
+				infoToDispatchOperator,
+			)
 		case <-contextDone(receiver.connectionCtx):
 			err = moerr.NewStreamClosed(receiver.getMessageContext())
 			dispatchProc.Cancel(err)
+			logIssue25816RemoteDispatchDiagnostic(dispatchProc, "notify-channel-send-connection-closed", "uuid=%s message_id=%d err=%v", receiver.messageUuid.String(), receiver.messageId, err)
 		case <-contextDone(receiver.messageCtx):
 			err = remoteRegistrationContextError(receiver.messageCtx)
 			dispatchProc.Cancel(err)
+			logIssue25816RemoteDispatchDiagnostic(dispatchProc, "notify-channel-send-message-canceled", "uuid=%s message_id=%d err=%v", receiver.messageUuid.String(), receiver.messageId, err)
 		case <-contextDone(dispatchProc.Ctx):
 			err = remoteRegistrationContextError(dispatchProc.Ctx)
+			logIssue25816RemoteDispatchDiagnostic(dispatchProc, "notify-channel-send-dispatch-canceled", "uuid=%s message_id=%d err=%v", receiver.messageUuid.String(), receiver.messageId, err)
 		}
 
 		if !succeed {
