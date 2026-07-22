@@ -380,32 +380,93 @@ func (t JoinMapMsg) GetReceiverAddr() MessageAddress {
 }
 
 func ReceiveJoinMap(tag int32, isShuffle bool, shuffleIdx int32, mb *MessageBoard, ctx context.Context) (*JoinMap, error) {
+	logMessageBoardDiagnostic(
+		"joinmap-receive-start",
+		mb.diagnosticSnapshot(),
+		"tag=%d is_shuffle=%t shuffle_idx=%d",
+		tag,
+		isShuffle,
+		shuffleIdx,
+	)
 	msgReceiver := NewMessageReceiver([]int32{tag}, AddrBroadCastOnCurrentCN(), mb)
 	for {
 		msgs, ctxDone, err := msgReceiver.ReceiveMessage(true, ctx)
 		if err != nil {
+			logMessageBoardDiagnostic(
+				"joinmap-receive-result",
+				mb.diagnosticSnapshot(),
+				"tag=%d outcome=error error=%q",
+				tag,
+				err,
+			)
 			return nil, err
 		}
 		if ctxDone {
+			logMessageBoardDiagnostic(
+				"joinmap-receive-result",
+				mb.diagnosticSnapshot(),
+				"tag=%d outcome=context-done",
+				tag,
+			)
 			return nil, nil
 		}
 		for i := range msgs {
 			msg, ok := msgs[i].(JoinMapMsg)
 			if !ok {
+				logMessageBoardDiagnostic(
+					"joinmap-receive-result",
+					mb.diagnosticSnapshot(),
+					"tag=%d outcome=unexpected-message message_type=%T",
+					tag,
+					msgs[i],
+				)
 				panic("expect join map message, receive unknown message!")
 			}
 			if isShuffle || msg.IsShuffle {
 				if shuffleIdx != msg.ShuffleIdx {
+					logMessageBoardDiagnostic(
+						"joinmap-receive-skip",
+						mb.diagnosticSnapshot(),
+						"tag=%d reason=shuffle-mismatch expected_shuffle_idx=%d message_shuffle_idx=%d message_is_shuffle=%t",
+						tag,
+						shuffleIdx,
+						msg.ShuffleIdx,
+						msg.IsShuffle,
+					)
 					continue
 				}
 			}
 			jm := msg.JoinMapPtr
 			if jm == nil {
+				logMessageBoardDiagnostic(
+					"joinmap-receive-result",
+					mb.diagnosticSnapshot(),
+					"tag=%d outcome=nil-joinmap message_is_shuffle=%t message_shuffle_idx=%d",
+					tag,
+					msg.IsShuffle,
+					msg.ShuffleIdx,
+				)
 				return nil, nil
 			}
 			if !jm.IsValid() {
+				logMessageBoardDiagnostic(
+					"joinmap-receive-result",
+					mb.diagnosticSnapshot(),
+					"tag=%d outcome=invalid-joinmap message_is_shuffle=%t message_shuffle_idx=%d",
+					tag,
+					msg.IsShuffle,
+					msg.ShuffleIdx,
+				)
 				panic("join receive a joinmap which has been freed!")
 			}
+			logMessageBoardDiagnostic(
+				"joinmap-receive-result",
+				mb.diagnosticSnapshot(),
+				"tag=%d outcome=joinmap message_is_shuffle=%t message_shuffle_idx=%d",
+				tag,
+				msg.IsShuffle,
+				msg.ShuffleIdx,
+			)
 			return jm, nil
 		}
 	}

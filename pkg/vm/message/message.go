@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +31,11 @@ import (
 const messageTimeout = 300 * time.Second
 const ALLCN = "ALLCN"
 const CURRENTCN = "CURRENTCN"
+
+const messageBoardDiagnosticMarker = "issue25816-messageboard"
+
+var nextMessageBoardDiagnosticID atomic.Uint64
+var nextMessageBoardDiagnosticEventSequence atomic.Uint64
 
 type MsgType int32
 
@@ -74,6 +80,7 @@ type MessageCenter struct {
 }
 
 type MessageBoard struct {
+	diagnosticID  uint64
 	reset         bool // for debug purpose
 	multiCN       bool
 	stmtId        uuid.UUID
@@ -83,14 +90,66 @@ type MessageBoard struct {
 	rwMutex       *sync.RWMutex
 }
 
+type messageBoardDiagnosticSnapshot struct {
+	diagnosticID  uint64
+	reset         bool
+	multiCN       bool
+	stmtID        uuid.UUID
+	messageCenter *MessageCenter
+}
+
 func NewMessageBoard() *MessageBoard {
 	m := &MessageBoard{
-		messages: make([]*Message, 0, 16),
-		waiters:  make([]chan bool, 0, 16),
-		rwMutex:  &sync.RWMutex{},
+		diagnosticID: nextMessageBoardDiagnosticID.Add(1),
+		messages:     make([]*Message, 0, 16),
+		waiters:      make([]chan bool, 0, 16),
+		rwMutex:      &sync.RWMutex{},
 	}
 	runtime.SetFinalizer(m, (*MessageBoard).finalize)
+	logMessageBoardDiagnostic("board-new", m.diagnosticSnapshot(), "")
 	return m
+}
+
+func (m *MessageBoard) diagnosticSnapshot() messageBoardDiagnosticSnapshot {
+	m.rwMutex.RLock()
+	snapshot := m.diagnosticSnapshotLocked()
+	m.rwMutex.RUnlock()
+	return snapshot
+}
+
+func (m *MessageBoard) diagnosticSnapshotLocked() messageBoardDiagnosticSnapshot {
+	return messageBoardDiagnosticSnapshot{
+		diagnosticID:  m.diagnosticID,
+		reset:         m.reset,
+		multiCN:       m.multiCN,
+		stmtID:        m.stmtId,
+		messageCenter: m.messageCenter,
+	}
+}
+
+func logMessageBoardDiagnostic(
+	event string,
+	snapshot messageBoardDiagnosticSnapshot,
+	detailFormat string,
+	detailArgs ...any,
+) {
+	eventSequence := nextMessageBoardDiagnosticEventSequence.Add(1)
+	format := messageBoardDiagnosticMarker +
+		" event_seq=%d event=%s stmt_id=%s board_id=%d multi_cn=%t reset=%t center=%p"
+	args := []any{
+		eventSequence,
+		event,
+		snapshot.stmtID.String(),
+		snapshot.diagnosticID,
+		snapshot.multiCN,
+		snapshot.reset,
+		snapshot.messageCenter,
+	}
+	if detailFormat != "" {
+		format += " " + detailFormat
+		args = append(args, detailArgs...)
+	}
+	logutil.Infof(format, args...)
 }
 
 func (m *MessageBoard) finalize() {
@@ -116,42 +175,89 @@ func (m *MessageBoard) DebugString() string {
 }
 
 func (m *MessageBoard) SetMultiCN(center *MessageCenter, stmtId uuid.UUID) *MessageBoard {
-	center.RwMutex.Lock()
-	defer center.RwMutex.Unlock()
-	mb, ok := center.StmtIDToBoard[stmtId]
-	if ok {
+	var mb *MessageBoard
+	var snapshot messageBoardDiagnosticSnapshot
+	var found bool
+	func() {
+		center.RwMutex.Lock()
+		defer center.RwMutex.Unlock()
+		mb, found = center.StmtIDToBoard[stmtId]
+		if found {
+			return
+		}
+		m.rwMutex.Lock()
+		m.multiCN = true
+		m.stmtId = stmtId
+		m.messageCenter = center
+		snapshot = m.diagnosticSnapshotLocked()
+		m.rwMutex.Unlock()
+		center.StmtIDToBoard[stmtId] = m
+		mb = m
+	}()
+	if found {
+		logMessageBoardDiagnostic(
+			"set-multicn-hit",
+			mb.diagnosticSnapshot(),
+			"candidate_board_id=%d",
+			m.diagnosticID,
+		)
 		return mb
 	}
-	m.rwMutex.Lock()
-	m.multiCN = true
-	m.stmtId = stmtId
-	m.messageCenter = center
-	m.rwMutex.Unlock()
-	center.StmtIDToBoard[stmtId] = m
-	return m
+	logMessageBoardDiagnostic("set-multicn-new", snapshot, "")
+	return mb
 }
 
 func (m *MessageBoard) BeforeRunonce() {
 	// call this before runonce
 	m.rwMutex.Lock()
-	defer m.rwMutex.Unlock()
+	previousReset := m.reset
 	m.reset = false
+	snapshot := m.diagnosticSnapshotLocked()
+	m.rwMutex.Unlock()
+	logMessageBoardDiagnostic(
+		"before-run-once",
+		snapshot,
+		"previous_reset=%t",
+		previousReset,
+	)
 }
 
 func (m *MessageBoard) Reset() *MessageBoard {
-	if m.multiCN {
-		m.messageCenter.RwMutex.Lock()
-		delete(m.messageCenter.StmtIDToBoard, m.stmtId)
-		m.messageCenter.RwMutex.Unlock()
+	snapshot := m.diagnosticSnapshot()
+	if snapshot.multiCN {
+		center := snapshot.messageCenter
+		center.RwMutex.Lock()
+		mappedBoard, mapPresent := center.StmtIDToBoard[snapshot.stmtID]
+		mappedBoardID := uint64(0)
+		if mappedBoard != nil {
+			mappedBoardID = mappedBoard.diagnosticID
+		}
+		mappedBoardMatches := mappedBoard == m
+		delete(center.StmtIDToBoard, snapshot.stmtID)
+		center.RwMutex.Unlock()
 		// other pipeline could still access thie messageBoard
 		// so reset current message board to a new one
-		return NewMessageBoard()
+		replacement := NewMessageBoard()
+		logMessageBoardDiagnostic(
+			"reset-multicn",
+			snapshot,
+			"mapped_board_id=%d map_present=%t mapped_board_matches=%t replacement_board_id=%d",
+			mappedBoardID,
+			mapPresent,
+			mappedBoardMatches,
+			replacement.diagnosticID,
+		)
+		return replacement
 	}
-	m.rwMutex.Lock()
-	defer m.rwMutex.Unlock()
-	m.cleanupQueuedMessagesLocked()
-	m.multiCN = false
-	m.reset = true
+	func() {
+		m.rwMutex.Lock()
+		defer m.rwMutex.Unlock()
+		m.cleanupQueuedMessagesLocked()
+		m.multiCN = false
+		m.reset = true
+		snapshot = m.diagnosticSnapshotLocked()
+	}()
+	logMessageBoardDiagnostic("reset-singlecn", snapshot, "")
 	return m
 }
 
@@ -208,10 +314,36 @@ func SendMessage(m Message, mb *MessageBoard) {
 			}
 		}
 		mb.rwMutex.Unlock()
+		logJoinMapSendDiagnostic(m, mb)
 	} else {
 		//todo: send message to other CN, need to lookup cnlist
 		panic("unsupported message yet!")
 	}
+}
+
+func logJoinMapSendDiagnostic(m Message, mb *MessageBoard) {
+	var msg JoinMapMsg
+	switch typed := m.(type) {
+	case JoinMapMsg:
+		msg = typed
+	case *JoinMapMsg:
+		if typed == nil {
+			return
+		}
+		msg = *typed
+	default:
+		return
+	}
+	logMessageBoardDiagnostic(
+		"joinmap-send",
+		mb.diagnosticSnapshot(),
+		"tag=%d joinmap_nil=%t is_shuffle=%t shuffle_idx=%d spilled=%t",
+		msg.Tag,
+		msg.JoinMapPtr == nil,
+		msg.IsShuffle,
+		msg.ShuffleIdx,
+		msg.Spilled,
+	)
 }
 
 func (mr *MessageReceiver) receiveMessageNonBlock() []Message {

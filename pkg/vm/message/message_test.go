@@ -35,6 +35,10 @@ type testMessage struct {
 	destroyed *atomic.Int32
 }
 
+type panicDestroyMessage struct {
+	testMessage
+}
+
 func (m testMessage) Serialize() []byte {
 	return nil
 }
@@ -63,6 +67,62 @@ func (m testMessage) Destroy() {
 	if m.destroyed != nil {
 		m.destroyed.Add(1)
 	}
+}
+
+func (panicDestroyMessage) Destroy() {
+	panic("destroy failed")
+}
+
+func TestMessageBoardDiagnosticIDIsUnique(t *testing.T) {
+	first := NewMessageBoard()
+	second := NewMessageBoard()
+
+	require.NotZero(t, first.diagnosticID)
+	require.NotZero(t, second.diagnosticID)
+	require.NotEqual(t, first.diagnosticID, second.diagnosticID)
+}
+
+func TestMessageBoardDiagnosticIDTracksRegisteredGeneration(t *testing.T) {
+	center := &MessageCenter{
+		StmtIDToBoard: make(map[uuid.UUID]*MessageBoard),
+		RwMutex:       &sync.Mutex{},
+	}
+	stmtID := uuid.New()
+	first := NewMessageBoard()
+	second := NewMessageBoard()
+
+	registered := first.SetMultiCN(center, stmtID)
+	reused := second.SetMultiCN(center, stmtID)
+
+	require.Same(t, first, registered)
+	require.Same(t, registered, reused)
+	require.Equal(t, registered.diagnosticID, reused.diagnosticID)
+	require.NotEqual(t, second.diagnosticID, reused.diagnosticID)
+}
+
+func TestMessageBoardResetUnlocksWhenDestroyPanics(t *testing.T) {
+	mb := NewMessageBoard()
+	runtime.SetFinalizer(mb, nil)
+	SendMessage(panicDestroyMessage{testMessage: testMessage{tag: 1}}, mb)
+
+	require.Panics(t, func() {
+		mb.Reset()
+	})
+	require.True(t, mb.rwMutex.TryLock())
+	mb.rwMutex.Unlock()
+}
+
+func TestMessageBoardSetMultiCNUnlocksWhenRegistrationPanics(t *testing.T) {
+	center := &MessageCenter{
+		RwMutex: &sync.Mutex{},
+	}
+	mb := NewMessageBoard()
+
+	require.Panics(t, func() {
+		mb.SetMultiCN(center, uuid.New())
+	})
+	require.True(t, center.RwMutex.TryLock())
+	center.RwMutex.Unlock()
 }
 
 func TestJoinMapMsgDestroyReleasesJoinMapMemory(t *testing.T) {
