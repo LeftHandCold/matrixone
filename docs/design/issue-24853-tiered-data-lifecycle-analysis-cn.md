@@ -4,7 +4,9 @@
 >
 > 复核日期：2026-07-23
 >
-> MatrixOne 基线：`main@0d7eeb38b43b6b89f746b0a634662349a4b01de2`
+> MatrixOne 原始分析基线：`main@0d7eeb38b43b6b89f746b0a634662349a4b01de2`
+>
+> Review 后复核基线：`main@e936d9757027325a8270b754938840ac7c8f8289`
 >
 > MatrixOne Docs 基线：`main@b38d52fd99f899846015f0ffc0dfacd8f12da10a`
 >
@@ -20,11 +22,20 @@ Issue #24853 反映的用户需求是真实且重要的，但 Issue 对问题的
 2. **历史版本保留、业务数据生命周期和物理冷热放置必须拆成三个独立平面。** `DATA_RETENTION_TIME_IN_DAYS`、PITR、Snapshot 解决的是历史版本；TTL/归档解决的是当前表中哪些业务行还应可见；HOT/COLD 解决的是在线数据的缓存、介质和访问 SLA。把三者放入一个 `RETENTION(HOT, COLD, ARCHIVE)` 语法会产生不可解释的冲突。
 3. **当前 MO 有可复用的基础能力，但不存在可以直接拼起来完成该 Feature 的“现成积木”。** 可以复用 Snapshot/PITR 的 GC 引用判定、TaskService、FileService、Stage 导入导出和对象存储适配器；但当前对象定位、对象元数据、缓存路径、merge、tombstone、索引和云存储接口都没有 lifecycle 状态与 restore 能力。
 4. **不建议让云厂商 Bucket Lifecycle 直接管理当前 TAE 对象，也不建议第一版把当前 TAE 对象原地转入深归档。** 这两种方案存在数据不可读、metadata 也被冻结、缓存绕过状态、merge/DML 失败、策略漂移以及误归档内部对象等严重风险。
-5. **推荐主方案是“MO 管理的逻辑归档数据集 + 热端 Manifest + 可恢复异步作业”。** 先把符合条件且已经封存的数据单元复制到独立、由 MO 管理的归档数据集，校验成功后再在一个 MO 事务中发布归档 Manifest 并从活动表逻辑移除。深归档数据不进入正常 TAE 查询路径，恢复默认写入新表。
-6. **第一版必须收窄能力。** 只支持表级、单调时间列、与 range 分区边界对齐、完整封存分区；只支持新表恢复；不支持任意 SQL 表达式、仅按 sort key 选择对象、last-access 作为正确性依据、透明访问深归档、同表恢复和账户级继承。
+5. **有条件推荐方案 C+：“独立 archive dataset + 热端 Manifest + 可恢复异步作业”。** 先通过 TN 权威 commit fence 封存完整 range 分区，再把固定 Snapshot 上已经应用 tombstone 的逻辑行集写入独立 archive dataset；完成端到端校验后，才允许在一个 MO 事务中发布 Manifest 并退休活动分区。该原子事务必须先通过 P0 原型，不能当成当前已具备能力。
+6. **第一版必须收窄能力。** 只支持表级、单调时间列、与 range 分区边界对齐、完整封存分区；只支持 purge eligibility 和恢复到新表；不支持任意 SQL 表达式、仅按 sort key 选择对象、last-access 作为正确性依据、maximum-retention 强制删除、透明访问深归档、同表恢复和账户级继承。
 7. **MO 可以在“可解释性和跨云一致性”上做得比主流方案更好。** 关键是提供 lifecycle dry-run、历史引用导致的 pinned bytes、物理回收进度、恢复文件数/字节数/预计费用、明确的云能力契约，以及可中断、可重试、有 fencing 的异步任务。
 
 建议将 #24853 与 [#24552 Native table TTL](https://github.com/matrixorigin/matrixone/issues/24552) 共享同一个 lifecycle 执行内核，但保持不同的用户语义：TTL 是逻辑过期动作，归档是“先保存到归档数据集，再逻辑过期”。
+
+Review 后的阶段决策：
+
+| 范围 | 决策 | 进入条件 |
+|---|---|---|
+| Lifecycle Core、严格 range partition TTL/EXPIRE | Conditional Go | TN fence、late arrival 和历史 Snapshot 读取已退休分区通过原型与故障测试 |
+| MO-managed direct-readable archive | Conditional Go | 独立 archive identity、版本化 container、原子 publish/retire 和 hidden staging restore 通过原型 |
+| Restore-required deep archive | No-Go | 前两阶段协议和 fake/real provider 故障矩阵通过后再进入 |
+| 活动 ObjectIO 原地 deep archive、Issue 原始混合 SQL | No-Go | 与当前 metadata/cache/merge 契约及三平面语义冲突 |
 
 ## 2. 首先纠正 Issue 中的语义混合
 
@@ -64,7 +75,7 @@ MO 应把历史保护和业务归档分别建模，只在 GC 引用图上汇合�
 
 ## 3. 当前 MO 能力与真实边界
 
-本节只描述当前 `main@0d7eeb38` 可从代码和文档确认的事实。
+本节代码事实最初在 `main@0d7eeb38` 确认，并已复核到 `main@e936d975`。代码链接仍固定到原始 commit，以保持行号稳定；两个基线间与本方案相关的分区 metadata、Drop、Snapshot/PITR GC、TaskService 和对象 soft-delete 契约没有发生改变。
 
 当前 MatrixOne Docs 已覆盖 Storage Hierarchy、Snapshot Read 和 PITR Tool，但没有定义业务数据 lifecycle policy、云归档状态机或 Restore Job 协议。因此这些文档能说明现有历史保护和存储分层基础，不能作为 #24853 已具备产品语义的证据。
 
@@ -125,11 +136,19 @@ MO 应把历史保护和业务归档分别建模，只在 GC 引用图上汇合�
 
 - 没有把 archive Manifest 发布与对象/分区退休组合起来的已验证协议；
 - snapshot transaction 明确禁止 `SoftDeleteObject`，所以“读取旧 Snapshot”和“在当前事务退休对象”必然是两个阶段；
-- 长时间复制期间发生的 INSERT/UPDATE/DELETE、tombstone 和 merge 必须通过 sealed state 或 generation/read-set 冲突检测处理；
+- 长时间复制期间发生的 INSERT/UPDATE/DELETE、tombstone 和 merge 必须由 TN generation fence 和稳定提交水位处理；
 - 直接 soft-delete 基础对象可能让 secondary/fulltext/vector index 留下悬空条目；
 - range/list 分区可以删除，不代表当前已经存在“分区只读/封存”的写入栅栏。
 
-最值得验证的 MVP 路径是：给时间 range 分区增加显式 sealed 状态，以分区为选择和并发隔离单元，归档成功后在短事务中发布 Manifest 并删除分区。对象级路径应在上述协议和索引一致性验证完成后再开放。
+最值得验证的 MVP 路径是：给时间 range 分区增加 TN 权威 generation/fence，以分区为选择和并发隔离单元，归档成功后在短事务中发布 Manifest 并删除分区。对象级路径应在上述协议和索引一致性验证完成后再开放。
+
+当前代码进一步证明 CN 本地 sealed flag 不足以保证正确性：
+
+- 分区 catalog 只有描述和映射，没有 lifecycle state/generation：[`partitionservice/types.go`](https://github.com/matrixorigin/matrixone/blob/e936d9757027325a8270b754938840ac7c8f8289/pkg/partitionservice/types.go#L31-L48)；
+- `PartitionInsert.Prepare` 会读取并缓存分区 metadata，随后按该路由写物理子表：[`insert_partition.go`](https://github.com/matrixorigin/matrixone/blob/e936d9757027325a8270b754938840ac7c8f8289/pkg/sql/colexec/insert/insert_partition.go#L65-L143)；
+- Snapshot/非 RC 事务可能继续使用已经缓存的 table delegate，不检查新版本：[`disttae/txn.go`](https://github.com/matrixorigin/matrixone/blob/e936d9757027325a8270b754938840ac7c8f8289/pkg/vm/engine/disttae/txn.go#L2384-L2422)。
+
+因此 CN admission 只能提前报错和减少浪费；旧路由、跨 CN 事务和已经 prepare 的写入必须在 TN pre-commit 通过 generation fence 最终裁决。
 
 #### Stage 可做临时人工方案
 
@@ -352,7 +371,7 @@ OFFLINE_RESTORE_REQUIRED
 | 一个 `HOT → COLD → ARCHIVE` 状态机即可 | 高 | 三个阶段混合了 cache、活动表物理介质和逻辑归档；历史版本还有独立状态 | 拆成历史、在线放置、归档/过期三个平面 |
 | 当前 TAE Object 可直接换 storage class | 阻断 | ObjectName/Location 没有 profile；metadata 与 payload 同对象；merge、DML、索引仍需要读取 | 深归档复制到独立归档数据集；在线 direct-read tier 后置 |
 | 用对象 `max(event_time)` 判断 | 阻断 | 当前热端只有一个 sort-key ZoneMap，任意列不具备该统计；即使能判断，也没有对象封存写栅栏 | MVP 限定完整时间 range 分区；对象级 lifecycle compaction 后置 |
-| 复制 Snapshot 后再退休当前对象即可保证一致 | 阻断 | 两阶段之间的 UPDATE/DELETE、tombstone 或 merge 可能让归档副本恢复出已删除行，或让退休集合失效；仅校验基础对象 ID 不够 | MVP 先封存时间分区并排空在途写；后续方案必须验证基础对象、tombstone 和索引的统一 generation/read set |
+| 复制 Snapshot 后再退休当前对象即可保证一致 | 阻断 | 两阶段之间的 UPDATE/DELETE、tombstone 或 merge 可能让归档副本恢复出已删除行，或让退休集合失效；仅校验基础对象 ID 不够 | MVP 用 TN fence 封存时间分区并等待稳定提交水位；后续方案必须验证基础对象、tombstone 和索引的统一 generation/read set |
 | `SoftDeleteObject` 已经让 Manifest + 退休可直接实现 | 高 | 当前有事务原语，但没有与 lifecycle catalog、外部副本校验、分区写栅栏和索引更新集成，也没有端到端故障测试 | 把它作为实现候选而非已完成能力；优先验证完整 range 分区路径 |
 | 用 Bucket Lifecycle 自动迁移当前对象 | 阻断 | 表对象不是按表前缀组织；provider 策略异步且会漂移；可能误归档内部对象 | MO catalog 是唯一事实源，provider 只作为显式作业执行器 |
 | 用 last-access 自动识别冷热 | 高 | CN cache hit 不会触达 provider，provider 看到的访问时间不等于用户查询热度 | 只用于 cache/advisor，不作为数据可见性或深归档正确性依据 |
@@ -400,17 +419,17 @@ OFFLINE_RESTORE_REQUIRED
 
 **结论：适合后续实现 `ACTIVE_DIRECT_READ` 在线层，不适合作为深归档 MVP。**
 
-### 方案 C：MO 管理的独立逻辑归档数据集
+### 方案 C+：MO 管理的独立 Archive Dataset
 
 做法：
 
-1. 在一致性 Snapshot TS 上选择符合条件的封存数据单元；
-2. 写入独立归档 payload；
-3. 校验 checksum、size、row count 和可读性；
-4. 在热端 catalog 发布 Manifest；
-5. 同一 MO 事务中将相应数据从活动表逻辑移除；
+1. 通过 TN commit fence 封存符合条件的完整 range 分区；
+2. 在稳定 Snapshot TS 上物化已经应用 tombstone 的逻辑行集；
+3. 写入具有独立 `archive_dataset_id` 的不可变、版本化 archive payload；
+4. 完成强 checksum、schema digest、Manifest root 和恢复读取校验；
+5. 在一个 MO 事务中发布热端 Manifest，并退休活动分区及其索引；
 6. 原活动对象继续由现有 Snapshot/PITR/Branch 规则保护和 GC；
-7. 归档数据通过异步 Restore Job 恢复到新表。
+7. 归档数据通过异步 Restore Job 物化到隐藏 staging table，校验后原子发布为新表。
 
 优点：
 
@@ -427,9 +446,11 @@ OFFLINE_RESTORE_REQUIRED
 - 需要独立 Manifest、Job 和 GC；
 - 历史窗口内存在双份存储。
 
-**结论：推荐主方案。**
+**结论：有条件推荐，只有 P0 协议门槛通过后才能进入生产实现。**
 
-这里的“同一 MO 事务”是需要新增和验证的 lifecycle commit protocol，不是当前代码已经提供的高层 API。底层 `SoftDeleteObject` 和 `DROP PARTITION` 提供了原语候选；对 MVP 而言，完整 range 分区比任意排序对象更安全，因为分区边界、写入栅栏、索引和 DDL 冲突都更容易定义。若这条事务路径无法证明 Manifest 发布与分区删除原子提交，则方案 C 不能进入生产，只能退回“归档已发布、活动数据稍后退休”的可见双份状态，绝不能先删活动数据。
+这里的“同一 MO 事务”是 P0 prototype gate，不是当前代码已经提供的高层 API。底层 `SoftDeleteObject` 和 `DROP PARTITION` 提供了原语候选；原型必须证明 Manifest 发布、partition mapping 删除、物理分区/索引退休和 commit-unknown reconciliation 形成一个可判定结果。Job 状态不是正确性事实源，事务结果必须能从 Manifest 与分区 catalog 推导。
+
+若无法证明该原子性，唯一安全降级是先发布 Manifest、保留活动分区可读，再由后续事务退休分区。该模式会暂时产生逻辑双份，但不会产生零副本；绝不能先删活动分区，再尝试发布 Manifest。
 
 ### 方案 D：SQL Task + Stage Parquet
 
@@ -451,8 +472,8 @@ OFFLINE_RESTORE_REQUIRED
 
 ```text
                     +-------------------------------+
-                    | Lifecycle Control Plane       |
-                    | Policy / Binding / Job / Cost |
+                    | Management Control Planes     |
+                    | Lifecycle + Placement + Cost  |
                     +---------------+---------------+
                                     |
               +---------------------+---------------------+
@@ -474,7 +495,7 @@ OFFLINE_RESTORE_REQUIRED
 
 ### 8.2 用户可见状态
 
-建议把用户语义定义为访问契约，而不是厂商 class：
+建议把用户语义定义为访问契约，而不是厂商 class。下表是跨平面的用户视图，不表示这些状态由同一个 policy 或状态机驱动：
 
 | 状态 | 是否属于当前表 | 正常 SQL 是否直接读 | 是否允许普通 DML | 说明 |
 |---|---|---|---|---|
@@ -496,14 +517,15 @@ OFFLINE_RESTORE_REQUIRED
 - `policy_name`
 - `owner_account_id`
 - `age_column_id`
-- `cold_after`
 - `archive_after`
-- `purge_after`
-- `storage_profile_id`
-- `retention_semantics`：minimum / maximum / best-effort
+- `purge_eligible_after`
+- `archive_storage_profile_id`
+- `purge_mode`：MVP 只允许 minimum-retention + best-effort physical purge
 - `version`
 - `status`
 - `created_at` / `modified_at`
+
+`cold_after` 不属于业务数据 lifecycle policy。`ONLINE_COLD` 是活动数据的物理放置问题，后续应进入独立 `mo_storage_placement_policies`；Phase 1/2 不把两者放进同一个状态机。
 
 #### `mo_data_lifecycle_bindings`
 
@@ -517,27 +539,34 @@ OFFLINE_RESTORE_REQUIRED
 
 #### `mo_archive_manifests`
 
-- `archive_id`
-- `source_table_id`
+- `archive_dataset_id`
+- `owner_account_id`
+- `source_database_id` / `source_table_id`
+- 源 database/table/partition 的归档时展示名称
+- `source_partition_id` / partition boundary / partition generation
 - `policy_id` / `policy_version`
 - `source_snapshot_ts`
-- `schema_version`
+- 完整 archive snapshot schema / schema digest
 - `predicate/cutoff`
 - `row_count` / `logical_bytes` / `physical_bytes`
 - policy/query 列 min/max
 - `storage_profile_id`
-- `payload_format_version`
+- `payload_format_version` / `reader_version`
+- region / KMS key ID / KMS key version
 - `state`
-- `created_at` / `expires_at`
-- `reference_count` / `legal_hold`
+- `archived_at` / `purge_eligible_at`
+
+`archive_dataset_id` 是独立于源表生命周期的稳定身份。源表 rename、DROP、同名重建或不兼容 schema 变更后，已发布 archive dataset 仍能被枚举、审计和恢复。
+
+Manifest 在发布时固化 `archived_at`、`purge_eligible_at`、policy version 和 retention semantics。后续 policy 修改不能静默重算已经发布 dataset 的删除期限；缩短期限必须 dry-run，并通过显式管理员操作生成新版本。
 
 #### `mo_archive_objects`
 
-- `archive_id`
+- `archive_dataset_id`
 - `object_id`
-- `uri` 或 profile 内 key
+- immutable/content-addressed URI，或 job/epoch scoped key
 - provider generation/version
-- checksum
+- strong checksum / manifest root membership
 - size / row count
 - storage state
 - restore state
@@ -552,10 +581,32 @@ OFFLINE_RESTORE_REQUIRED
 - `job_type`
 - `state`
 - `lease_owner` / `lease_epoch`
-- object/chunk progress
+- step / object/chunk progress / executor epoch
 - retry count / next retry
 - last error
 - requested/cancelled/completed time
+
+#### `mo_archive_references`
+
+- `reference_id`
+- `archive_dataset_id`
+- `reference_kind`
+- `owner_id`
+- `generation`
+- `created_at` / `expires_at`
+- `state`
+
+引用数量只能作为派生缓存，不能作为删除的唯一事实源。Crash、重试和重复消息都可能使单一 `reference_count` 漂移。
+
+#### `mo_archive_legal_holds`
+
+- `hold_id`
+- `archive_dataset_id` 或明确适用范围
+- 创建人、授权角色和原因
+- `created_at` / optional `expires_at`
+- 解除人、解除原因和解除时间
+
+Legal hold 是独立审计记录，不能被普通 policy 更新、DROP 或 GC 静默覆盖。
 
 ### 8.4 Provider 能力模型
 
@@ -579,20 +630,57 @@ Capabilities:
 
 storage profile 必须由系统管理员管理，不直接复用用户 Stage credential。policy 绑定时先做 capability validation，不能运行到第 90 天才发现 provider 不支持目标动作。
 
+### 8.5 Archive Ownership、DROP、Backup/DR
+
+- Active partition 由 table/partition lifecycle catalog 拥有；
+- 已发布 payload 由 archive dataset Manifest 拥有；未发布 payload 由 lifecycle job 临时拥有；
+- hidden restore staging 由 restore job 拥有，发布成功后新表接管 active objects；
+- provider restore 临时副本不是权威副本，任务结束后必须回收；
+- 普通 `DROP TABLE` 只删除活动表，不自动删除已经发布的 archive dataset；
+- archive 通过稳定 `archive_dataset_id` 继续枚举和恢复；
+- 删除归档使用独立、可审计的 `DROP ARCHIVE DATASET <stable-id>` 一类命令；
+- `DROP ... INCLUDING ARCHIVES` 必须先 dry-run，并检查显式 reference edge 与 legal hold；
+- database/account 删除必须明确选择 archive 迁移、继续保留或显式级联删除，不能依赖名称前缀；
+- archive catalog、storage profile、KMS metadata 和 reference/hold 必须纳入 Backup/DR；payload 是否跨区复制由 profile 明确声明，并计入成本；
+- KMS key rotation 与疑似泄露必须有 rekey/restore-copy-drop 流程，不能假定深归档对象可以原地快速重加密。
+
+### 8.6 独立状态机
+
+Policy、partition、Manifest、provider object 和 restore job 不能共用一个状态字段：
+
+```text
+Partition: ACTIVE(g) -> SEALING(g+1) -> SEALED(g+1) -> RETIRED
+           SEALING/SEALED(g+1) -- explicit abort before publish --> ACTIVE(g+2)
+Manifest:  WRITING -> VERIFYING -> VERIFIED_NOT_PUBLISHED -> PUBLISHED
+           -> PURGE_PENDING -> PURGED
+Object:    UPLOADING -> DIRECT_READ_VERIFIED -> TRANSITIONING
+           -> DIRECT_READ | RESTORE_REQUIRED -> DELETING -> DELETED
+Restore:   REQUESTED -> REHYDRATING -> MATERIALIZING -> VALIDATING
+           -> READY_TO_PUBLISH -> PUBLISHED
+```
+
+失败、取消和接管状态还需区分 `FAILED_RETRYABLE`、`FAILED_TERMINAL`、`CANCEL_REQUESTED` 与 stale epoch。任务状态用于调度和观察，Manifest/partition catalog 才是数据正确性的事实源。
+
+每个非终态必须定义 deadline、重试上限、接管条件和 terminal failure；不能存在依赖某个失联 CN 或永不返回 provider 请求才能离开的状态。
+
 ## 9. Lifecycle 执行协议
 
 ### 9.1 数据单元选择
 
 第一版只选择满足以下条件的单元：
 
-1. lifecycle 列是非空的 DATETIME/TIMESTAMP；
-2. lifecycle 列与 range 分区边界对齐；
-3. 分区已经进入由系统强制的 sealed 状态，不接受新的 INSERT/UPDATE/DELETE；
-4. 整个分区的上界 `<= cutoff`；
-5. 没有进行中的 merge、DDL 或另一个 lifecycle job；
-6. policy generation 与任务捕获的一致。
+1. 表已经由用户显式定义 range partition，MVP 不隐式创建、滚动或重组分区；
+2. lifecycle 列是非空的 DATETIME/TIMESTAMP，并与 range 分区边界对齐；
+3. 整个分区的上界 `<= cutoff`；
+4. 没有进行中的 merge、DDL 或另一个 lifecycle job；
+5. policy generation 与任务捕获的一致；
+6. partition/table、job 和文件数量没有超过硬上限。
 
-当前 MO 没有该 lifecycle sealed 状态，必须新增 DML admission gate，并等待已经进入事务的写入完成后才能捕获归档 Snapshot。不能把“最近没有写入”当成封存。
+当前 MO 没有 lifecycle state 或 partition generation。`PartitionInsert.Prepare` 会读取并缓存分区路由，Snapshot/非 RC 事务也可能继续使用已经缓存的 table delegate；因此 CN admission gate 只能做快速失败优化，不能保证封存正确性。
+
+MVP 必须引入 TN 权威 commit fence：所有可能写入物理分区的 INSERT、UPDATE、DELETE、MERGE、LOAD、CDC、index build 和后台 merge，在 pre-commit 都要携带并校验预期 partition generation。Fence 的 wire identity 可以设计为“物理 partition table ID + generation”，或“logical table ID + partition ID + generation”；具体形式必须由 P0 原型结合现有写请求和冲突模型确定，不能只在文档中假设。
+
+封存等待的是 TN fence 对应的稳定提交水位，而不是枚举或等待所有 CN 本地事务。Fence 之前成功提交的写入必须全部进入 `source_snapshot_ts`，fence 之后的旧 generation 写入必须 abort/retry。
 
 若 `min <= cutoff < max`，这是混合单元。第一版应跳过；后续可以：
 
@@ -601,23 +689,25 @@ storage profile 必须由系统管理员管理，不直接复用用户 Stage cre
 
 不能把混合对象整个归档，否则会让仍应在线的数据消失。
 
+Late arrival 必须有显式语义：MVP 默认返回 sealed-partition 错误；可选能力可以把迟到数据路由到独立 quarantine/late-arrival 表，但不能静默重开旧分区。对其他 ACTIVE 分区的写入可以继续。
+
 ### 9.2 Archive 的安全顺序
 
 推荐顺序：
 
-1. 创建带幂等键的 Job，并申请 table/partition lease；
-2. 在短事务中把目标分区从 `ACTIVE` 切到 `SEALING`，阻止新 DML 进入；
-3. 等待所有已获准的在途写和 merge 完成，再切到 `SEALED`；
-4. 捕获 `source_snapshot_ts`、policy version、分区定义以及基础对象/tombstone/index generation；
-5. 从一致性 Snapshot 读取已经封存的分区；
-6. 写入内容寻址或 job-scoped 的 archive payload；
-7. 校验 checksum、size、row count，并做最小可读性检查；
+1. dry-run 计算 policy version、cutoff、候选完整分区、rows/bytes/files、pinned bytes 和目标 profile；
+2. 创建语义幂等键为 `(table_id, policy_version, partition_id, partition_generation, action)` 的 Job；
+3. 通过 TN commit fence 将分区从 `ACTIVE(g)` 切到 `SEALING(g+1)`；
+4. 等待 fence 对应的稳定提交水位，记录 `source_snapshot_ts`，再切到 `SEALED(g+1)`；
+5. 从一致性 Snapshot 物化已经应用 tombstone 的逻辑行集；
+6. 写入 immutable/content-addressed 或 job/epoch scoped archive payload；
+7. 完成 container、强 checksum、schema、行数和 Manifest root 校验；
 8. 将 Manifest 写为 `VERIFIED_NOT_PUBLISHED`；
-9. 在一个短 MO 事务中发布 Manifest，并删除分区或逻辑退休活动对象，同时处理索引；
-10. commit 后将任务标记为 `ARCHIVED`；
-11. 未发布 payload 由 orphan GC 在 grace period 后回收。
+9. 在一个短 MO 事务中发布 Manifest，并退休 partition mapping、物理分区及其索引；
+10. commit 后由 reconciliation 从 Manifest/partition catalog 推导结果，再更新 Job 状态；
+11. 未发布或 stale epoch payload 由 orphan GC 在 grace period 后回收。
 
-如果复制失败，可以保留 `SEALED` 重试，或在确认没有 Manifest 发布和退休动作后显式 unseal。不能在不做审计的情况下自动解封，因为调用方可能已经依赖“该时间分区不再可写”的语义。
+如果复制失败，可以保留 `SEALED(g+1)` 重试，或在确认没有 Manifest 发布和退休动作后显式 unseal 到 `ACTIVE(g+2)`。Generation 不能回退或复用，旧 runner 和旧路由仍然必须被 TN 拒绝。不能在不做审计的情况下自动解封，因为调用方可能已经依赖“该时间分区不再可写”的语义。
 
 核心不变量：
 
@@ -629,20 +719,39 @@ storage profile 必须由系统管理员管理，不直接复用用户 Stage cre
 
 可借鉴 Snowflake 的保守策略：
 
-- lifecycle commit 窗口阻止影响候选单元的 `UPDATE`、`DELETE`、`MERGE`；
-- `INSERT` 可以继续，但只属于捕获 Snapshot 之后的新 generation；
-- 若候选对象在归档期间被 merge/replace，当前 job 必须基于 generation 检测冲突并重算，不能继续退休旧选择集；
-- 同一 table/policy generation 只允许一个 active executor，CN failover 通过 lease epoch fencing。
+- TN fence 对目标分区的 INSERT、UPDATE、DELETE、MERGE、LOAD、CDC、index build 和后台 merge 执行统一 generation 校验；
+- 其他 ACTIVE 分区的 INSERT 可以继续；目标 SEALED 分区默认拒绝 late arrival；
+- 若候选分区、对象、tombstone 或索引 generation 在封存前发生变化，当前 job 必须重算，不能继续退休旧选择集；
+- 同一 table/policy/partition generation 只允许一个 active executor，CN failover 通过 lease epoch 防止旧 runner 推进 catalog；
+- CN 层锁和 admission 只减少无效工作，最终正确性由 TN pre-commit fence 保证。
 
 ### 9.4 Archive Payload 格式
 
-不能默认把“当前 ObjectIO 文件”当作长期归档格式。需要单独 ADR 决定：
+不能默认把“当前 ObjectIO 文件”当作长期归档格式。外层应定义稳定、版本化的 Archive Container，内部 columnar payload 再通过 ADR 选择：
 
 - **ObjectIO**：恢复进 MO 成本低，但必须承诺跨版本 reader compatibility；
 - **Parquet + 完整 schema manifest**：生态和长期可读性更好，但需验证全部 MO 类型、默认值、约束和精度映射；
-- **版本化 archive container**：内部包含 columnar payload、schema、统计和 checksum，工作量最大但契约最清楚。
+- **其他版本化格式**：只有具备稳定 reader dispatch、升级和 golden archive 测试后才可加入。
 
-在 payload 格式和升级兼容测试确定前，不应承诺多年级的合规可恢复性。
+Container 至少保存：
+
+- 完整 MO schema、类型 ID 和 schema digest；
+- predicate、Snapshot TS、partition ID/boundary/generation；
+- 每文件强 checksum、size、row count、列 min/max；
+- 由文件摘要构成的 Manifest root；
+- payload writer/reader version；
+- compression/encryption 和 KMS key version；
+- job ID、executor epoch 和 idempotency key。
+
+对象 key 必须 immutable、content-addressed 或 job/epoch scoped，不能原地覆盖。Direct-readable archive MVP 在源分区退休前应完整重读目标 payload，重算 hash 并执行最小 restore/read drill；如果后续希望用 provider 认可的客户端强 checksum 代替每次全量重读，必须用单独 ADR 证明其端到端等价性，并保留周期 scrub 和跨版本 restore drill。
+
+在 container、类型矩阵、reader dispatch、golden archive 和升级兼容测试确定前，不应承诺多年级的合规可恢复性。Deep Archive transition 只能发生在 direct-readable payload 完成上述校验之后。
+
+### 9.5 TaskService 与外部副作用 Fencing
+
+TaskService runner epoch、heartbeat 和 CAS 适合做外层调度，但不能自动 fence 已经发给 provider 的 multipart upload、copy、transition、restore 或 batch delete。
+
+每个外部 step 必须使用 `(job_id, executor_epoch, step, object_id)` 记录条件状态迁移。旧 runner 即使在发现 lease 失效前完成了 provider 请求，也只能留下可 reconciliation 的 immutable object 或重复请求，不能推进新 epoch 的 Manifest。跨云正确性不能依赖所有 provider 都有 CAS，应以不可变 key、catalog 条件更新和幂等 reconciliation 收敛。
 
 ## 10. Restore 设计
 
@@ -658,12 +767,12 @@ RESTORE TABLE events FROM ARCHIVE ...;
 
 ```sql
 EXPLAIN RESTORE
-  FROM ARCHIVE OF events
+  FROM ARCHIVE DATASET 'archive-dataset-uuid'
   WHERE event_ts >= '2024-01-01'
     AND event_ts <  '2024-02-01';
 
 CREATE RESTORE JOB restore_events_202401
-  FROM ARCHIVE OF events
+  FROM ARCHIVE DATASET 'archive-dataset-uuid'
   INTO events_restored_202401
   WHERE event_ts >= '2024-01-01'
     AND event_ts <  '2024-02-01'
@@ -674,6 +783,8 @@ CREATE RESTORE JOB restore_events_202401
 SHOW RESTORE JOB restore_events_202401;
 ```
 
+`FROM ARCHIVE DATASET <stable-id>` 是权威入口。源表仍存在时可以提供 `FROM ARCHIVE OF <table>` 便捷语法，由 catalog 解析为 dataset ID；源表 DROP 后仍可通过 `SHOW ARCHIVE DATASETS` 和稳定 ID 恢复，不能依赖名称复活入口。
+
 理由：
 
 - 原表可能已经出现相同主键；
@@ -682,6 +793,21 @@ SHOW RESTORE JOB restore_events_202401;
 - restore-required provider 需要数小时，不能占用普通 session；
 - 部分恢复失败时，新表可保持不可见/RESTORING，成功后再原子发布；
 - 取消任务可能无法取消云端费用，必须在 Job 状态中明确提示。
+
+Restore 必须使用系统拥有的隐藏 staging table：
+
+```text
+REQUESTED
+  -> REHYDRATING
+  -> MATERIALIZING
+  -> VALIDATING
+  -> READY_TO_PUBLISH
+  -> PUBLISHED
+```
+
+并单独支持 `CANCEL_REQUESTED`、`FAILED_RETRYABLE` 和 `FAILED_TERMINAL`。Provider 的临时恢复副本不能直接成为已发布表的数据源；必须把数据复制到正常可读的 MO-managed active profile，校验行数、schema、hash 和抽样查询后，再以短事务原子发布新表。部分恢复、stale runner 和失败 staging 对用户不可见，并由 restore job 或 grace-period GC 回收。
+
+权限检查基于 archive dataset owner 和 restore 发起人。行级安全、masking、index、constraint、publication/subscription 等派生定义不从 payload 盲目继承。
 
 ### 10.2 `WHERE` 必须强制
 
@@ -694,13 +820,13 @@ Snowflake 已强制 restore 使用 `WHERE`，并允许用 `EXPLAIN` 估算文件
 
 ### 10.3 Schema evolution
 
-建议第一版采用与 Snowflake 接近、可解释的规则：
+建议第一版以“独立、可逆”为默认规则：
 
-- 新表使用源表当前 schema；
-- 归档前不存在的新增列恢复为 NULL；
-- 已删除列默认不暴露，但 archive manifest 保留原 schema，供管理员审计或未来 raw export；
-- type change 必须有显式兼容矩阵，不兼容则 job 早失败；
-- index、constraint、publication、subscription 等派生对象不从 archive payload 盲目恢复，按当前定义重建或显式排除。
+- 新表默认使用 archive Snapshot 时保存的完整 schema，不依赖源表仍然存在；
+- 用户若要映射到源表当前 schema，必须显式选择 `MAP TO CURRENT SCHEMA` 一类选项；
+- 映射前检查新增列填充值、删除列处理、type change 是否无损、default/generated column、collation、时区和 decimal 精度；
+- 不兼容映射在发起 provider restore 前早失败；
+- index、constraint、row policy、publication、subscription 等派生对象默认不从 archive payload 盲目恢复，需要按显式选项或当前定义重建。
 
 ## 11. Cache、Merge、Index 与 Tombstone
 
@@ -737,7 +863,7 @@ Snowflake 已强制 restore 使用 `WHERE`，并允许用 `EXPLAIN` 估算文件
 - archive payload 以基础行数据为真；
 - secondary/fulltext/vector index 不单独深归档；
 - 活动表对应索引在逻辑退休事务中同步更新；
-- restore 到新表后按当前 schema 和 index 定义重建；
+- restore 到新表后按最终发布的 restore schema 和显式 index 选项重建；
 - restore dry-run 要估算重建成本，而不仅是对象恢复成本。
 
 ## 12. GC 与引用模型
@@ -755,6 +881,8 @@ restore job
 legal hold
 ```
 
+以上引用必须保存为可审计的显式 reference edge。`reference_count` 可以作为派生指标或查询加速缓存，但不能作为 GC 的唯一事实源；reconciliation 应能从边集合重建 count 并检测漂移。Legal hold 使用独立记录和授权流程，普通 policy、DROP 和 task retry 不能删除或覆盖它。
+
 物理删除条件至少是：
 
 ```text
@@ -771,7 +899,7 @@ AND orphan/grace deadline reached
 1. **原活动对象**：继续由当前 TAE GC 和 Snapshot/PITR/Branch 引用判定保护；
 2. **归档 payload**：由 archive catalog reference、restore job、backup/DR、hold 和 archive retention 保护。
 
-建议参考 Timescale 的做法：引用归零后仍设置 hard-delete grace period。Iceberg 的经验也说明，过短 orphan retention 会把仍在写入或提交中的文件误判为 orphan。
+原活动对象继续使用当前 TAE GC；archive payload 使用独立 mark-and-sweep GC，不能让当前 TAE GC 依赖远端 provider 可用性。建议参考 Timescale 的做法：引用归零后仍设置 hard-delete grace period。Iceberg 的经验也说明，过短 orphan retention 会把仍在写入或提交中的文件误判为 orphan。
 
 ## 13. SQL 语义建议
 
@@ -798,10 +926,9 @@ RETENTION (
 ```sql
 CREATE DATA LIFECYCLE POLICY events_lifecycle
   AGE BY event_ts
-  MOVE TO ONLINE_COLD AFTER INTERVAL '7' DAY
   ARCHIVE AFTER INTERVAL '90' DAY
-  PURGE AFTER INTERVAL '730' DAY
-  USING STORAGE PROFILE mo_archive_default;
+  PURGE ELIGIBLE AFTER INTERVAL '730' DAY
+  USING ARCHIVE STORAGE PROFILE mo_archive_default;
 
 ALTER TABLE events
   ADD DATA LIFECYCLE POLICY events_lifecycle ON (event_ts);
@@ -809,11 +936,14 @@ ALTER TABLE events
 
 明确语义：
 
-- `[0, 7d)`：HOT；
-- `[7d, 90d)`：ONLINE_COLD；
+- `[0, 90d)`：仍属于活动表；其 cache/介质由独立 storage placement policy 管理；
 - `[90d, 730d)`：ARCHIVED；
-- `>=730d`：归档 payload 可进入 purge 判定；
+- `>=730d`：归档 payload 具备 purge eligibility，进入 best-effort 回收判定；
 - 原活动对象何时物理删除仍受历史引用影响。
+
+MVP 不在 data lifecycle policy 中提供 `MOVE TO ONLINE_COLD`。ONLINE_COLD 是活动数据的物理放置策略，应在后续独立 `STORAGE PLACEMENT POLICY` 中定义，避免重新把三个平面混回一个状态机。
+
+`PURGE ELIGIBLE AFTER` 表示“在此之前不得删除；到期后允许进入 best-effort 物理回收”，不承诺某一时刻前必然删除。Maximum retention 是后续独立合规模式，需要更高权限并处理 Snapshot、PITR、Branch、Backup、replica 和 legal hold 冲突。
 
 ### 13.2 Snowflake 兼容层
 
@@ -841,6 +971,8 @@ SHOW DATA LIFECYCLE FOR TABLE events;
 EXPLAIN DATA LIFECYCLE FOR TABLE events;
 SHOW DATA LIFECYCLE JOBS;
 SHOW ARCHIVES FOR TABLE events;
+SHOW ARCHIVE DATASETS;
+SHOW ARCHIVE DATASET 'archive-dataset-uuid';
 SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 ```
 
@@ -874,20 +1006,24 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 - 只支持单个非空时间列；
 - 必须与 range 分区边界对齐；
 - 只处理完整封存分区；
-- sealed state、在途写排空和分区级 DML admission；
+- TN commit fence、partition generation 和稳定提交水位；
+- late arrival 默认拒绝，可观察但不静默重开分区；
 - policy/binding/job catalog；
 - dry-run、fencing、对象级 journal；
+- partitions/table、jobs/account 和 metadata rows 硬上限；
 - 逻辑 expire 与物理 GC 指标；
-- 与 Snapshot/PITR/Branch 联合测试。
+- 与 Snapshot/PITR/Branch 联合测试，包括读取已经 DROP 的历史 partition。
 
 这一阶段可先解决 #24552 的安全子集，不涉及云深归档。
 
 ### Phase 2：MO-managed Online Archive
 
 - 建立 archive payload + hot Manifest；
-- copy → verify → transactional publish/retire；
-- 强制 predicate 的新表恢复；
-- schema evolution；
+- 独立 `archive_dataset_id` 和版本化 Archive Container；
+- copy → full verify → P0 transactional publish/retire prototype gate；
+- 强制 predicate 的 hidden staging → validate → atomic publish 新表恢复；
+- archive snapshot schema 默认恢复，当前 schema 映射为显式选项；
+- explicit reference edge、legal hold 和 archive mark-and-sweep GC；
 - archive/restore cost 和进度；
 - 先使用始终可直接读取的 profile 验证协议。
 
@@ -898,6 +1034,7 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 - priority、quota、deadline、cancel 状态；
 - 大规模文件恢复的 backpressure；
 - cache gate 和跨 CN invalidation；
+- archive catalog/profile/KMS 的 Backup/DR 与周期 restore drill；
 - 故障注入覆盖所有中间状态。
 
 ### Phase 4：ONLINE_COLD 与自动热度优化
@@ -916,6 +1053,8 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 
 - cutoff 边界、时区、NULL、未来时间、late arrival；
 - whole-unit 和 mixed-unit；
+- fence 前写入全部进入 archive Snapshot，fence 后旧 generation 提交成功数严格为零；
+- 无主键 INSERT、UPDATE、DELETE、MERGE、LOAD、CDC、index build 和后台 merge 使用同一 TN generation 协议；
 - policy 修改、删除、改名、table rename、drop/recreate；
 - DML/merge 与 lifecycle 同时操作相同对象；
 - secondary/fulltext/vector index；
@@ -932,6 +1071,7 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 - user Snapshot；
 - Branch Protect Snapshot；
 - Snapshot/Branch 在归档前、归档中、归档后创建/删除；
+- Snapshot/PITR 在活动 partition DROP 后仍能读取其历史对象；
 - archive purge 与 history pin 冲突；
 - legal hold 与 maximum retention 冲突。
 
@@ -949,6 +1089,8 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 8. restore 部分完成；
 9. archive 多对象部分删除；
 10. CN owner 失联，新 owner 以更高 lease epoch 接管。
+11. TN leader change、commit unknown 和 seal command/已 prepare 事务竞争；
+12. stale runner 已提交 provider 请求，但失去 catalog 推进权限。
 
 每个点都要证明：
 
@@ -976,6 +1118,21 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 - object generation/CAS 冲突；
 - credentials/KMS key rotation。
 
+### 15.5 容量和可观测性
+
+必须设置并测试硬限制，而不只是展示指标：
+
+- max lifecycle partitions per table；
+- max archive files/bytes/duration per job；
+- max concurrent jobs per account/cluster；
+- target archive file size 和 max provider request QPS；
+- max outstanding restore requests / restore staging bytes；
+- max orphan bytes/objects 和 orphan grace duration；
+- completed job/step、Manifest 和 reference metadata retention；
+- hard backlog circuit breaker。
+
+超过上限时 fail closed，不能静默扩大扫描或恢复范围。至少分别展示 `logical_expired_bytes`、`archive_verified_bytes`、`history_pinned_bytes`、`physically_reclaimed_bytes`、`orphan_bytes`、`restore_pending_bytes` 和预计 storage/retrieval cost。
+
 ## 16. MO 可以比业界做得更好的地方
 
 ### 16.1 把“逻辑过期”和“物理省钱”同时展示
@@ -993,6 +1150,21 @@ blocked by:
 ```
 
 这比只显示“已归档 10 TB”更真实。
+
+由于 MO 的 durable data 本来就在对象存储，经济收益不能只比较 Standard 与 Glacier/Archive 的单价。每次 dry-run 应估算：
+
+```text
+net saving =
+  standard storage saved
+  - archive storage
+  - Snapshot/PITR/Branch pinned duplicate storage
+  - transition/retrieval/request cost
+  - temporary restore copy
+  - early-deletion/minimum-duration charge
+  - restore compute and index rebuild cost
+```
+
+Phase 2 进入生产前，应使用真实客户表验证净节省、年度预计 restore 次数、平均 archive 文件大小、restore P50/P95/P99、历史引用导致的双份时间和 index rebuild 成本。若不能证明正向净收益，就不应只为了“有冷热分层”而开启归档。
 
 ### 16.2 Restore 从一开始就是异步、可恢复作业
 
@@ -1046,16 +1218,30 @@ Recommendation: partition by day on event_ts before enabling archive.
 
 以下问题未决前不建议进入完整实现：
 
-1. 归档 payload 的长期格式是 ObjectIO、Parquet 还是新 container？
-2. MVP 是否强制用户按 lifecycle 时间列分区，还是允许后台 lifecycle compaction？
-3. `PURGE AFTER` 是 best-effort、minimum-retention 还是 maximum-retention？
-4. maximum-retention 与 Snapshot/PITR/Branch/legal hold 谁优先？
+1. 版本化 Archive Container 内部 payload 选择 ObjectIO、Parquet 还是其他格式？长期 reader compatibility 如何承诺？
+2. TN fence 的稳定身份使用物理 partition table ID 还是 logical table + partition ID？如何与现有冲突检测和 commit TS 建立稳定水位？
+3. Manifest 发布、partition mapping 删除和物理 partition/index 退休能否在当前事务框架中形成单一可判定提交？
+4. Maximum-retention 合规模式与 Snapshot/PITR/Branch/Backup/replica/legal hold 谁优先，由谁有权强制清理？
 5. archive data 是否参与备份、跨区复制、Data Branch 和 clone？由谁承担副本费用？
 6. ONLINE_COLD 是否要求普通查询完全透明，还是需要 session/query opt-in？
 7. policy 切换 storage profile 后，历史 archive 是否原地迁移？
 8. KMS key rotation 和密钥疑似泄露时，归档数据如何 rekey？
-9. 长时间 restore 完成后，新表何时可见，失败表如何清理？
+9. hidden restore staging 使用何种系统表身份和原子 rename/publish 原语？失败清理如何与用户同名建表竞争？
 10. account/database 默认 policy 的继承、覆盖和 policy generation 如何定义？
+
+### 17.1 Review 处理决策记录
+
+| Review 意见 | 处理 | 原因 |
+|---|---|---|
+| 方案 C 升级为 C+，生产实现有条件通过 | 采纳 | 原分析稿方向正确，但缺 TN fence、独立 identity、原子提交和 restore staging 四个闭环 |
+| CN admission 改为 TN commit fence | 采纳正确性要求；保留 wire key 决策 | 当前 CN 会缓存分区路由；最终 fence 必须在 TN。具体使用物理 partition table ID 还是 logical table/partition ID，需要 P0 原型验证 |
+| `cold_after` 移出 lifecycle policy | 采纳 | ONLINE_COLD 属于活动数据 storage placement，不属于业务归档/过期状态机 |
+| 独立 archive dataset、snapshot schema、reference edge、legal hold | 采纳 | 否则源表 DROP/schema 变化或计数漂移会破坏恢复与 GC 入口 |
+| 版本化 container 和全量重读 | MVP 采纳；保留等价校验扩展 | Direct-readable MVP 在源退休前全量重读。未来只有 provider 认可的客户端强 checksum 被 ADR 证明端到端等价后，才可替代逐对象全量重读 |
+| TaskService epoch 不等于 provider side-effect fencing | 采纳 | 外部请求可能在旧 runner 失去 lease 前完成，必须由 immutable key、step journal 和 catalog 条件更新收敛 |
+| Hidden staging 和原子发布 | 采纳 | 部分 restore 不能对用户可见，provider 临时恢复副本也不能成为已发布表的长期数据源 |
+| `PURGE AFTER` 改为 purge eligibility | 采纳 | MVP 只能承诺 minimum retention + best-effort reclaim；maximum retention 是独立合规模式 |
+| Restore-required deep archive 当前 No-Go | 采纳 | 必须等 direct-readable C+ 协议、容量上限和故障矩阵先证明 |
 
 ## 18. 功能定位、业务场景与行业术语
 
@@ -1099,7 +1285,7 @@ Recommendation: partition by day on event_ts before enabling archive.
 
 | 术语 | 含义 | 在 MO 方案中的理解 |
 |---|---|---|
-| Data Lifecycle，数据生命周期 | 数据从产生、活跃、低频访问、归档到删除的完整过程 | policy 定义每个阶段的进入条件、可见性、可写性和最终回收条件 |
+| Data Lifecycle，数据生命周期 | 数据从产生、活跃、归档到删除的业务过程 | lifecycle policy 定义活动/归档/过期条件；在线介质和 cache 由独立 storage placement policy 定义 |
 | Retention，保留 | 数据在某个范围内必须继续存在的时间约束 | 需要区分历史保留、业务归档保留和最大删除期限 |
 | TTL（Time To Live） | 到达时间条件后自动过期的机制 | TTL 更接近逻辑 expire；它不天然意味着要先复制到 Archive |
 | Expire/Logical Expire，逻辑过期 | 从当前业务表中不可见，但底层副本可能暂时存在 | 逻辑过期和物理删除之间可能被 PITR、Snapshot、Branch 或 hold 拉开很长时间 |
@@ -1121,11 +1307,12 @@ Recommendation: partition by day on event_ts before enabling archive.
 | Object Storage，对象存储 | 以 key/value 对象形式保存大文件的持久存储，如 S3、OSS、COS、GCS | MO 的 TAE 对象最终落在对象存储，生命周期不能只改 CN 本地缓存状态 |
 | Storage Class/Profile | 云厂商对对象的成本、延迟、最短存储时间和恢复能力组合 | MO 应用 storage profile 把 `ACTIVE_DIRECT_READ`、`OFFLINE_RESTORE_REQUIRED` 映射到具体云能力 |
 | Provider Lifecycle | S3 等服务按对象创建时间、标签或前缀自动迁移/删除 | provider 不知道 MO 的逻辑引用，最多作为受 MO 控制的执行器 |
+| Archive Dataset | 具有稳定 ID、独立于源表生命周期的逻辑归档集合 | 源表 DROP/rename 后仍可审计和恢复，并独立拥有 Manifest、payload、引用和 hold |
 | Archive Payload | 归档数据本身，可能是 ObjectIO、Parquet 或版本化 container | 必须有长期格式和 schema 兼容承诺，不能默认当前内部文件格式永久不变 |
 | Manifest | 描述归档数据由哪些对象组成、来源 Snapshot、schema、统计和状态的目录 | Manifest 是热端的权威索引，使恢复前不必读取深归档对象的 metadata |
 | Metadata Sidecar | 与数据 payload 分离、保持在线的元数据副本 | 用于列 min/max、行数、checksum 和 restore 规划，避免 cache miss 后无法读取原对象 metadata |
 | Immutable，封存/不可变 | 数据单元封存后不再允许普通 DML 修改 | 只有不可变单元才能安全复制、校验并在短事务中退休 |
-| Sealed Partition，封存分区 | 系统明确禁止新的 INSERT/UPDATE/DELETE，并排空在途写入的分区 | 这是 MO 当前缺失、但归档 MVP 必须新增的并发隔离状态 |
+| Sealed Partition，封存分区 | TN fence 之后旧 generation 写入无法提交，并已形成稳定提交水位的分区 | 这是 MO 当前缺失、但归档 MVP 必须新增的权威并发隔离状态 |
 | Partition Pruning，分区裁剪 | 根据查询条件跳过不可能命中的分区 | 让按时间恢复和归档只处理必要文件，也是控制扫描成本的基础 |
 | Compaction/Merge，合并重写 | 把多个小对象或混合数据重写为更适合查询/归档的大对象 | 生命周期不能绕过 merge；归档前通常要先形成完整封存单元 |
 | Tombstone，删除标记 | MVCC/列存系统中表示某些行或对象已被删除的记录 | 归档必须在固定 Snapshot 上应用 tombstone，否则可能恢复出已删除行 |
@@ -1149,6 +1336,9 @@ Recommendation: partition by day on event_ts before enabling archive.
 | Async Job | 脱离普通 SQL session、可重试和可查询状态的后台任务 | 适合数小时级归档/恢复，不应绑定客户端连接生命周期 |
 | Idempotency，幂等 | 同一操作重复执行，结果等价于执行一次 | 任务重试必须使用稳定 idempotency key，避免重复发布或重复删除 |
 | Lease/Fencing | 用租约和递增 epoch 保证同一资源只有一个有效执行者 | CN 故障转移后，旧 executor 即使恢复也不能继续提交旧 generation |
+| TN Commit Fence | 在事务最终提交位置校验 partition generation 的权威写屏障 | CN 旧路由可以继续运行，但 fence 后旧 generation 的写入无法提交，因此可证明分区已经封存 |
+| Stable Commit Watermark | Fence 之前所有允许提交的写入均已完成的稳定时间点 | `source_snapshot_ts` 必须覆盖该水位，不能通过枚举 CN 本地事务近似得到 |
+| Hidden Staging Table | Restore 期间由系统拥有、尚未向用户发布的临时目标表 | 只有数据、schema 和 hash 校验完成后才原子发布，避免用户读到部分恢复结果 |
 | Dry-run/Explain | 只计算候选数据、字节数、阻塞引用、恢复时间和费用，不改变数据 | 让管理员在不可逆迁移前知道真实影响 |
 | Backpressure，反压 | 当 provider、网络、内存或 restore 配额不足时主动限制生产速度 | 防止归档/恢复把 CN、对象存储连接或任务元数据打爆 |
 | Exactly-once | 从业务效果看只产生一次结果 | 外部对象存储通常不能提供跨系统 exactly-once，MO 应通过幂等发布和可回收 orphan 达到等价效果 |
@@ -1207,9 +1397,9 @@ OFFLINE_RESTORE_REQUIRED  = 查询前必须提交异步恢复任务
 | 数据年龄 | MO 逻辑状态 | 客户体验 | 背后动作 |
 |---|---|---|---|
 | 0–30 天 | `HOT` | 正常查询、UPDATE、告警分析 | 活动表和高性能缓存 |
-| 30–180 天 | `ONLINE_COLD` / 类 COOL | 普通查询仍能执行，但延迟和成本可能更高 | 转到支持 DirectRead 的低成本层，仍由 MO Manifest 管理 |
+| 30–180 天 | `ONLINE_COLD` / 类 COOL | 普通查询仍能执行，但延迟和成本可能更高 | 由独立 storage placement policy 转到支持 DirectRead 的低成本层 |
 | 180 天–2 年 | `ARCHIVED` / 类 COLD | 当前表不可直接查；提交带时间和设备条件的 Restore Job，恢复到新表 | 复制、校验后从活动表逻辑退休，归档 payload 异步保存 |
-| 2 年以后 | `PURGE_CANDIDATE` | 一般不可见 | 检查 PITR、Snapshot、Branch、Backup 和 legal hold 后物理清除 |
+| 2 年以后 | `PURGE_ELIGIBLE` | 一般不可见 | 检查 PITR、Snapshot、Branch、Backup 和 legal hold 后进入 best-effort 物理清除 |
 
 #### 客户 A 什么时候真正使用 Archive
 
@@ -1246,16 +1436,16 @@ CREATE RESTORE JOB restore_device_events_202502
 
 建议将 #24853 的目标重新表述为：
 
-> 为 MatrixOne 增加独立于 Snapshot/PITR 的数据生命周期策略。策略首先支持按时间对齐的封存 range 分区进行逻辑过期和 MO-managed archive；归档数据由热端 Manifest 管理，通过异步、可估算、带谓词的新表 Restore Job 恢复。在线冷热放置使用跨云访问能力契约，不直接暴露或依赖云厂商 Bucket Lifecycle 作为事实源。
+> 为 MatrixOne 增加独立于 Snapshot/PITR 和在线 storage placement 的业务数据 lifecycle core。MVP 只处理按时间列对齐的完整 range partition，通过 TN commit fence 封存分区；归档时将固定 Snapshot 上已经应用 tombstone 的逻辑行集写入版本化、不可变且具有稳定 ID 的 MO-managed archive dataset，完成端到端校验后，在一个 MO 事务中发布 Manifest 并退休活动分区。归档数据通过有界、可估算、带谓词的异步任务恢复到隐藏 staging table，校验后原子发布为新表。Restore-required 深归档与 ONLINE_COLD 在核心协议证明后分别演进。
 
 推荐优先级：
 
-1. 先交付 Lifecycle Core、时间 range 分区 sealed state 和严格子集的 Native TTL；
-2. 再交付 MO-managed archive 和新表 restore；
+1. 先交付 Lifecycle Core、TN fence、严格 range partition EXPIRE 和 dry-run；
+2. 再交付 direct-readable MO-managed archive、版本化 container、独立 archive identity 和 hidden staging restore；
 3. 再接入 restore-required 云归档；
-4. 最后做活动对象 ONLINE_COLD 和自动热度优化。
+4. 最后独立实现活动对象 ONLINE_COLD/storage placement 和自动热度优化。
 
-不建议把 Issue 原语法直接实现，因为它会在 API 层固化错误的三个平面混合，并承诺当前存储引擎尚无法可靠实现的透明语义。
+不建议把 Issue 原语法直接实现，因为它会在 API 层固化错误的三个平面混合，并承诺当前存储引擎尚无法可靠实现的透明语义。在 TN fence、原子 publish/retire、Archive Container、独立 archive identity、reference GC 和 hidden restore staging 六项 P0 能力通过故障注入前，只能称为受控原型，不能声称生产级数据安全。
 
 ## 20. 参考资料
 
