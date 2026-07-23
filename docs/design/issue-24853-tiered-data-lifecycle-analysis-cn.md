@@ -22,7 +22,7 @@ Issue #24853 反映的用户需求是真实且重要的，但 Issue 对问题的
 2. **历史版本保留、业务数据生命周期和物理冷热放置必须拆成三个独立平面。** `DATA_RETENTION_TIME_IN_DAYS`、PITR、Snapshot 解决的是历史版本；TTL/归档解决的是当前表中哪些业务行还应可见；HOT/COLD 解决的是在线数据的缓存、介质和访问 SLA。把三者放入一个 `RETENTION(HOT, COLD, ARCHIVE)` 语法会产生不可解释的冲突。
 3. **当前 MO 有可复用的基础能力，但不存在可以直接拼起来完成该 Feature 的“现成积木”。** 可以复用 Snapshot/PITR 的 GC 引用判定、TaskService、FileService、Stage 导入导出和对象存储适配器；但当前对象定位、对象元数据、缓存路径、merge、tombstone、索引和云存储接口都没有 lifecycle 状态与 restore 能力。
 4. **不建议让云厂商 Bucket Lifecycle 直接管理当前 TAE 对象，也不建议第一版把当前 TAE 对象原地转入深归档。** 这两种方案存在数据不可读、metadata 也被冻结、缓存绕过状态、merge/DML 失败、策略漂移以及误归档内部对象等严重风险。
-5. **有条件推荐方案 C+：“独立 archive dataset + 热端 Manifest + 可恢复异步作业”。** 先通过 TN 权威 commit fence 封存完整 range 分区，再把固定 Snapshot 上已经应用 tombstone 的逻辑行集写入独立 archive dataset；完成端到端校验后，才允许在一个 MO 事务中发布 Manifest 并退休活动分区。该原子事务必须先通过 P0 原型，不能当成当前已具备能力。
+5. **有条件推荐方案 C+：“独立 archive dataset + 热端 Manifest + 可恢复异步作业”。** 先通过 TN 权威 commit fence 封存完整 range 分区，同时建立 TAE GC 可识别的 source pin，再把固定 Snapshot 上已经应用 tombstone 的逻辑行集写入独立 archive dataset；完成端到端校验后，才允许通过带完整 CAS 前置条件的 MO 事务发布 Manifest 并退休活动分区。该事务、source pin 和不可逆 Archive Delete 协议都必须先通过 P0 原型，不能当成当前已具备能力。
 6. **第一版必须收窄能力。** 只支持表级、单调时间列、与 range 分区边界对齐、完整封存分区；只支持 purge eligibility 和恢复到新表；不支持任意 SQL 表达式、仅按 sort key 选择对象、last-access 作为正确性依据、maximum-retention 强制删除、透明访问深归档、同表恢复和账户级继承。
 7. **MO 可以在“可解释性和跨云一致性”上做得比主流方案更好。** 关键是提供 lifecycle dry-run、历史引用导致的 pinned bytes、物理回收进度、恢复文件数/字节数/预计费用、明确的云能力契约，以及可中断、可重试、有 fencing 的异步任务。
 
@@ -32,8 +32,9 @@ Review 后的阶段决策：
 
 | 范围 | 决策 | 进入条件 |
 |---|---|---|
+| Phase 0 / TN fence P0 原型 | Go | 验证 TN generation fence、稳定提交水位以及旧 generation 写入 abort/retry |
 | Lifecycle Core、严格 range partition TTL/EXPIRE | Conditional Go | TN fence、late arrival 和历史 Snapshot 读取已退休分区通过原型与故障测试 |
-| MO-managed direct-readable archive | Conditional Go | 独立 archive identity、版本化 container、原子 publish/retire 和 hidden staging restore 通过原型 |
+| MO-managed direct-readable archive | Conditional Go | conditional transactional publish、source pin、不可逆删除、独立 archive identity、版本化 container 和 hidden staging restore 通过原型 |
 | Restore-required deep archive | No-Go | 前两阶段协议和 fake/real provider 故障矩阵通过后再进入 |
 | 活动 ObjectIO 原地 deep archive、Issue 原始混合 SQL | No-Go | 与当前 metadata/cache/merge 契约及三平面语义冲突 |
 
@@ -95,6 +96,8 @@ MO 应把历史保护和业务归档分别建模，只在 GC 引用图上汇合�
 - [`pkg/vm/engine/tae/db/gc/v3/exec_v1.go`](https://github.com/matrixorigin/matrixone/blob/0d7eeb38b43b6b89f746b0a634662349a4b01de2/pkg/vm/engine/tae/db/gc/v3/exec_v1.go#L373-L479)
 
 这部分适合复用为 lifecycle 的“历史引用是否允许物理回收”判定，但不应复用 `mo_pitr` 作为 lifecycle policy 表。
+
+当前 GC 保护集合并没有 lifecycle Job/source Snapshot 引用。也就是说，仅在 Job 中记录 `source_snapshot_ts` 不会自动让 TAE GC pin 住对应源对象；Phase 2 必须新增 GC 可识别的 `lifecycle_source_ref`，或严格复用系统管理 Snapshot，不能只依赖 CN 内存任务状态。
 
 #### Data Branch 已通过系统 Snapshot 保护历史
 
@@ -191,6 +194,8 @@ FORMAT 'parquet';
 - checksum/完整性查询。
 
 代码证据：[`pkg/fileservice/object_storage.go`](https://github.com/matrixorigin/matrixone/blob/0d7eeb38b43b6b89f746b0a634662349a4b01de2/pkg/fileservice/object_storage.go#L139-L189)。
+
+其中 `Delete(ctx, keys...)` 只接收 key，没有统一的 version/generation match 条件。因此不可变 key 能避免旧 runner 覆盖新 payload，却不能单独阻止旧 runner 删除对象；archive GC 还需要 catalog 中不可逆的 delete intent、禁止重新引用和 key 永不复用。
 
 AWS 适配器的 `PutObjectInput` 和 `CreateMultipartUploadInput` 当前也没有设置 `StorageClass` 或归档标签。S3FS 还会根据 Endpoint 选择 AWS、MinIO、COS、OSS、HDFS 或本地磁盘适配器，因此新能力不能假定所有后端都支持同一种操作。
 
@@ -503,7 +508,7 @@ OFFLINE_RESTORE_REQUIRED
 | `ONLINE_COLD` | 是 | 是 | 是，但可能有更高读成本 | 仅映射到支持直接读的存储 profile |
 | `ARCHIVED` | 否 | 否 | 否 | 独立归档数据集，需要 restore |
 | `LOGICALLY_EXPIRED` | 否 | 否 | 否 | 已从当前表移除，原对象可能仍被历史引用 |
-| `PURGED` | 否 | 否 | 否 | 所有归档 payload 和不再被引用的源对象均已物理回收 |
+| `PURGED` | 否 | 否 | 否 | 该 archive dataset 的 payload 已确认删除；源 TAE 对象是否回收由独立的历史引用和 TAE GC 决定 |
 
 “HOT”在 MO 中主要代表缓存/QoS，而不是另一个 durable 主存。MO 本身已经把持久数据放在对象存储，CN 本地 SSD/内存更多是缓存。
 
@@ -544,12 +549,15 @@ OFFLINE_RESTORE_REQUIRED
 - `source_database_id` / `source_table_id`
 - 源 database/table/partition 的归档时展示名称
 - `source_partition_id` / partition boundary / partition generation
+- 捕获的 table/schema lifecycle generation
 - `policy_id` / `policy_version`
+- binding ID / binding version
 - `source_snapshot_ts`
 - 完整 archive snapshot schema / schema digest
 - `predicate/cutoff`
 - `row_count` / `logical_bytes` / `physical_bytes`
 - policy/query 列 min/max
+- verified Manifest root / verifier version / verified time
 - `storage_profile_id`
 - `payload_format_version` / `reader_version`
 - region / KMS key ID / KMS key version
@@ -564,7 +572,7 @@ Manifest 在发布时固化 `archived_at`、`purge_eligible_at`、policy version
 
 - `archive_dataset_id`
 - `object_id`
-- immutable/content-addressed URI，或 job/epoch scoped key
+- dataset/job/epoch scoped immutable URI；MVP key 全局不复用，content hash 单独记录
 - provider generation/version
 - strong checksum / manifest root membership
 - size / row count
@@ -575,9 +583,12 @@ Manifest 在发布时固化 `archived_at`、`purge_eligible_at`、policy version
 #### `mo_lifecycle_jobs`
 
 - `job_id`
+- `parent_batch_id`
 - `idempotency_key`
 - `policy_id` / generation
 - `target_table_id`
+- `target_partition_id` / captured partition generation
+- captured table/schema lifecycle generation 和 binding version
 - `job_type`
 - `state`
 - `lease_owner` / `lease_epoch`
@@ -585,6 +596,20 @@ Manifest 在发布时固化 `archived_at`、`purge_eligible_at`、policy version
 - retry count / next retry
 - last error
 - requested/cancelled/completed time
+
+一次 policy scan 可以生成包含多个候选分区的 coordinator/batch，但一个 archive child job 只能处理一个 partition。每个 child job 对应一个 `archive_dataset_id` 和一次 publish/retire 事务，不能把多个大分区放入同一个 all-or-nothing Job。
+
+#### `mo_lifecycle_source_refs`
+
+- `source_ref_id`
+- `job_id` / `archive_dataset_id`
+- `source_database_id` / `source_table_id` / `source_partition_id`
+- `source_snapshot_ts`
+- captured partition、table/schema lifecycle generation
+- `state`
+- `created_at` / `released_at`
+
+`lifecycle_source_ref` 是归档复制期间对源 TAE Snapshot 的持久化 pin。实现可以复用系统管理 Snapshot，但最终必须进入现有 TAE GC 能识别的引用集合；只在 publish 成功、显式 unseal/cancel 完成或 terminal cleanup 后释放。记录本身不直接删除，而是保留 `RELEASED` 终态供 reconciliation 和审计。
 
 #### `mo_archive_references`
 
@@ -633,7 +658,9 @@ storage profile 必须由系统管理员管理，不直接复用用户 Stage cre
 ### 8.5 Archive Ownership、DROP、Backup/DR
 
 - Active partition 由 table/partition lifecycle catalog 拥有；
+- 正在复制的源 Snapshot 由 `lifecycle_source_ref` 拥有；它必须被 TAE GC 识别，Job 结束前不能只靠内存 lease 保护；
 - 已发布 payload 由 archive dataset Manifest 拥有；未发布 payload 由 lifecycle job 临时拥有；
+- Manifest 进入 `PURGE_PENDING` 后，archive payload 的不可逆删除所有权转移给 archive GC；普通 Job、policy 更新或新 reference 不能再撤销；
 - hidden restore staging 由 restore job 拥有，发布成功后新表接管 active objects；
 - provider restore 临时副本不是权威副本，任务结束后必须回收；
 - 普通 `DROP TABLE` 只删除活动表，不自动删除已经发布的 archive dataset；
@@ -653,8 +680,12 @@ Partition: ACTIVE(g) -> SEALING(g+1) -> SEALED(g+1) -> RETIRED
            SEALING/SEALED(g+1) -- explicit abort before publish --> ACTIVE(g+2)
 Manifest:  WRITING -> VERIFYING -> VERIFIED_NOT_PUBLISHED -> PUBLISHED
            -> PURGE_PENDING -> PURGED
-Object:    UPLOADING -> DIRECT_READ_VERIFIED -> TRANSITIONING
-           -> DIRECT_READ | RESTORE_REQUIRED -> DELETING -> DELETED
+Object:    UPLOADING -> VERIFYING -> VERIFIED
+           -> DELETE_INTENT -> DELETING -> DELETED
+           DELETING -> DELETE_FAILED_MANUAL -> DELETING
+Access:    DIRECT_READ -> TRANSITIONING -> RESTORE_REQUIRED
+           -> REHYDRATING -> DIRECT_READ
+SourceRef: PROTECTING -> PINNED -> RELEASE_PENDING -> RELEASED
 Restore:   REQUESTED -> REHYDRATING -> MATERIALIZING -> VALIDATING
            -> READY_TO_PUBLISH -> PUBLISHED
 ```
@@ -672,7 +703,7 @@ Restore:   REQUESTED -> REHYDRATING -> MATERIALIZING -> VALIDATING
 1. 表已经由用户显式定义 range partition，MVP 不隐式创建、滚动或重组分区；
 2. lifecycle 列是非空的 DATETIME/TIMESTAMP，并与 range 分区边界对齐；
 3. 整个分区的上界 `<= cutoff`；
-4. 没有进行中的 merge、DDL 或另一个 lifecycle job；
+4. scan 时没有进行中的 merge、DDL 或另一个 lifecycle job，且后续通过 lifecycle generation 而不是长时间表锁检测 DDL；
 5. policy generation 与任务捕获的一致；
 6. partition/table、job 和文件数量没有超过硬上限。
 
@@ -691,21 +722,52 @@ MVP 必须引入 TN 权威 commit fence：所有可能写入物理分区的 INSE
 
 Late arrival 必须有显式语义：MVP 默认返回 sealed-partition 错误；可选能力可以把迟到数据路由到独立 quarantine/late-arrival 表，但不能静默重开旧分区。对其他 ACTIVE 分区的写入可以继续。
 
+归档 copy 可能持续数小时，候选选择时检查一次 DDL 不构成保护。MVP 必须同时满足：
+
+- seal 事务在把 partition 置为 `SEALING(g+1)` 时建立持久化、TAE GC 可识别的 `lifecycle_source_ref`；稳定提交水位确定后将它绑定到 `source_snapshot_ts`，两者之间不能出现源对象失去 active/reference 保护的窗口；
+- table/schema/partition lifecycle generation 和 policy/binding version 在 Job 创建时捕获；相关 DDL 或 policy 变更必须推进对应 generation/version；
+- 纯 metadata schema DDL 不持有数小时表锁，可以完成并推进 table/schema lifecycle generation；旧 Job 的最终 publish CAS 因此失败，然后执行 cleanup、unseal 或重新规划；
+- index build、schema rewrite 或其他会写入目标物理分区的 DDL 仍受 TN fence 约束，不能绕过 `SEALED` 状态完成；调用方必须等待归档结束或先显式 cancel；
+- `DROP TABLE`、`TRUNCATE`、`DROP/REORGANIZE PARTITION` 以及 database/account 删除遇到非终态 lifecycle Job 时，MVP 默认拒绝并返回阻塞 Job；管理员显式 cancel 后，catalog 事务必须阻止旧 publish、unseal 到新 generation、把 source ref 置为 `RELEASE_PENDING`，并把未发布 payload 所有权转给 orphan GC，随后即可重试 DROP；
+- “DROP 后继续完成归档”或“DROP 隐式级联取消”都不是 MVP 的默认语义；若后续提供，必须使用独立显式命令和审计记录。
+
+cancel/DROP 控制路径不能同步等待远端 orphan Delete；远端不可用时只会形成有上限、可告警的 orphan backlog，不应把 DDL 永久卡住。因此正确性不依赖持有数小时 DDL 锁：源 Snapshot 由持久化 reference 保护，元数据竞争由 generation/version 在最终事务中裁决。
+
 ### 9.2 Archive 的安全顺序
 
 推荐顺序：
 
 1. dry-run 计算 policy version、cutoff、候选完整分区、rows/bytes/files、pinned bytes 和目标 profile；
-2. 创建语义幂等键为 `(table_id, policy_version, partition_id, partition_generation, action)` 的 Job；
-3. 通过 TN commit fence 将分区从 `ACTIVE(g)` 切到 `SEALING(g+1)`；
-4. 等待 fence 对应的稳定提交水位，记录 `source_snapshot_ts`，再切到 `SEALED(g+1)`；
-5. 从一致性 Snapshot 物化已经应用 tombstone 的逻辑行集；
-6. 写入 immutable/content-addressed 或 job/epoch scoped archive payload；
-7. 完成 container、强 checksum、schema、行数和 Manifest root 校验；
-8. 将 Manifest 写为 `VERIFIED_NOT_PUBLISHED`；
-9. 在一个短 MO 事务中发布 Manifest，并退休 partition mapping、物理分区及其索引；
-10. commit 后由 reconciliation 从 Manifest/partition catalog 推导结果，再更新 Job 状态；
-11. 未发布或 stale epoch payload 由 orphan GC 在 grace period 后回收。
+2. 创建一次 coordinator/batch；为每个候选 partition 创建一个 child Job，语义幂等键为 `(table_id, policy_version, partition_id, partition_generation, action)`；
+3. 每个 child Job 独立分配一个 `archive_dataset_id`，一次只处理一个 partition；
+4. 通过 TN commit fence 将该分区从 `ACTIVE(g)` 切到 `SEALING(g+1)`，并在同一封存操作中建立 TAE GC 可识别的 `lifecycle_source_ref`；
+5. 等待 fence 对应的稳定提交水位，在一个 metadata 事务中记录 `source_snapshot_ts`、把 source ref 从 `PROTECTING` 置为 `PINNED`，并将 partition 切到 `SEALED(g+1)`；
+6. 从一致性 Snapshot 物化已经应用 tombstone 的逻辑行集；
+7. 写入 dataset/job/epoch scoped、全局不复用的 immutable archive payload；
+8. 完成 container、强 checksum、schema、行数和 Manifest root 校验，把每个 object 标记为 `VERIFIED`；
+9. 将 Manifest 写为 `VERIFIED_NOT_PUBLISHED`，固化 verified root；
+10. 执行 conditional transactional publish：在一个短 MO 事务中校验全部 CAS 前置条件，发布 Manifest，退休 partition mapping、物理分区及其索引，并把 `lifecycle_source_ref` 置为 `RELEASE_PENDING`；
+11. commit 后由 reconciliation 从 Manifest/partition catalog 推导结果，将 source ref 收敛到 `RELEASED`，再更新 Job 状态；
+12. 未发布或 stale epoch payload 由 orphan GC 在 grace period 后回收。
+
+第 10 步不是普通的“发布 + DROP”事务。它必须在同一事务快照中同时断言：
+
+```text
+partition.state == SEALED
+AND partition.generation == captured g+1
+AND table/schema lifecycle generation == captured generation
+AND policy/binding version == captured version
+AND job.executor_epoch == current epoch
+AND manifest.state == VERIFIED_NOT_PUBLISHED
+AND manifest.root == verified root
+AND source_ref.state == PINNED
+AND source_ref.source_snapshot_ts == manifest.source_snapshot_ts
+AND manifest object set/count exactly matches verified root
+AND every object referenced by manifest.state == VERIFIED
+AND every object referenced by manifest.access == DIRECT_READ
+```
+
+任一条件不成立，整个事务必须 abort，不得发布 Manifest，也不得退休 partition 或索引。例如旧 Job 在 `SEALED(g+1)` 完成校验后，管理员已经显式 unseal 到 `ACTIVE(g+2)`，旧 publish 请求即使晚到也只能 CAS 失败，不能退休已经恢复写入的 `g+2` 分区。事务提交结果未知时，恢复器只能从 Manifest、partition catalog 和 generation 推导结果，不能以 Job 状态猜测。
 
 如果复制失败，可以保留 `SEALED(g+1)` 重试，或在确认没有 Manifest 发布和退休动作后显式 unseal 到 `ACTIVE(g+2)`。Generation 不能回退或复用，旧 runner 和旧路由仍然必须被 TN 拒绝。不能在不做审计的情况下自动解封，因为调用方可能已经依赖“该时间分区不再可写”的语义。
 
@@ -714,6 +776,18 @@ Late arrival 必须有显式语义：MVP 默认返回 sealed-partition 错误；
 > 在活动数据被逻辑退休之前，必须至少存在一份已经校验且可由 catalog 找回的归档副本。
 
 允许暂时双份，不允许出现零副本。
+
+MVP 的原子边界固定为：
+
+```text
+one policy scan
+  -> one bounded coordinator/batch
+  -> one child job per partition
+  -> one archive dataset per child job
+  -> one conditional publish/retire transaction per partition
+```
+
+不能让一个 archive Job 跨多个大分区做 all-or-nothing publish。这样事务大小、失败范围、source pin、幂等键、恢复范围和接管成本都有明确上限。
 
 ### 9.3 并发语义
 
@@ -743,15 +817,45 @@ Container 至少保存：
 - compression/encryption 和 KMS key version；
 - job ID、executor epoch 和 idempotency key。
 
-对象 key 必须 immutable、content-addressed 或 job/epoch scoped，不能原地覆盖。Direct-readable archive MVP 在源分区退休前应完整重读目标 payload，重算 hash 并执行最小 restore/read drill；如果后续希望用 provider 认可的客户端强 checksum 代替每次全量重读，必须用单独 ADR 证明其端到端等价性，并保留周期 scrub 和跨版本 restore drill。
+对象 key 必须使用 dataset/job/epoch scoped 的全局唯一 immutable identity，例如 `<archive_dataset_id>/<job_id>/<object_id>-<content-hash>`，不能原地覆盖，也不能在删除后复用。MVP 不做跨 dataset 的纯 content-addressed key 去重，content hash 只用于完整性校验；未来只有在建立全局 archive object identity、跨 dataset reference edge 和原子删除 CAS 后才能开放去重。Direct-readable archive MVP 在源分区退休前应完整重读目标 payload，重算 hash 并执行最小 restore/read drill；如果后续希望用 provider 认可的客户端强 checksum 代替每次全量重读，必须用单独 ADR 证明其端到端等价性，并保留周期 scrub 和跨版本 restore drill。
 
 在 container、类型矩阵、reader dispatch、golden archive 和升级兼容测试确定前，不应承诺多年级的合规可恢复性。Deep Archive transition 只能发生在 direct-readable payload 完成上述校验之后。
 
 ### 9.5 TaskService 与外部副作用 Fencing
 
-TaskService runner epoch、heartbeat 和 CAS 适合做外层调度，但不能自动 fence 已经发给 provider 的 multipart upload、copy、transition、restore 或 batch delete。
+TaskService runner epoch、heartbeat 和 CAS 适合做外层调度，但不能自动 fence 已经发给 provider 的 multipart upload、copy、transition、restore 或 delete。
 
-每个外部 step 必须使用 `(job_id, executor_epoch, step, object_id)` 记录条件状态迁移。旧 runner 即使在发现 lease 失效前完成了 provider 请求，也只能留下可 reconciliation 的 immutable object 或重复请求，不能推进新 epoch 的 Manifest。跨云正确性不能依赖所有 provider 都有 CAS，应以不可变 key、catalog 条件更新和幂等 reconciliation 收敛。
+upload、copy、transition 和 restore 等非破坏性 step 必须使用 `(job_id, executor_epoch, step, object_id)` 记录条件状态迁移。旧 runner 即使在发现 lease 失效前完成了 provider 请求，也只能留下可 reconciliation 的 immutable object 或重复请求，不能推进新 epoch 的 Manifest。跨云正确性不能依赖所有 provider 都有 CAS，应以不可变 key、catalog 条件更新和幂等 reconciliation 收敛。
+
+immutable key 只解决重复上传和覆盖，不能让 stale runner 的 Delete 自动安全。当前 `ObjectStorage.Delete(ctx, keys...)` 只有 key，没有统一的 provider version/generation 前置条件；删除必须使用下面的独立协议。
+
+### 9.6 不可逆 Archive Delete 协议
+
+Archive dataset 只有在 catalog 事务中满足以下删除谓词时，才能从可引用的 `PUBLISHED` 原子进入不可逆的 `PURGE_PENDING`：
+
+```text
+purge_eligible_at reached
+AND archive reference edges == 0
+AND restore/backup/DR/transition/migration/rekey reference edges == 0
+AND legal hold == 0
+AND hard-delete grace reached
+AND manifest.state == PUBLISHED
+AND every object.state == VERIFIED
+AND no nonterminal provider step
+```
+
+创建 reference/hold 的事务必须同时断言 Manifest 仍为 `PUBLISHED`，不能是 `PURGE_PENDING`/`PURGED`；这样用一次 dataset 级 CAS 关闭“GC 检查引用为零后，新 restore 又增加引用”的 TOCTOU 窗口。Manifest 进入 `PURGE_PENDING` 后，object 才能逐个从 `VERIFIED` 条件更新为 `DELETE_INTENT -> DELETING`。这一 object 状态迁移同样不可撤销：
+
+- 禁止新增 reference，也禁止 cancel 后重新引用同一个 immutable key；
+- 重新保留的可靠决策必须在 Manifest 进入 `PURGE_PENDING` 前建立 reference。进入后不能恢复原 dataset；若 provider 对象尚可读，只能把它 best-effort 复制到新的 immutable key 并建立新的 object/Manifest，且这不会撤销或延缓旧 key 的删除；
+- stale runner 和新 runner 只能对同一个、已冻结的 immutable key 重复 Delete，因此重复调用才是安全幂等；
+- provider 支持 version ID、generation match 或 conditional delete 时，必须删除 Manifest 记录的具体版本；不支持时依赖“key 永不复用 + 不可逆 catalog 状态”保证旧 Delete 不会命中新数据；
+- 单个对象必须在 provider 返回 not-found 或通过确认读取证明不存在后进入 `DELETED`；
+- 只有 Manifest 的所有对象都进入 `DELETED`，Manifest 才能从 `PURGE_PENDING` 进入 `PURGED`。
+
+Delete 请求结果未知时保持 `DELETING` 并重试同一个 key/version；不能回退到 `VERIFIED`，也不能仅凭 TaskService lease epoch 判断删除没有发生。这是 archive ownership/GC 的 P0 不变量。
+
+每次 provider Delete 必须有 deadline、重试上限和退避。超过自动重试上限后进入不可重新引用的 `DELETE_FAILED_MANUAL` 告警态，Manifest 保持 `PURGE_PENDING`；人工重试仍只能恢复到 `DELETING` 并删除同一个冻结 key/version，不能回到 `PUBLISHED`。这样 provider 永久不可用不会产生无限同步等待，同时也不会谎报 `PURGED`。
 
 ## 10. Restore 设计
 
@@ -868,38 +972,60 @@ Snowflake 已强制 restore 使用 `WHERE`，并允许用 `EXPLAIN` 估算文件
 
 ## 12. GC 与引用模型
 
-建议统一维护以下引用：
+必须把源 TAE 对象与 archive payload 分成两个引用域和两条删除谓词，不能把所有引用合并成一个跨平面计数器。
+
+源 TAE 引用域包括：
 
 ```text
 active table
 snapshot
 pitr
 branch protect snapshot
-backup / replica / fork
-archive manifest
+backup / replica / fork / ISCP
+lifecycle_source_ref
+```
+
+源对象继续由现有 TAE GC watermark 和其可识别的历史引用保护。新增 `lifecycle_source_ref` 必须接入这套 GC 判定，或者严格复用系统管理 Snapshot；只在归档 child Job 发布成功、显式 unseal/cancel 完成或 terminal cleanup 后释放。
+
+```text
+Source TAE object deletable =
+  dropped from active table
+  AND no Snapshot/PITR/Branch/Backup/replica/fork/ISCP reference
+  AND no lifecycle_source_ref
+  AND existing TAE GC watermark allows deletion
+```
+
+Archive 引用域包括：
+
+```text
+published archive dataset/reference
 restore job
+archive backup / DR replica
+transition / migration / rekey job
 legal hold
 ```
 
-以上引用必须保存为可审计的显式 reference edge。`reference_count` 可以作为派生指标或查询加速缓存，但不能作为 GC 的唯一事实源；reconciliation 应能从边集合重建 count 并检测漂移。Legal hold 使用独立记录和授权流程，普通 policy、DROP 和 task retry 不能删除或覆盖它。
-
-物理删除条件至少是：
+这些关系必须保存为可审计的显式 reference edge。`reference_count` 只能作为派生指标或查询加速缓存，不能作为 GC 的唯一事实源；reconciliation 必须能从边集合重建 count 并检测漂移。Legal hold 使用独立记录和授权流程，普通 policy、DROP 和 task retry 不能删除或覆盖它。
 
 ```text
-retention deadline reached
-AND active reference = 0
-AND snapshot/pitr/branch/backup reference = 0
-AND restore job reference = 0
-AND legal hold = 0
-AND orphan/grace deadline reached
+Archive payload provider-delete allowed =
+  purge_eligible_at reached
+  AND no archive dataset/reference edge
+  AND no restore/backup/DR/transition/migration/rekey reference edge
+  AND no legal hold
+  AND hard-delete grace reached
+  AND object is irreversibly marked DELETING
 ```
 
-需要区分两类物理对象：
+`DELETING` 必须由第 9.6 节的 catalog CAS 产生，不能先调用 provider Delete 再补状态。Archive payload 使用独立 mark-and-sweep GC，不能让当前 TAE GC 依赖远端 provider 可用性。
 
-1. **原活动对象**：继续由当前 TAE GC 和 Snapshot/PITR/Branch 引用判定保护；
-2. **归档 payload**：由 archive catalog reference、restore job、backup/DR、hold 和 archive retention 保护。
+两个引用域默认不互相 pin：
 
-原活动对象继续使用当前 TAE GC；archive payload 使用独立 mark-and-sweep GC，不能让当前 TAE GC 依赖远端 provider 可用性。建议参考 Timescale 的做法：引用归零后仍设置 hard-delete grace period。Iceberg 的经验也说明，过短 orphan retention 会把仍在写入或提交中的文件误判为 orphan。
+- Archive Manifest 发布成功并释放 `lifecycle_source_ref` 后，不再因为 Archive Manifest 的存在而 pin 源 TAE 对象；
+- Snapshot/PITR/Branch 只保护其历史视图需要的源 TAE 对象，不会无条件 pin archive payload；
+- 若 Backup/DR 同时复制源对象和 archive payload，必须分别建立两个域内的引用边，不能用一个含义不明的全局 count。
+
+否则会产生无法解释的跨平面永久引用和持续存储增长。建议参考 Timescale 的做法：引用归零后仍设置 hard-delete grace period。Iceberg 的经验也说明，过短 orphan retention 会把仍在写入或提交中的文件误判为 orphan。
 
 ## 13. SQL 语义建议
 
@@ -1010,6 +1136,7 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 - late arrival 默认拒绝，可观察但不静默重开分区；
 - policy/binding/job catalog；
 - dry-run、fencing、对象级 journal；
+- table/schema/partition lifecycle generation 与 conditional retire；
 - partitions/table、jobs/account 和 metadata rows 硬上限；
 - 逻辑 expire 与物理 GC 指标；
 - 与 Snapshot/PITR/Branch 联合测试，包括读取已经 DROP 的历史 partition。
@@ -1020,7 +1147,11 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 
 - 建立 archive payload + hot Manifest；
 - 独立 `archive_dataset_id` 和版本化 Archive Container；
-- copy → full verify → P0 transactional publish/retire prototype gate；
+- seal 时建立 TAE GC 可识别的 `lifecycle_source_ref`，覆盖长时间 copy 与 DDL/GC 并发；
+- 一分区一 child Job、一 archive dataset、一次 conditional transactional publish/retire；
+- publish 事务 CAS partition、table/schema、policy/binding、executor epoch、Manifest root/state 和全部 object verification；
+- archive object 使用不可逆 `DELETE_INTENT -> DELETING` 协议，关闭新增引用/Delete 竞态；
+- copy → full verify → conditional transactional publish/retire P0 prototype gate；
 - 强制 predicate 的 hidden staging → validate → atomic publish 新表恢复；
 - archive snapshot schema 默认恢复，当前 schema 映射为显式选项；
 - explicit reference edge、legal hold 和 archive mark-and-sweep GC；
@@ -1056,6 +1187,9 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 - fence 前写入全部进入 archive Snapshot，fence 后旧 generation 提交成功数严格为零；
 - 无主键 INSERT、UPDATE、DELETE、MERGE、LOAD、CDC、index build 和后台 merge 使用同一 TN generation 协议；
 - policy 修改、删除、改名、table rename、drop/recreate；
+- 旧 Job 校验完成后 unseal 到 `ACTIVE(g+2)`，晚到 publish 必须整体 CAS 失败；
+- publish 前并发改变 table/schema lifecycle generation、policy/binding version、executor epoch、Manifest root/state 或任一 object verification，退休成功数必须为零；
+- 一次 scan 可选择多个分区，但每个 child Job、archive dataset 和 publish/retire 事务只能覆盖一个 partition；
 - DML/merge 与 lifecycle 同时操作相同对象；
 - secondary/fulltext/vector index；
 - tombstone 已应用后的归档结果；
@@ -1071,6 +1205,9 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 - user Snapshot；
 - Branch Protect Snapshot；
 - Snapshot/Branch 在归档前、归档中、归档后创建/删除；
+- 慢速 copy 期间并发 schema/index DDL、DROP/TRUNCATE/REORGANIZE、table/database/account DROP，验证 generation CAS、默认阻塞/cancel 语义和 `lifecycle_source_ref` 无保护空窗；
+- `lifecycle_source_ref` 在 CN crash、TN leader change、executor takeover 和 commit unknown 后仍被 TAE GC 识别，并且只在 publish、显式 unseal/cancel 或 terminal cleanup 后释放；
+- cancel/DROP 只等待 catalog fencing、unseal 和 source-ref ownership transfer，不等待远端 orphan Delete；
 - Snapshot/PITR 在活动 partition DROP 后仍能读取其历史对象；
 - archive purge 与 history pin 冲突；
 - legal hold 与 maximum retention 冲突。
@@ -1088,15 +1225,18 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 7. provider transition/restore 已提交但状态未知；
 8. restore 部分完成；
 9. archive 多对象部分删除；
-10. CN owner 失联，新 owner 以更高 lease epoch 接管。
+10. CN owner 失联，新 owner 以更高 lease epoch 接管；
 11. TN leader change、commit unknown 和 seal command/已 prepare 事务竞争；
-12. stale runner 已提交 provider 请求，但失去 catalog 推进权限。
+12. stale runner 已提交 provider 请求，但失去 catalog 推进权限；
+13. 引用归零检查与并发新增 restore/reference 竞争；
+14. object 已进入 `DELETE_INTENT/DELETING` 后旧、新 runner 重复 Delete，provider 返回成功、not-found、超时或结果未知；
+15. provider key 被删除后尝试重新引用或复用同名 key；
 
 每个点都要证明：
 
 - 不出现零副本；
 - 不重复发布；
-- 不重复删除；
+- 重复 Delete 只能命中同一个冻结 key/version，不能删除新对象或已重新引用的数据；
 - 重试可收敛；
 - orphan 最终可回收；
 - 等待有 deadline；
@@ -1238,10 +1378,28 @@ Recommendation: partition by day on event_ts before enabling archive.
 | `cold_after` 移出 lifecycle policy | 采纳 | ONLINE_COLD 属于活动数据 storage placement，不属于业务归档/过期状态机 |
 | 独立 archive dataset、snapshot schema、reference edge、legal hold | 采纳 | 否则源表 DROP/schema 变化或计数漂移会破坏恢复与 GC 入口 |
 | 版本化 container 和全量重读 | MVP 采纳；保留等价校验扩展 | Direct-readable MVP 在源退休前全量重读。未来只有 provider 认可的客户端强 checksum 被 ADR 证明端到端等价后，才可替代逐对象全量重读 |
-| TaskService epoch 不等于 provider side-effect fencing | 采纳 | 外部请求可能在旧 runner 失去 lease 前完成，必须由 immutable key、step journal 和 catalog 条件更新收敛 |
+| TaskService epoch 不等于 provider side-effect fencing | 采纳 | 外部请求可能在旧 runner 失去 lease 前完成；非破坏性请求由 immutable key、step journal 和 catalog 条件更新收敛，Delete 使用独立不可逆协议 |
 | Hidden staging 和原子发布 | 采纳 | 部分 restore 不能对用户可见，provider 临时恢复副本也不能成为已发布表的长期数据源 |
 | `PURGE AFTER` 改为 purge eligibility | 采纳 | MVP 只能承诺 minimum retention + best-effort reclaim；maximum retention 是独立合规模式 |
 | Restore-required deep archive 当前 No-Go | 采纳 | 必须等 direct-readable C+ 协议、容量上限和故障矩阵先证明 |
+
+### 17.2 二轮 Review 处理决策记录
+
+| Review 意见 | 处理 | 落地位置与判断 |
+|---|---|---|
+| publish/retire 缺完整 CAS 前置条件 | 采纳，P0 | 第 9.2 节定义 conditional transactional publish，原子校验 partition、table/schema、policy/binding、executor epoch、Manifest root/state 和全部 object verification；任何失败均不得退休 |
+| immutable key 不能保证 stale runner Delete 安全 | 采纳，P0 | 当前 `ObjectStorage.Delete` 只有 key；第 9.6 节增加不可逆 `DELETE_INTENT -> DELETING`、reference 创建反向 CAS、provider version 优先和 key 永不复用 |
+| 长时间 copy 缺 DDL 协调和 source pin | 采纳，P0 | 第 8.3、9.1、9.2 节增加 TAE GC 可识别的 `lifecycle_source_ref`、table/schema lifecycle generation 和 DROP/cancel 语义，不使用数小时表锁 |
+| GC 需要拆成两条删除谓词 | 采纳，P1 | 第 12 节拆分 Source TAE 与 Archive payload 引用域，明确两者默认不交叉 pin |
+| 一分区一原子 Job | 采纳，P1 | 一次 scan 生成有界 batch，每个 partition 一个 child Job、一个 archive dataset 和一次 conditional publish/retire 事务 |
+| maximum retention 与 GC 术语不一致 | 采纳，P2 | 当前策略统一使用 `purge_eligible_at`；maximum-retention 明确标记为未来合规模式、非 MVP |
+
+自审进一步固定四项失败路径：
+
+- `PROTECTING -> PINNED` 与 `SEALING -> SEALED` 必须在同一 metadata 事务完成，避免 partition 已封存但 Snapshot pin 尚未生效；
+- publish 或 cancel 只把 source ref 转为 `RELEASE_PENDING`，由 reconciliation 幂等收敛到可审计的 `RELEASED`；
+- cancel/DROP 不同步等待 provider orphan Delete；Delete 自动重试耗尽后停在不可重新引用的人工处理态，不能谎报 `PURGED`。
+- MVP 禁止跨 dataset 复用纯 content-addressed key；否则旧 Delete 可能命中新引用。key 使用 dataset/job/epoch scoped 唯一身份，content hash 仅用于校验。
 
 ## 18. 功能定位、业务场景与行业术语
 
@@ -1275,7 +1433,7 @@ Recommendation: partition by day on event_ts before enabling archive.
 | 订单、交易和履约记录 | 当前订单需要低延迟读写，历史订单需要查询、对账或监管留存 | 当前分区保持活动；封存后的历史分区归档；恢复到临时分析表 | 订单完成 90 天后归档，客服调查时恢复指定日期和订单范围 |
 | 多租户 SaaS | 租户规模、留存要求和付费等级不同 | policy 绑定稳定的 account/table ID；storage profile 和配额按租户隔离 | 企业租户保留 7 年，普通租户保留 1 年，不能因为表 rename 误绑定到新表 |
 | 数据分析和成本治理 | 低频历史数据占用大部分对象存储，偶尔需要全量分析 | 先 dry-run 估算可归档字节、重复副本和恢复成本，再按分区批量执行 | 财务系统只在月末访问三年前的明细，平时不需要在线占用高成本层 |
-| 数据删除和隐私合规 | 要求到期后确实删除，而不是继续保留副本 | 使用 maximum retention，并同时处理 PITR、Snapshot、Branch、Backup 和 legal hold | 用户注销后按法规删除个人数据；若仍有 legal hold，必须明确显示删除被阻塞 |
+| 数据删除和隐私合规 | 要求到期后确实删除，而不是继续保留副本 | 未来 maximum-retention 合规模式（非 MVP），并同时处理 PITR、Snapshot、Branch、Backup 和 legal hold | 用户注销后按法规删除个人数据；若仍有 legal hold，必须明确显示删除被阻塞 |
 
 最适合的共同特征是：**时间列明确、数据能够按 range 分区、封存后很少更新、可以接受异步恢复。**
 
@@ -1436,7 +1594,7 @@ CREATE RESTORE JOB restore_device_events_202502
 
 建议将 #24853 的目标重新表述为：
 
-> 为 MatrixOne 增加独立于 Snapshot/PITR 和在线 storage placement 的业务数据 lifecycle core。MVP 只处理按时间列对齐的完整 range partition，通过 TN commit fence 封存分区；归档时将固定 Snapshot 上已经应用 tombstone 的逻辑行集写入版本化、不可变且具有稳定 ID 的 MO-managed archive dataset，完成端到端校验后，在一个 MO 事务中发布 Manifest 并退休活动分区。归档数据通过有界、可估算、带谓词的异步任务恢复到隐藏 staging table，校验后原子发布为新表。Restore-required 深归档与 ONLINE_COLD 在核心协议证明后分别演进。
+> 为 MatrixOne 增加独立于 Snapshot/PITR 和在线 storage placement 的业务数据 lifecycle core。MVP 只处理按时间列对齐的完整 range partition，通过 TN commit fence 封存分区并建立 GC 可见的 source pin；归档时由一分区一 Job 将固定 Snapshot 上已经应用 tombstone 的逻辑行集写入版本化、不可变且具有稳定 ID 的 MO-managed archive dataset，完成端到端校验后，通过带完整 CAS 前置条件的事务发布 Manifest 并退休活动分区。归档 payload 使用不可逆、禁止重新引用的删除协议。归档数据通过有界、可估算、带谓词的异步任务恢复到隐藏 staging table，校验后原子发布为新表。Restore-required 深归档与 ONLINE_COLD 在核心协议证明后分别演进。
 
 推荐优先级：
 
@@ -1445,7 +1603,7 @@ CREATE RESTORE JOB restore_device_events_202502
 3. 再接入 restore-required 云归档；
 4. 最后独立实现活动对象 ONLINE_COLD/storage placement 和自动热度优化。
 
-不建议把 Issue 原语法直接实现，因为它会在 API 层固化错误的三个平面混合，并承诺当前存储引擎尚无法可靠实现的透明语义。在 TN fence、原子 publish/retire、Archive Container、独立 archive identity、reference GC 和 hidden restore staging 六项 P0 能力通过故障注入前，只能称为受控原型，不能声称生产级数据安全。
+不建议把 Issue 原语法直接实现，因为它会在 API 层固化错误的三个平面混合，并承诺当前存储引擎尚无法可靠实现的透明语义。在 TN fence、conditional publish/retire、GC 可见 source pin、不可逆 Archive Delete、Archive Container、独立 archive identity、双域 reference GC 和 hidden restore staging 通过故障注入前，只能称为受控原型，不能声称生产级数据安全。
 
 ## 20. 参考资料
 
