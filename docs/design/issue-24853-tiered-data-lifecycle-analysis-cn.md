@@ -1,5 +1,7 @@
 # MatrixOne Issue #24853：分层数据生命周期方案复核与设计建议
 
+> **实现方向更新（2026-07-24）**：本文保留行业调研、三平面模型、归档所有权、GC 和删除协议等分析结论；其中“以 SQL Range Partition 作为归档执行边界”的建议已被后续代码复核推翻。Issue #24552 / #24853 的当前推荐实现以**不可变 TAE 对象集合**为执行单元，不依赖 SQL Partition，也不修改普通 Merge 策略。正式概要设计见 [MatrixOne TAE 对象级数据生命周期概要设计](issue-24552-24853-tae-object-lifecycle-overview-design-cn.md)。
+>
 > 状态：方案评估稿，不代表已进入实现
 >
 > 复核日期：2026-07-23
