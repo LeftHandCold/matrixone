@@ -2,7 +2,7 @@
 
 > 状态：Accepted
 >
-> 日期：2026-07-24
+> 日期：2026-07-25
 >
 > 适用范围：MatrixOne Issue #24552 / #24853
 >
@@ -18,15 +18,17 @@ TAE 数据已经以不可变 Object 组织，Object 具有行数、大小、Zone
 
 ## 决策
 
-1. Lifecycle Scanner、Job、source ref 和最终事务以**有界的 exact TAE Object set**为执行边界。
+1. Lifecycle Scanner、Job 和最终事务以**有界的 exact TAE Object set**为执行边界；单个超限 Object 使用 streaming，不假装还能拆成更小 Object set。
 2. SQL Partition 不是功能依赖。已有分区只能作为候选发现和物理对齐优化。
 3. 不新增第二套 Merge Engine，也不修改普通 Merge 的候选、Level、Overlap、Small、目标大小或调度策略。
 4. Mixed Object 使用独立的 **Lifecycle Rewrite Executor**：
    - 过期行进入 Discard/Archive Sink；
    - 存活行使用稳定的 Merge sort/write 原语写回 ObjectIO；
    - 最终通过独立、可重放的 Lifecycle Commit 协议替换源对象。
-5. Whole Object、Mixed Object、TTL 和 Archive 使用同一 Catalog、source-ref、commit receipt、依赖准入和资源预算模型。
-6. correctness 由持久化 source ref、dependency fingerprint、事务 CAS 和 durable receipt 保证；TN scope reservation 只减少与普通 Merge 的冲突，是可后置优化。
+5. Whole Object、Mixed Object、TTL 和 Archive 使用同一 Catalog、Lifecycle Snapshot、Attempt/Cleanup Root、Feature Guard、commit receipt 和资源预算模型。
+6. 首个 GA 用 system table-level Snapshot 保护源对象；只有 Snapshot 提交、数据 flush、GC metadata-visible 且旧 GC cycle drained 后才能选择 Object。correctness 再由 exact object MVCC CAS、Feature Guard 和 durable receipt 闭环。
+7. 第一次外部 PUT 前必须创建 system-owned Attempt Root；Archive 从属于源 table generation/account incarnation，DROP 只写 owner tombstone，provider cleanup 由后台 Sweeper 完成。
+8. TN scope reservation 只减少与普通 Merge 的冲突，是可后置优化；持续冲突到阈值进入 `CONFLICT_BLOCKED`，不修改普通 Merge 策略。
 
 ## 为什么不选择其他方案
 
@@ -61,14 +63,19 @@ TAE 数据已经以不可变 Object 组织，Object 具有行数、大小、Zone
 ```text
 Read-only Planner/Object Index/Dry-run
   -> Export-only Parquet + verification
-  -> replayable commit/source-ref/GC/admission/resource protocol
+  -> tagged commit/Snapshot-GC gate/Attempt Root/Feature Guard/resource protocol
   -> Whole Object TTL/Archive
   -> Mixed Object Lifecycle Rewrite Executor
-  -> direct-readable and restore-required Archive/Restore/Purge
+  -> direct-readable Archive/Restore/Purge (Commercial GA)
+  -> optional restore-required Deep Archive Profile
   -> reservation、聚簇建议等优化
 ```
 
-前两步可以在不退休活动数据的情况下先验证功能和成本。只要开始从活动表移除数据，commit、GC、dependency admission 和资源上限就属于正确性前提，不得以“后续优化”为由跳过。
+前两步可以在不退休活动数据的情况下先验证功能和成本。只要开始从活动表移除数据，tagged commit/replay、Snapshot-GC gate、pre-PUT Root、Feature Guard、immutable Profile 和资源上限就属于正确性前提，不得以“后续优化”为由跳过。
+
+“归档可恢复”是 Commercial GA 的必要条件，但“恢复前必须由 provider thaw”不是。首个 GA 从 direct-readable Parquet/ZSTD payload 恢复到新表；Deep Archive 只在客户 provider 和成本收益明确后增加，不改变本 ADR 的对象级执行边界。
+
+首个 GA 的可恢复性从属于源表/租户：DROP TABLE/DATABASE/ACCOUNT 后不再承诺 Archive Restore。Legal Hold/WORM、DROP 后保留、跨租户 Transfer 和 Archive Backup/DR 不在范围；Backup/PITR/Snapshot Restore/Clone/Branch/DR 对 Lifecycle 表必须 fail closed。该收敛方案只有在六项 GA P0 和完整 Gate E 证据通过后才是 Commercial GA，因此决策状态为 Conditional Go，不表示当前实现已经 GA。
 
 ## 影响
 
@@ -82,7 +89,9 @@ Read-only Planner/Object Index/Dry-run
 代价：
 
 - Mixed Object 必须读取并重写存活行；
-- 需要新的 Lifecycle Commit、exact source ref 和 dependency handler；
+- 需要 tagged Lifecycle Commit、Snapshot GC-visible gate、system Root/owner tombstone 和 Feature Guard；
+- 表级 Lifecycle Snapshot 可能保留与当前 Job 无关的 Merge 旧版本，必须按 exclusive retained bytes 限额并完成 10 TiB sustained-Merge 验证；
+- 首个 GA 拒绝所有物化隐藏索引表和 archive-unaware Backup/DR；
 - Object Index 必须处理 generation、断档恢复和 obsolete GC；
 - 生命周期列不聚簇时重写放大会较高。
 

@@ -6,7 +6,7 @@
 >
 > 状态：历史调研稿，非规范、非实现输入
 >
-> 复核日期：2026-07-23
+> 复核日期：2026-07-25
 >
 > MatrixOne 原始分析基线：`main@0d7eeb38b43b6b89f746b0a634662349a4b01de2`
 >
@@ -22,10 +22,14 @@
 
 1. 历史版本保留、业务生命周期和在线物理放置是三个独立平面；
 2. 不允许云 Bucket Lifecycle 直接迁移或删除活动 TAE Object；
-3. 长期归档使用独立 Archive Dataset、版本化 Container、热端 Manifest、显式 Reference 和不可逆删除协议；
+3. Archive Payload 与活动 Object 物理分离，但首个 GA 的 Dataset 所有权从属于源 table generation/account incarnation；DROP 后不承诺恢复；
 4. 当前规范以有界 exact TAE Object set 为 Job 和事务边界，不依赖 SQL Partition；
 5. 普通 Merge 策略保持不变，Mixed Object 由独立 Lifecycle Rewrite Executor 处理；
-6. TTL、direct-readable archive、restore-required deep archive 和恢复到新表属于 Commercial GA 目标，实际 GA 以规范文档定义的能力门禁和验收结果为准。
+6. Source Pin 首个 GA 使用 system Lifecycle Snapshot，并在选 Object 前同时通过 flush gate 与 GC metadata-visible/old-cycle-drained gate；不新增 exact-object ref；
+7. 第一次外部 PUT 前必须创建 system-owned Attempt/Cleanup Root，DROP 只写 owner tombstone，provider cleanup 由后台 Sweeper 完成；
+8. Commercial GA 必须包含 TTL、direct-readable archive、恢复到新表和不可逆 Purge；Legal Hold/WORM、DROP 后保留、Archive Backup/DR 和 restore-required deep archive 不属于首个 GA；
+9. 未实现 archive-aware 语义的 Backup/PITR/Snapshot Restore/Clone/Branch/DR 必须 fail closed；不能静默恢复缺少已归档历史行的表；
+10. 收敛后方案是 Conditional Go：六项 GA P0 和 Gate E 的实现、故障测试证据完成后才能称为 Commercial GA。
 
 本文后续章节用于理解行业背景、早期设计为什么被否决以及哪些所有权原则仍可复用。任何与当前规范冲突的内容均以对象级概要设计和 ADR 为准。
 
@@ -88,7 +92,7 @@ MO 应把历史保护和业务归档分别建模，只在 GC 引用图上汇合�
 
 这部分适合复用为 lifecycle 的“历史引用是否允许物理回收”判定，但不应复用 `mo_pitr` 作为 lifecycle policy 表。
 
-当前 GC 保护集合并没有 lifecycle Job/source Snapshot 引用。也就是说，仅在 Job 中记录 `source_snapshot_ts` 不会自动让 TAE GC pin 住对应源对象；Phase 2 必须新增 GC 可识别的 `lifecycle_source_ref`，或严格复用系统管理 Snapshot，不能只依赖 CN 内存任务状态。
+当前 GC 保护集合不会因为 lifecycle Job 中只有一个 `source_snapshot_ts` 字段就自动 pin 住源对象。当前规范已经选择严格复用 system-managed Lifecycle Snapshot，并要求数据 flush gate 与 GC snapshot-metadata-visible/old-cycle-drained gate；不再采用历史方案的 exact `lifecycle_source_ref`。
 
 #### Data Branch 已通过系统 Snapshot 保护历史
 
@@ -328,7 +332,7 @@ CREATE TABLE ... WITH RETENTION PERIOD n DAY;
 
 | 系统 | 当前方案 | 对 MO 的启示 |
 |---|---|---|
-| Snowflake | Storage Lifecycle Policy 基于行表达式，每日增量执行，可归档到 COOL/COLD 或直接过期；归档行不直接查询，通过带强制 `WHERE` 的 `CREATE TABLE ... FROM ARCHIVE OF` 新建表恢复；COLD 最长可 48 小时 | Issue 的 Snowflake 前提已过时；恢复到新表、强制谓词、热端 archive metadata、DML 锁、临时双份存储都值得借鉴 |
+| Snowflake | Storage Lifecycle Policy 基于行表达式每日执行；官方只说明大操作按小批次、可跨多日完成，没有公开其 micro-partition 重写/删除算法；可归档到 COOL/COLD 或直接过期；归档行不直接查询，通过带 `WHERE` 的 `CREATE TABLE ... FROM ARCHIVE OF` 新建表恢复；COLD 最长可 48 小时 | 不臆测其内部扫描/对象复制实现；恢复到新表、强制范围、热端 archive metadata、DML 锁、临时双份存储都值得借鉴 |
 | Databricks Delta | Public Preview；依赖外部 S3 lifecycle 和手工同步的 `delta.timeUntilArchived`；只允许能排除归档文件的查询，其余早失败；`MERGE/UPDATE/DELETE` 需先恢复 | 是“provider lifecycle 做事实源”的风险样本：策略漂移、`_delta_log` 误归档、改长阈值不能自动回热、只靠有限 file stats |
 | Elasticsearch ILM | 对 rollover 后的 immutable backing index 做 hot/warm/cold/frozen/delete；searchable snapshot 前通常 force-merge；不能直接处理 write index | 生命周期单元应先封存，并在归档前 compact；不应对任意可变行或当前写对象直接沉降 |
 | Tiger/Timescale | 以时间 chunk 为单位异步迁移到对象存储；tiered chunk 不可 INSERT/UPDATE/DELETE；catalog 保存引用；引用归零后还延迟 14 天再 hard delete 以支持 PITR | “封存 chunk + catalog reference + delayed hard delete”与 MO 最匹配 |
@@ -337,7 +341,16 @@ CREATE TABLE ... WITH RETENTION PERIOD n DAY;
 | Redshift RA3/RG | SSD 保存热块、S3 保存冷块，按 block temperature、age 和 workload 自动放置 | MO 的 HOT 更接近 CN cache/QoS，未必需要用户指定一个“热桶” |
 | Oracle Heat Map/ADO | 跟踪 block 修改与 segment 访问统计，按 row/segment/tablespace policy 做压缩、In-Memory 驱逐或 segment 级 tablespace 迁移；storage tiering 只支持 segment scope | 热度应是数据库自身可观测信号；物理迁移应以完整 segment/partition 为单位，不能把 row-level policy 等同于任意对象跨介质 |
 | Apache Doris | `STORAGE POLICY + cooldown_ttl` 把数据放远端；不支持 Unique MOW、backup 等组合，已冷却数据不会因 policy 改长自动回迁 | 原地分层会向 DML/备份/策略变更传播大量限制，第一版不宜承诺全表型透明兼容 |
-| Apache Iceberg | 只有当数据文件不再被任何可 time-travel/rollback 的 Snapshot 引用时才删除；过短 orphan retention 会误删在途文件并损坏表 | MO 必须把 Snapshot/PITR/Branch/Job/Legal Hold 统一纳入引用图，并给 orphan GC 足够 grace period |
+| Apache Iceberg | 只有当数据文件不再被任何可 time-travel/rollback 的 Snapshot 引用时才删除；过短 orphan retention 会误删在途文件并损坏表 | 完整合规产品最终需要统一引用图；首个 MO GA 通过拒绝 archive-unaware Snapshot/PITR/Branch 和排除 Legal Hold 来收敛范围，staging cleanup 仍必须有 Root 与 grace/quiescence |
+
+对 Snowflake 的 DROP 语义必须单独纠正：
+
+- Snowflake 的 Lifecycle Job 每日运行并按小批次处理，运行时会锁该表的 UPDATE/DELETE/MERGE，但允许 INSERT/COPY；
+- 归档行不能直接查询，通过 `CREATE TABLE ... FROM ARCHIVE OF` 恢复到新表；
+- Snowflake `DROP TABLE` 不是立即物理删除：表先保留在 Time Travel，适用窗口内 `UNDROP TABLE` 会连同 Archive 数据一起恢复；进入 Fail-safe 后 Archive 仍可能由 Snowflake Support 恢复；
+- Snowflake 不把 COOL/COLD Archive 复制到 failover 目标，官方明确说明 failover 后目标账户不可使用源账户 Archive。
+
+MO 首个 GA 选择更简单但不同的契约：DROP TABLE/DATABASE/ACCOUNT 后即放弃 Archive Restore SLA，并由 system Sweeper 异步级联清理。这是为减少 DROP、租户删除和合规所有权协议而做的**有意差异**，不能描述为“与 Snowflake DROP 语义接近”，也不能宣传成独立七年合规归档。
 
 ### 5.2 云对象存储的“归档”并非统一语义
 
@@ -689,7 +702,7 @@ Restore:   REQUESTED -> REHYDRATING -> MATERIALIZING -> VALIDATING
 
 ## 9. 已废弃的 Partition-first 执行协议
 
-> 本节中的 seal、partition generation、TN partition fence 和一分区一 Job 已由 exact-object source ref、Lifecycle Commit Intent 和一 Object group 一 Job 取代。
+> 本节中的 seal、partition generation、TN partition fence 和一分区一 Job 已由 system Lifecycle Snapshot、tagged Lifecycle Commit Entry、Attempt Root 和一 Object group 一 Job 取代。
 
 ### 9.1 数据单元选择
 
@@ -1380,7 +1393,7 @@ Recommendation: partition by day on event_ts before enabling archive.
 | TaskService epoch 不等于 provider side-effect fencing | 采纳 | 外部请求可能在旧 runner 失去 lease 前完成；非破坏性请求由 immutable key、step journal 和 catalog 条件更新收敛，Delete 使用独立不可逆协议 |
 | Hidden staging 和原子发布 | 采纳 | 部分 restore 不能对用户可见，provider 临时恢复副本也不能成为已发布表的长期数据源 |
 | `PURGE AFTER` 改为 purge eligibility | 采纳 | MVP 只能承诺 minimum retention + best-effort reclaim；maximum retention 是独立合规模式 |
-| 历史 Review 当时将 restore-required deep archive 判为 No-Go | 当时采纳，当前已被取代 | 当前 Commercial GA 范围和门禁见对象级规范 |
+| Restore-required deep archive 当前不进入首个 GA | 采纳 | Restore 是 GA 必需能力，但首个 GA 直接读取已发布 Parquet/ZSTD payload；provider thaw、轮询、临时副本和跨云差异进入独立可选 Profile |
 
 ### 17.2 二轮 Review 处理决策记录
 
@@ -1399,6 +1412,23 @@ Recommendation: partition by day on event_ts before enabling archive.
 - publish 或 cancel 只把 source ref 转为 `RELEASE_PENDING`，由 reconciliation 幂等收敛到可审计的 `RELEASED`；
 - cancel/DROP 不同步等待 provider orphan Delete；Delete 自动重试耗尽后停在不可重新引用的人工处理态，不能谎报 `PURGED`。
 - MVP 禁止跨 dataset 复用纯 content-addressed key；否则旧 Delete 可能命中新引用。key 使用 dataset/job/epoch scoped 唯一身份，content hash 仅用于校验。
+
+### 17.3 Commercial GA 范围收敛决策记录
+
+这一轮决策取代 17.1/17.2 中关于独立 Archive、exact source ref、Legal Hold、隐藏索引 handler 和 Archive Backup/DR 的产品结论；早期条目仅用于说明风险是如何被发现的。
+
+| 收敛项 | 当前决策 |
+|---|---|
+| Archive ownership | 从属于源 table generation/account incarnation；DROP 后不承诺 Restore |
+| Source protection | system Lifecycle Snapshot；commit -> flush -> GC visible/old-cycle drained -> select Object |
+| External ownership | 第一次 PUT 前建立 system Attempt Root；DROP 写 Owner Registry tombstone，Sweeper 异步清理 |
+| Dependency serialization | table Feature Guard + account/database scope Guard；首次创建和 bind 由唯一键/CAS 关闭竞态 |
+| Index | 首个 GA 拒绝所有物化隐藏索引表，只允许不产生隐藏表的 Base PK |
+| Backup/DR | Payload/Catalog 不复制；Backup/PITR/Snapshot Restore/Clone/Branch/DR 对 Lifecycle owner fail closed |
+| Wire/replay | 在原始 `PrecommitWriteCmd.EntryList` 增加 tagged Lifecycle Entry，进入相同 WAL/1PC/2PC/retry 链 |
+| Profile identity | Dataset/Root 冻结 profile version、namespace 和对象 identity；credential rotation 独立 |
+| 长冲突/大 Object | 分别进入 `CONFLICT_BLOCKED` 和 oversize-object streaming/`OVERSIZE_BLOCKED` |
+| GA 判定 | 六项 P0 与 Gate E 证据完成后 Conditional Go；当前代码仍不是 Commercial GA |
 
 ## 18. 功能定位、业务场景与行业术语
 
@@ -1517,11 +1547,11 @@ Recommendation: partition by day on event_ts before enabling archive.
 
 ```text
 TTL       = 到期后从当前逻辑表中过期
-Archive   = 把低频但仍需保留的数据放入独立长期数据集
+Archive   = 把低频但仍需保留的数据放入物理分离、但从属于源表/租户的数据集
 Backup    = 为系统故障准备另一份恢复副本
 Snapshot  = 某个时间点的一致视图或历史引用
 PITR      = 按时间点回到历史状态
-Purge     = 在所有引用、保留期和 legal hold 消失后物理删除
+Purge     = owner 存在时到正常清理时间、或 owner DROP 后，在无 Restore/read lease 时物理删除
 Restore   = 把 Archive 数据重新变成可查询数据，通常是异步作业
 Tiering   = 按成本/性能/恢复能力改变数据放置，不等价于删除
 ```
@@ -1547,7 +1577,7 @@ OFFLINE_RESTORE_REQUIRED  = 查询前必须提交异步恢复任务
 1. 最近 30 天的数据用于实时运维，查询频繁，必须正常读写；
 2. 30 天到 180 天的数据偶尔用于趋势分析和客服排障，仍保留在活动表中，由 CN cache 自适应冷热；
 3. 180 天到 2 年的数据很少访问，但合同和安全审计要求保留；
-4. 2 年以后通常可以删除，但正在调查的设备或法务 hold 不能删除。
+4. 2 年以后通常可以删除；若调查尚未完成，用户应在归档进入删除前先 Restore 到新表。本首个 GA 不提供 Legal Hold。
 
 可以配置成如下逻辑（具体云 class 由管理员的 storage profile 决定）：
 
@@ -1556,7 +1586,7 @@ OFFLINE_RESTORE_REQUIRED  = 查询前必须提交异步恢复任务
 | 0–30 天 | `ACTIVE` | 正常查询、UPDATE、告警分析 | 活动表；CN cache 会保留热点 |
 | 30–180 天 | `ACTIVE` | 仍可普通查询；低频页自然退出 cache | 活动表；不引入 Lifecycle `ONLINE_COLD` 状态 |
 | 180 天–2 年 | `ARCHIVED` / 类 COLD | 当前表不可直接查；提交带时间和设备条件的 Restore Job，恢复到新表 | 复制、校验后从活动表逻辑退休，归档 payload 异步保存 |
-| 2 年以后 | `PURGE_ELIGIBLE` | 一般不可见 | 检查 PITR、Snapshot、Branch、Backup 和 legal hold 后进入 best-effort 物理清除 |
+| 2 年以后 | `PURGE_ELIGIBLE` | 一般不可见 | 等当前 Archive Restore/read lease 结束后进入不可逆物理清除；普通 PITR/Snapshot/Backup 不保护 Archive |
 
 #### 客户 A 什么时候真正使用 Archive
 
@@ -1577,17 +1607,17 @@ CREATE RESTORE JOB restore_device_events_202502
     AND event_ts <  '2025-03-01';
 ```
 
-恢复完成后，客户把 `device_events_202502` 与当前设备表、工单表关联，完成故障定位。调查结束后，如果没有 legal hold，新表和归档引用可以按策略清理。
+恢复完成后，客户把 `device_events_202502` 与当前设备表、工单表关联，完成故障定位。Archive Restore Job 结束后释放 access lease；恢复得到的新表按普通 MO 表管理，调查结束后由客户删除。
 
 #### 客户 A 得到的实际好处
 
 - **成本下降**：两年前的绝大多数数据不再长期占用高成本在线层；同时可以看到仍被 PITR、Snapshot 或 Branch pin 住的源对象，避免误判节省金额。
 - **在线性能更稳定**：当前运维查询主要面对近 30 天活动数据，历史长尾不会持续扩大 hot cache、merge 和统计开销。
-- **合规更容易解释**：可以回答“当前表保留多久、归档保留多久、何时允许 purge、什么原因阻止删除”，而不是只说对象存储已经变冷。
+- **生命周期更容易解释**：可以回答“当前表保留多久、归档正常保留多久、何时允许 purge、是否有 Restore lease 阻止删除”，而不是只说对象存储已经变冷；但这不等于 Legal Hold/WORM 合规证明。
 - **恢复范围可控**：按设备、时间和其他归档元数据恢复，先估算文件数、字节数和费用，避免一次性恢复数十 TB。
 - **不会把日常查询绑在云厂商差异上**：对客户只有活动数据和归档数据两种业务可见性；AWS 的数小时 thaw 和 GCS 的直接读取由 Archive Profile 屏蔽。
 
-这个例子也说明了为什么当前规范以有界 exact TAE Object set 为执行边界，并把恢复固定为独立新表，而不要求客户先建立时间 Range Partition。如果客户 A 要求对两年归档数据继续毫秒级 UPDATE，这项能力就不适合启用；这部分数据应继续留在活动表。
+这个例子也说明了为什么当前规范以有界 exact TAE Object set 为执行边界，并把恢复固定为独立新表，而不要求客户先建立时间 Range Partition。如果客户 A 要求对两年归档数据继续毫秒级 UPDATE，这项能力就不适合启用；这部分数据应继续留在活动表。若客户要求 DROP 租户后仍不可删除地保留七年，本首个 GA 同样不适用。
 
 ## 19. 当前规范入口
 
@@ -1595,9 +1625,14 @@ CREATE RESTORE JOB restore_device_events_202502
 
 - 以有界 exact TAE Object set 而不是 SQL Partition 为执行边界；
 - 使用 Lifecycle Rewrite Executor，不新增或修改普通 Merge Engine；
-- Commercial GA 覆盖 TTL、direct-readable archive、restore-required deep archive 和恢复到独立新表；
+- Commercial GA 覆盖 TTL、direct-readable archive、恢复到独立新表和从属 owner 的不可逆 Purge；
+- Source Pin 使用 system Lifecycle Snapshot + GC visible gate；第一次 PUT 前使用 system Attempt Root；
+- Archive 从属于源表/租户，DROP 后不承诺恢复；Legal Hold/WORM、DROP 后保留和 Archive Backup/DR 不在首个 GA；
+- Backup/PITR/Snapshot Restore/Clone/Branch/DR 对 Lifecycle 表 fail closed；
+- 首个 GA 拒绝所有物化隐藏索引表，能力创建/bind/final commit CAS 同一 Feature Guard；
+- restore-required deep archive 是首个 GA 后的可选 Archive Profile，不阻塞 GA；
 - CDC、FK、Publication/Subscription、Fulltext、Vector 和外部插件不在首个 GA 支持矩阵；
-- 事务 replay、GC fail-closed、依赖准入、资源硬上限、双层 Purge、升级降级和 TB 级长稳全部是 GA 门禁。
+- tagged Entry replay、GC visible gate、Root/owner cleanup、Feature Guard、资源硬上限、不可逆 Purge、升级降级和 TB 级长稳全部是 GA 门禁。
 
 唯一规范请阅读：
 
@@ -1627,6 +1662,7 @@ CREATE RESTORE JOB restore_device_events_202502
 - [Snowflake CREATE STORAGE LIFECYCLE POLICY](https://docs.snowflake.com/en/sql-reference/sql/create-storage-lifecycle-policy)
 - [Snowflake Retrieve Archived Data](https://docs.snowflake.com/en/user-guide/storage-management/storage-lifecycle-policies-retrieving-archived-data)
 - [Snowflake Lifecycle Billing](https://docs.snowflake.com/en/user-guide/storage-management/storage-lifecycle-policies-billing)
+- [Snowflake DROP TABLE](https://docs.snowflake.com/en/sql-reference/sql/drop-table)
 - [Databricks Delta Archival Support](https://docs.databricks.com/aws/en/optimizations/archive-delta)
 - [Elasticsearch ILM](https://www.elastic.co/docs/manage-data/lifecycle/index-lifecycle-management)
 - [Elasticsearch Searchable Snapshot](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-searchable-snapshot)
