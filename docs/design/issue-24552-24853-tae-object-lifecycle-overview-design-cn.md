@@ -2,17 +2,19 @@
 
 > 目标 Issue：[Native table TTL #24552](https://github.com/matrixorigin/matrixone/issues/24552)、[Tiered data lifecycle #24853](https://github.com/matrixorigin/matrixone/issues/24853)
 >
-> 状态：生产目标概要设计，可用于架构评审和分阶段实现
+> 状态：Issue #24552 / #24853 当前唯一规范概要设计；定义 Commercial GA 目标和强制门禁，不代表当前代码已经具备该能力
 >
 > 设计日期：2026-07-24
 >
-> 代码复核基线：`534aa8cb894bb303cd74a8e8fa0b80f84922c63b`
+> 代码复核基线：`54b63cb8ebfc2169e457b4cab3ee09e1ac12b562`
 >
-> 本文取代早期分析稿中“以 SQL Range Partition 为主要执行边界”的实现建议，但保留其三平面、归档所有权、GC 引用和不可逆删除协议。
+> 架构决策：[以 TAE Object 而不是 SQL Partition 作为生命周期执行边界](issue-24552-24853-object-lifecycle-boundary-adr-cn.md)
+>
+> 本文取代早期分析稿中的全部实现、Phase 和 Go/No-Go 建议；早期文档只保留为行业调研与历史记录。
 
 ## 1. 最终结论
 
-MO 应建设一套独立的 **TAE 对象级数据生命周期引擎**，同时服务于：
+MO 应建设独立的 **TAE 对象级 Lifecycle Service 与 Lifecycle Rewrite Executor**，同时服务于：
 
 - #24552：过期行从当前表中自动消失，即原生 TTL；
 - #24853：过期行先写入可验证、可恢复的归档数据集，再从当前表中消失。
@@ -21,15 +23,16 @@ MO 应建设一套独立的 **TAE 对象级数据生命周期引擎**，同时�
 
 1. 以一组有上限、精确标识的不可变 TAE Object 为一个原子 Job；
 2. 用增量对象索引计算到期时间，不按天全库扫描数据；
-3. 复用现有 `mergesort.DoMergeAndWrite` 的读、排序、写 ObjectIO 和 transfer-map 生成能力；
-4. 通过新的 `LifecycleRewriteHost` 将过期行送入 `DiscardSink` 或 `ArchiveSink`，将仍然存活的行写回正常 TAE Object；
-5. 新增独立的 `LifecycleCommitEntry`，在一个短事务内原子完成：
+3. 先实现只读 Planner/Object Index/Dry-run 和 Export-only Archive，用真实表验证候选选择、文件格式和成本；
+4. Whole Object 直接进入有界退休协议；Mixed Object 通过 `LifecycleRewriteExecutor` 将过期行送入 `DiscardSink` 或 `ArchiveSink`，将仍存活行写回正常 TAE Object；
+5. Rewrite Executor 可以复用现有 `mergesort.DoMergeAndWrite` 的读、排序、写 ObjectIO 和 transfer-map 生成能力，但不是第二套 Merge Engine，也不进入普通 Merge scheduler；
+6. 新增独立、可版本化和可重放的 `LifecycleCommitIntent` / `LifecycleCommitEntry`，在一个短事务内原子完成：
    - 发布已校验的 Archive Manifest；
    - 注册新 TAE Object；
    - 退休精确的旧 TAE Object；
-   - 提交索引、CDC、约束等依赖变更；
-6. 普通 Merge 的候选选择、Level、Overlap、Small、目标大小、资源估算和调度策略全部保持不变；
-7. 只在 TAE 通用多 scope 调度器上增加一个带租期的外部对象 reservation，用于降低 Lifecycle 与后台 Merge 的重复重写；reservation 不是正确性条件，最终正确性仍由事务 CAS 保证。
+   - 提交 GA 支持矩阵内的普通/唯一索引依赖变更；
+7. 普通 Merge 的候选选择、Level、Overlap、Small、目标大小、资源估算和调度策略全部保持不变；
+8. TAE 通用多 scope reservation 只用于降低 Lifecycle 与后台 Merge 的重复重写，可以在协议原型之后实现；它不是正确性条件，最终正确性由事务 CAS 和 durable receipt 保证。
 
 生命周期状态只有：
 
@@ -38,9 +41,38 @@ TTL:      ACTIVE -> EXPIRED
 Archive:  ACTIVE -> ARCHIVED -> PURGED
 ```
 
-`ONLINE_COLD` 不属于这套生命周期引擎。CN 内存/磁盘缓存、远端缓存和活动 ObjectIO 的介质选择属于独立的在线放置策略。MO 不应为了一个收益不明确的 “COOL” 名称，把缓存、Merge、FileService 和查询路径一起复杂化。
+`ONLINE_COLD` 不属于这套 Lifecycle Service。CN 内存/磁盘缓存、远端缓存和活动 ObjectIO 的介质选择属于独立的在线放置策略。MO 不应为了一个收益不明确的 “COOL” 名称，把缓存、Merge、FileService 和查询路径一起复杂化。
 
 该设计不依赖 SQL Partition。SQL Partition 可以继续作为用户的数据组织和路由功能，但不是 TTL/Archive 的正确性边界。
+
+### 1.1 Commercial GA 支持矩阵
+
+Commercial GA 是“能力边界受限但承诺生产质量”，不是 Preview 改名。GA 必须支持：
+
+| 能力 | GA 决策 |
+|---|---|
+| Policy scope | 只支持 table scope |
+| Lifecycle column | `NOT NULL DATE/DATETIME/TIMESTAMP`；显式单位、无溢出的 epoch integer |
+| TTL | Whole Object + Mixed Object |
+| 普通/唯一索引 | 专用 dependency handler 通过一致性验收后支持 |
+| Direct-readable Archive | 支持 |
+| Restore-required Deep Archive | 支持至少一个客户实际 provider，并通过真实故障矩阵 |
+| Restore | 显式异步 thaw，恢复到独立新表 |
+| Purge | minimum-retention eligibility、Legal Hold、不可逆 version delete |
+
+首个 GA 明确拒绝：
+
+- NULL lifecycle column；
+- active CDC；
+- FK 父表或子表；
+- Publication/Subscription；
+- Fulltext、Vector、异步索引和外部插件；
+- account/database Policy 继承；
+- 任意表达式、UDF 和 subquery；
+- 同表恢复、透明查询时自动 thaw；
+- maximum-retention 准时物理删除承诺。
+
+拒绝能力必须在 Policy bind 和最终事务的 `dependency_fingerprint` CAS 两次检查。未来每增加一种能力，都通过独立 ADR、handler 和验收矩阵进入支持列表。
 
 ## 2. 用户最终获得什么
 
@@ -74,9 +106,7 @@ CREATE DATA LIFECYCLE POLICY archive_orders
     ON COLUMN order_time
     ARCHIVE AFTER INTERVAL 90 DAY
     TO ARCHIVE PROFILE saudi_archive
-    PURGE AFTER INTERVAL 7 YEAR
-    NULLS KEEP
-    CDC ROW_DELETE;
+    PURGE ELIGIBLE AFTER INTERVAL 7 YEAR;
 
 ALTER TABLE finance.orders
     SET DATA LIFECYCLE POLICY archive_orders;
@@ -89,6 +119,19 @@ ALTER TABLE finance.orders
 - 归档文件不要求可被 MO 直接在线查询；恢复是显式异步操作；
 - 满七年只表示进入可清理时间，仍需同时满足无引用、无法律保留和 grace period；
 - 恢复默认生成新表，不直接把历史数据混回正在写入的原表。
+
+若 `saudi_archive` 是 restore-required Profile，用户查看归档数据的流程是：
+
+```text
+RESTORE ARCHIVE ... INTO new_table
+  -> MO 向 provider 申请 thaw
+  -> 有界轮询 RestoreStatus
+  -> 解冻后导入 hidden staging table
+  -> 校验并原子发布新表
+  -> 用户 SELECT 新表
+```
+
+冻结文件不支持透明 `SELECT`。MO 必须在执行前展示预计恢复字节、provider 费用和 SLA；用户显式确认后才发起可能收费且不可取消的 thaw。
 
 典型客户效果是：沙特金融客户把最近 90 天订单留在活动表，七年合规记录进入归档数据集。日常查询、Merge、统计信息、备份和缓存不再处理七年全部历史；审计时按时间范围恢复到独立表。
 
@@ -230,7 +273,7 @@ MO 当前 Partition 模块不是“假的”，但它是 SQL 逻辑路由和隐�
 - 两套代码会逐渐产生数据格式和正确性差异；
 - 测试面几乎翻倍。
 
-### 6.3 方案 C：独立 Lifecycle Engine，组合稳定原语
+### 6.3 方案 C：Lifecycle Service + Rewrite Executor，组合稳定原语
 
 采用该方案：
 
@@ -240,7 +283,22 @@ MO 当前 Partition 模块不是“假的”，但它是 SQL 逻辑路由和隐�
 - 通用 scope dispatcher 只增加可过期 reservation；
 - 正确性由新的事务 Entry 和 CAS 负责。
 
-这是“加一层并复用基础能力”，而不是“把 Feature 塞进 Merge”。
+这是“加一层并复用基础能力”，而不是“把 Feature 塞进 Merge”，也不是创建新的 Merge Engine。
+
+### 6.4 功能优先的实现切片
+
+可以先实现可见功能，但必须区分“不会删活动数据的原型”和“开始承担数据正确性的写路径”：
+
+| 切片 | 能做什么 | 是否允许退休活动数据 |
+|---|---|---|
+| Read-only Planner | 扫描表/Object 元数据、计算 cutoff、展示候选与成本 | 否 |
+| Export-only | 读取候选 Object、输出 Parquet/Container、全量重读校验 | 否 |
+| Protocol Foundation | Commit Intent/Receipt、exact ref、GC ACK、admission、hard budget | 只用于故障原型 |
+| Whole Object | 对完全过期 Object 做 TTL/Archive | 是，协议门禁通过后 |
+| Mixed Object | 过期行归档/丢弃，存活行写回 ObjectIO | 是，GA 必需 |
+| Deep Archive/Restore | transition/thaw、staging restore、原子发布 | 是，GA 必需 |
+
+Planner 可以先直接通过当前 `GetColumMetadataScanInfo` 分析一张白名单表；规模验证后再切换到增量 Object Index。Export-only 也可以先不复用 mergesort。真正退休活动数据之前，必须完成 replay、source ref、dependency admission 和资源上限，不能用“后续再优化”替代。
 
 ## 7. 总体架构
 
@@ -274,7 +332,7 @@ MO 当前 Partition 模块不是“假的”，但它是 SQL 逻辑路由和隐�
               - publish Manifest
               - register new objects
               - retire exact source objects
-              - update index/CDC/FK dependencies
+              - update supported index dependencies
                            |
                            v
                  reconcile + release source pin
@@ -284,7 +342,7 @@ MO 当前 Partition 模块不是“假的”，但它是 SQL 逻辑路由和隐�
 
 | 组件 | 职责 |
 |---|---|
-| Policy Manager | 解析策略、继承规则、版本和 provider capability |
+| Policy Manager | 解析 table-scope 策略、版本和 provider capability |
 | Object Indexer | 为活动对象建立生命周期列 min/max/null 和 next action 派生索引 |
 | Scanner | 只扫描到期索引项，生成 dry-run 或执行计划 |
 | Coordinator | 建立 source pin，将 batch 拆成独立 child Job，管理引用计数 |
@@ -311,10 +369,9 @@ Lifecycle Job Executor 运行在 CN TaskService worker，而不是塞入 TN 后�
 - `action`：`EXPIRE` / `ARCHIVE`
 - `column_id`、`column_type`
 - `interval`
-- `null_semantics`
 - `archive_profile_id`
-- `purge_after`
-- `cdc_mode`
+- `purge_eligible_after`
+- `required_capability_version`
 - `version`
 - `state`
 
@@ -332,7 +389,7 @@ Lifecycle Job Executor 运行在 CN TaskService worker，而不是塞入 TN 后�
 
 所有影响生命周期语义的 DDL、Policy 变更和显式取消都增加 `lifecycle_generation`，只增不减。
 
-Policy 可以定义在 account、database 或 table；优先级为 `table > database > account`。继承结果在建表或上级 Policy 变更时物化为每表一条 effective binding，日常 Scanner 不逐层解析继承，也不遍历所有数据库。`mo_catalog` 等系统表默认禁止绑定。
+Commercial GA 只支持 table-scope Policy，一张表一条独立 Binding。account/database 继承不进入首个 GA，避免一次 Policy 变更同步更新海量表。`mo_catalog` 等系统表默认禁止绑定。
 
 生命周期表达式限定为确定性的单列时间边界：
 
@@ -340,7 +397,15 @@ Policy 可以定义在 account、database 或 table；优先级为 `table > data
 lifecycle_column < fixed_cutoff
 ```
 
-不允许 UDF、`now()` 以外的非确定函数、跨表子查询或任意布尔表达式进入 Object Index。每次 scan 先固定 UTC `evaluation_ts` 和 cutoff，Job 重试继续使用同一个值，避免边执行边移动边界。
+不允许用户表达式中的 UDF、`now()`、其他非确定函数、跨表子查询或任意布尔表达式进入 Object Index；当前时间只能由系统固定的 `evaluation_ts` 提供。时间语义固定为：
+
+- `evaluation_ts` 取创建 Job 事务的 HLC timestamp，转换为 UTC 后持久化；
+- cutoff 等值不算过期，谓词固定为 `value < cutoff`；
+- `TIMESTAMP` 按 UTC instant 比较；
+- `DATETIME` 和 `DATE` 在 Policy 创建时固定声明的 timezone/calendar 中计算，再转换为 UTC cutoff，不读取执行 Job 时的 session timezone；
+- Month/Year interval 使用日历运算，月末取目标月最后一个合法日期，闰日按目标年最后合法日期；
+- epoch integer 必须声明秒/毫秒/微秒/纳秒单位，并在 bind 时验证不会溢出；
+- 同一 Job 的 retry 永久复用原 `evaluation_ts` 和 cutoff，重新规划才产生新值。
 
 ### 8.2 Object Index
 
@@ -371,7 +436,17 @@ lifecycle_column < fixed_cutoff
 
 增量消费者持久化 logtail checkpoint。重启后从 checkpoint 重放；检测到 logtail gap 时，按 account/table shard 限速对账当前对象列表。后台还要做分片轮转 reconciliation，保证“漏事件”不会让新对象永远没有 deadline，但它扫描的是对象目录和 footer 缺口，不是每天读取全部业务数据。
 
-支持的生命周期列首期及正式默认范围为 `DATE`、`DATETIME`、`TIMESTAMP` 和显式声明为 epoch 的整数列。ZoneMap 对候选发现可以保守；只有能证明 `max < cutoff` 时才走整对象快速路径，否则一律按 Mixed Object 读取验证。
+`OBSOLETE` 不是永久墓碑。Indexer 维护 `applied_logtail_lsn/index_generation`；只有对象 drop 已被持久 checkpoint 覆盖、新对象 create 已处理、所有 Scanner cursor 都超过该 generation 后，才按 account 公平、有限 batch 删除旧索引行。Indexer 不可用、版本未知或发现 corruption 时：
+
+- 停止创建新 Lifecycle Job；
+- 不影响普通 DML、查询、Merge；
+- 从当前 Object catalog 按 shard 重建新 generation；
+- 新旧 generation digest 对比成功后原子切换；
+- 旧 generation 由独立 watermark GC 回收。
+
+支持的生命周期列范围为 `NOT NULL DATE/DATETIME/TIMESTAMP` 和显式声明为 epoch 的整数列。ZoneMap 对候选发现可以保守；只有统计版本已知且能严格证明 whole-expired 时才走整对象快速路径，否则一律按 Mixed Object 读取验证。
+
+Indexer 从所有 data block 聚合 object `row_count/null_count/min/max`，并校验 block row/null 总和。任何不一致都标记对象 `SCAN_REQUIRED` 并报警，不能用默认零值进入 whole-object fast path。
 
 ### 8.3 Job、Dataset 和 Payload
 
@@ -390,11 +465,46 @@ TaskService 分配新 executor 后，runner 必须先用 TaskService epoch 条�
 
 一个 child Job 对应一个独立 `archive_dataset_id`，不以源 table ID 作为永久身份，也不与其他 Job 做 all-or-nothing 发布。面向用户的月/年归档视图由 collection/super-manifest 聚合多个 Dataset，不重写其 payload。
 
-`mo_archive_manifests` 记录 schema digest、payload root、行数、min/max/null、压缩、KMS、provider version 和状态。
+`mo_archive_datasets` 是 Dataset 可见性和生命周期状态的唯一权威行，至少记录：
+
+- `archive_dataset_id`、account、source database/table、collection ID；
+- source Snapshot、schema/policy/binding/lifecycle generation；
+- lifecycle range、rows/bytes、manifest root、archive profile；
+- `published_at`、`purge_eligible_at`、reference/hold summary；
+- `state`：`STAGING`、`VERIFIED_NOT_PUBLISHED`、`PUBLISHED`、`PURGE_PENDING`、`PURGED`；
+- dataset row version 和 access generation。
+
+最终 publish/retire 事务必须原子写入可按 source table/range 检索的 `PUBLISHED` Dataset 行。Restore 和 Purge 以该行为事实源，不能依赖异步任务先更新 Collection 才发现 Dataset。
+
+`mo_archive_collections` 为同一 table/policy generation 提供稳定 `collection_id`，按 lifecycle range 和 dataset shard 分页维护：
+
+- `commit_seq`、reference summary、legal-hold state/generation；
+- range min/max、dataset count、logical rows/bytes；
+- page cursor、page root 和 collection root；
+- collection-level Reference/Legal Hold；
+- 部分 Purge 后的审计摘要；
+- Backup/DR checkpoint 和 catalog compaction generation。
+
+Restore 先按 collection range 裁剪 dataset page，再按 Manifest/payload min-max 裁剪文件，禁止一次把数万 Dataset 全部装入内存。Super-manifest 更新使用 copy-on-write page 和 root CAS，不重写已发布 Dataset。
+
+Collection page/root 是 Dataset 权威行之上的分页聚合索引。Page 更新可以在最终事务后由幂等 Indexer 完成，但 Restore 必须同时扫描“已 `PUBLISHED`、尚未进入当前 collection root”的有界增量 Dataset；Indexer 持久化 high-watermark 并对账，不能让 collection lag 把已经从活动表退休的数据隐藏。
+
+Collection 权威行另有 `commit_seq`、reference summary 和 legal-hold state/generation。Dataset publish、Dataset Purge CAS、Collection Reference/Legal Hold 的创建和释放都必须在同一事务条件更新并递增 `collection.commit_seq`。Publish 继承当时有效的 Collection Hold；Purge 同时断言 Dataset 与 Collection 都无 Reference/Hold。这样并发 Hold、Publish 和 Purge 必然至少有一方 CAS 失败，不需要在一个事务中展开数万个 Dataset edge。
+
+`mo_archive_manifests` 记录 schema digest、payload root、行数、min/max/null、压缩、KMS 和 provider version；发布后内容不可变。Dataset row 持有 Manifest root 和生命周期状态，Manifest 不能独立进入与 Dataset 冲突的 `PUBLISHED/PURGE_PENDING` 状态。
 
 `mo_archive_payloads` 每个不可变文件一行，记录 key、content hash、provider version ID、etag、storage class、字节数、验证和删除状态。
 
 `mo_archive_references` 用显式边表达 Restore、Backup、DR 等对 dataset/payload 的引用；Legal Hold 使用独立表，不能伪装成一个很大的 retention 值。
+
+控制面 metadata 也有独立 retention/GC：
+
+- terminal Job 在 source ref、staging 和 commit unknown 全部收敛后，按 account/batch 归档或删除；
+- Commit Receipt 至少保留到 source ref 释放、Dataset 进入终态且审计保留期结束，再将 digest 汇总进 collection audit root；
+- 已 Purged Dataset/Manifest 保留有界审计摘要，不永久保留全部 payload 行；
+- Collection page 只有新 root 已被 Backup/DR checkpoint 覆盖、无 cursor/reference 指向时才能回收；
+- `DELETE_FAILED_MANUAL`、in-doubt Receipt 和 Legal Hold 相关 metadata 禁止自动 GC；
+- metadata rows/bytes、删除 batch 和速率进入 account/cluster hard budget。
 
 ## 9. 调度和规模
 
@@ -425,16 +535,38 @@ one scan
 
 一个 Job 不跨多个大表，也不把整个 TB 表放进一个 all-or-nothing 事务。
 
-保守默认上限：
+调度使用两类 profile：
 
-- source bytes：1 GiB；
-- source rows：100 万；
-- source objects：64；
-- archive target file：256 MiB；
-- output files：16；
-- output ObjectIO 数量必须小于 `api.NoTransfer` 保留值；
-- 单 account 并发 Job：2；
-- 以上均可配置，但扩大上限必须通过内存和 transfer-map 基准。
+| Profile | 适用条件 | 目标 |
+|---|---|---|
+| Whole-object streaming | 整对象全部过期、无未支持依赖、不需要 live transfer | 提高 source rows/objects 上限，持续形成 256–512 MiB Archive Payload |
+| Mixed/dependency | 需要 live rewrite、transfer 或索引 delta | 小批次，严格控制行数、transfer 和 Prepare |
+
+Planner 联合估算 source bytes/rows/blocks、expired rows、live rewrite bytes、archive compressed bytes、target files、tombstone 和 dependency delta。不能只用 `source bytes` 间接推断其他资源。
+
+每个 Job 和每个 final transaction 分别设置硬上限：
+
+| 资源 | 强制控制 |
+|---|---|
+| source objects/blocks/rows/bytes | scan 前估算，运行时达到任一上限立即停止追加 |
+| transfer slots/bytes | 独立预算，不按 source bytes 推断 |
+| new/concurrent tombstones | rows、bytes、objects 上限 |
+| dependency delta | rows、bytes、files、target tables 上限 |
+| archive/live output | writer memory、spill/temp bytes、文件数和文件最小/最大值 |
+| created/source metadata | ref count、fingerprint bytes、entry bytes 上限 |
+| WAL/RPC | Intent 序列化后 hard limit，发送前测量 |
+| Prepare | deadline、CPU budget、可执行操作白名单 |
+| staging/orphan | account/cluster bytes、objects 和 oldest-age 水位 |
+
+起始实验配置可以使用 `1 GiB source / 100 万 rows / 64 objects / 16 output files / 256 MiB archive target`，但这不是 GA 承诺。GA 默认值必须由 32 B、256 B、4 KiB 行宽和真实 WAL/RPC/内存基准确定。output ObjectIO 数量始终小于 `api.NoTransfer` 保留值。
+
+dependency delta 使用对象化 staging；final transaction 只携带有界 locations、digests 和 counts，不携带无限逐行列表。任何运行时预算超限都执行：
+
+```text
+abort current attempt
+keep source visible and pinned
+split/replan into smaller job
+```
 
 调度采用 account/table 公平队列，并分别限制：
 
@@ -443,6 +575,8 @@ one scan
 - archive write bytes/s；
 - 内存、spill 和 in-flight bytes；
 - Job、payload、orphan、delete backlog 数量。
+
+Restore、TTL、Archive、Purge 使用独立队列和最低份额，避免大租户或大 Restore 饿死小租户 TTL。TaskService 不可用时只积累 backlog，绝不转为前台同步删除。
 
 ### 9.3 与普通 Merge 的关系
 
@@ -487,32 +621,67 @@ reservation 通过新的 TN lifecycle scope RPC 获取、续租和释放。它�
 3. 计算生命周期谓词；
 4. 将过期行加入 overlay delete mask；
 5. TTL 将过期行交给 `DiscardSink`；
-6. Archive 将过期行交给 `ArchiveSink` 和 DependencyDeltaSink；
-7. 返回原 Batch + 合并后的 delete mask 给 `DoMergeAndWrite`；
-8. `DoMergeAndWrite` 只对存活行排序、写新 ObjectIO 并建立 transfer map。
+6. Archive 将过期行交给 `ArchiveSink`；
+7. TTL 和 Archive 都按 Dependency Plan 将过期行交给 `DependencyDeltaSink`；
+8. 返回原 Batch + 合并后的 delete mask 给 `DoMergeAndWrite`；
+9. `DoMergeAndWrite` 只对存活行排序、写新 ObjectIO 并建立 transfer map。
 
-所有 Sink 都是流式、有上限且可取消的。任一 Sink 失败，整个 Job 不进入 `VERIFIED_NOT_PUBLISHED`。
+所有 Sink 都是流式、有上限且可取消的。任一 Sink 失败，Job 不进入 `READY_TO_COMMIT`，Archive Dataset 不进入 `VERIFIED_NOT_PUBLISHED`。
 
-Job 在进入 `VERIFIED_NOT_PUBLISHED` 前验证：
+Job 在进入 `READY_TO_COMMIT` 前验证：
 
 ```text
 source_visible_rows = live_rows + expired_rows
+live and expired source-row identities are disjoint and cover every visible row
 live transfer mappings = live_rows
-dependency input rows = expired_rows
+dependency input rows = expired_rows        # plan 有 handler 时；否则为 0
 archive manifest rows = expired_rows        # Archive only
-source/expired streaming digest = verified manifest digest
+expired streaming digest = verified manifest data digest  # Archive only
 ```
 
 Archive Payload 必须通过 `ArchiveStore` 重新打开并完整读取校验，不能只相信上传成功、ETag 或 executor 本地 hash。未来只有 provider 给出可证明等价的不可变 checksum 契约后，才允许把全量重读改成服务端校验。
 
 ### 10.1 整对象快速路径
 
-条件：`max_value < cutoff`，且 ZoneMap 对该列是精确可证明的。
+Commercial GA 的生命周期列必须 `NOT NULL`。整对象快速路径的保守判定是：
+
+```text
+whole_expired =
+  row_count > 0
+  AND null_count == 0
+  AND zonemap_initialized
+  AND zonemap_version_supported
+  AND zonemap_type_exact_for_lifecycle_type
+  AND max_non_null < cutoff
+```
+
+空对象交给普通对象清理，不产生空 Archive Dataset。ZoneMap 缺失、未初始化、截断、类型/统计版本未知、row/null count 不一致或 cutoff 等值时，一律进入 Mixed scan，不能直接退休。
+
+最终模型若以后开放 NULL，公式必须是：
+
+```text
+NULLS KEEP:
+  whole_expired =
+    null_count == 0
+    AND zonemap_initialized
+    AND max_non_null < cutoff
+
+NULLS EXPIRE:
+  whole_expired =
+    (row_count > 0 AND null_count == row_count)
+    OR (
+      zonemap_initialized
+      AND max_non_null < cutoff
+    )
+```
+
+这些 NULL 模式在独立正确性矩阵通过前不进入 GA SQL。
 
 TTL：
 
-- 没有隐藏索引、行级 CDC、FK cascade 或插件依赖时，不读取 payload，最终事务直接退休对象；
-- 存在行级依赖时仍需扫描一次，以生成依赖删除 delta。
+- dependency plan 证明没有行级消费者时，不读取 payload，最终事务直接退休对象；
+- 普通/唯一索引 handler 要求行级 key 时仍需扫描生成对象化 dependency delta；
+- 未支持 CDC、FK、Publication 或插件由 admission 直接拒绝，不能在运行时跳过。
 
 Archive：
 
@@ -537,7 +706,7 @@ Archive：
 - 读取验证后无过期行：Job 成功结束，不产生 commit；
 - 全过期且需要重写：新活动 Object 列表可以为空；
 - 新插入的迟到数据产生新 Object，由后续增量索引再次捕获；
-- `NULLS KEEP` 为默认语义；显式 `NULLS EXPIRE` 才允许过期 NULL。
+- 运行时发现生命周期列含 NULL，视为 schema/data contract violation，Job fail closed 并阻止后续执行。
 
 ## 11. Archive 格式与存储
 
@@ -571,6 +740,8 @@ ArchiveStore
   Open(version)
   StatVersion()
   VerifyChecksum()
+  TransitionVersion(target_class)
+  TransitionStatus()
   RequestRestore()
   RestoreStatus()
   DeleteVersion(condition)
@@ -588,12 +759,39 @@ Capability 至少声明：
 - 最小保存时长、提前删除费用、最小对象大小；
 - checksum、server-side copy 和 KMS 能力。
 
+Commercial GA Archive Profile 必须提供稳定 version identity、不可覆盖的唯一 key、可验证 checksum 和按具体 version 的删除；缺少这些能力的 provider 只能用于 Export-only 实验，不能绑定可退休源数据的 GA Policy。
+
 逻辑上只有一个 `ARCHIVED` 状态。标准对象类和深归档类只是不同 Archive Profile：
 
 - `ONLINE_ARCHIVE`：可直接读 Parquet，恢复较快；
 - `RESTORE_REQUIRED_ARCHIVE`：先由 provider thaw，恢复慢且可能收费。
 
 这不是再造 `COOL/COLD` 业务状态，Policy、Manifest、引用和删除协议完全相同。
+
+`RESTORE_REQUIRED_ARCHIVE` 是 GA 能力，不是后续实验。Provider adapter 必须实现：
+
+- 写入或 transition 到目标 storage class 的确定结果；
+- event 丢失时可用 polling 收敛；
+- thaw request 幂等键、状态、临时可读截止时间；
+- request 不可取消时的费用和 UI 语义；
+- provider throttle、unknown、not-found、KMS 和 credential rotation；
+- 至少一次真实 provider 的 archive/restore/purge drill。
+
+每个 transition/thaw request 携带 payload version ID、`access_generation` 和稳定 request ID。Provider event 与 polling 结果只有同时匹配三者才能推进 access state；旧 attempt 的迟到事件只能记审计日志，不能覆盖新 generation。
+
+若 provider transition 产生新的 version identity，结果必须先完成 checksum/size 验证，再用 `(payload_id, old_version, access_generation)` CAS 写入新 version。CAS 成功前旧 verified version 仍是权威版本；CAS 失败的新 version 只能进入 orphan cleanup，不能被 Manifest、Restore 或 Purge 引用。CAS 成功后，新 version 成为唯一权威版本，旧 version 作为 dataset 所有的 superseded version 使用同一不可逆删除协议清理；新 version 未完成验证前禁止删除旧 version。
+
+Deep Archive 的安全顺序固定为：
+
+```text
+upload to direct-readable staging class
+  -> reopen and full verify
+  -> publish Dataset + retire source
+  -> transition the exact verified version to deep class
+  -> poll until RESTORE_REQUIRED
+```
+
+Transition 失败时保留 direct-readable 已发布副本并重试，不能删除后重传。除非 provider checksum 契约已经单独证明与完整重读等价，否则禁止把未重读校验的 payload 直接写入不可读 deep class 后退休源数据。
 
 ### 11.3 不可变 key
 
@@ -630,17 +828,45 @@ TAE GC 在现有 Snapshot/PITR 判断之外查询已加载的 lifecycle source-r
 
    `source_snapshot_ts` 是该事务的真实 Snapshot TS；事务先验证 exact source objects 在此时刻可见且 fingerprint 匹配，任一对象已被 Merge/DDL 替换就整体放弃并重选，不能给不存在或错误版本的对象补 ref。
 
-2. 等待 GC/logtail 消费端确认 `source_ref_generation` 已可见；
+2. 等待所有可能删除该 Object 的 owning TN/GC shard 持久确认 `source_ref_generation` 已可见；
 3. 只有收到确认后，才删除表级桥接 Snapshot；
 4. Job 使用 exact refs 继续读取和归档；
 5. 若确认超时，Job 不读取源对象，保留或安全删除桥接 Snapshot 后重试。
 
-这使“引用创建到 GC 可见”的窗口由现有 Snapshot 覆盖，同时让长 Job 最终只 pin 精确对象。Phase 0 可以先保留桥接 Snapshot 完成安全原型，但 TB 级 Preview/GA 前必须启用 exact refs，不能长期用整表 Snapshot 代替。
+ACK 不是“某个 TN 读过一次表”。一个有效 ACK 同时证明：
+
+1. exact refs 已提交、已进入可重放 checkpoint；
+2. owning TN 已加载目标 generation；
+3. 该 owner 上未看见新 refs 的旧 GC cycle 已结束，或 watermark 被隔离在 ref generation 之前；
+4. checkpoint/GC watermark 不会越过被保护 object；
+5. TN 重启时 loader 在 GC 恢复 delete 前完成；
+6. shard 迁移后新旧 owner 都完成 handoff/ACK。
+
+ACK generation 和 owner set 持久化在 Lifecycle Catalog，可分页观察。GC source-ref filter 固定 fail-closed：
+
+```text
+loader not ready          -> retain and alarm
+generation gap            -> retain and alarm
+catalog/checkpoint error  -> retain and alarm
+unknown ref version       -> retain and alarm
+owner handoff incomplete  -> retain and alarm
+all required ACKs ready   -> evaluate normal GC predicates
+```
+
+Fail-closed 作用于已经激活 lifecycle ref generation 的 account/table/shard；未启用 Lifecycle 的 scope 继续使用原 GC 路径。任何错误都不能转换成“空引用集合”。这使“引用创建到 GC 可见”的窗口由现有 Snapshot 覆盖，同时让长 Job 最终只 pin 精确对象。协议原型可以暂时保留桥接 Snapshot，但 TB 级 Preview/GA 前必须启用 exact refs。
+
+滚动升级/降级屏障：
+
+- 所有可能承担 GC owner 的 TN 报告 exact-ref capability 后才能 bind/execute；
+- exact refs 激活后，旧 TN 不得加入 owner set；
+- 停止新 Job 不等于可以降级；
+- 降级前重新建立表级宽保护，等待全部 owner ACK，再释放 exact refs；
+- 无法恢复宽保护时禁止降级，宁可多保留。
 
 释放规则：
 
 - publish/retire 已确定成功；
-- 或明确 cancel/unbind；
+- 或明确 cancel/unbind 已增加 generation、fence 全部 attempt、确认没有在途 source read/commit unknown，并完成 terminal staging 所有权转移；
 - 或 terminal failure 完成 staging cleanup；
 - commit unknown 必须先 reconcile；
 - exact object 的最后一个 Job 引用结束。
@@ -657,11 +883,12 @@ Source TAE Object deletable =
   AND existing TAE GC watermark allows deletion
 
 Archive Payload deletable =
-  purge_eligible_at reached
+  parent dataset is irreversibly PURGE_PENDING
+  AND dataset purge_eligible_at reached
   AND no archive/restore/backup/DR reference
   AND no legal hold
   AND grace period reached
-  AND payload is irreversibly marked DELETING
+  AND payload is DELETE_INTENT or DELETING
 ```
 
 ## 13. 原子提交协议
@@ -673,22 +900,47 @@ Archive Payload deletable =
 ```text
 write immutable staging
   -> full verification
-  -> VERIFIED_NOT_PUBLISHED
+  -> dataset VERIFIED_NOT_PUBLISHED + job READY_TO_COMMIT
   -> short conditional MO transaction
-  -> PUBLISHED + source retired atomically
+  -> dataset PUBLISHED + source retired + job SUCCEEDED atomically
 ```
 
 新增：
 
-- `api.LifecycleCommitEntry`
+- 版本化 `api.LifecycleCommitIntent` / `LifecycleCommitEntry`
 - `OpCommitLifecycle`
 - CN `CommitLifecycle`
 - TN `HandleCommitLifecycle`
 - TAE `lifecycleObjectsEntry`
+- `mo_lifecycle_commit_receipts`
 
 最终 wire/事务语义不能复用或扩展 `MergeCommitEntry`。前述 `DoMergeAndWrite` 进程内适配不属于最终提交协议。
 
-### 13.2 最终事务内容
+`LifecycleCommitIntent` 必须完整进入 `TxnCommitRequest.Payload` 和事务 WAL 可重放信息，不能引用 executor 内存。稳定身份为：
+
+```text
+intent_id = hash(job_id, attempt, lifecycle_generation, object_group_digest)
+```
+
+Intent 至少包含：
+
+- wire/capability version；
+- job ID、attempt、executor epoch；
+- source Snapshot、exact object create/drop/fingerprint digest；
+- schema、policy、binding、lifecycle generation；
+- `dependency_fingerprint`；
+- cutoff、predicate 和 immutable export intent digest；
+- created live Object locations/stats/root；
+- transfer locations/digest/count；
+- dependency delta locations/digest/count；
+- archive dataset/container/payload versions/root；
+- source/expired/live rows、objects、bytes 和序列化 budget。
+
+同一个 `intent_id` 的重复 Handle/Prepare/Replay 只能得到同一个对象注册和 retirement 结果；内容 digest 不同则返回不可重试冲突。
+
+### 13.2 最终短事务
+
+导出阶段只冻结 source Snapshot/object fingerprint、schema/policy generation、dependency fingerprint 和 export intent digest，不捕获 `commit_seq`。完整读取和校验完成后才开启最终短事务，读取当前 `commit_seq` 并执行：
 
 同一个正常分布式事务中：
 
@@ -697,7 +949,7 @@ write immutable staging
    ```text
    job_id == captured job
    executor_epoch == current epoch
-   state == VERIFIED_NOT_PUBLISHED
+   job.state == READY_TO_COMMIT
    ```
 
 2. 条件更新 Binding 的 `commit_seq`（不能只做 Snapshot read）：
@@ -707,60 +959,85 @@ write immutable staging
    binding_version == captured
    lifecycle_generation == captured
    table_schema_version == captured
-   commit_seq == captured
-     -> commit_seq = captured + 1
+   commit_seq == value read in this short transaction
+     -> commit_seq = value + 1
    ```
 
-   这会与并发 DDL/Policy Job 形成真实的 write-write conflict；条件影响行数不是 1 时立即 abort。
+   这会与并发 Lifecycle commit/DDL/Policy 形成真实 write-write conflict；条件影响行数不是 1 时只重试短事务。只有 source/schema/policy/dependency fingerprint 改变时，才废弃已校验 export 并重新规划。
 
 3. 条件发布 Manifest：
 
    ```text
-   state == VERIFIED_NOT_PUBLISHED
-   root == verified root
-   all payloads == VERIFIED
+   dataset.state == VERIFIED_NOT_PUBLISHED
+   manifest.root == verified root
+   every payload.state == VERIFIED
+   collection.commit_seq == captured collection commit_seq
+     -> collection.commit_seq = value + 1
    ```
+
+   Dataset row 在该事务中进入 `PUBLISHED` 并继承当前有效的 Collection Reference/Legal Hold。Collection page/root 可以异步聚合，但权威 Dataset 行必须立即可按 source/range 发现。
 
 4. 附加 `OpCommitLifecycle`：
 
-   - exact source object identity、create/drop version 和 digest；
-   - source Snapshot TS；
-   - cutoff、predicate digest；
-   - created live ObjectStats；
-   - transfer table；
-   - dependency delta locations；
-   - archive dataset ID 和 root；
-   - job ID、executor epoch、schema/policy/generation。
+   - 携带完整、序列化后仍在 hard limit 内的 `LifecycleCommitIntent`；
+   - transfer/dependency 使用对象化 locations，不携带无限逐行列表。
 
 5. TN PrepareCommit 验证：
 
    - 每个源对象仍是当前可见且版本完全相同；
+   - source Snapshot、schema/policy/binding/generation 仍匹配；
+   - `dependency_fingerprint` 仍匹配 GA support matrix；
    - 没有遗漏需要处理的并发 tombstone；
-   - created object 和 transfer table 完整；
-   - 依赖更新计划完整；
+   - created object、transfer 和 dependency locations 的 digest/count 完整；
+   - Intent/WAL/RPC/Prepare budget 未超限；
    - 输出对象数量不与 `NoTransfer` sentinel 冲突。
+
+   Prepare 只能执行确定、幂等、有界的本地 metadata 校验和 txn entry 注册；禁止远端 ArchiveStore I/O、全量 payload/source 扫描、provider polling、无 deadline wait。必须使用事务 request deadline，禁止 `context.Background()`；任一 collect/transfer/validation 错误原样上抛，禁止返回 `nil`。
 
 6. 原子提交：
 
    - 注册新活动对象；
    - 退休 exact source objects；
    - 转移 live-row tombstone；
-   - 提交隐藏索引、CDC 和约束 delta；
-   - 发布 Manifest 和 Job success。
+   - 提交支持矩阵内的隐藏索引 delta；
+   - 发布 Manifest、Job success 和 durable commit receipt。
 
 任一条件失败，整个事务 abort，不能出现“Manifest 已发布但源数据还在”或“源对象已退休但 Manifest 不可用”。
 
-### 13.3 Commit unknown
+### 13.3 Replay、Receipt 与 Commit unknown
+
+CN 将 Catalog normal writes 和每个 TN 的 Lifecycle Intent 一起放入同一个分布式事务。每个 participant 按稳定 request order 重放；Catalog row 和 TAE Object 变更都只在全局 commit 后可见。`ErrTAENeedRetry` 重建 TAE txn 时必须从原始 `TxnCommitRequest` 重放同一 Intent，不允许重新读取 mutable Job 状态拼请求。
+
+最终事务涉及多个 participant 时必须走完整 2PC。只有 Catalog、Lifecycle Intent 和 Receipt 确认落在同一个兼容 participant，且 replay/commit-unknown 语义与 2PC 等价时，才允许 1PC 优化；任何优化都不得省略 Intent、Receipt 或 durable commit result。集群 capability 未全部升级到兼容 wire/replay 版本时，不得启动会退休源对象的 Job。
+
+`mo_lifecycle_commit_receipts` 在同一事务插入：
+
+- intent ID/digest；
+- job/attempt/generation；
+- source/created/dependency/dataset roots；
+- commit timestamp；
+- format/capability version。
+
+TAE WAL/txn entry 同时记录 intent ID 和 digest，用于检测同一 Intent 的重复 replay。Receipt 对用户不可改，按 collection 分页保留并进入 Backup/DR。
 
 网络超时时不能根据 executor 本地状态判断成功或失败。Reconciler 按以下事实判断：
 
-- Manifest 是否已按 dataset/root 发布；
-- source object set 是否已被该 `job_id` 的 commit 退休；
-- created objects 是否已注册；
-- Job epoch 和 terminal state；
-- dependency delta 是否提交。
+- Receipt 是否按 intent ID/digest 可见；
+- Manifest 是否按 dataset/root 发布；
+- source/created/dependency roots 是否与 Receipt 匹配；
+- 事务服务是否仍报告 in-doubt；
+- TAE intent registry/WAL 是否存在冲突结果。
 
-确认未提交才允许重试；确认已提交只做后处理；无法确认时继续持有 source pin 和 staging，不得猜测。
+判断规则：
+
+```text
+receipt visible + all roots match  -> committed，做后处理
+transaction durably aborted        -> retry same/replanned intent
+transaction still in-doubt         -> wait/reconcile
+receipt/root mismatch              -> terminal corruption alarm
+```
+
+无法确认时继续持有 source pin 和 staging，不得猜测。故障测试必须覆盖 before Prepare、during Prepare、WAL append 前后、after commit、response lost 和重复 replay，证明不重复注册对象、发布 Manifest 或提交索引 delta。
 
 ## 14. 并发语义
 
@@ -802,13 +1079,30 @@ Job 记录 `source_snapshot_ts`，最终事务检查从 Snapshot 到 Prepare 之
 1. 将未发布 Job 标记 cancel；
 2. 使 generation 失效；
 3. 有界等待 executor 停止并释放 reservation；
-4. source pin 在 terminal reconcile 后释放。
+4. DROP 可以完成逻辑 Catalog 变更，不同步等待远端 Delete、thaw 或 commit-unknown 收敛；
+5. source pin 在 terminal reconcile 后异步释放；无法判定时继续多保留物理对象。
 
 产品可另加 `DROP ... CASCADE ARCHIVE JOBS`，但默认不能让旧 Job 在表已改变后继续发布。
 
 ## 15. 索引、CDC、外键和插件
 
-这是生产实现不能绕过的部分。
+Commercial GA 使用拒绝优先的 support matrix：
+
+| 表能力 | GA 行为 |
+|---|---|
+| 无二级依赖的普通表 | 允许 |
+| 普通/唯一索引 | 对应 handler 通过后允许 |
+| active CDC | 拒绝 |
+| FK 父表或子表 | 拒绝 |
+| Publication/Subscription | 拒绝 |
+| Fulltext/Vector/异步索引/外部插件 | 拒绝 |
+
+准入执行两次：
+
+1. Policy bind 时解析 TableDef、系统 Catalog 和外部依赖，生成版本化 `dependency_fingerprint`；
+2. 最终短事务重新计算并 CAS fingerprint，阻止 Job 运行期间新增 Index、CDC、FK、Publication 或插件。
+
+任何未知依赖、Catalog 读取失败或 handler version 不匹配都 fail closed。
 
 ### 15.1 隐藏索引表
 
@@ -833,25 +1127,19 @@ Delta 必须携带隐藏索引行的精确身份或等价 MVCC 条件，不能�
 
 ### 15.2 CDC
 
-Policy 必须声明 CDC 语义：
+首个 GA 拒绝 active CDC。Object retirement 不天然等价于 CDC 逐行 delete，不能让下游继续保留已过期行。
 
-- 表没有 active CDC：无额外动作；
-- `CDC ROW_DELETE`：对已过期行生成 CDC 可消费的逐行删除，正式默认；
-- `CDC RANGE_RETIRE`：只有 MO CDC 协议和下游显式支持范围 retirement event 时才可选。
-
-存在 active CDC 却没有兼容 handler 时，Policy 绑定失败，不能静默让下游继续保留已过期数据。
-
-`ROW_DELETE` 事件与 Base Object retirement 使用同一个 commit timestamp；Reconciler 必须能以 `job_id` 证明事件已提交，不能在事务外补发后直接标记成功。
+未来开放前必须用独立 ADR 定义 replayable lifecycle delete log、commit timestamp、下游 capability 和 Receipt 对账；不得在事务外补发后直接标记成功。
 
 ### 15.3 外键
 
-- 默认 `RESTRICT`：过期父行仍被引用时 Job 失败并给出计数；
-- 显式 `CASCADE`：Dependency Planner 生成有上限的跨表 DAG，并在同一事务提交；
-- 不能在 engine 层绕过 SQL 外键语义。
+首个 GA 拒绝 FK 父表和子表。`RESTRICT/CASCADE/SET NULL` 都是跨表行级语义，不能在 engine 层绕过，也不能靠整对象 retirement 推导。
 
-### 15.4 Fulltext、Vector 和外部插件
+### 15.4 Publication、Fulltext、Vector 和外部插件
 
-每种插件必须注册 lifecycle handler。未注册的索引类型使 Policy admission 失败。正式交付前，当前产品声明支持的所有内置索引类型必须有 handler 或明确禁止与 Lifecycle 同时使用，不能把数据不一致留给用户发现。
+Publication 是 MO 将数据库/表发布给其他账户并由 Subscription 消费的数据共享能力。首个 GA 拒绝已经发布的源表和 Subscription 表，避免源端归档后订阅端是否应同步删除的语义不明确。
+
+Fulltext、Vector、异步索引和外部插件同样拒绝。未来每种能力必须注册 lifecycle handler 并通过独立一致性验收后才能进入 support matrix；未注册永远是 bind/commit 拒绝，不是运行时静默跳过。
 
 ## 16. Archive 发布、引用和删除
 
@@ -860,7 +1148,7 @@ Policy 必须声明 CDC 语义：
 Job：
 
 ```text
-PLANNED -> PINNED -> RUNNING -> VERIFIED_NOT_PUBLISHED
+PLANNED -> PINNED -> RUNNING -> READY_TO_COMMIT
         -> COMMITTING -> SUCCEEDED
         \-> RETRY_WAIT / CANCELING / FAILED_TERMINAL
 ```
@@ -871,18 +1159,35 @@ Dataset：
 STAGING -> VERIFIED_NOT_PUBLISHED -> PUBLISHED
                                       |
                                       v
-                                  DELETING -> PURGED
+                              PURGE_PENDING -> PURGED
 ```
 
 Payload：
 
 ```text
 UPLOADING -> VERIFIED -> DELETE_INTENT -> DELETING -> DELETED
+                                           |
+                                           v
+                              DELETE_FAILED_MANUAL
 ```
+
+Payload 的删除所有权状态与 provider access 状态分列保存，不能互相覆盖：
+
+```text
+DIRECT_READABLE -> TRANSITIONING -> RESTORE_REQUIRED
+                                      |
+                                      v
+                               THAW_REQUESTED
+                                      |
+                                      v
+                               THAWED_UNTIL(ts)
+```
+
+Restore Job 使用 `PLANNED -> REQUESTING_THAW -> WAITING_THAW -> LOADING_STAGING -> VERIFYING -> PUBLISHED/FAILED`。Dataset 始终保持自己的 `PUBLISHED/PURGE_PENDING` 状态，不能用 `RESTORING` 覆盖删除互斥判断。
 
 ### 16.2 删除所有权
 
-`PURGE AFTER INTERVAL 7 YEAR` 的时间基准是 lifecycle column，不是“归档成功后再保存七年”。对一个 payload：
+`PURGE ELIGIBLE AFTER INTERVAL 7 YEAR` 的时间基准是 lifecycle column，不是“归档成功后再保存七年”。对一个 payload：
 
 ```text
 purge_eligible_at =
@@ -894,26 +1199,46 @@ purge_eligible_at =
 
 使用 payload 中的最大业务时间，保证其中每一行都达到最短保存期。Writer 按 purge deadline bucket 组文件，避免一个很新的行让大量老数据长期无法清理。该语义只是 minimum retention eligibility；“到七年必须物理删除”的 maximum-retention 合规模式需要同时约束 Snapshot、PITR、Backup、DR 和 Legal Hold，作为单独策略提供。
 
-不可变 key 只能防止重复覆盖，不能防止 stale runner 删除对象。Purger 必须先在 MO 中原子执行：
+不可变 key 只能防止重复覆盖，不能防止 stale runner 删除对象。Purger 首先在一个 MO 事务中执行 Dataset CAS：
 
 ```text
-references == 0
-AND purge_eligible_at reached
+dataset.state == PUBLISHED
+AND reference_edges == 0
 AND legal_hold == false
+AND collection.reference_summary == 0
+AND collection.legal_hold == false
+AND collection.commit_seq == captured collection commit_seq
+AND dataset.purge_eligible_at reached
 AND grace period reached
-AND state == VERIFIED
-  -> state = DELETE_INTENT / DELETING
+AND no restore/reference creation in progress
+AND no transition/thaw operation in progress
+AND every payload.state == VERIFIED
+  -> dataset.state = PURGE_PENDING
+  -> collection.commit_seq = value + 1
 ```
 
-进入 `DELETING` 后：
+Reference/Legal Hold 创建事务必须反向断言 `dataset.state == PUBLISHED`。Reference 创建与 Purge CAS 竞争时只有一个事务成功；一旦 Dataset 进入 `PURGE_PENDING`，不能新增引用、取消删除或回到 `PUBLISHED`。
+
+Dataset 成功冻结后，每个 Payload 独立 CAS：
+
+```text
+dataset.state == PURGE_PENDING
+AND payload.state == VERIFIED
+AND key/version == frozen identity
+  -> payload.state = DELETE_INTENT
+  -> payload.state = DELETING
+```
+
+进入 Payload `DELETING` 后：
 
 - 状态不可撤销；
-- 禁止新增 reference；
-- 禁止取消后重新引用同一个 key；
 - 如需恢复保留，只能复制到新 immutable key；
-- provider 支持 version ID 时删除具体版本；
+- GA provider 必须按冻结的具体 version identity 删除，禁止只按 key 删除“当前版本”；
 - stale/new runner 重复 Delete 才是安全幂等；
-- 所有 payload 确认删除后，Manifest 才能进入 `PURGED`。
+- provider 永久失败或无法证明结果时进入 `DELETE_FAILED_MANUAL`，Dataset 保持 `PURGE_PENDING` 并告警；
+- 所有 payload 确认 `DELETED` 后，Dataset 才能进入 `PURGED`。
+
+Archive Container sidecar 自身也是一个带 version/hash 的 Payload，并且最后删除；在数据文件部分删除或人工处理期间，仍保留冻结 key/version 清单作为审计和重复 Delete 的事实源。
 
 ## 17. Restore
 
@@ -943,6 +1268,20 @@ RESTORE ARCHIVE DATASET 'dataset-id'
 - CDC、外键和业务写入并发复杂；
 - 新表更容易验证、审计和删除。
 
+Commercial GA 的 Restore schema contract：
+
+- 使用 Archive Container 保存的 snapshot schema，不自动映射到源表当前 schema；
+- 所有列类型必须无损解码，任何类型/版本未知时 staging 整体失败；
+- 重建在 GA support matrix 中声明支持的普通/唯一索引，并在发布前与全量重建 digest 对比；
+- default 和 comment 从 snapshot schema 复制；
+- 只允许 bind 时已经验证为确定性、可重建的 generated column；恢复后重新计算并校验；
+- auto-increment 创建独立 sequence，起点高于恢复数据最大值，不连接源表 sequence；
+- 不复制 ACL、FK、CDC、Publication/Subscription、Partition、Fulltext、Vector 或插件状态；
+- staging schema、row count、data digest、index digest 全部成功后才能原子 rename/publish；
+- 任一失败回滚/清理隐藏 staging，不能留下部分可见表。
+
+Restore 在创建 reference 时反向 CAS Dataset 仍为 `PUBLISHED`；若 Dataset 已进入 `PURGE_PENDING`，Restore 必须失败。Deep Archive 的 thaw 临时副本有 provider expiry，MO 必须在 expiry 前完成有界导入，否则重新申请，不能把临时 thaw 副本作为已发布表的长期底层文件。
+
 全量恢复大数据集需要显式 `FULL` 和容量/费用确认。
 
 ## 18. 故障恢复与所有权
@@ -958,6 +1297,8 @@ RESTORE ARCHIVE DATASET 'dataset-id'
 | Archive Payload staging | dataset + job epoch | Manifest 发布后转 dataset 所有 | staging GC |
 | Dependency Delta | child Job | commit 后转目标表所有 | orphan GC |
 | Restore staging table | Restore Job | rename 后转用户所有 | Drop staging |
+| Restore reference | Restore Job/attempt | 新表发布或明确不再 resume 后释放 | retry 继续持有，terminal cleanup 后释放 |
+| Provider thaw temp copy | Provider request/version | staging load 完成后等待 provider expiry | 不主动当作永久副本，过期后重新申请 |
 | Published Payload | Archive Dataset | Purge 后删除 | Reconciler 继续维护 |
 
 Staging GC 也不能只按文件年龄删除。它必须同时确认 owner Job 已 terminal、该 executor epoch 已失效、attempt deadline 与 orphan grace 均已超过、没有已发布 Manifest 引用；随后以和正式 Purge 相同的 `DELETE_INTENT -> DELETING` 协议删除。仍在上传或 commit unknown 的 key 不属于 orphan。
@@ -967,7 +1308,7 @@ Staging GC 也不能只按文件年龄删除。它必须同时确认 owner Job �
 - provider 有 versioning 时列举并删除该 immutable key 的全部未引用版本；
 - 在 quiescence window 内持续 Stat/List，发现迟到版本就再次删除；
 - `DELETED` tombstone 至少保留到最大 attempt deadline、provider request timeout 和 grace 都过去；
-- provider 无法提供 version/list/一致 Stat 时，Profile 必须声明该限制并采用更长隔离窗口，不能宣称已经完成强删除。
+- provider 无法提供 version/list/一致 Stat 时，Profile 必须声明该限制并采用更长隔离窗口，不能宣称已经完成强删除，也不能进入包含 Purge 承诺的 Commercial GA。
 
 所有外部操作必须有 deadline：
 
@@ -988,7 +1329,7 @@ peak transient bytes =
   pinned source bytes
   + rewritten live ObjectIO bytes
   + archive staging bytes
-  + dependency/CDC delta bytes
+  + dependency/index delta bytes
   + retry/orphan allowance
 ```
 
@@ -1003,6 +1344,23 @@ peak transient bytes =
 - Manifest 保存 KMS key ID 和加密版本，密钥轮换不能要求重写所有 payload；删除 KMS key 前必须检查引用；
 - DROP 源表默认不删除独立 Archive Dataset；必须显式 `CASCADE ARCHIVES` 且经过 retention/hold 检查；
 - Policy unbind 只停止新归档，不删除已发布 Dataset。
+
+### 18.2 错误状态和接管责任
+
+| 状态 | 自动重试 | 接管者 | 是否 terminal | 是否继续 pin/block |
+|---|---|---|---|---|
+| `RETRY_WAIT` | 有界退避 | TaskService 新 executor | 否 | source ref 保留 |
+| `COMMIT_UNKNOWN` | 只允许 reconcile | Reconciler | 否 | source ref/staging 保留 |
+| `CANCELING` | 等待有界 stop | Coordinator/Reconciler | 否 | terminal cleanup 前保留 |
+| `FAILED_TERMINAL` | 否 | 管理员确认/cleanup | 是 | 活动源未退休；cleanup 后释放 |
+| `GC_REF_BLOCKED` | loader 修复后 | TN GC owner | 否 | fail-closed，阻止受影响 GC 和新 Job |
+| `INDEX_REBUILD_REQUIRED` | 重建 generation | Indexer | 否 | 停止新 Job，不影响普通表 |
+| `RESTORE_WAIT_THAW` | polling/backoff | Restore executor | 否 | Dataset reference 保留 |
+| `DELETE_FAILED_MANUAL` | 否 | 运维/Purger | Payload terminal | Dataset 保持 `PURGE_PENDING` |
+
+所有 retry 都有 attempt 和 elapsed deadline；自动重试耗尽转 terminal/manual 并告警。`COMMIT_UNKNOWN` 不允许用户强制标记失败后释放 source ref。
+
+`COMMIT_UNKNOWN` 超过 transaction recovery SLO 后进入人工恢复队列，但状态仍保持 in-doubt：运维工具查询 transaction service、Receipt 和各 TN intent registry，只能写入“已提交”或“已确认 abort”的可证明结果，不能提供“强制释放 pin”按钮。
 
 ## 19. SQL、可解释性与成本
 
@@ -1021,7 +1379,7 @@ EXPLAIN DATA LIFECYCLE FOR finance.orders;
 - whole-object 与 mixed-object 数量；
 - `alignment_ratio`；
 - 预计活动表回收字节；
-- 预计 active rewrite、archive write、index/CDC write 字节；
+- 预计 active rewrite、archive write、index/dependency write 字节；
 - provider storage/restore/early-delete 费用；
 - Snapshot/PITR 可能 pin 的字节；
 - 不兼容索引、CDC、FK 和类型；
@@ -1045,10 +1403,23 @@ operational isolation saving: measurable but workload-dependent
 - archived、active reclaimed、source pinned bytes；
 - whole/mixed/alignment ratio；
 - estimated/actual rewrite amplification；
-- source/index/CDC/archive bytes；
+- source/index/archive bytes；
 - Job progress、attempt、epoch、deadline；
 - staging orphan、delete backlog、oldest age；
 - Restore thaw ETA、读取字节和费用。
+
+### 19.3 Commercial SLO、Backlog 与公平性
+
+每个发布 SKU/Archive Profile 必须在 GA release artifact 中固定并验证：
+
+- cutoff 到逻辑退休的 target lag 和 maximum supported backlog age；
+- account/cluster 的 scan、rewrite、archive、restore、purge QPS/bytes/s；
+- foreground P95/P99、普通 Merge backlog、TN memory/WAL 的自动降速和暂停阈值；
+- provider 故障时 staging/orphan bytes、objects 和 oldest-age circuit breaker；
+- oldest pending、pinned bytes、retry age、GC generation gap 和 delete manual 告警；
+- TTL、Archive、Restore、Purge 的 weighted fairness 和最低份额。
+
+大租户不能饿死小租户，Restore 不能饿死 TTL。TaskService/provider 不可用时数据保持活动可见，只增加 backlog。GA 门禁使用固定硬件、并发和 workload 生成可重复报告，不在设计中承诺未经测量的固定百分比。
 
 ## 20. 代码改动边界
 
@@ -1057,11 +1428,11 @@ operational isolation saving: measurable but workload-dependent
 建议新增：
 
 - `pkg/vm/engine/tae/lifecycle`：RewriteHost、transaction entry、source validation；
-- `pkg/lifecycle/catalog`：Policy/Binding/Job/Manifest/Reference；
+- `pkg/lifecycle/catalog`：Policy/Binding/Job/Receipt/Collection/Manifest/Reference；
 - `pkg/lifecycle/scheduler`：indexer、scanner、coordinator、reconciler；
 - `pkg/lifecycle/archive`：Parquet container、ArchiveStore、provider adapters；
-- `pkg/lifecycle/dependency`：index/CDC/FK/plugin handlers；
-- `pkg/pb/api`：版本化 `LifecycleCommitEntry`；
+- `pkg/lifecycle/dependency`：普通/唯一索引 handler 和未支持依赖 admission；
+- `pkg/pb/api`：版本化 `LifecycleCommitIntent` / `LifecycleCommitEntry`；
 - SQL parser/planner/executor 的 Policy、TTL、Dry-run、Restore 入口。
 
 ### 20.2 对现有核心路径的最小改动
@@ -1077,6 +1448,14 @@ operational isolation saving: measurable but workload-dependent
 | FileService | 不破坏 ObjectStorage；旁路增加 ArchiveStore | 活动 ObjectIO 读写 |
 | GC/logtail | 新增 exact-object lifecycle source refs 和可见 generation ACK；新增 archive purger | Snapshot/PITR 原判定，两种删除谓词不混合 |
 
+Feature 使用 global/account/table 三层 capability gate。表没有有效 Binding 时：
+
+- Object create/delete consumer 不读取生命周期列 footer；
+- 普通 Merge 不查询 Lifecycle Catalog；
+- 普通 DML/查询不生成 Lifecycle Intent；
+- GC 只有在 cluster 已激活 exact-ref capability 时加载 source-ref filter，loader 异常仍 fail closed；
+- scheduler、commit、source-ref、archive/restore、purger 分别有 kill switch，停止新工作不能跳过在途 reconciliation。
+
 ### 20.3 明确禁止
 
 - 不在普通 Merge callback 中查询 lifecycle policy；
@@ -1090,18 +1469,32 @@ operational isolation saving: measurable but workload-dependent
 - 不在没有 dependency handler 时直接 SoftDeleteObject；
 - 不允许 stale runner 撤销 `DELETING` 或复用 payload key。
 
-## 21. 交付阶段与正式门槛
+## 21. Capability Gates 与 Commercial GA
 
-阶段是实现顺序，不是永久阉割的产品版本。所有阶段从第一天使用同一套最终 Catalog、Job、Entry、Manifest、引用和错误模型。
+Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。所有 Gate 使用同一最终 Catalog、Intent、Receipt、source ref、Manifest、Reference 和错误模型。
 
-| 阶段 | 实现内容 | 进入下一阶段条件 |
+| Gate | 能力 | Exit criteria |
 |---|---|---|
-| Phase 0 | Object Index、dry-run、桥接 Snapshot、scope reservation、Lifecycle Entry 原型 | crash/race 下证明无错删、无提前 GC、无双发布 |
-| Phase 1 | exact-object source refs、Native TTL、whole/mixed path、普通/唯一索引、CDC、DDL 并发 | 生产数据安全矩阵与 TB 级 pin 放大测试通过 |
-| Phase 2 | Parquet Archive、Manifest 原子发布、标准对象类、恢复到新表 | provider fake/real 故障矩阵和成本压测通过 |
-| Phase 3 | 深归档 thaw、version delete、Legal Hold、Backup/DR 引用、全部内置插件 | 完整生产验收 |
+| Gate A：Read-only | 单表 metadata Planner、Dry-run、Export-only Parquet/Container | 不退休活动数据；候选、行数和 digest 与全表基准一致 |
+| Gate B：Safety Protocol | replayable Intent/Receipt、bridge/exact ref、GC ACK、dependency admission、hard budget、whole/mixed fault prototype | P0-2～P0-6 的 kill/replay/GC/超限矩阵全部通过 |
+| Gate C：TTL GA Candidate | table-scope、NOT NULL 时间列、whole/mixed TTL、验收后的普通/唯一索引 | P0-1～P0-6 关闭，1/10 TiB 与 7 天 chaos/soak 通过 |
+| Gate D：Archive GA Candidate | direct-readable + restore-required Profile、双层 Purge、Collection、Restore 新表、Backup/DR | P0-7 和全部 P1 关闭，fake/real provider archive/restore/purge drill 通过 |
+| Gate E：Commercial GA | 支持矩阵、SLO、Runbook、升级/降级、reconciliation/audit 工具 | 客户试点完成一次 archive、deep restore、reference/hold 和 purge drill；发布评审签字 |
 
-正式 Feature GA 必须完成 Phase 0–3 中与已声明能力相关的全部门槛。可以先交付受控 Preview，但不能用 “MVP” 名义绕过索引、CDC、GC、接管和删除安全。
+任何 Gate 未通过都不能通过减少故障测试、放宽 budget 或关闭 fail-closed 来换取发布进度。Commercial GA 必须完成 Gate A–E；CDC、FK、Publication、Fulltext、Vector 和插件因为明确不在 GA support matrix，不要求实现 handler，但必须证明两次 admission 都会拒绝。
+
+### 21.1 进入实现前的详细设计包
+
+概要设计之后必须拆分并分别评审：
+
+1. Lifecycle Commit Intent、replay、WAL、Receipt；
+2. exact source ref、GC bridge/ACK、owner handoff、升级降级；
+3. dependency handler 与 GA support matrix；
+4. Archive Dataset/Collection/Manifest/Payload/Reference/Purge；
+5. direct/deep ArchiveStore 和 Restore staging/schema/publish；
+6. Object Index generation/backfill/reconciliation/obsolete GC；
+7. resource budget、scheduler、公平性和 SLO；
+8. disaster recovery、audit/reconciliation 工具和 Runbook。
 
 ## 22. 验收矩阵
 
@@ -1109,12 +1502,11 @@ operational isolation saving: measurable but workload-dependent
 
 - 无过期、部分过期、全部过期；
 - lifecycle 列是/不是 sort key；
-- NULL、时区边界、DST、精度、cutoff 等值；
+- NOT NULL admission；全 NULL/部分 NULL schema 或坏数据必须拒绝/fail closed；
+- 时区边界、DST、闰日、月末、epoch 单位/溢出、精度、cutoff 等值；
 - 迟到 INSERT；
 - 无 PK、PK、普通索引、唯一索引；
-- CDC on/off、ROW_DELETE、RANGE_RETIRE capability；
-- FK RESTRICT/CASCADE；
-- Fulltext/Vector/plugin admission；
+- active CDC、FK、Publication/Subscription、Fulltext/Vector/plugin 的 bind 和 final CAS 拒绝；
 - schema evolution 和归档 schema restore。
 
 ### 22.2 并发
@@ -1139,17 +1531,21 @@ operational isolation saving: measurable but workload-dependent
 - payload complete/verify；
 - 新 TAE Object 写完；
 - dependency delta 写完；
-- Manifest `VERIFIED_NOT_PUBLISHED`；
-- final txn before/after prepare；
+- Archive Dataset `VERIFIED_NOT_PUBLISHED`、Job `READY_TO_COMMIT`；
+- final txn before/during/after Prepare；
+- WAL append 前后、Intent 重放和 Receipt 写入；
 - commit response 丢失；
 - source pin release；
-- DELETE_INTENT、provider delete、PURGED；
-- Restore thaw、staging load、rename。
+- Reference/Restore 创建与 Dataset `PURGE_PENDING` CAS 竞争；
+- Payload DELETE_INTENT、DELETING、DELETE_FAILED_MANUAL、provider delete、Dataset PURGED；
+- Deep Archive transition/thaw、event 丢失、polling、临时副本 expiry、staging load、rename。
 
 ### 22.4 资源与性能
 
 - 10 万表/大量空表时不全库扫描；
-- TB 表 Job 拆分和公平性；
+- 1 TiB/10 TiB 表，32 B/256 B/4 KiB 行宽；
+- whole/mixed `0%/50%/100%`，tombstone `0%/1%/20%`；
+- Job 拆分和多租户/TTL/Restore 公平性；
 - foreground P95/P99 扫描、写入和 Merge 影响；
 - transfer map、Parquet writer、dependency delta 内存上限；
 - provider 限流、慢读、慢写和 eventual consistency；
@@ -1162,6 +1558,8 @@ operational isolation saving: measurable but workload-dependent
 - 所有 TN/CN 支持新 opcode 后才能启用执行；
 - 旧节点收到新 Entry 明确拒绝，不能忽略；
 - Manifest/container 有版本号和兼容读取器；
+- exact refs 激活后旧 TN 不得成为 GC owner；
+- 降级前重建宽保护并等待所有 owner ACK；
 - 回滚只停止新 Job，已发布 Dataset 仍可恢复和清理。
 
 ## 23. 主要风险与控制
@@ -1174,7 +1572,7 @@ operational isolation saving: measurable but workload-dependent
 | exact ref 尚未传播就释放宽保护 | GC 错删源对象 | bridge Snapshot + generation ACK + chaos test |
 | 并发删除被归档复活 | 数据语义错误 | expired-row tombstone 变化时 abort/re-export |
 | 隐藏索引残留 | 错查或唯一冲突 | dependency handler 同事务 |
-| CDC 下游不删除 | 双边不一致 | ROW_DELETE 默认、无 handler 拒绝绑定 |
+| CDC/FK/Publication/插件语义缺失 | 外部或派生状态不一致 | bind + final fingerprint 两次拒绝 |
 | stale runner 删除新对象 | 永久丢失 | immutable key + irreversible delete state + version delete |
 | 同价云存储无字节降本 | ROI 不成立 | capability/cost dry-run，分离运维收益 |
 | 深归档恢复时间不可控 | SLA 违约 | Profile 声明、异步 Restore、ETA 和容量预检 |
@@ -1188,14 +1586,38 @@ operational isolation saving: measurable but workload-dependent
 1. 不使用 SQL Partition 作为生命周期底座；
 2. 不实现生命周期 `ONLINE_COLD` 状态；
 3. 不修改普通 Merge 策略；
-4. 重用 Merge 的流式排序/写对象原语，但使用独立 Host 和事务 Entry；
+4. 不新增 Merge Engine；Lifecycle Rewrite Executor 可重用流式排序/写对象原语，但使用独立 Host、Intent 和事务 Entry；
 5. 用增量 Object Index 代替每日全库数据扫描；
 6. 以 bounded exact object set 作为原子 Job；
 7. 用桥接 Snapshot 安全建立 exact-object source refs，用对象 MVCC + Catalog CAS 决定提交；
 8. Archive 用 typed Parquet/ZSTD 和独立 Manifest，不复制原 ObjectIO 充当长期格式；
-9. 索引、CDC、FK 和插件是提交协议的一部分，不是后补功能；
-10. Archive Payload 删除采用不可逆状态机和具体 version delete；
-11. 恢复默认进入新表；
-12. 分阶段实现，但正式交付以生产级闭环为唯一目标。
+9. 普通/唯一索引由同事务 handler 处理；CDC、FK、Publication 和插件在首个 GA 双重拒绝；
+10. Dataset 使用 `PURGE_PENDING`，Payload 使用不可逆状态机和具体 version delete；
+11. direct-readable 与 restore-required deep archive 都进入 GA，恢复默认进入新表；
+12. 按 capability gate 实现，但只有完整 Gate E 才能称为 Commercial GA。
 
 这套方案的主要价值是：它把 Feature 加在 TAE Object 生命周期之上，最大限度隔离普通 Merge；同时没有用“隔离”换取数据正确性漏洞。即使客户已经把活动数据放在 S3/OSS/COS，MO 仍能通过缩小活动数据集、减少后台重写和查询面，并在 provider 支持时使用更低价归档类别，实现可测量、可解释的降本。
+
+## 25. Commercial Review 规范闭环索引
+
+下表表示设计要求已经进入唯一规范，不表示代码或测试已经通过：
+
+| Review 项 | 规范落点 |
+|---|---|
+| P0-1 唯一权威方案 | 本文状态、历史分析稿降级、Object-boundary ADR |
+| P0-2 NULL/ZoneMap fast path | 10.1 |
+| P0-3 replay/Receipt/Prepare | 13 |
+| P0-4 exact ref/GC fail-closed | 12 |
+| P0-5 dependency closure | 1.1、15 |
+| P0-6 hard budgets | 9.2、13.2、18 |
+| P0-7 Dataset/Payload Purge | 16 |
+| P1-1 Whole/Mixed profile | 9.2 |
+| P1-2 Object Index GC | 8.2 |
+| P1-3 Policy inheritance | 1.1、8.1：GA 只支持 table scope |
+| P1-4 late `commit_seq` | 13.2 |
+| P1-5 Collection/super-manifest | 8.3 |
+| P1-6 Restore schema contract | 17 |
+| P1-7 SLO/fairness | 19.3 |
+| P1-8 time/calendar semantics | 8.1 |
+
+实现进入 Commercial GA 的唯一判据是 Gate E 及其测试证据，不是“文档中已经描述”。

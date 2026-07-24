@@ -1,8 +1,10 @@
-# MatrixOne Issue #24853：分层数据生命周期方案复核与设计建议
+# MatrixOne Issue #24853：分层数据生命周期行业调研与历史方案记录
 
-> **实现方向更新（2026-07-24）**：本文保留行业调研、三平面模型、归档所有权、GC 和删除协议等分析结论；其中“以 SQL Range Partition 作为归档执行边界”的建议已被后续代码复核推翻。Issue #24552 / #24853 的当前推荐实现以**不可变 TAE 对象集合**为执行单元，不依赖 SQL Partition，也不修改普通 Merge 策略。正式概要设计见 [MatrixOne TAE 对象级数据生命周期概要设计](issue-24552-24853-tae-object-lifecycle-overview-design-cn.md)。
+> **非规范文档，禁止作为实现规格。** 本文只保留行业调研、术语、早期 Partition 方案及其 Review 演进记录。文中所有以 SQL Range Partition、TN partition generation fence、Phase 1/2 或 C+ 分区方案为前提的“推荐”“必须”“Go/No-Go”均为已经被取代的历史结论。
 >
-> 状态：方案评估稿，不代表已进入实现
+> Issue #24552 / #24853 当前唯一规范架构来源是 [MatrixOne TAE 对象级数据生命周期概要设计](issue-24552-24853-tae-object-lifecycle-overview-design-cn.md)，架构边界由 [ADR：以 TAE Object 而不是 SQL Partition 作为生命周期执行边界](issue-24552-24853-object-lifecycle-boundary-adr-cn.md) 固化。实现、测试、交付和 Commercial GA 评审只能引用这两份文档。
+>
+> 状态：历史调研稿，非规范、非实现输入
 >
 > 复核日期：2026-07-23
 >
@@ -14,31 +16,18 @@
 >
 > 目标 Issue：[#24853](https://github.com/matrixorigin/matrixone/issues/24853)
 
-## 1. 结论先行
+## 1. 当前有效结论与本文用途
 
-Issue #24853 反映的用户需求是真实且重要的，但 Issue 对问题的定义和最初方案需要做较大修正。
+当前有效结论只有以下几项：
 
-核心结论如下：
+1. 历史版本保留、业务生命周期和在线物理放置是三个独立平面；
+2. 不允许云 Bucket Lifecycle 直接迁移或删除活动 TAE Object；
+3. 长期归档使用独立 Archive Dataset、版本化 Container、热端 Manifest、显式 Reference 和不可逆删除协议；
+4. 当前规范以有界 exact TAE Object set 为 Job 和事务边界，不依赖 SQL Partition；
+5. 普通 Merge 策略保持不变，Mixed Object 由独立 Lifecycle Rewrite Executor 处理；
+6. TTL、direct-readable archive、restore-required deep archive 和恢复到新表属于 Commercial GA 目标，实际 GA 以规范文档定义的能力门禁和验收结果为准。
 
-1. **Issue 中关于 Snowflake 的关键前提已经过时。** Snowflake 已于 2025-11-07 将 Storage Lifecycle Policies 正式 GA，当前已支持基于行条件的归档/过期、`COOL`/`COLD` 两种归档层、归档元数据查询和 `CREATE TABLE ... FROM ARCHIVE OF ... WHERE ...` 恢复。因此 MO 的差异化不能再建立在“Snowflake 不提供显式归档策略”上。
-2. **历史版本保留、业务数据生命周期和物理冷热放置必须拆成三个独立平面。** `DATA_RETENTION_TIME_IN_DAYS`、PITR、Snapshot 解决的是历史版本；TTL/归档解决的是当前表中哪些业务行还应可见；HOT/COLD 解决的是在线数据的缓存、介质和访问 SLA。把三者放入一个 `RETENTION(HOT, COLD, ARCHIVE)` 语法会产生不可解释的冲突。
-3. **当前 MO 有可复用的基础能力，但不存在可以直接拼起来完成该 Feature 的“现成积木”。** 可以复用 Snapshot/PITR 的 GC 引用判定、TaskService、FileService、Stage 导入导出和对象存储适配器；但当前对象定位、对象元数据、缓存路径、merge、tombstone、索引和云存储接口都没有 lifecycle 状态与 restore 能力。
-4. **不建议让云厂商 Bucket Lifecycle 直接管理当前 TAE 对象，也不建议第一版把当前 TAE 对象原地转入深归档。** 这两种方案存在数据不可读、metadata 也被冻结、缓存绕过状态、merge/DML 失败、策略漂移以及误归档内部对象等严重风险。
-5. **有条件推荐方案 C+：“独立 archive dataset + 热端 Manifest + 可恢复异步作业”。** 先通过 TN 权威 commit fence 封存完整 range 分区，同时建立 TAE GC 可识别的 source pin，再把固定 Snapshot 上已经应用 tombstone 的逻辑行集写入独立 archive dataset；完成端到端校验后，才允许通过带完整 CAS 前置条件的 MO 事务发布 Manifest 并退休活动分区。该事务、source pin 和不可逆 Archive Delete 协议都必须先通过 P0 原型，不能当成当前已具备能力。
-6. **第一版必须收窄能力。** 只支持表级、单调时间列、与 range 分区边界对齐、完整封存分区；只支持 purge eligibility 和恢复到新表；不支持任意 SQL 表达式、仅按 sort key 选择对象、last-access 作为正确性依据、maximum-retention 强制删除、透明访问深归档、同表恢复和账户级继承。
-7. **MO 可以在“可解释性和跨云一致性”上做得比主流方案更好。** 关键是提供 lifecycle dry-run、历史引用导致的 pinned bytes、物理回收进度、恢复文件数/字节数/预计费用、明确的云能力契约，以及可中断、可重试、有 fencing 的异步任务。
-
-建议将 #24853 与 [#24552 Native table TTL](https://github.com/matrixorigin/matrixone/issues/24552) 共享同一个 lifecycle 执行内核，但保持不同的用户语义：TTL 是逻辑过期动作，归档是“先保存到归档数据集，再逻辑过期”。
-
-Review 后的阶段决策：
-
-| 范围 | 决策 | 进入条件 |
-|---|---|---|
-| Phase 0 / TN fence P0 原型 | Go | 验证 TN generation fence、稳定提交水位以及旧 generation 写入 abort/retry |
-| Lifecycle Core、严格 range partition TTL/EXPIRE | Conditional Go | TN fence、late arrival 和历史 Snapshot 读取已退休分区通过原型与故障测试 |
-| MO-managed direct-readable archive | Conditional Go | conditional transactional publish、source pin、不可逆删除、独立 archive identity、版本化 container 和 hidden staging restore 通过原型 |
-| Restore-required deep archive | No-Go | 前两阶段协议和 fake/real provider 故障矩阵通过后再进入 |
-| 活动 ObjectIO 原地 deep archive、Issue 原始混合 SQL | No-Go | 与当前 metadata/cache/merge 契约及三平面语义冲突 |
+本文后续章节用于理解行业背景、早期设计为什么被否决以及哪些所有权原则仍可复用。任何与当前规范冲突的内容均以对象级概要设计和 ADR 为准。
 
 ## 2. 首先纠正 Issue 中的语义混合
 
@@ -389,7 +378,7 @@ OFFLINE_RESTORE_REQUIRED
 | 改大 policy 阈值可自动回热 | 中 | 云 provider 不会反向执行旧对象恢复，Databricks/Doris 均有类似限制 | policy version 化；已迁移数据只通过显式 restore/migration 回迁 |
 | 删除超过归档期限的数据即可合规 | 高 | Snapshot/Branch/legal hold 可能继续保留原活动对象 | 区分最低留存、最大留存、hold；强制删除需处理整个引用图 |
 
-## 7. 四种可选实现路径
+## 7. 历史阶段比较过的四种实现路径
 
 ### 方案 A：直接使用云 Bucket Lifecycle
 
@@ -473,7 +462,9 @@ OFFLINE_RESTORE_REQUIRED
 
 **结论：可作为 Phase 0 使用指南，不应包装成已完成的原生 lifecycle。**
 
-## 8. 推荐架构
+## 8. 已废弃的 Partition-first 推荐架构
+
+> 本节是早期方案记录，不得实现。当前 Catalog、Job 和 source-ref schema 见对象级规范设计。
 
 ### 8.1 三平面结构
 
@@ -696,7 +687,9 @@ Restore:   REQUESTED -> REHYDRATING -> MATERIALIZING -> VALIDATING
 
 每个非终态必须定义 deadline、重试上限、接管条件和 terminal failure；不能存在依赖某个失联 CN 或永不返回 provider 请求才能离开的状态。
 
-## 9. Lifecycle 执行协议
+## 9. 已废弃的 Partition-first 执行协议
+
+> 本节中的 seal、partition generation、TN partition fence 和一分区一 Job 已由 exact-object source ref、Lifecycle Commit Intent 和一 Object group 一 Job 取代。
 
 ### 9.1 数据单元选择
 
@@ -1118,7 +1111,9 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 - restore-required files/bytes；
 - 最近任务、错误和下一次重试。
 
-## 14. 分阶段落地建议
+## 14. 已废弃的 Partition-first 分阶段建议
+
+> 本节 Phase 编号只用于保存历史 Review 上下文，不代表当前交付顺序。当前交付使用对象级规范中的 capability gates。
 
 ### Phase 0：明确现状和人工 Workaround
 
@@ -1180,7 +1175,9 @@ SHOW ARCHIVE OBJECTS FOR TABLE events WHERE ...;
 - rollup/downsample；
 - legal hold 与 maximum-retention 强制模式。
 
-## 15. 必须通过的故障与兼容测试
+## 15. 历史 Partition 方案的故障与兼容测试
+
+> 本节含有仍可复用的故障场景，但 partition fence/partition generation 验收已经失效。当前 Commercial GA 验收只以对象级规范为准。
 
 ### 15.1 正确性
 
@@ -1356,9 +1353,9 @@ Recommendation: partition by day on event_ts before enabling archive.
 
 这把 ClickHouse、Timescale、Elastic 的“封存分区/chunk/index”经验产品化，而不是把读写放大留到后台才暴露。
 
-## 17. 尚需产品/架构决策的问题
+## 17. 历史方案当时尚未解决的问题
 
-以下问题未决前不建议进入完整实现：
+以下内容记录 Partition-first 方案当时的未决问题，不是当前决策清单：
 
 1. 版本化 Archive Container 内部 payload 选择 ObjectIO、Parquet 还是其他格式？长期 reader compatibility 如何承诺？
 2. TN fence 的稳定身份使用物理 partition table ID 还是 logical table + partition ID？如何与现有冲突检测和 commit TS 建立稳定水位？
@@ -1383,7 +1380,7 @@ Recommendation: partition by day on event_ts before enabling archive.
 | TaskService epoch 不等于 provider side-effect fencing | 采纳 | 外部请求可能在旧 runner 失去 lease 前完成；非破坏性请求由 immutable key、step journal 和 catalog 条件更新收敛，Delete 使用独立不可逆协议 |
 | Hidden staging 和原子发布 | 采纳 | 部分 restore 不能对用户可见，provider 临时恢复副本也不能成为已发布表的长期数据源 |
 | `PURGE AFTER` 改为 purge eligibility | 采纳 | MVP 只能承诺 minimum retention + best-effort reclaim；maximum retention 是独立合规模式 |
-| Restore-required deep archive 当前 No-Go | 采纳 | 必须等 direct-readable C+ 协议、容量上限和故障矩阵先证明 |
+| 历史 Review 当时将 restore-required deep archive 判为 No-Go | 当时采纳，当前已被取代 | 当前 Commercial GA 范围和门禁见对象级规范 |
 
 ### 17.2 二轮 Review 处理决策记录
 
@@ -1536,7 +1533,7 @@ Tiering   = 按成本/性能/恢复能力改变数据放置，不等价于删除
 - `COOL`：归档后的数据仍然比较容易取回，适合偶尔访问但不要求长期处于最高性能层的数据；Snowflake 文档给出的最短归档期是 90 天。
 - `COLD`：比 COOL 更便宜，但取回速度更慢；Snowflake 文档给出的最短归档期是 180 天，恢复最长可能达到 48 小时，并限制单次恢复的文件数。
 
-在 AWS、Azure、GCS、OSS、COS 中，同样叫“冷”或“归档”的层可能分别代表直接读取、需要 restore、不同的最短存储时长和不同的取回费用。因此 MO 不应把 SQL 中的 `COOL`/`COLD` 直接硬编码成某个云厂商 class，而应表达成访问能力：
+在 AWS、Azure、GCS、OSS、COS 中，同样叫“冷”或“归档”的层可能分别代表直接读取、需要 restore、不同的最短存储时长和不同的取回费用。因此 MO 不应把 SQL 中的 `COOL`/`COLD` 直接硬编码成某个云厂商 class。下面两个名称只用于解释 provider 能力，并不表示当前规范会把 `ONLINE_COLD` 暴露为 Lifecycle 状态：
 
 ```text
 ACTIVE_DIRECT_READ       = 成本较低，但普通 SQL 仍可直接读取
@@ -1548,7 +1545,7 @@ OFFLINE_RESTORE_REQUIRED  = 查询前必须提交异步恢复任务
 客户 A 为工厂管理设备，MatrixOne 中每天写入大量设备事件、告警和传感器明细。客户的实际需求不是“永远把所有数据放在最快的存储上”，而是：
 
 1. 最近 30 天的数据用于实时运维，查询频繁，必须正常读写；
-2. 30 天到 180 天的数据偶尔用于趋势分析和客服排障，仍希望可以直接查，但可以接受更高延迟；
+2. 30 天到 180 天的数据偶尔用于趋势分析和客服排障，仍保留在活动表中，由 CN cache 自适应冷热；
 3. 180 天到 2 年的数据很少访问，但合同和安全审计要求保留；
 4. 2 年以后通常可以删除，但正在调查的设备或法务 hold 不能删除。
 
@@ -1556,8 +1553,8 @@ OFFLINE_RESTORE_REQUIRED  = 查询前必须提交异步恢复任务
 
 | 数据年龄 | MO 逻辑状态 | 客户体验 | 背后动作 |
 |---|---|---|---|
-| 0–30 天 | `HOT` | 正常查询、UPDATE、告警分析 | 活动表和高性能缓存 |
-| 30–180 天 | `ONLINE_COLD` / 类 COOL | 普通查询仍能执行，但延迟和成本可能更高 | 由独立 storage placement policy 转到支持 DirectRead 的低成本层 |
+| 0–30 天 | `ACTIVE` | 正常查询、UPDATE、告警分析 | 活动表；CN cache 会保留热点 |
+| 30–180 天 | `ACTIVE` | 仍可普通查询；低频页自然退出 cache | 活动表；不引入 Lifecycle `ONLINE_COLD` 状态 |
 | 180 天–2 年 | `ARCHIVED` / 类 COLD | 当前表不可直接查；提交带时间和设备条件的 Restore Job，恢复到新表 | 复制、校验后从活动表逻辑退休，归档 payload 异步保存 |
 | 2 年以后 | `PURGE_ELIGIBLE` | 一般不可见 | 检查 PITR、Snapshot、Branch、Backup 和 legal hold 后进入 best-effort 物理清除 |
 
@@ -1588,24 +1585,24 @@ CREATE RESTORE JOB restore_device_events_202502
 - **在线性能更稳定**：当前运维查询主要面对近 30 天活动数据，历史长尾不会持续扩大 hot cache、merge 和统计开销。
 - **合规更容易解释**：可以回答“当前表保留多久、归档保留多久、何时允许 purge、什么原因阻止删除”，而不是只说对象存储已经变冷。
 - **恢复范围可控**：按设备、时间和其他归档元数据恢复，先估算文件数、字节数和费用，避免一次性恢复数十 TB。
-- **不会把日常查询绑在云厂商差异上**：对客户仍然是 `HOT`、`ONLINE_COLD`、`ARCHIVED` 这些稳定语义，AWS 的数小时恢复和 GCS 的直接读取由管理员 profile 屏蔽。
+- **不会把日常查询绑在云厂商差异上**：对客户只有活动数据和归档数据两种业务可见性；AWS 的数小时 thaw 和 GCS 的直接读取由 Archive Profile 屏蔽。
 
-这个例子也说明了为什么第一版应优先支持“时间 range 分区 + 追加或少更新数据 + 新表恢复”。如果客户 A 的设备事件表每天都在随机 UPDATE 过去两年的记录，或者要求对两年归档数据继续毫秒级 UPDATE，那么这项能力就不适合直接启用，应该先做数据分区、冷热数据拆表或保留在在线层。
+这个例子也说明了为什么当前规范以有界 exact TAE Object set 为执行边界，并把恢复固定为独立新表，而不要求客户先建立时间 Range Partition。如果客户 A 要求对两年归档数据继续毫秒级 UPDATE，这项能力就不适合启用；这部分数据应继续留在活动表。
 
-## 19. 最终建议
+## 19. 当前规范入口
 
-建议将 #24853 的目标重新表述为：
+本文不再提供最终实现建议。当前决定是：
 
-> 为 MatrixOne 增加独立于 Snapshot/PITR 和在线 storage placement 的业务数据 lifecycle core。MVP 只处理按时间列对齐的完整 range partition，通过 TN commit fence 封存分区并建立 GC 可见的 source pin；归档时由一分区一 Job 将固定 Snapshot 上已经应用 tombstone 的逻辑行集写入版本化、不可变且具有稳定 ID 的 MO-managed archive dataset，完成端到端校验后，通过带完整 CAS 前置条件的事务发布 Manifest 并退休活动分区。归档 payload 使用不可逆、禁止重新引用的删除协议。归档数据通过有界、可估算、带谓词的异步任务恢复到隐藏 staging table，校验后原子发布为新表。Restore-required 深归档与 ONLINE_COLD 在核心协议证明后分别演进。
+- 以有界 exact TAE Object set 而不是 SQL Partition 为执行边界；
+- 使用 Lifecycle Rewrite Executor，不新增或修改普通 Merge Engine；
+- Commercial GA 覆盖 TTL、direct-readable archive、restore-required deep archive 和恢复到独立新表；
+- CDC、FK、Publication/Subscription、Fulltext、Vector 和外部插件不在首个 GA 支持矩阵；
+- 事务 replay、GC fail-closed、依赖准入、资源硬上限、双层 Purge、升级降级和 TB 级长稳全部是 GA 门禁。
 
-推荐优先级：
+唯一规范请阅读：
 
-1. 先交付 Lifecycle Core、TN fence、严格 range partition EXPIRE 和 dry-run；
-2. 再交付 direct-readable MO-managed archive、版本化 container、独立 archive identity 和 hidden staging restore；
-3. 再接入 restore-required 云归档；
-4. 最后独立实现活动对象 ONLINE_COLD/storage placement 和自动热度优化。
-
-不建议把 Issue 原语法直接实现，因为它会在 API 层固化错误的三个平面混合，并承诺当前存储引擎尚无法可靠实现的透明语义。在 TN fence、conditional publish/retire、GC 可见 source pin、不可逆 Archive Delete、Archive Container、独立 archive identity、双域 reference GC 和 hidden restore staging 通过故障注入前，只能称为受控原型，不能声称生产级数据安全。
+1. [TAE 对象级数据生命周期概要设计](issue-24552-24853-tae-object-lifecycle-overview-design-cn.md)
+2. [ADR：以 TAE Object 而不是 SQL Partition 作为生命周期执行边界](issue-24552-24853-object-lifecycle-boundary-adr-cn.md)
 
 ## 20. 参考资料
 
