@@ -5,6 +5,8 @@
 > 状态：首个受限 Commercial GA 的唯一概要设计；不表示当前代码已经具备该能力
 >
 > 评审结论：**Conditional Go**。第 22 节七项 P0、1/10 TiB 认证、故障矩阵和分阶段放量门禁全部通过后，才允许发布 Commercial GA
+>
+> 实现级详细设计：[TAE Object Lifecycle 详细设计索引](tae-object-lifecycle/README.md)
 
 ## 1. 结论
 
@@ -380,7 +382,8 @@ SQL DDL ---------------->| Policy / Binding     |
                                     |
                                     v
                          +----------------------+
-Logtail/Object Metadata->| Derived Object Index |
+CollectObjectList/Metadata
+------------------------>| Derived Object Index |
                          +----------+-----------+
                                     |
                                     v
@@ -511,6 +514,7 @@ endpoint_identity
 bucket/container
 immutable_prefix
 capabilities
+encryption/KMS identity digest
 credential_generation
 ```
 
@@ -528,6 +532,7 @@ payload key/version list
 
 - endpoint/bucket/prefix 不能对已发布版本原地修改；
 - Credential 可以轮换，但不能改变 namespace identity；
+- KMS key identity 变化必须创建新 Profile version，不能让历史 Dataset 静默改用新 key；
 - 存在 Dataset、Root 或未完成清理时禁止删除 Profile metadata；
 - 已被 Root/Dataset 引用的 Profile version 和 cleanup credential handle 保存在
   system-retained registry，不随 DROP ACCOUNT 删除；
@@ -536,8 +541,9 @@ payload key/version list
 - provider 不支持 version ID 时，必须使用全局唯一、永不复用的 immutable key；
 - 缺少稳定 PUT/GET/HEAD/LIST/DELETE 和 checksum 能力的 Profile 不能退休源数据。
 
-如果客户在 Provider 侧撤销 credential、删除 bucket 或修改外部策略，MO 只能进入
-`DELETE_FAILED/ARCHIVE_UNAVAILABLE` 并告警，不能声称已经清理或可 Restore。GA
+如果客户在 Provider 侧撤销 credential、删除 bucket 或修改外部策略，MO 只能让
+Cleanup 进入 `DELETE_FAILED`，或让 Restore 返回 `LIFECYCLE_ARCHIVE_UNAVAILABLE`
+并记录健康告警；Dataset 本身仍保持 `PUBLISHED`，不能声称已经清理或可 Restore。GA
 合同必须把外部 namespace/credential 的可用性责任写清。
 
 ### 9.4 Dataset 和 Manifest
@@ -627,7 +633,7 @@ Index 的性质：
 - 是候选 hint，不是 final retirement 的权威条件；
 - 可以落 system Catalog，使用普通 Catalog 事务和恢复；
 - 不增加自定义 WAL/replay；
-- 重启后从 Binding、PartitionState、Logtail 增量和 footer backfill 重建；
+- 重启后从 Binding、`CollectObjectList`、当前 Relation Metadata 和 footer backfill 重建；
 - 按 account/table/object key 分页，不使用单行全局进度热点；
 - stale、缺失或版本未知时只能少选或暂停，不能错误退休。
 
@@ -635,13 +641,14 @@ Index 的性质：
 
 ```text
 CREATE BINDING
-  -> create index generation + capture logtail watermark
-  -> page through watermark Snapshot 的 current Object metadata
+  -> create index generation + capture object-list TS watermark W0
+  -> page through W0 Snapshot 的 current Object metadata
   -> read lifecycle-column footer only
-  -> replay watermark 之后的 Object create/delete delta
-  -> CAS generation READY at applied watermark
+  -> CollectObjectList(W0, W1] 补扫 Object create/delete delta
+  -> CAS generation READY at applied watermark W1
 
-Object create/delete logtail
+bounded periodic polling
+  -> CollectObjectList(last_applied_ts, current_ts]
   -> update only affected bound-table Object rows
 
 schema/binding generation change
@@ -950,7 +957,7 @@ acquire table write lock with deadline
 ```text
 table write lock
   -> Feature Guard/Binding/owner rows
-  -> Dataset/Receipt/Root rows
+  -> Dataset/Receipt rows
   -> TN StrictObjectRetire Prepare
 ```
 
@@ -1170,15 +1177,15 @@ Archive 和 DELETE 基于同一 SI Snapshot：
 - 完整类型、NULL、时区、Decimal 精度和 schema version；
 - row-group min/max/null count；
 - content checksum 和 Dataset root；
-- KMS key ID/generation；
-- provider object version。
+- encryption/KMS identity digest；
+- provider object version（Provider支持时）；否则使用 immutable key + size + SHA-256。
 
 不使用 CSV，因为 CSV 不能无损表达 MO 类型、NULL、时区、Decimal 和长期 schema contract。
 
 不规定“一天一个文件”或“每月重写合并”：
 
 - child 内流式累计到目标文件大小；
-- 月/年视图通过 Manifest/Super-manifest 聚合；
+- 月/年范围通过 Dataset Catalog 和 Manifest 集合选择；
 - 不为了目录整齐复制历史 Payload。
 
 ### 16.2 ArchiveStore
@@ -1594,7 +1601,7 @@ Restore 使用 Manifest 冻结的源 schema：
 - Merge 先提交：Lifecycle strict retire abort 并 replan；
 - Lifecycle 先提交：Merge 按现有冲突语义 abort/replan；
 - Mixed 路径继续使用现有 RowID transfer；
-- Object Index 通过后续 Logtail 更新。
+- Object Index 通过绑定表的有界 `CollectObjectList` 增量轮询更新。
 
 Lifecycle 不直接处理 Merge 已删除的旧 Object，也不阻止现有 GC 删除它们。Lifecycle 只对执行 Snapshot 上选中的当前有效数据负责。
 
