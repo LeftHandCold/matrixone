@@ -22,14 +22,15 @@
 
 1. 历史版本保留、业务生命周期和在线物理放置是三个独立平面；
 2. 不允许云 Bucket Lifecycle 直接迁移或删除活动 TAE Object；
-3. Archive Payload 与活动 Object 物理分离，但首个 GA 的 Dataset 所有权从属于源 table generation/account incarnation；DROP 后不承诺恢复；
+3. Archive Payload 与活动 Object 物理分离，但首个 GA 的 Dataset 所有权从属于 stable logical table owner generation/account incarnation；DROP 后不承诺恢复；
 4. 当前规范以有界 exact TAE Object set 为 Job 和事务边界，不依赖 SQL Partition；
 5. 普通 Merge 策略保持不变，Mixed Object 由独立 Lifecycle Rewrite Executor 处理；
-6. Source Pin 首个 GA 使用 system Lifecycle Snapshot，并在选 Object 前同时通过 flush gate 与 GC metadata-visible/old-cycle-drained gate；不新增 exact-object ref；
-7. 第一次外部 PUT 前必须创建 system-owned Attempt/Cleanup Root，DROP 只写 owner tombstone，provider cleanup 由后台 Sweeper 完成；
+6. Source Pin 首个 GA使用与现有 user/branch 行为隔离的 `kind='lifecycle'` table-only Snapshot，保护 exact physical table generation，并在选 Object 前通过 flush gate 与 GC metadata-visible/old-cycle-drained gate；不新增 exact-object ref；
+7. 每个 TTL/Archive child 都有 system-retained Attempt/Commit Control；Archive 第一次外部 PUT 前另建 Cleanup Root。DROP 只写 owner tombstone，provider cleanup 由后台 Sweeper 完成；
 8. Commercial GA 必须包含 TTL、direct-readable archive、恢复到新表和不可逆 Purge；Legal Hold/WORM、DROP 后保留、Archive Backup/DR 和 restore-required deep archive 不属于首个 GA；
 9. 未实现 archive-aware 语义的 Backup/PITR/Snapshot Restore/Clone/Branch/DR 必须 fail closed；不能静默恢复缺少已归档历史行的表；
-10. 收敛后方案是 Conditional Go：六项 GA P0 和 Gate E 的实现、故障测试证据完成后才能称为 Commercial GA。
+10. Object Index 和 scheduler 只覆盖显式 Binding，不扫描集群几十万张普通表；首个 release profile 认证 500～1000 张绑定表，并同时限制 index/backlog/retained bytes/Job/外部对象；
+11. 收敛后方案是 Conditional Go：六项 GA P0、1/10 TiB、Stage 4 与 Gate E 的实现、故障测试证据完成后才能称为 Commercial GA。
 
 本文后续章节用于理解行业背景、早期设计为什么被否决以及哪些所有权原则仍可复用。任何与当前规范冲突的内容均以对象级概要设计和 ADR 为准。
 
@@ -1419,16 +1420,19 @@ Recommendation: partition by day on event_ts before enabling archive.
 
 | 收敛项 | 当前决策 |
 |---|---|
-| Archive ownership | 从属于源 table generation/account incarnation；DROP 后不承诺 Restore |
-| Source protection | system Lifecycle Snapshot；commit -> flush -> GC visible/old-cycle drained -> select Object |
-| External ownership | 第一次 PUT 前建立 system Attempt Root；DROP 写 Owner Registry tombstone，Sweeper 异步清理 |
+| Archive ownership | 从属于 stable logical table owner generation/account incarnation；TAE CAS 使用 physical table generation + exact Object；DROP 后不承诺 Restore |
+| Source protection | 独立 `kind='lifecycle'` table-only Snapshot；commit -> flush -> GC visible/old-cycle drained -> select Object |
+| Commit reconciliation | TTL/Archive 都有 system retained Attempt Control，冻结 final transaction identity/request digest/immutable result |
+| External ownership | Archive 第一次 PUT 前建立 system Attempt Root；DROP 写 Owner Registry tombstone，Sweeper 异步清理 |
 | Dependency serialization | table Feature Guard + account/database scope Guard；首次创建和 bind 由唯一键/CAS 关闭竞态 |
 | Index | 首个 GA 拒绝所有物化隐藏索引表，只允许不产生隐藏表的 Base PK |
 | Backup/DR | Payload/Catalog 不复制；Backup/PITR/Snapshot Restore/Clone/Branch/DR 对 Lifecycle owner fail closed |
 | Wire/replay | 在原始 `PrecommitWriteCmd.EntryList` 增加 tagged Lifecycle Entry，进入相同 WAL/1PC/2PC/retry 链 |
 | Profile identity | Dataset/Root 冻结 profile version、namespace 和对象 identity；credential rotation 独立 |
 | 长冲突/大 Object | 分别进入 `CONFLICT_BLOCKED` 和 oversize-object streaming/`OVERSIZE_BLOCKED` |
-| GA 判定 | 六项 P0 与 Gate E 证据完成后 Conditional Go；当前代码仍不是 Commercial GA |
+| ALTER COPY | logical owner/physical source transfer 未实现前，对 Lifecycle-bound 表 fail closed |
+| Scale | 只索引/调度显式 Binding；认证 500～1000 表、1/10 TiB、`1/2/4/8` child 并发和 index/backlog/retained-byte 硬上限 |
+| GA 判定 | 六项 P0、1/10 TiB、Stage 4 与 Gate E 证据完成后 Conditional Go；当前代码仍不是 Commercial GA |
 
 ## 18. 功能定位、业务场景与行业术语
 
@@ -1626,13 +1630,15 @@ CREATE RESTORE JOB restore_device_events_202502
 - 以有界 exact TAE Object set 而不是 SQL Partition 为执行边界；
 - 使用 Lifecycle Rewrite Executor，不新增或修改普通 Merge Engine；
 - Commercial GA 覆盖 TTL、direct-readable archive、恢复到独立新表和从属 owner 的不可逆 Purge；
-- Source Pin 使用 system Lifecycle Snapshot + GC visible gate；第一次 PUT 前使用 system Attempt Root；
+- Source Pin 使用独立 table-only Lifecycle Snapshot + GC visible gate；每个 child 使用 system Attempt Control，Archive 第一次 PUT 前使用 system Attempt Root；
+- Archive owner 使用 stable logical table identity，TAE retirement 使用 physical table/object identity；首个 GA 拒绝 Lifecycle-bound 表的 ALTER COPY；
 - Archive 从属于源表/租户，DROP 后不承诺恢复；Legal Hold/WORM、DROP 后保留和 Archive Backup/DR 不在首个 GA；
 - Backup/PITR/Snapshot Restore/Clone/Branch/DR 对 Lifecycle 表 fail closed；
 - 首个 GA 拒绝所有物化隐藏索引表，能力创建/bind/final commit CAS 同一 Feature Guard；
 - restore-required deep archive 是首个 GA 后的可选 Archive Profile，不阻塞 GA；
 - CDC、FK、Publication/Subscription、Fulltext、Vector 和外部插件不在首个 GA 支持矩阵；
-- tagged Entry replay、GC visible gate、Root/owner cleanup、Feature Guard、资源硬上限、不可逆 Purge、升级降级和 TB 级长稳全部是 GA 门禁。
+- Object Index/scheduler 只覆盖显式 Binding；首个 profile 认证 500～1000 表、1/10 TiB 和同表/库/账户/集群 `1/2/4/8` child 并发；
+- tagged Entry replay、table-only GC visible gate、Control/Root/owner cleanup、Feature Guard、资源硬上限、不可逆 Purge、Stage 4、升级降级和 TB 级长稳全部是 GA 门禁。
 
 唯一规范请阅读：
 

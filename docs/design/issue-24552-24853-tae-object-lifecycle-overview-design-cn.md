@@ -4,7 +4,9 @@
 >
 > 状态：Issue #24552 / #24853 当前唯一规范概要设计；定义 Commercial GA 目标和强制门禁，不代表当前代码已经具备该能力
 >
-> 方案评审结论：Conditional Go；六项 GA P0、Gate E 与实现/故障测试证据全部关闭后，才允许发布 Commercial GA
+> 方案评审结论：Conditional Go；六项 GA P0、1/10 TiB 认证、Stage 4、Gate E 与实现/故障测试证据全部关闭后，才允许发布 Commercial GA
+>
+> 首个 release profile：集群总表数可达几十万，但只有显式绑定的表进入 Lifecycle；认证上限为 500～1000 张绑定表，1 TiB 为常见规模，10 TiB 单表为数据路径认证目标
 >
 > 设计日期：2026-07-25
 >
@@ -63,6 +65,7 @@ Commercial GA 是“能力边界受限但承诺生产质量”，不是 Preview 
 | Archive ownership | Archive 从属于源 table generation 和 account incarnation；DROP TABLE/DATABASE/ACCOUNT 后不再承诺 Archive Restore |
 | Purge | 正常到期或 owner DROP 触发的不可逆 exact-identity delete；不包含 Legal Hold/WORM/maximum retention |
 | Backup/DR | 不复制 Archive；未实现 archive-aware restore 的 Backup/PITR/Snapshot Restore/Clone/Branch/DR 操作必须 fail closed |
+| Scale | 只服务显式 Binding；首个 release profile 最多认证 1000 张绑定表，并同时受 Object Index、backlog、retained bytes、Job 和外部对象等硬上限约束 |
 
 首个 GA 明确拒绝：
 
@@ -77,6 +80,7 @@ Commercial GA 是“能力边界受限但承诺生产质量”，不是 Preview 
 - account/database Policy 继承；
 - 任意表达式、UDF 和 subquery；
 - 同表恢复、归档数据透明参与普通查询；
+- 在 owner transfer 协议通过前，对 Lifecycle-bound 表执行会替换 physical table ID 的 `ALTER TABLE ... COPY`；
 - 在独立 Deep Archive capability gate 通过前绑定 `RESTORE_REQUIRED_ARCHIVE` Profile；
 - 为生命周期表执行未实现 archive-aware 语义的 Backup/PITR/Snapshot Restore/Clone/Branch/DR。
 
@@ -88,6 +92,8 @@ Commercial GA 是“能力边界受限但承诺生产质量”，不是 Preview 
 - `DROP TABLE/DATABASE/ACCOUNT` 沿用 MO 的删除含义，并级联放弃相应 Archive 的恢复能力；
 - 本能力不能宣传为“七年不可删除”的合规归档；用户需要此类保证时必须等待 Legal Hold/WORM/独立归档所有权能力；
 - DROP 主事务只增加本地、常数级 Catalog tombstone，不等待对象存储；外部 Archive 由 system-owned Sweeper 异步删除。
+
+首个 GA 的容量也是正式契约。`1000` 是本 release profile 的认证上限，不是 SQL 永久语义，也不是唯一限制。系统必须同时发布并强制执行 `max_bound_tables`、`max_indexed_objects/bytes`、`max_due/backlog_bytes`、`max_snapshot_retained_bytes`、active Job/attempt、staging/orphan/delete backlog 和外部对象数量上限。任一硬上限达到时拒绝新绑定或暂停新 Job，已发布数据的 Reconcile、Restore 和 Cleanup 仍继续。提高上限必须重新完成 Catalog、调度、GC、provider 和长稳认证，不能只修改配置。
 
 ## 2. 用户最终获得什么
 
@@ -165,6 +171,9 @@ RESTORE ARCHIVE ... INTO new_table
 | Archive Dataset | 具有稳定 ID、物理上与活动 Object 分离，但所有权从属于源 table generation/account incarnation 的逻辑归档数据集 |
 | Manifest | 描述归档文件、schema、行数、统计、校验和、加密和引用关系的热端元数据 |
 | Lifecycle Snapshot | system-owned 表级 Snapshot；在归档/重写期间阻止 TAE GC 删除其可见的源 Object |
+| Logical Owner Identity | Archive/Policy 长期所有权键；由 stable logical table ID 和只增不减的 owner generation 组成，不等同于可被 ALTER COPY 替换的 physical table ID |
+| Physical Source Identity | TAE 提交键；由当次 Snapshot 下的 physical database/table ID、physical generation 和 exact Object identity 组成 |
+| Attempt/Commit Control | 每个 TTL/Archive child Job 都在 system retained registry 保存的 commit 对账行；tenant Catalog 被 DROP 后仍可确定 final transaction 结果并安全释放 Snapshot |
 | Attempt/Cleanup Root | 在第一次外部 PUT 前写入 system-account retained registry 的持久所有权记录；负责 staging、已发布 payload 和 DROP 后清理 |
 | Owner Registry/Tombstone | system retained registry 中 account/database/table 的 `ACTIVE/DROPPED` 权威行；DROP 将其 CAS 为 tombstone，通知 Sweeper 放弃 Restore 并级联清理 Archive |
 | Access Generation | Dataset 上串行化 Restore/read lease 与 `DELETE_PENDING` 的递增版本 |
@@ -236,11 +245,11 @@ MO 当前 Partition 模块不是“假的”，但它是 SQL 逻辑路由和隐�
 
    [`pkg/taskservice/task_service.go`](../../pkg/taskservice/task_service.go) 在任务重新分配时增加 epoch，并在完成时按 epoch 更新。可以复用其 cron、任务持久化和 executor 接管，但不能把 task epoch 当作对象存储副作用的 fence。
 
-5. **Snapshot/PITR GC 引用**
+5. **Snapshot/PITR GC 引用模型**
 
-   [`pkg/vm/engine/tae/logtail/snapshot.go`](../../pkg/vm/engine/tae/logtail/snapshot.go) 和 [`pkg/vm/engine/tae/db/gc/v3/exec_v1.go`](../../pkg/vm/engine/tae/db/gc/v3/exec_v1.go) 已能让表级 Snapshot 阻止源对象被 GC。
+   [`pkg/vm/engine/tae/logtail/snapshot.go`](../../pkg/vm/engine/tae/logtail/snapshot.go) 和 [`pkg/vm/engine/tae/db/gc/v3/exec_v1.go`](../../pkg/vm/engine/tae/db/gc/v3/exec_v1.go) 已有 Snapshot 保护源版本的 GC 模型，可以复用引用和删除谓词。
 
-   Data Branch 已在 [`pkg/frontend/data_branch_snapshot.go`](../../pkg/frontend/data_branch_snapshot.go) 中演示“业务系统元数据与保护 Snapshot 同事务写入”。这证明 system-owned Lifecycle Snapshot 可以沿现有模式实现。但 [`pkg/frontend/check_snapshot_flushed.go`](../../pkg/frontend/check_snapshot_flushed.go) 的 `CheckSnapshotFlushed` 只证明 Base/Index Table 的 `flushTS >= snapshotTS`，不证明 GC loader 已把 `mo_snapshots` 记录装入保护集合；Lifecycle 仍需新增 GC metadata-visible gate。
+   Data Branch 已在 [`pkg/frontend/data_branch_snapshot.go`](../../pkg/frontend/data_branch_snapshot.go) 中演示“业务系统元数据与保护 Snapshot 同事务写入”。这证明 system-owned Lifecycle Snapshot 可以沿现有模式实现。但当前 GC loader 不保留 snapshot ID/kind，`AccountToTableSnapshots` 还会把 table Snapshot 的 TS 应用到同 database 的其他表，不能直接当作 Lifecycle 的 table-only 实现；Lifecycle 必须增加隔离的 kind/target 分支。另一个限制是 [`pkg/frontend/check_snapshot_flushed.go`](../../pkg/frontend/check_snapshot_flushed.go) 的 `CheckSnapshotFlushed` 只证明 Base/Index Table 的 `flushTS >= snapshotTS`，不证明 GC loader 已把 `mo_snapshots` 记录装入保护集合；仍需新增 GC metadata-visible gate。
 
 6. **DROP 的轻量系统表 Hook**
 
@@ -270,7 +279,11 @@ MO 当前 Partition 模块不是“假的”，但它是 SQL 逻辑路由和隐�
 
    只退休 Base Object 不会自动清理隐藏索引表，也不一定产生 CDC 所需的逐行 delete。生命周期不能绕过 SQL 删除的依赖语义。
 
-5. **把固定 ObjectStats 布局继续加字段**
+5. **ALTER COPY 的单一 table ID**
+
+   [`pkg/sql/compile/alter.go`](../../pkg/sql/compile/alter.go) 的 `ALTER TABLE ... COPY` 保留 logical ID，但会创建新 relation、内部 DROP 原 relation 并换成新 physical table ID。因此 Lifecycle 不能沿用“一个 table_id 同时表示 Archive owner 和 TAE source”的模型；首个 GA 先通过 Guard 拒绝 bound table 的 physical replacement。
+
+6. **把固定 ObjectStats 布局继续加字段**
 
    `ObjectStats` 是固定二进制布局。生命周期索引是可重建派生数据，不应为它改变所有对象的固定格式和兼容边界。
 
@@ -318,13 +331,13 @@ MO 当前 Partition 模块不是“假的”，但它是 SQL 逻辑路由和隐�
 |---|---|---|
 | Read-only Planner | 扫描表/Object 元数据、计算 cutoff、展示候选与成本 | 否 |
 | Export-only | 读取候选 Object、输出 Parquet/Container、全量重读校验 | 否 |
-| Protocol Foundation | tagged Commit Entry/Receipt、Lifecycle Snapshot/GC visible gate、Attempt Root、Feature Guard、hard budget | 只用于故障原型 |
+| Protocol Foundation | tagged Commit Entry/Receipt、table-only Lifecycle Snapshot/GC visible gate、Attempt Control、Archive Root、Feature Guard、hard budget | 只用于故障原型 |
 | Whole Object | 对完全过期 Object 做 TTL/Archive | 是，协议门禁通过后 |
 | Mixed Object | 过期行归档/丢弃，存活行写回 ObjectIO | 是，GA 必需 |
 | Direct-readable Archive/Restore | 直接读取已发布 payload、staging restore、原子发布 | 是，GA 必需 |
 | Restore-required Deep Archive Profile | transition/thaw、临时可读副本和 provider 状态收敛 | 否；首个 GA 后按客户需求独立验收 |
 
-Planner 可以先直接通过当前 `GetColumMetadataScanInfo` 分析一张白名单表；规模验证后再切换到增量 Object Index。Export-only 也可以先不复用 mergesort。真正退休活动数据之前，必须完成 replay、Snapshot/GC gate、Attempt Root、Feature Guard 和资源上限，不能用“后续再优化”替代。
+Planner 可以先直接通过当前 `GetColumMetadataScanInfo` 分析一张白名单表；规模验证后再切换到增量 Object Index。Export-only 也可以先不复用 mergesort。真正退休活动数据之前，必须完成 replay、table-only Snapshot/GC gate、Attempt Control、Archive pre-PUT Root、Feature Guard 和资源上限，不能用“后续再优化”替代。
 
 ## 7. 总体架构
 
@@ -372,7 +385,7 @@ Planner 可以先直接通过当前 `GetColumMetadataScanInfo` 分析一张白�
 | Policy Manager | 解析 table-scope 策略、版本和 provider capability |
 | Object Indexer | 为活动对象建立生命周期列 min/max/null 和 next action 派生索引 |
 | Scanner | 只扫描到期索引项，生成 dry-run 或执行计划 |
-| Coordinator | 创建 Lifecycle Snapshot；Archive Job 另建 Attempt Root；通过 GC gate 后将 batch 拆成独立 child Job |
+| Coordinator | child 取得执行配额后创建 Lifecycle Snapshot 与 Attempt Control；Archive Job 另建 Attempt Root；通过 GC gate 后形成独立 bounded source set |
 | Job Executor | 读取固定 Snapshot、输出活动对象和归档文件 |
 | ArchiveStore | 提供版本化、可校验、可恢复的云归档能力 |
 | Commit Handler | 执行对象级 CAS、tombstone 协调和原子 retirement |
@@ -380,7 +393,7 @@ Planner 可以先直接通过当前 `GetColumMetadataScanInfo` 分析一张白�
 | Purger | 按不可逆删除协议清理 Archive Payload |
 | Restore Service | 读取已发布归档、验证、写隐藏 staging 表并原子发布为新表；可选 Profile 在读取前扩展 thaw |
 
-Lifecycle Job Executor 运行在 CN TaskService worker，而不是塞入 TN 后台 Merge task：CN 负责跨云归档、Parquet 和正常分布式事务；TN 只提供 scope reservation、对象级 PrepareCommit 校验和 TAE transaction entry。长时间 copy/export 不保持 MO 事务，只有创建 Snapshot/Root 和最终 publish/retire 是短事务。
+Lifecycle Job Executor 运行在 CN TaskService worker，而不是塞入 TN 后台 Merge task：CN 负责跨云归档、Parquet 和正常分布式事务；TN 只提供 scope reservation、对象级 PrepareCommit 校验和 TAE transaction entry。长时间 copy/export 不保持 MO 事务，只有创建 Snapshot/Attempt Control/Archive Root 和最终 publish/retire 是短事务。
 
 ## 8. 元数据模型
 
@@ -404,7 +417,8 @@ Lifecycle Job Executor 运行在 CN TaskService worker，而不是塞入 TN 后�
 
 `mo_lifecycle_bindings`：
 
-- `table_id`
+- `logical_table_id`、`owner_generation`
+- current `physical_database_id/physical_table_id/physical_generation`
 - `policy_id`
 - `policy_version`
 - `binding_version`
@@ -436,9 +450,10 @@ lifecycle_column < fixed_cutoff
 
 ### 8.2 Feature Guard 与 Archive Profile 身份
 
-`dependency_fingerprint` 不能只在最终事务里“重新读一次”。这无法与并发首次创建 CDC、Publication、FK、Index 或插件形成 write-write conflict。首个 GA 新增每表唯一权威行 `mo_table_feature_guards`：
+`dependency_fingerprint` 不能只在最终事务里“重新读一次”。这无法与并发首次创建 CDC、Publication、FK、Index 或插件形成 write-write conflict。首个 GA 新增每个逻辑 owner generation 唯一的权威行 `mo_table_feature_guards`：
 
-- 唯一键：`(account_incarnation, table_id)`；
+- 唯一键：`(account_incarnation, logical_table_id, owner_generation)`；
+- 当前 `physical_database_id/physical_table_id/physical_generation`，并对 active physical locator 建唯一约束；
 - `guard_version`、`table_schema_version`、`lifecycle_generation`；
 - 已启用 feature bitmap 和版本化 digest；
 - Lifecycle Binding ID/version/state；
@@ -462,6 +477,8 @@ Lifecycle bind/unbind、最后一个 Root 清理以及 scope 保护创建/删除
 - ALTER、TRUNCATE 和 DROP TABLE。DROP DATABASE/ACCOUNT 不枚举并更新每张表 Guard，而是 CAS system owner registry 的 database/account 行。
 
 首次操作不能先判断“Guard 不存在”后跳过写入。双方都尝试插入同一个唯一键，唯一键冲突后重新读取并 CAS，才能关闭“Lifecycle bind 与 CDC create 同时看到不存在”的竞态。Guard 不进入普通 INSERT/UPDATE/DELETE、查询或 Merge 路径；未绑定 Lifecycle 的表也只在上述低频 DDL/控制面操作发生时创建。
+
+`logical_table_id` 是 Policy、Archive Dataset 和 owner tombstone 的长期所有权身份；`physical_table_id` 只标识当前 TAE relation。对于尚无非零 `TableDef.LogicalId` 的旧表，首次 bind 必须在同一 Catalog 事务把新 stable logical owner ID 写入权威 TableDef/identity row 和 Guard，不能只藏在 Binding 中，也不能把后续可能被替换的 physical ID 当作长期身份。active Guard 还提供从 `(account_incarnation, physical_table_id, physical_generation)` 到 logical owner 的唯一反向定位，使 DROP/ALTER 可以 O(1) 找到同一串行化行。首个 GA 不实现 owner transfer：任何会替换 `physical_table_id` 的 `ALTER TABLE ... COPY` 在 Guard admission 阶段直接拒绝。未来只有在一个 Catalog 事务内完成旧 physical generation fence、新 physical generation 发布和 Binding/Guard/Owner 原子迁移后，才可开放该操作。
 
 升级时不能假定 Guard 已包含历史依赖。允许 Lifecycle bind 前必须满足：
 
@@ -491,7 +508,8 @@ Lifecycle bind/unbind、最后一个 Root 清理以及 scope 保护创建/删除
 
 `mo_lifecycle_object_index` 每个当前对象一行：
 
-- account/database/table/object ID；
+- account incarnation、logical owner ID/generation；
+- physical database/table ID/generation、object ID；
 - 对象 create/drop version 或 fingerprint；
 - policy/binding version；
 - 生命周期列 `min_value`、`max_value`、`null_count`；
@@ -528,11 +546,12 @@ Lifecycle bind/unbind、最后一个 Root 清理以及 scope 保护创建/删除
 
 Indexer 从所有 data block 聚合 object `row_count/null_count/min/max`，并校验 block row/null 总和。任何不一致都标记对象 `SCAN_REQUIRED` 并报警，不能用默认零值进入 whole-object fast path。
 
-### 8.4 Job、Attempt Root、Dataset 和 Payload
+### 8.4 Job、Attempt/Commit Control、Root、Dataset 和 Payload
 
 `mo_lifecycle_jobs` 记录：
 
 - `job_id`、`coordinator_id`
+- stable logical owner identity、physical source table identity/generation
 - exact source object set 及 digest
 - `source_snapshot_ts`
 - `cutoff`、predicate digest
@@ -541,7 +560,36 @@ Indexer 从所有 data block 聚合 object `row_count/null_count/min/max`，并�
 - 状态、deadline、progress、错误
 - created object / dataset / rewrite result 摘要
 
-TaskService 分配新 executor 后，runner 必须先用 TaskService epoch 条件认领 `mo_lifecycle_jobs`，成功写入 authoritative `executor_epoch`。TaskService epoch 负责“谁应执行”，Job/Root CAS 负责“谁还能写外部对象和发布”；两者不能合并成一个内存判断。
+Job 初建为 `PLANNED` 时只保存有界 candidate hint，exact source set 为空；只有 Lifecycle Snapshot 两道 gate 全部通过后，才在对应 physical table generation 和 `source_snapshot_ts` 上选择对象，并以 `PLANNED -> PINNED` CAS 一次性冻结 exact set/digest。之后 retry 不能原地改写该集合；需要换对象就终结旧 child 并新建 Snapshot/Control/child generation。
+
+TaskService 分配新 executor 后，runner 必须先用 TaskService epoch 条件认领 `mo_lifecycle_jobs`，成功写入 authoritative `executor_epoch`。TaskService epoch 负责“谁应执行”，Job/Attempt Control/Root CAS 负责“谁还能读源、写外部对象和发布”；两者不能合并成一个内存判断。
+
+#### System-owned Attempt/Commit Control
+
+每个 TTL/Archive child Job 都必须在 system account retained registry 创建 `mo_lifecycle_attempt_controls`。它与 Lifecycle Snapshot、tenant Job 同一正常事务创建，直到 final transaction 结果和 Snapshot 释放都已经明确收敛后才能回收。Archive 可以把该 Control 与 Cleanup Root 存在同一 system row family，但 TTL 也必须有轻量 Control，不能只依赖可能被 DROP ACCOUNT 删除的 tenant Job/Receipt。
+
+Control 至少冻结：
+
+- account incarnation、stable logical owner ID/generation；
+- physical database/table ID/generation、Snapshot ID/TS；
+- job ID、attempt、executor epoch、stable intent ID/digest；
+- final transaction identity，或 transaction service 可持久解析的等价 key；
+- participant/shard set、原始 request/Entry digest；
+- immutable `publish_version = final transaction identity`；commit 后由 durable transaction result 或该次 Control MVCC version 唯一解析的 `publish_commit_ts`，以及 commit result；
+- state/version、deadline 与 Snapshot release result。
+
+Control 提交状态机固定为：
+
+```text
+PLANNED
+  -> COMMIT_CLAIMED(final transaction identity persisted)
+     -> COMMITTED(immutable result) -> RECONCILED
+     -> ABORTED(provable transaction result) -> RECONCILED
+```
+
+Coordinator 在发送 final transaction 前先从 transaction service 获取稳定 transaction identity，并 CAS `PLANNED -> COMMIT_CLAIMED` 持久化 identity、participant set 和 request digest；重试永久复用这些值。`COMMIT_CLAIMED` 表示 final transaction 可能未发送、执行中或结果未知，Reconciler 必须查询 transaction service；只有明确 aborted 才能进入 `ABORTED`。如果当前事务服务无法提供 durable intent-to-transaction resolver，该能力就是 GA-P0-D 的协议原型阻塞项，不能用 executor 内存或最新 Catalog 行时间戳代替。
+
+`PLANNED` attempt 在 executor 已被 epoch fence、Job 未进入 final transaction、所有 source/provider I/O deadline 已结束时，可以由 Reconciler CAS 为 `ABORTED`；因为协议禁止未先写 `COMMIT_CLAIMED` 就发送 final transaction，这一条件构成“final transaction 未开始”的证明。CAS 同时封死旧 executor 的 claim/PUT 权限。`COMMIT_CLAIMED` 则绝不能使用该快捷路径，必须取得 transaction service 的确定结果。
 
 #### System-owned Attempt/Cleanup Root
 
@@ -549,7 +597,7 @@ TaskService 分配新 executor 后，runner 必须先用 TaskService epoch 条�
 
 Root 至少冻结：
 
-- account ID/incarnation、database/table ID、table/lifecycle generation；
+- account ID/incarnation、stable logical owner ID/generation、physical database/table ID/generation、table/lifecycle generation；
 - job ID、attempt、executor epoch；
 - Lifecycle Snapshot ID/TS；
 - `profile_id/profile_version/storage_namespace_id` 与 credential generation reference；
@@ -557,7 +605,8 @@ Root 至少冻结：
 - attempt lease、I/O deadline、quiescence deadline；
 - Archive Container/Manifest key、provider version、root；
 - Payload key/version page root、rows/bytes；
-- final intent ID/digest、Receipt digest mirror；Root row 的 MVCC commit timestamp 作为提交顺序；
+- final intent ID/digest、Attempt Control identity、Receipt digest mirror；
+- final transaction identity 形成的 immutable `publish_version`，以及由 durable transaction result/该次 Root MVCC version 唯一解析的 `publish_commit_ts`；后续 lease/delete 对 Root 的更新不得覆盖它；
 - `access_generation`、state、row version。
 
 Root 状态机：
@@ -571,7 +620,7 @@ REGISTERED -> UPLOADING -> VERIFIED -> PUBLISHED
 
 约束：
 
-1. Archive Job 的 Lifecycle Snapshot、Job 和 `REGISTERED` Root 在同一正常事务创建；事务提交后还要通过数据 flush 与 GC metadata-visible 两道 gate。TTL Job 不产生外部 Archive PUT，只需同事务创建 Snapshot 与 Job，不需要空 Root。
+1. Archive Job 的 Lifecycle Snapshot、Job、Attempt Control 和 `REGISTERED` Root 在同一正常事务创建；TTL Job 的 Snapshot、Job 和轻量 Attempt Control 也必须同事务创建。事务提交后还要通过数据 flush 与 GC metadata-visible 两道 gate。TTL 不产生外部 Archive PUT，因此不创建 payload Root。
 2. Runner 只有 CAS `REGISTERED/UPLOADING + executor_epoch + state_version` 成功后才能执行 PUT；每个已完成 multipart/PUT 的精确 key/version/checksum 都写入 Root 的有界 payload page 或不可变 Container。
 3. 最终 publish/retire 事务把 Root 从 `VERIFIED` 原子转为 `PUBLISHED`，表示外部对象所有权从 attempt staging 转交给从属 Dataset；Root 本身继续作为 DROP/租户删除后的 cleanup root。
 4. 失败且明确未发布的 attempt 进入 `DELETE_PENDING`。`COMMIT_UNKNOWN` 禁止进入删除。
@@ -581,13 +630,14 @@ Crash 可能发生在 provider 已接受 PUT、Root 尚未记下 identity 之间
 
 key 还必须包含 account incarnation，避免账户 ID 或表 ID 复用后，旧 Sweeper 命中新租户对象。
 
-协议原型必须证明 tenant Lifecycle 事务可以把 tenant Dataset/Binding、system Root/Owner Registry 和 TAE Entry 放入同一 1PC/2PC。若当前 SQL 执行上下文不能原子写 system-owned relation，就应新增 TN/Catalog 可识别的 system registry write entry；禁止把 Root `PUBLISHED` 或 Owner CAS 降级成事务后的异步补写，否则会重新打开 DROP/commit-unknown 窗口。
+协议原型必须证明 tenant Lifecycle 事务可以把 tenant Dataset/Binding、system Attempt Control/Root/Owner Registry 和 TAE Entry 放入同一 1PC/2PC。若当前 SQL 执行上下文不能原子写 system-owned relation，就应新增 TN/Catalog 可识别的 system registry write entry；禁止把 immutable commit result、Root `PUBLISHED` 或 Owner CAS 降级成事务后的异步补写，否则会重新打开 DROP/commit-unknown 窗口。
 
-一个 child Job 对应一个 `archive_dataset_id`，不与其他 Job 做 all-or-nothing 发布。Dataset ID 是稳定路由 ID，但所有权明确从属于 `(account_incarnation, source_table_id, source_table_generation)`；它不是可以脱离源表长期存在的独立合规对象。面向用户的月/年归档视图由 collection/super-manifest 聚合多个 Dataset，不重写 payload。
+一个 child Job 对应一个 `archive_dataset_id`，不与其他 Job 做 all-or-nothing 发布。Dataset ID 是稳定路由 ID，但所有权明确从属于 `(account_incarnation, logical_table_id, owner_generation)`，同时冻结产生它的 physical source identity；它不是可以脱离源表长期存在的独立合规对象。面向用户的月/年归档视图由 collection/super-manifest 聚合多个 Dataset，不重写 payload。
 
 `mo_archive_datasets` 是 Dataset 可见性和生命周期状态的唯一权威行，至少记录：
 
-- `archive_dataset_id`、account incarnation、source database/table/generation、collection ID；
+- `archive_dataset_id`、account incarnation、logical owner ID/generation、collection ID；
+- source physical database/table ID/generation 和 exact source digest；
 - source Snapshot、schema/policy/binding/lifecycle generation；
 - lifecycle range、rows/bytes、manifest root、冻结的 archive profile identity；
 - `published_at`、`purge_eligible_at`、active access lease count；
@@ -624,7 +674,7 @@ Lease 获取短事务必须同时：
 
 因此 Restore 首次获取与 owner DROP 会产生真实 write-write conflict。owner DROP 已提交后，Sweeper fence Restore executor；待 Restore publish 事务明确 committed/aborted，或 executor 已失效且最大 read I/O deadline 结束后，将 Lease 置为 `RELEASED` 并递减 Root count。DROP 主事务不等待该过程；卡住只形成可告警的 cleanup backlog，不阻塞用户 DDL。
 
-`mo_lifecycle_owner_registry` 同样属于 system account retained registry。Lifecycle bind 懒创建 account-incarnation、database ID/generation 和 table ID/generation 三层唯一权威行，状态初始为 `ACTIVE`，包含 `owner_version/commit_seq`：
+`mo_lifecycle_owner_registry` 同样属于 system account retained registry。Lifecycle bind 懒创建 account-incarnation、database ID/generation 和 logical table ID/owner generation 三层唯一权威行，并保存当前 physical table identity，状态初始为 `ACTIVE`，包含 `owner_version/commit_seq`：
 
 - 最终 publish/retire 必须条件递增相关 account/database/table owner `commit_seq`；
 - DROP TABLE 只 CAS table owner 为 `DROPPED`；
@@ -640,6 +690,7 @@ Lease 获取短事务必须同时：
 控制面 metadata 也有独立 retention/GC：
 
 - terminal Job 在 Snapshot、staging 和 commit unknown 全部收敛后，按 account/batch 归档或删除；
+- Attempt Control 只有 final result 可证明、Snapshot release 已记录、Archive Root/源 staging 已转交或清理后才能进入 `RECONCILED`；之后按 audit retention 压缩，不允许先删 Control 再猜测 tenant Receipt；
 - Commit Receipt 至少保留到 Snapshot 释放、Dataset/Root 进入终态且审计保留期结束，再将 digest 汇总进 collection audit root；
 - 已 Purged Dataset/Manifest 保留有界审计摘要，不永久保留全部 payload 行；
 - Collection page 只有新 root 已生效、无 cursor/access lease 指向时才能回收；
@@ -652,16 +703,45 @@ Lease 获取短事务必须同时：
 
 ### 9.1 不做全库每日扫描
 
-每天扫描全部数据和 footer 的成本不可接受。本设计的日常查询是：
+集群可以有几十万张普通表，但只有显式 Binding 的 500～1000 张认证表进入 Lifecycle 控制面。未绑定表不创建 Object Index，不读取生命周期列 footer，不进入 scheduler/reconciler，也不让普通 Merge 查询 Lifecycle Catalog。日常入口必须从 `mo_lifecycle_bindings` 的有界索引页开始：
 
 ```text
-WHERE next_action_at <= now()
-  AND state = 'ACTIVE'
-ORDER BY next_action_at
-LIMIT bounded_batch
+mo_lifecycle_bindings
+  WHERE state = READY
+    AND next_scan_at <= now()
+  ORDER BY next_scan_at, binding_id
+  LIMIT bounded_binding_page
+    -> per-binding Object Index
+       WHERE next_action_at <= evaluation_ts
+         AND state = ACTIVE
+       ORDER BY next_action_at, object_id
+       LIMIT bounded_object_page
 ```
 
 以 128 MiB 平均对象估算，1 TiB 表约 8192 个 Object Index 行，不是 1 TiB 数据扫描，也不是每天为每张表建立一个新分区。对象 Index 的维护成本与对象产生/退休数量相关，而不是与全库行数相关。
+
+因此：
+
+- 禁止 scheduler 周期性扫描全部 `mo_tables`；
+- 禁止为未绑定表预建 Guard/Binding/Object Index 或计算 deadline；
+- Object create/drop 增量消费者只在内存/持久 Binding registry 命中后计算 lifecycle metadata；
+- 升级不一次为几十万表回填 Lifecycle metadata；Guard 只在 bind 或受控 DDL/能力创建时懒创建；
+- Reconciler 只按 Binding/Object Index shard 有界轮转，不以“发现遗漏”为由退化成全 Catalog 高频扫描。
+
+单表 bind 后先进入 `BACKFILLING`，分页读取当前 Object footer，写新 index generation，对当前 physical table object directory 做 digest/reconciliation，再 CAS 为 `READY`。backfill、logtail checkpoint 或 generation 未收敛时只阻止该表新 Job；普通 DML、查询和 Merge 不受影响。backfill 运行中命中 Object Index rows/bytes hard cap 时进入可运维的 `INDEX_CAPACITY_BLOCKED`，停止继续写 index，不创建 Job；管理员只能提高经过认证的 quota 或 unbind 后让 Reconciler 有界清理 partial generation，不能无限 retry。首次 PB 级历史 backlog 与稳态到期流量分开：Initial Backfill 低优先级且允许持续数天/数周，Steady State 才按已认证 SLO 调度。创建 Policy 后必须先 Dry-run 展示 index backfill、due/whole/mixed bytes、Snapshot/staging 峰值、ETA 和 provider 成本，由管理员显式确认后才能启动大规模初始回填。
+
+规模上限至少同时覆盖：
+
+| 维度 | 软/硬边界行为 |
+|---|---|
+| bound table、Binding/Guard rows | 达到 hard limit 拒绝新 bind |
+| Object Index rows/bytes、generation/obsolete backlog | 暂停对应 backfill/新 Job；Indexer 有界回收 |
+| due/claimed/running/retry jobs 与 bytes、oldest age | 停止领取新 child，保持活动数据可见 |
+| active Snapshot 与 snapshot-exclusive retained bytes | soft limit 停新 Job；hard limit fence 当前 I/O，结果明确后释放 |
+| staging Payload、multipart、orphan/delete objects/bytes/age | 停止新 PUT，Reconciler/Sweeper 保留最低清理份额 |
+| Receipt/Dataset/Manifest/Root/audit tombstone metadata | 分页、watermark 和有界 retention；不允许永久线性增长 |
+
+平均 128 MiB Object 下，1000 张 1 TiB 表约 820 万条 Object Index；1000 张 10 TiB 表约 8190 万条。GA 必须用 1000 表 Catalog/调度、千万和亿级 index row 等价规模基准验证这些路径，但不要求同时构造 1000 张真实 10 TiB 表。
 
 ### 9.2 一组对象一个原子 Job
 
@@ -671,13 +751,26 @@ LIMIT bounded_batch
 one scan
   -> one coordinator
   -> N bounded child jobs
+  -> child first acquires table/database/account/cluster execution quota
   -> one Lifecycle Snapshot per child
+  -> one Attempt/Commit Control per child
   -> one Attempt Root per Archive child
   -> one archive dataset per Archive child
   -> one publish/retire transaction per child
 ```
 
-一个 Job 不跨多个大表，也不把整个 TB 表放进一个 all-or-nothing 事务。每个 child 的 Snapshot/Root/commit-unknown 独立收敛；一个冲突或卡住的 child 不得延长其他 child 的 Snapshot 生命周期。
+一个 Job 不跨多个大表，也不把整个 TB 表放进一个 all-or-nothing 事务。每个 child 的 Snapshot/Attempt Control/commit-unknown 独立收敛；Archive child 另有独立 Root。一个冲突或卡住的 child 不得延长其他 child 的 Snapshot 生命周期。
+
+首个 release profile 的起始并发硬上限为：
+
+| Scope | active child Job | active Lifecycle Snapshot |
+|---|---:|---:|
+| 同一 table | 1 | 1 |
+| 同一 database | 2 | 由 table/database retained-byte budget 共同限制 |
+| 同一 account | 4 | 由 account retained-byte budget 限制 |
+| cluster | 8 | 由 cluster retained-byte 和 provider budget 限制 |
+
+这些数值是认证 profile，不是永久 SQL/API。Planner 可以提前生成不持有资源的 candidate hint；child 只有真正取得全部层级执行配额后，才即时创建 Snapshot、Attempt Control 和 Archive Root。禁止为排队中的数百个 child 预先创建 Snapshot。提高并发必须重新验证 1/10 TiB、持续普通 Merge、provider 限流、retained bytes、WAL 和前台 P99。
 
 调度使用两类 profile：
 
@@ -701,7 +794,7 @@ Planner 联合估算 source bytes/rows/blocks、expired rows、live rewrite byte
 | Prepare | deadline、CPU budget、可执行操作白名单 |
 | staging/orphan | account/cluster bytes、objects 和 oldest-age 水位 |
 
-起始实验配置可以使用 `1 GiB source / 100 万 rows / 64 objects / 16 output files / 256 MiB archive target`，但它只是多对象 batch 上限，不得成为单对象无法处理的死循环。当前默认上限可达到：
+普通 child 起始目标使用 `512 MiB source / 32 objects / 8 output files / 256–512 MiB archive target`，多对象 hard limit 为 `1 GiB source / 64 objects / 16 output files`；rows、blocks、transfer、tombstone、spill、WAL/RPC 仍各有独立实测上限。这只是多对象 batch 上限，不得成为单对象无法处理的死循环。当前默认上限可达到：
 
 ```text
 8192 rows/block * 256 blocks/object = 2,097,152 rows/object
@@ -737,7 +830,7 @@ split/replan into smaller job
 - 内存、spill 和 in-flight bytes；
 - Job、payload、orphan、delete backlog 数量。
 
-Restore、TTL、Archive、Purge 使用独立队列和最低份额，避免大租户或大 Restore 饿死小租户 TTL。TaskService 不可用时只积累 backlog，绝不转为前台同步删除。
+Restore、TTL、Archive、Purge 使用独立队列和最低份额，避免大租户或大 Restore 饿死小租户 TTL；Purge/Sweeper 也必须有最低清理份额，避免停止新工作后 delete backlog 永远没有执行机会。TaskService 不可用时只积累 backlog，绝不转为前台同步删除。
 
 ### 9.3 与普通 Merge 的关系
 
@@ -967,12 +1060,29 @@ object_group_digest / file_sequence / content_hash
 
 ## 12. Lifecycle Snapshot 与 GC
 
-首个 GA 不新增 exact-object source ref，也不改普通 Merge/GC 的对象引用模型。每个 child Job 使用现有 GC 能识别的 system-owned **table-level Lifecycle Snapshot** 保护源数据。代价是慢 Job 可能额外保留该表在 Snapshot 之后由持续 Merge 产生的旧版本；这是用更高、可测的空间成本换取更小的内核改动面。
+首个 GA 不新增 exact-object source ref，也不改普通 Merge/GC 的对象引用模型。每个 child Job 在现有 Snapshot 保护模型上增加 system-owned **table-only Lifecycle Snapshot** 保护源数据。代价是慢 Job 可能额外保留该表在 Snapshot 之后由持续 Merge 产生的旧版本；这是用更高、可测的空间成本换取更小的内核改动面。
+
+这里的“table-level”不能直接复用当前 loader 的实际展开结果。当前 [`pkg/vm/engine/tae/logtail/snapshot.go`](../../pkg/vm/engine/tae/logtail/snapshot.go) 在加载 `mo_snapshots` 时只读取 TS、level 和 obj_id，没有保留 snapshot ID/kind；`AccountToTableSnapshots` 又把任意 table snapshot 的时间传播给同 database 的其他表。该行为可能属于现有用户 Snapshot/Data Branch 契约，Lifecycle 不得全局改写它。必须增加按 `kind='lifecycle'` 隔离的 loader/protection 分支：
+
+```text
+existing user/branch Snapshot
+  -> existing behavior unchanged
+
+kind = lifecycle
+  -> retain snapshot_id/kind/source_snapshot_ts
+  -> retain stable logical owner + exact physical target generation
+  -> protect only that physical table generation
+  -> retain target mapping even after live table Catalog is dropped
+  -> expose GC owner epoch/checkpoint load generation
+```
+
+若旧节点、未知 checkpoint 格式或 owner handoff 不能识别 lifecycle kind，结果必须是“不允许选择 source Object”，不能把未知 kind 当作无 Snapshot。
 
 正确顺序固定为：
 
 ```text
 create system Lifecycle Snapshot + Job
+  + Attempt/Commit Control
   + REGISTERED Attempt Root             # Archive only
   -> transaction committed
   -> data flush gate
@@ -985,15 +1095,16 @@ create system Lifecycle Snapshot + Job
 
 具体要求：
 
-1. Snapshot 使用 `mo_snapshots.kind='lifecycle'`、table scope 和真实 `source_snapshot_ts`，对用户隐藏；Archive Job 的 Snapshot、Job 和 Root 必须同事务成功或失败，TTL Job 的 Snapshot 与 Job 必须同事务成功或失败。
+1. Snapshot 使用 `mo_snapshots.kind='lifecycle'`、table-only scope 和真实 `source_snapshot_ts`，记录 logical owner 与 physical table generation，对用户隐藏；Archive Job 的 Snapshot、Job、Control 和 Root 必须同事务成功或失败，TTL Job 的 Snapshot、Job 和 Control 必须同事务成功或失败。
+   Snapshot Catalog 行本身必须由 system account retained ownership 持有，被保护租户只作为 target account incarnation 字段；不能写成会被该租户 `DROP ACCOUNT` cluster-table cleanup 删除的 tenant-owned row。Data Branch 已有以 system account 写保护 Snapshot 的模式可复用。owner DROP 只写 tombstone并 fence Job，Snapshot 仍保留到 Attempt Control 明确收敛。
 2. `CheckSnapshotFlushed` 只作为第一道 gate，证明 Base Table 的 `flushTS >= snapshotTS`。首个 GA 拒绝隐藏索引表，因此无需等待隐藏 Index Table；若以后开放索引 handler，必须扩展对应 flush 集合。
-3. 新增只读 `CheckLifecycleSnapshotProtected(snapshot_id, snapshot_ts, owner_epoch)` 或等价内部协议。每个可能删除源 Object 的 GC owner 必须确认：
-   - 已从可重放 Catalog/checkpoint 加载该 Snapshot；
-   - 当前保护集合包含精确 Snapshot ID/TS；
+3. 新增只读 `CheckLifecycleSnapshotProtected(snapshot_id, kind, logical_owner, physical_target_generation, snapshot_ts, owner_epoch, checkpoint_generation)` 或等价内部协议。每个可能删除源 Object 的 GC owner 必须确认：
+   - 已从可重放 Catalog/checkpoint 加载该 Snapshot，load generation 覆盖创建事务；
+   - 当前保护集合包含精确 Snapshot ID/kind/TS 和 physical target generation，且 target mapping 不依赖 live `mo_tables` 行继续存在；
    - 在加载前冻结 protection set 的旧 GC cycle 已结束；
    - owner restart/shard handoff 后，新 owner 在恢复 delete 前重新满足同一条件。
 4. Object Index 在 gate 前只能提供候选 hint。两道 gate 未全部通过前，Planner 不得形成权威 source Object set，Executor 不得读源对象或执行外部 PUT。超时只停止 Job并告警，不能降级为“假定已保护”。
-5. gate 后在 `source_snapshot_ts` 选择对象，并用 Job CAS `PLANNED -> PINNED` 持久化 exact object identity/fingerprint/digest；Executor 只有看到 `PINNED` 和匹配 epoch 后才能读取/PUT。Snapshot 负责可读性，object CAS 负责防止并发 Merge/DDL 后错误退休。
+5. gate 后在已冻结的 `physical_table_id/physical_generation + source_snapshot_ts` 选择对象，并用 Job CAS `PLANNED -> PINNED` 持久化 exact object identity/fingerprint/digest；Executor 只有看到 `PINNED` 和匹配 epoch 后才能读取/PUT。Snapshot 负责可读性，physical object CAS 负责防止并发 Merge/DDL 后错误退休；logical owner identity 只负责 Archive 的长期归属，不能拿来替代 TAE source key。
 
 其时序证明是：
 
@@ -1019,7 +1130,7 @@ System Snapshot 的空间控制不是“超过预算只暂停新 Job”：
 
 - 持续统计每个 Job 的 `snapshot_exclusive_retained_bytes`，即若无该 Lifecycle Snapshot 本可被现有 GC 回收的额外旧版本；
 - 软限额停止同表/同租户新 Job；
-- 硬限额 fence/cancel 当前 executor，停止新 PUT；等待 final transaction 明确 committed/aborted 后，分别完成 publish 后处理或 attempt cleanup，再释放 Snapshot；
+- 硬限额 fence/cancel 当前 executor，停止新 PUT；等待 final transaction 明确 committed/aborted 后，分别完成 publish 后处理或 attempt cleanup，再释放 Snapshot；未提交 child 进入 `RESOURCE_CAPACITY_BLOCKED`，不能立即无限重建；
 - 不能通过提前删 Snapshot 来降低 pinned bytes；
 - GA 必须覆盖 `10 TiB table + sustained normal Merge`，测量 Snapshot 独占保留量、前台 P95/P99、Merge backlog、fence 到释放时间和 cleanup backlog。
 
@@ -1054,6 +1165,7 @@ Archive Payload deletable =
 write immutable staging
   -> full verification
   -> dataset VERIFIED_NOT_PUBLISHED + job READY_TO_COMMIT
+  -> persist stable final transaction identity in Attempt Control
   -> short conditional MO transaction
   -> dataset PUBLISHED + source retired + job SUCCEEDED atomically
 ```
@@ -1078,7 +1190,8 @@ Entry 至少包含：
 
 - wire/capability version；
 - job ID、attempt、executor epoch；
-- Lifecycle Snapshot ID/TS、exact object create/drop/fingerprint digest；
+- stable logical owner ID/generation；
+- physical database/table ID/generation、Lifecycle Snapshot ID/TS、exact object create/drop/fingerprint digest；
 - schema、policy、binding、lifecycle generation；
 - Feature Guard key/version/digest；
 - cutoff、predicate 和 immutable export intent digest；
@@ -1091,16 +1204,18 @@ Entry 至少包含：
 
 ### 13.2 最终短事务
 
-导出阶段只冻结 Lifecycle Snapshot/object fingerprint、schema/policy generation、Feature Guard version/digest 和 export intent digest，不捕获 `commit_seq`。完整读取和校验完成后才开启最终短事务，读取当前 `commit_seq` 并执行：
+导出阶段只冻结 Lifecycle Snapshot/physical object fingerprint、schema/policy generation、Feature Guard version/digest 和 export intent digest，不捕获 `commit_seq`。完整读取和校验完成后，Coordinator 先从 transaction service 获得稳定 final transaction identity，在一个短 CAS 中把 Attempt Control 从 `PLANNED` 置为 `COMMIT_CLAIMED`，冻结 participant/shard set 和 request/Entry digest；随后才使用该 identity 开启最终短事务并读取当前 `commit_seq`。claim 成功后发生 crash 只能由 Reconciler 查询同一 transaction identity，不能生成新 intent 猜测重试。
 
 同一个正常分布式事务中：
 
-1. 条件更新 Job：
+1. 条件更新 Job 与 system Attempt Control：
 
    ```text
    job_id == captured job
    executor_epoch == current epoch
    job.state == READY_TO_COMMIT
+   control.intent/transaction identity/request digest == captured
+   control.state == COMMIT_CLAIMED
    attempt_root.state == VERIFIED                   # Archive only
    attempt_root.executor_epoch == current epoch     # Archive only
    ```
@@ -1108,8 +1223,9 @@ Entry 至少包含：
 2. 条件更新同一张表的 Feature Guard、Binding 与 system Owner Registry（不能只做 Snapshot read）：
 
    ```text
-   guard.key == (account_incarnation, table_id)
+   guard.key == (account_incarnation, logical_table_id, owner_generation)
    guard.version/digest == captured
+   guard.physical_table_id/generation == captured
    guard declares no unsupported feature
    account/database/table owner.state == ACTIVE
    each owner.commit_seq == captured
@@ -1134,6 +1250,7 @@ Entry 至少包含：
    attempt_root.state == VERIFIED
      -> attempt_root.state = PUBLISHED
    attempt_root.intent/receipt digest mirror == final digest
+   attempt_root.publish_version == captured final transaction identity
    collection.commit_seq == captured collection commit_seq
      -> collection.commit_seq = value + 1
    ```
@@ -1163,7 +1280,8 @@ Entry 至少包含：
    - 退休 exact source objects；
    - 转移 live-row tombstone；
    - Archive Job 发布 Manifest 并完成 Root handoff；
-   - 写入 Job success 和 durable commit receipt。
+   - 写入 Job success、durable commit receipt；
+   - 将 Attempt Control 写为 `COMMITTED` 并冻结 transaction identity、commit result 和 `publish_version`；Archive Root 镜像同一个不可变结果。
 
 任一条件失败，整个事务 abort，不能出现“Manifest 已发布但源数据还在”或“源对象已退休但 Manifest 不可用”。
 
@@ -1176,6 +1294,7 @@ CN 将 Catalog normal writes 和每个 TN 的 tagged Lifecycle Entry 一起放�
 `mo_lifecycle_commit_receipts` 在同一事务插入：
 
 - intent ID/digest；
+- final transaction identity、participant/shard set 和 request/Entry digest；
 - job/attempt/generation；
 - source/created/transfer/tombstone/dataset roots；
 - commit timestamp；
@@ -1203,19 +1322,24 @@ txn service 已 committed
     -> terminal corruption alarm
 ```
 
-owner DROP 可能在 final transaction 已提交后删除 tenant Job/Dataset/Receipt。为使这条合法路径可判定，final transaction 必须把 intent/Receipt digest 同步镜像到 system Root，并使用 Root/tombstone 的 MVCC commit timestamp 判断先后：
+owner DROP 可能在 final transaction 已提交后删除 tenant Job/Dataset/Receipt。为使这条合法路径可判定，final transaction 必须把 intent/Receipt digest 和 immutable commit result 同步写入 system Attempt Control；Archive Root 同步镜像。`publish_version` 使用已经预登记的 final transaction identity；`publish_commit_ts` 必须由 transaction service 的 durable commit result，或由该 transaction 写出的特定 Control/Root MVCC version 唯一解析。它可以被缓存，但正确性不能依赖 response 后异步回填。比较时禁止使用 Root 最新 MVCC row timestamp，因为后续 access lease、delete 和 cleanup 会生成更新版本：
 
 ```text
 txn service 明确 committed
-  + Root == PUBLISHED 且 intent/receipt digest 匹配
-  + matching owner DROPPED tombstone.commit_ts > lifecycle commit_ts
+  + (
+      Control == COMMITTED 且 intent/transaction/request digest 匹配
+      OR Control 已在 Snapshot release 后合法 RECONCILED，
+         Root 保存等价 immutable committed mirror
+    )
+  + Archive Root == PUBLISHED 且 intent/receipt digest 匹配   # Archive only
+  + matching owner DROPPED tombstone.commit_ts > immutable publish_commit_ts
     -> committed-for-cleanup
        tenant Receipt/Manifest 缺失是预期 cascade，不报 corruption
 ```
 
-Root mirror 只用于收敛与删除，不恢复被 DROP 的业务 Catalog。非一致性读取暂时看不到 Receipt/Manifest，或者某个 participant 尚未通过正常事务/logtail 可见，均只能 WAIT/RETRY，不能报 corruption。无法确认时继续持有 Snapshot 和 Root，不得猜测。故障测试必须覆盖 1PC/2PC、重复 Prepare、before/during Prepare、WAL append 前后、`ErrTAENeedRetry`、after commit、response lost、commit 后立即 DROP TABLE/ACCOUNT、滚动升级/降级和重复 replay，证明不重复注册对象、发布 Manifest 或错误清理 payload。
+Control/Root mirror 只用于收敛、释放 Snapshot 与删除，不恢复被 DROP 的业务 Catalog。Archive Control 只有在 Snapshot 已释放、Root 已持久镜像 `PUBLISHED` 结果且 staging 所有权已转交后才能压缩为 `RECONCILED`；此后 Root 是 payload cleanup 的唯一 retained authority。TTL Control 只有 Snapshot 已释放且 Receipt/TAE intent 已完成有界审计汇总后才能回收。非一致性读取暂时看不到 Receipt/Manifest，或者某个 participant 尚未通过正常事务/logtail 可见，均只能 WAIT/RETRY，不能报 corruption。无法确认时继续持有 Snapshot、Control 和 Archive Root，不得猜测。故障测试必须覆盖 1PC/2PC、重复 Prepare、before/during Prepare、WAL append 前后、`ErrTAENeedRetry`、after commit、response lost、commit 后立即 DROP TABLE/ACCOUNT、滚动升级/降级和重复 replay，证明不重复注册对象、发布 Manifest 或错误清理 payload。
 
-TTL 没有 Archive Root。若 transaction service 明确返回 TTL final transaction committed，且 owner tombstone 的 MVCC commit timestamp 晚于该 transaction commit timestamp，则 tenant Receipt 因 DROP 缺失同样视为 committed-for-cleanup；此规则只允许释放 Snapshot/清理 staging，不恢复 owner 或重放 retirement。
+TTL 没有 Archive Root，但有 system-retained Attempt Control。若 transaction service 明确返回 TTL final transaction committed，Control 的 immutable transaction/request digest 和 commit result 匹配，且 owner tombstone 的 MVCC commit timestamp 晚于 `publish_commit_ts`，则 tenant Receipt 因 DROP 缺失同样视为 committed-for-cleanup；此规则只允许释放 Snapshot/清理 staging，不恢复 owner 或重放 retirement。
 
 ## 14. 并发语义
 
@@ -1254,16 +1378,31 @@ Job 记录 `source_snapshot_ts`，最终事务检查从 Snapshot 到 Prepare 之
 - DROP TABLE/DATABASE/ACCOUNT；
 - Policy bind/unbind/change。
 
-这些操作都 CAS `FeatureGuard`；最终事务同时 CAS Guard 和 Binding generation。首个 GA 的 DROP 契约固定为：
+table-scope ALTER/TRUNCATE/DROP 与 Policy 操作 CAS `FeatureGuard`；DROP DATABASE/ACCOUNT 只 CAS 对应 scope Guard/Owner Registry。最终事务同时 CAS Guard、Binding generation、logical owner 和 physical source identity。
+
+当前 [`pkg/sql/compile/alter.go`](../../pkg/sql/compile/alter.go) 的 `ALTER TABLE ... COPY` 会创建新物理表、复制数据、内部 DROP 原表并保留 logical ID，因此不能把一个 `table_id` 同时当作长期 Archive owner 和 TAE CAS key。首个 GA 固定采用最小风险策略：
+
+```text
+Lifecycle Binding/Job/Dataset/Root exists
+  AND ALTER would replace physical table ID
+    -> fail before creating/copying temporary table
+```
+
+为关闭“ALTER COPY 与首次 bind 都看到未绑定”的竞态，ALTER COPY 也必须在创建临时表前懒创建/CAS 同一 Guard 行，写入本事务的 `physical_replacement_intent`；Lifecycle bind 要求该 intent 不存在并写同一行，因此由正常 write-write conflict 决定先后。ALTER 事务提交/回滚同时清除或撤销 intent并更新新的 physical identity；不能用一次无锁检查代替。普通 in-place ALTER 仍按 Guard/schema/lifecycle generation CAS。未来若开放 ALTER COPY，必须新增单事务 owner-transfer 协议，原子迁移 Binding/Guard/Owner 的 current physical generation，并证明旧 Dataset 仍归属同一 logical owner；不能依赖内部 DROP/rename 的事后补偿。
+
+首个 GA 的 DROP 契约固定为：
 
 1. DROP TABLE 在自己的 Catalog 事务中 CAS table Feature Guard 和 table Owner Registry；DROP DATABASE/ACCOUNT 只 CAS 对应 database/account-incarnation Owner Registry，不枚举全部 table Guard；
-2. 同一事务把 system retained registry 的对应 Owner Registry 行置为 `DROPPED` tombstone；
-3. DROP 按现有 MO 逻辑完成，不同步等待 executor stop、远端 Delete、Restore、provider 或 `COMMIT_UNKNOWN`；
-4. Coordinator/Reconciler 观察 tombstone 后 fence 未进入 final transaction 的 executor，并停止新 PUT；
-5. 已进入 final transaction 的 attempt 先按 transaction service + 一致性 Receipt 规则确认 committed/aborted；
-6. Sweeper fence system retained registry 中已有的 Restore/read lease；在 Restore publish 明确收敛或最大 read I/O deadline 结束后释放 lease，再 CAS `access_generation`，将 Root/Dataset 置为 `DELETE_PENDING` 并异步清理；
-7. owner tombstone 提交后，`purge_eligible_at` 不再阻止级联删除；进入 `DELETE_PENDING` 后禁止新 Restore/read lease；
-8. Lifecycle Snapshot 只有在 final result 明确、在途源读结束后释放；无法判定时宁可多保留。
+2. DROP DATABASE/ACCOUNT 向其内部逐表删除路径传递不可伪造的 `ancestor_drop` context；内部 DROP 不再逐表创建 Lifecycle tombstone，也不把 ALTER COPY 的内部替换误判为用户 owner DROP；
+3. 同一事务把 system retained registry 的对应 Owner Registry 行置为 `DROPPED` tombstone；
+4. DROP 按现有 MO 逻辑完成，不同步等待 executor stop、远端 Delete、Restore、provider 或 `COMMIT_UNKNOWN`；
+5. Coordinator/Reconciler 观察 tombstone 后 fence 未进入 final transaction 的 executor，并停止新 PUT；
+6. 已进入 final transaction 的 attempt 先按 transaction service + Attempt Control/一致性 Receipt 规则确认 committed/aborted；
+7. Sweeper fence system retained registry 中已有的 Restore/read lease；在 Restore publish 明确收敛或最大 read I/O deadline 结束后释放 lease，再 CAS `access_generation`，将 Root/Dataset 置为 `DELETE_PENDING` 并异步清理；
+8. owner tombstone 提交后，`purge_eligible_at` 不再阻止级联删除；进入 `DELETE_PENDING` 后禁止新 Restore/read lease；
+9. Lifecycle Snapshot 只有在 final result 明确、在途源读结束后释放；无法判定时宁可多保留。
+
+这里的 O(1) 只描述 Lifecycle 新增的 scope Owner/Guard 写入，不声称现有 MO 的 DROP DATABASE/ACCOUNT 本身不会枚举或清理业务 Catalog。Lifecycle 不应在现有逐表清理之上再做一次按绑定表数量增长的同步 provider/Root 工作。
 
 这里的“不等待”只排除 Lifecycle 自建的长期锁、executor/provider 等待和无限期 `COMMIT_UNKNOWN` 等待。DROP 对 Guard/Owner Registry 的 CAS 仍属于普通 MO 事务，允许按现有事务语义发生写冲突、重试、死锁检测或 statement timeout；它不能绕过一个正在提交的 final transaction，也不能因为追求 DDL 立即返回而取消上述串行化点。
 
@@ -1331,7 +1470,8 @@ Job：
 PLANNED -> PINNED -> RUNNING -> READY_TO_COMMIT
         -> COMMITTING -> SUCCEEDED
         \-> RETRY_WAIT / CANCELING / CONFLICT_BLOCKED
-                         / OVERSIZE_BLOCKED / FAILED_TERMINAL
+                         / OVERSIZE_BLOCKED / RESOURCE_CAPACITY_BLOCKED
+                         / FAILED_TERMINAL
 ```
 
 Dataset：
@@ -1498,6 +1638,18 @@ Commercial GA 的 Restore schema contract：
 | 加入 DR/replication/failover scope | 拒绝 |
 | DR target 上 `RESTORE ARCHIVE` | 明确返回 `ARCHIVE_UNAVAILABLE_ON_DR`，不得返回空结果或“恢复成功” |
 
+只要表存在有效 Binding、in-flight Job、`PUBLISHED` Dataset 或未 `CLEANED` Control/Root，就属于 Lifecycle owner，不能通过“先暂停 scheduler”绕过拒绝。错误必须指明缺少 archive-aware 能力，例如：
+
+```text
+LIFECYCLE_ARCHIVE_NOT_INCLUDED_IN_SNAPSHOT:
+scope contains lifecycle-bound or archived tables;
+archive-aware snapshot is not supported in this release
+```
+
+用户若要重新启用普通历史保护，必须先 unbind、等待 Job/commit-unknown 收敛，并 Restore 或 Purge 仍需处理的 Dataset，直到 Control/Root 和 scope owner edge 进入终态。Restore 生成的新表未绑定 Lifecycle 时可以创建 table-scope Snapshot；若 database/account scope 仍包含原 Lifecycle owner，scope Snapshot 继续拒绝。
+
+该 database/account scope 影响、解除步骤、错误码和 DR 限制必须进入 GA 用户文档、升级说明与 Runbook，不能只存在内部设计中。
+
 对 database/account scope 的保护操作，使用 8.2 节 system scope Guard 与 owner edge/root 做 O(1) 串行化，不能采用“先枚举当前 Binding，再逐表检查”的 TOCTOU 方案。Table-scope 操作 CAS table Feature Guard。反向地，Lifecycle bind 同时 CAS account/database scope Guard 与 table Guard，拒绝已经处于上述保护关系中的 scope/table。
 
 Archive Dataset Catalog/Root 丢失后的业务恢复、跨地域副本以及 failover 后 Archive 可用性不在首个 GA SLA。Runbook 必须明确区分：
@@ -1514,7 +1666,9 @@ Archive Dataset Catalog/Root 丢失后的业务恢复、跨地域副本以及 fa
 
 | 资源 | Owner | 成功后 | 失败/接管后 |
 |---|---|---|---|
-| Lifecycle Snapshot | child Job/Attempt Root | final result 明确后释放 | `COMMIT_UNKNOWN` 继续保留 |
+| Binding/Object Index generation | Lifecycle Catalog/Indexer | READY generation 提供候选 | Reconciler 重建；旧 generation 按 watermark GC |
+| Lifecycle Snapshot | system Attempt Control | final result 明确后释放 | `COMMIT_UNKNOWN` 继续保留 |
+| Final transaction result | system Attempt Control | TTL 汇总为 Receipt/TAE audit；Archive 转交 Root immutable mirror | Reconciler 查询冻结 transaction identity |
 | TN reservation | job + executor epoch | final txn 后释放 | lease 到期 |
 | 新 TAE Object staging | child Job | commit 后转 table 所有 | orphan GC |
 | Archive Payload staging | system Attempt Root | Manifest 发布后 Root 状态转 `PUBLISHED` | Root 驱动 staging cleanup |
@@ -1539,7 +1693,7 @@ Staging GC 不能只按文件年龄或“租户 Job 查不到”删除。它从 
 - 可选 Deep Archive 的 provider thaw/status；
 - reservation acquire/renew；
 - Job attempt；
-- DROP cancel wait；
+- executor fence/cancel RPC；DROP 主事务只发出本地 tombstone，不等待该 RPC；
 - cleanup 和 Delete retry。
 
 禁止在等待 provider、对象 I/O、Task 接管或用户确认时持有表锁。
@@ -1551,11 +1705,13 @@ peak transient bytes =
   snapshot-exclusive retained source bytes
   + rewritten live ObjectIO bytes
   + archive staging bytes
-  + dependency/index delta bytes
+  + transfer/tombstone staging bytes
   + retry/orphan allowance
 ```
 
 超过 account 或 cluster soft budget 时不启动新 Job；运行中越过 hard budget 时必须 fence 当前 Job，按明确提交结果收敛后再释放 Snapshot，而不是执行到中途靠 OOM、磁盘写满或提前释放保护限流。
+
+除 transient bytes 外，Binding/Object Index rows、due/running/retry Job、active Snapshot、Attempt Control、Root/Payload/object、multipart、commit-unknown、Restore staging/lease、orphan/delete backlog、Receipt/Dataset/Manifest/audit tombstone 都必须同时记录 account/cluster `count + bytes + oldest_age`。每项都有 quota owner、soft action、hard action和终态回收 watermark；只限制内存而允许 Catalog 或外部对象无限增长，同样不满足 GA。
 
 ### 18.1 安全、租户与审计
 
@@ -1571,14 +1727,16 @@ peak transient bytes =
 
 | 状态 | 自动重试 | 接管者 | 是否 terminal | 是否继续保留/阻塞 |
 |---|---|---|---|---|
-| `RETRY_WAIT` | 有界退避 | TaskService 新 executor | 否 | Snapshot/Root 保留 |
-| `COMMIT_UNKNOWN` | 只允许 reconcile | Reconciler | 否 | Snapshot/Root/staging 保留 |
+| `RETRY_WAIT` | 有界退避 | TaskService 新 executor | 否 | Snapshot/Control/Root 保留 |
+| `COMMIT_UNKNOWN` | 只允许 reconcile | Reconciler | 否 | Snapshot/Control/Root/staging 保留 |
 | `CANCELING` | 等待有界 stop | Coordinator/Reconciler | 否 | terminal cleanup 前保留 |
 | `CONFLICT_BLOCKED` | 管理员/数据组织变化后重新规划 | Coordinator | 是（当前 Job） | 活动源保持可见；不承诺 Archive Lag SLO |
 | `OVERSIZE_BLOCKED` | 提高经认证上限或修复 streaming 后 | Coordinator | 是（当前 Job） | 活动源保持可见 |
+| `RESOURCE_CAPACITY_BLOCKED` | retained/staging/WAL 等资源恢复且显式重新规划 | Coordinator/管理员 | 是（当前 Job） | 活动源保持可见；停止同 scope 新 Job |
 | `FAILED_TERMINAL` | 否 | 管理员确认/cleanup | 是 | 活动源未退休；cleanup 后释放 |
 | `GC_SNAPSHOT_GATE_BLOCKED` | loader/owner 修复后 | TN GC owner | 否 | 不选源对象、不执行 PUT |
 | `INDEX_REBUILD_REQUIRED` | 重建 generation | Indexer | 否 | 停止新 Job，不影响普通表 |
+| `INDEX_CAPACITY_BLOCKED` | 提高经认证 quota 或 unbind cleanup | Indexer/管理员 | 是（当前 backfill） | partial generation 有界保留；不创建 Job |
 | `RESTORE_WAIT_ACCESS`（仅可选 Deep Archive 使用 `WAIT_THAW`） | polling/backoff | Restore executor | 否 | Dataset access lease 保留 |
 | `DELETE_FAILED_MANUAL` | 否 | 运维/Purger | Payload terminal | Dataset/Root 保持 `DELETE_PENDING` |
 
@@ -1641,6 +1799,8 @@ operational isolation saving: measurable but workload-dependent
 - foreground P95/P99、普通 Merge backlog、TN memory/WAL 的自动降速和暂停阈值；
 - provider 故障时 staging/orphan bytes、objects 和 oldest-age circuit breaker；
 - oldest pending、Snapshot exclusive retained bytes、retry age、GC gate gap 和 delete manual 告警；
+- bound tables、Object Index rows/bytes/generation backlog、due/claimed/running/retry jobs/bytes；
+- active Snapshot/Attempt Control/Root、commit-unknown、multipart、external payload object 和 retained metadata 数量/字节/oldest-age；
 - TTL、Archive、Restore、Purge 的 weighted fairness 和最低份额。
 
 大租户不能饿死小租户，Restore 不能饿死 TTL。TaskService/provider 不可用时数据保持活动可见，只增加 backlog。持续 UPDATE/DELETE 导致反复冲突的表在阈值后进入 `CONFLICT_BLOCKED`，首个 GA 对该表不承诺 Archive Lag SLO，但必须告警并解释原因。GA 门禁使用固定硬件、并发和 workload 生成可重复报告，不在设计中承诺未经测量的固定百分比。
@@ -1653,7 +1813,7 @@ operational isolation saving: measurable but workload-dependent
 
 - `pkg/vm/engine/tae/lifecycle`：RewriteHost、transaction entry、source validation；
 - `pkg/lifecycle/catalog`：Policy/Binding/FeatureGuard/Job/Receipt/Collection/Manifest/AccessLease；
-- `pkg/lifecycle/ownership`：system-owned Attempt/Cleanup Root、Owner Tombstone、Sweeper；
+- `pkg/lifecycle/ownership`：system-owned Attempt/Commit Control、Archive Cleanup Root、Owner Tombstone、Sweeper；
 - `pkg/lifecycle/scheduler`：indexer、scanner、coordinator、reconciler；
 - `pkg/lifecycle/archive`：Parquet container、ArchiveStore、provider adapters；
 - `pkg/lifecycle/admission`：Feature Guard 和未支持依赖/Backup/DR fail-closed；
@@ -1668,11 +1828,12 @@ operational isolation saving: measurable but workload-dependent
 | `tae/db/dispatcher` | 增加有租期 external reservation 和空表快速路径 | 普通 Merge 候选和优先级 |
 | `tae/rpc` | 现有 Precommit parser/iterator 增加 tagged Lifecycle Entry handler | MergeCommitEntry 语义和原请求 retry 链 |
 | `disttae` | 新 lifecycle relation/txn 调用 | 普通 DML/Merge API |
-| Snapshot frontend | 增加 `kind='lifecycle'` 的系统管理、用户隐藏、flush gate | 其他用户 Snapshot 语义 |
+| Snapshot frontend | 增加 `kind='lifecycle'` 的系统管理、用户隐藏、table-only target 和 flush gate | 其他用户 Snapshot 语义 |
 | TaskService | 注册 lifecycle task code/runner | epoch 的通用语义 |
 | FileService | 不破坏 ObjectStorage；旁路增加 ArchiveStore | 活动 ObjectIO 读写 |
-| GC/logtail | 暴露 Snapshot metadata-visible + old-cycle-drained gate；不新增 exact refs | Snapshot/PITR 原删除谓词和普通 Merge |
-| DDL/Account Drop | 低频路径 CAS Feature Guard、写 system owner tombstone | 不等待 provider、不改变普通 DROP 主体语义 |
+| GC/logtail | lifecycle kind 单独保留 snapshot ID/kind/logical+physical target/owner generation，暴露 metadata-visible + old-cycle-drained gate；不新增 exact refs | 现有 user/branch Snapshot 展开语义、Snapshot/PITR 原删除谓词和普通 Merge |
+| ALTER COPY | Lifecycle-bound 表在创建临时表前 fail closed | 普通未绑定表的 ALTER COPY |
+| DDL/Account Drop | 低频路径 CAS Feature Guard、写 scope owner tombstone并传递 ancestor-drop context | 不等待 provider、不改变普通 DROP 主体语义 |
 
 Feature 使用 global/account/table 三层 capability gate。表没有有效 Binding 时：
 
@@ -1703,25 +1864,39 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 |---|---|---|
 | Gate A：Read-only | 单表 metadata Planner、Dry-run、Export-only Parquet/Container | 不退休活动数据；候选、行数和 digest 与全表基准一致 |
 | Gate B：Safety Protocol | tagged Entry/Receipt、Snapshot/GC gate、pre-PUT Root、immutable Profile、Feature Guard、hard budget、whole/mixed fault prototype | GA-P0-A～F 的原型和 kill/replay/GC/超限矩阵全部通过 |
-| Gate C：TTL GA Candidate | table-scope、NOT NULL 时间列、无隐藏索引表、whole/mixed TTL | 六项 GA P0 实现关闭；1/10 TiB、oversize Object 与 7 天 chaos/soak 通过 |
-| Gate D：Archive GA Candidate | direct-readable Profile、Root/Sweeper、不可逆 Delete、Restore 新表、Backup/DR fail-closed | fake/real provider direct archive/restore/owner-drop/purge drill 通过 |
-| Gate E：Commercial GA | 支持矩阵、SLO、Runbook、升级/降级、reconciliation/audit 工具 | 客户试点完成 direct archive、Restore 新表、DROP cascade cleanup 和 purge drill；发布评审签字 |
+| Gate C：TTL GA Candidate | table-scope、NOT NULL 时间列、无隐藏索引表、whole/mixed TTL | GA-P0-A/C/D/E/F 实现关闭；1/10 TiB、oversize Object 与 7 天 chaos/soak 通过 |
+| Gate D：Archive GA Candidate | direct-readable Profile、Root/Sweeper、不可逆 Delete、Restore 新表、Backup/DR fail-closed | GA-P0-B 加入后六项 P0 全部关闭；fake/real provider direct archive/restore/owner-drop/purge drill 通过 |
+| Gate E：Commercial GA | 支持矩阵、容量 profile、SLO、Runbook、升级/降级、reconciliation/audit 工具 | 1/10 TiB 与 Stage 4 分阶段放量完成；客户试点完成 direct archive、Restore 新表、DROP cascade cleanup 和 purge drill；发布评审签字 |
 | Optional Gate F：Restore-required Deep Archive | provider transition/thaw、临时副本期限、费用和跨云故障矩阵 | 客户 provider 与成本收益明确；独立 ADR 通过；至少一个真实 provider 完成 transition/thaw/restore/purge drill |
 
 任何 Gate 未通过都不能通过减少故障测试、放宽 budget 或关闭 fail-closed 来换取发布进度。Commercial GA 必须完成 Gate A–E，不要求完成 Optional Gate F；隐藏索引表、CDC、FK、Publication、Fulltext、Vector、插件和 archive-unaware Backup/DR 因为明确不在 GA support matrix，不要求实现 handler，但必须证明 Feature Guard 在首次创建竞态和 final commit 都会拒绝。
 
-### 21.1 进入实现前的详细设计包
+### 21.1 分阶段放量门禁
+
+认证必须遵循同一最终协议和 Catalog，不允许用 Preview 专用的不安全提交路径：
+
+| Stage | 范围 | 退出条件 |
+|---|---|---|
+| Stage 0 Read-only | 最多 1000 个 Binding 的 Dry-run、Object Index backfill/reconcile；不 PUT、不退休 | 未绑定表零日常扫描；1000 表和千万/亿级 index row 等价基准通过 |
+| Stage 1 Export-only | 50 张代表性表写 Parquet/Container、全量重读校验和 staging cleanup；不退休 | Profile identity、pre-PUT Root、multipart/orphan cleanup 和成本模型通过 |
+| Stage 2 TTL Candidate | 50 张无依赖表；table-only Snapshot、tagged Entry/replay；含真实 1/10 TiB 和持续 Merge | GA-P0-A/C/D/E/F、硬容量和 kill/downgrade barrier 通过 |
+| Stage 3 Archive/Restore Candidate | 50→200 张表；direct-readable Archive、Restore、DROP cleanup、normal Purge | 六项 P0、commit unknown/立即 DROP/Restore-Delete 竞争和真实 provider drill 通过 |
+| Stage 4 受限 GA | 200→500→认证最大 1000 张绑定表 | 每一级观察窗口通过，客户演练、7 天 chaos/soak、Runbook 和发布评审完成 |
+
+每一级至少观察 oldest backlog age、due/running/retry bytes、Snapshot retained bytes、final transaction retry/commit unknown、Root/Payload orphan/delete backlog、Restore 成功率/耗时、前台 P95/P99、Merge backlog、Object Index/Catalog 增长、provider 错误率和费用。任何数据不变量失败立即停止扩大并触发 kill switch；容量/性能越界暂停新绑定/新 Job，但 Reconcile、Restore、Purge 和 Cleanup 必须继续获得最低资源份额。
+
+### 21.2 进入实现前的详细设计包
 
 概要设计之后必须拆分并分别评审：
 
 1. tagged Lifecycle Commit Entry、Precommit parser/iterator、1PC/2PC replay、WAL、Receipt；
-2. system Lifecycle Snapshot、flush/GC metadata-visible gate、释放时序和 10 TiB pinned-byte budget；
-3. system Attempt/Cleanup Root、Owner Tombstone、迟到 PUT quiescence 和 Sweeper；
+2. table-only system Lifecycle Snapshot、kind/target/owner-generation loader、flush/GC metadata-visible gate、释放时序和 10 TiB pinned-byte budget；
+3. system Attempt/Commit Control、Archive Cleanup Root、durable transaction identity、Owner Tombstone、迟到 PUT quiescence 和 Sweeper；
 4. Feature Guard、immutable Archive Profile 与 GA support matrix；
 5. Archive Dataset/Collection/Manifest/Payload/Access Lease/不可逆 Delete；
 6. direct-readable ArchiveStore 和 Restore staging/schema/publish；
 7. Backup/PITR/Snapshot/Clone/Branch/DR fail-closed；
-8. Object Index generation/backfill/reconciliation/obsolete GC；
+8. 仅 Binding 表的 Object Index generation/backfill/reconciliation/obsolete GC；
 9. oversize streaming、resource budget、scheduler、公平性和 SLO；
 10. audit/reconciliation 工具和 Runbook。
 
@@ -1739,6 +1914,7 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 - 无 PK、Base Table PK；隐藏普通/唯一索引表的 bind、并发 CREATE INDEX 和 final Guard CAS 拒绝；
 - active CDC、FK、Publication/Subscription、Fulltext/Vector/plugin 的 bind、首次创建竞态和 final Guard CAS 拒绝；
 - Backup/PITR/用户 Snapshot Restore/Clone/Branch/DR 双向准入拒绝，DR target Restore Archive 明确报不可用；
+- Lifecycle-bound 表 `ALTER TABLE ... COPY` 在临时 physical table 创建前拒绝；logical owner/physical source identity 不混用；
 - schema evolution、跨多个 schema digest 的 Restore 拒绝/拆分、跨 Dataset Base PK 重复的原子失败。
 
 ### 22.2 并发
@@ -1747,6 +1923,7 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 - CN 手工 Merge；
 - INSERT/UPDATE/DELETE 和新增 tombstone；
 - ALTER/DROP/TRUNCATE；
+- ALTER COPY、用户 DROP TABLE、ancestor DROP DATABASE/ACCOUNT 的内部逐表 DROP context；
 - Policy change/unbind；
 - Task epoch 接管；
 - reservation 到期、TN restart；
@@ -1758,19 +1935,19 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 
 对每个点做 kill/restart：
 
-- Lifecycle Snapshot/Job/`REGISTERED` Root 事务前后；
+- Lifecycle Snapshot/Job/Attempt Control/`REGISTERED` Root 事务前后；
 - flush gate、GC metadata-visible gate 和旧 GC cycle drain 前后；
 - Root `REGISTERED -> UPLOADING` 后、第一次 PUT 前后；
 - 每个 payload multipart；
 - payload complete/verify；
 - 新 TAE Object 写完；
 - Archive Dataset `VERIFIED_NOT_PUBLISHED`、Root `VERIFIED`、Job `READY_TO_COMMIT`；
-- final txn before/during/after Prepare；
+- Attempt Control `PLANNED -> COMMIT_CLAIMED` 前后；final txn before/during/after Prepare；
 - WAL append 前后、tagged Entry 重放和 Receipt 写入；
 - commit response 丢失；
 - Snapshot release；
 - Restore access lease 创建与 Dataset/Root `DELETE_PENDING` CAS 竞争；
-- DROP TABLE/ACCOUNT 的 owner tombstone 提交前后、tenant Job/Catalog 已删除但 Root 仍存在；
+- DROP TABLE/ACCOUNT 的 owner tombstone 提交前后、tenant Job/Catalog 已删除但 system Snapshot/Control/Root 仍存在；
 - DROP DATABASE/ACCOUNT 与第一次 Lifecycle bind、scope Backup/PITR/Snapshot/Clone/Branch/DR 准入同时 CAS scope Guard/Owner Registry；
 - Restore executor 异常退出或 tenant Catalog 被 DROP 后，system retained lease 仍可被 fence、收敛和回收；
 - stale executor 在第一次 cleanup 后迟到 PUT，`CLEANED` tombstone/quiescence 再清理；
@@ -1781,11 +1958,14 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 ### 22.4 资源与性能
 
 - 10 万表/大量空表时不全库扫描；
+- 1000 个 Binding/Guard/Job summary、1000 表 Object Index backfill 调度；
+- 1000 万和 1 亿级 Object Index row 的分页、reconcile、generation GC 等价规模基准；
 - 1 TiB/10 TiB 表，32 B/256 B/4 KiB 行宽；
 - 10 TiB 表持续普通 Merge 时的 `snapshot_exclusive_retained_bytes`、硬限额 fence 与明确结果后释放；
 - whole/mixed `0%/50%/100%`，tombstone `0%/1%/20%`；
 - 当前版本最大 rows/object、blocks/object、bytes/object、单 block varlen、几乎全存活 Mixed rewrite、spill/file hard limit；
 - Job 拆分和多租户/TTL/Restore 公平性；
+- table/database/account/cluster `1/2/4/8` child 并发与 7 天 chaos/soak；
 - foreground P95/P99 扫描、写入和 Merge 影响；
 - transfer map、Parquet writer、tombstone staging 内存/磁盘上限；
 - provider 限流、慢读、慢写和 eventual consistency；
@@ -1799,22 +1979,27 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 - 旧节点收到新 Entry 明确拒绝，不能忽略；
 - Manifest/container 有版本号和兼容读取器；
 - 新 Lifecycle Snapshot gate capability 未全员可用前不得选源对象；
-- 滚动降级前停止新 Job，并让所有在途 Snapshot/Root/commit-unknown 明确收敛；
+- 滚动降级前停止新 Job，并让所有在途 Snapshot/Attempt Control/Root/commit-unknown 明确收敛；
 - 回滚只停止新 Job，已发布 Dataset 仍可恢复和清理。
 
 ## 23. 主要风险与控制
 
 | 风险 | 结果 | 控制 |
 |---|---|---|
+| 几十万普通表进入日常 Lifecycle 扫描 | Catalog/调度负载污染普通业务 | 只扫描显式 Binding registry；未绑定表不建 Object Index、不读 footer |
+| 1000 张 TB 表产生数千万索引行 | metadata 膨胀和调度退化 | rows/bytes/generation hard cap、分页、obsolete GC、千万/亿级基准 |
 | Mixed Object 比例高 | 重写放大大 | index dry-run、sort key 建议、bounded job |
 | 与 Merge/高频更新持续冲突 | 重复导出、永久饥饿 | reservation + CAS/retry；到阈值进入 `CONFLICT_BLOCKED`，不承诺 Lag SLO |
 | 慢 copy 遇到 GC | 源对象消失 | system Lifecycle Snapshot + flush gate + GC metadata-visible/old-cycle-drained gate |
+| 当前 table Snapshot 被扩大到同 DB | unrelated 表旧版本大量保留 | lifecycle kind 独立 table-only loader；现有 user/branch 行为不改 |
 | 长 Job 的表级 Snapshot 过度保留 | 对象存储增长 | exclusive retained bytes budget；硬限额 fence 当前 Job；10 TiB sustained-Merge soak |
 | 并发删除被归档复活 | 数据语义错误 | expired-row tombstone 变化时 abort/re-export |
 | 隐藏索引残留 | 错查或唯一冲突 | 首个 GA 拒绝所有隐藏索引表；Feature Guard 关闭首次 CREATE 竞态 |
 | CDC/FK/Publication/插件语义缺失 | 外部或派生状态不一致 | 所有能力创建 + bind + final commit CAS 同一 Guard |
 | 首次 PUT 后 DROP ACCOUNT | staging 永久泄漏 | PUT 前 system Attempt Root；DROP owner tombstone；Sweeper |
 | Snapshot 只 flush 未被 GC loader 看见 | GC 错删源对象 | 独立 GC metadata-visible + old-cycle-drained gate |
+| final response 丢失后立即 DROP | tenant Job/Receipt 消失，结果无法判定 | system Attempt Control 冻结 transaction identity/request digest/commit result |
+| ALTER COPY 替换 physical table ID | Archive owner orphan 或 retirement 命中错误 relation | logical owner/physical source 分离；首个 GA 在 copy 前拒绝 |
 | 普通 Backup/DR 静默缺历史 | “恢复成功”但数据不完整 | support matrix 执行前 fail closed，DR target 显式 unavailable |
 | Profile 被改指另一个 bucket | Restore 找不到或 Purge 误删 | Dataset/Root 冻结 versioned namespace identity，credential 独立轮换 |
 | stale runner 删除新对象 | 永久丢失 | immutable key + irreversible delete state + exact-identity delete |
@@ -1831,16 +2016,17 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 2. 不实现生命周期 `ONLINE_COLD` 状态；
 3. 不修改普通 Merge 策略；
 4. 不新增 Merge Engine；Lifecycle Rewrite Executor 可重用流式排序/写对象原语，但使用独立 Host 和 tagged 事务 Entry；
-5. 用增量 Object Index 代替每日全库数据扫描；
+5. 只为显式 Binding 表建立增量 Object Index，代替每日全库数据扫描；
 6. 以 bounded exact object set 作为原子 Job；单个超限 Object 使用 streaming，不假装还能拆 Object；
-7. 首个 GA 用 system table-level Lifecycle Snapshot 保护源对象，通过 flush + GC metadata-visible gate 后才选择对象；不新增 exact refs；
+7. 首个 GA 用与现有 user/branch 行为隔离的 `kind='lifecycle'` table-only Snapshot 保护精确 physical table generation，通过 flush + GC metadata-visible/old-cycle-drained gate 后才选择对象；不新增 exact refs；
 8. Archive 用 typed Parquet/ZSTD 和独立 Manifest，不复制原 ObjectIO 充当长期格式；
-9. 首个 GA 拒绝隐藏普通/唯一索引表、CDC、FK、Publication、插件和 archive-unaware Backup/DR；table 依赖 CAS table Guard，account/database 保护 CAS scope Guard；
-10. 第一次外部 PUT 前创建 system Attempt Root；DROP 写 owner tombstone并异步级联清理；
+9. 首个 GA 拒绝隐藏普通/唯一索引表、CDC、FK、Publication、插件、ALTER COPY 和 archive-unaware Backup/DR；table 依赖 CAS logical-owner Guard，TAE commit CAS physical source identity，account/database 保护 CAS scope Guard；
+10. 每个 child 创建 system Attempt/Commit Control；Archive 在第一次外部 PUT 前另有 Cleanup Root；DROP 写 owner tombstone并异步级联清理；
 11. Dataset 从属于源 table/account；使用 `DELETE_PENDING`、Payload 不可逆状态机和 exact-identity delete；不包含 Legal Hold/WORM；
 12. Profile 的 namespace identity 不可变且版本化，credential rotation 与存储身份分离；
 13. 首个 GA 必须包含 direct-readable archive 和恢复到新表；restore-required deep archive 是 Optional Gate F，不阻塞 GA；
-14. 按 capability gate 实现，完成 Gate A–E 才能称为 Commercial GA；Optional Gate F 通过后才能开放对应 Deep Archive Profile。
+14. 首个 release profile 同表/库/账户/集群 child 并发从 `1/2/4/8` 起步，最多认证 1000 张绑定表，并同时执行 Object Index、backlog、retained bytes 和外部对象硬上限；
+15. 按 capability gate 实现，完成 Gate A–E 以及 `50 -> 200 -> 500 -> 1000` 分阶段认证后才能称为 Commercial GA；Optional Gate F 通过后才能开放对应 Deep Archive Profile。
 
 这套方案的主要价值是：它把 Feature 加在 TAE Object 生命周期之上，最大限度隔离普通 Merge；同时没有用“隔离”换取数据正确性漏洞。即使客户已经把活动数据放在 S3/OSS/COS，MO 仍能通过缩小活动数据集、减少后台重写和查询面，并在 provider 支持时使用更低价归档类别，实现可测量、可解释的降本。
 
@@ -1852,9 +2038,9 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 |---|---|---|
 | GA-P0-A Lifecycle wire/replay | 13：`PrecommitWriteCmd.EntryList` tagged Entry，进入原始 WAL/retry 链 | 1PC/2PC、重复 Prepare、`ErrTAENeedRetry`、response lost、滚动升级/降级 |
 | GA-P0-B immutable Profile identity | 8.2、11：Dataset 与 Root 冻结 profile version/namespace/exact object identity | Profile 改名、credential rotation、versioned/versionless Restore/Purge、误 namespace 删除测试 |
-| GA-P0-C serializable Feature Guard | 8.2、13.2、15、17.1：table 依赖 CAS table Guard；account/database 保护 CAS scope Guard/owner edge | CDC/Index/Backup/DR 等与首次 bind 并发，唯一键/CAS 只能一方成功 |
-| GA-P0-D pre-PUT Root 与 owner cleanup | 8.4、14.4、16、18：Root 在首个 PUT 前；DROP tombstone；迟到 PUT quiescence | system/tenant/TAE 同事务原型、upload 各点 kill、DROP TABLE/ACCOUNT、租户 Journal 消失、stale executor 迟到上传 |
-| GA-P0-E Snapshot/GC 可见性与释放 | 5.1、12：commit -> flush -> GC visible/old-cycle drain -> object selection；deadline 非 lease | Merge/GC/Snapshot chaos、`COMMIT_UNKNOWN`、10 TiB sustained Merge、硬限额 fence |
+| GA-P0-C serializable Feature Guard 与稳定表身份 | 8.2、13.2、14.4、15、17.1：table 依赖 CAS logical-owner Guard；TAE CAS physical source；scope 保护 CAS Guard/owner edge | CDC/Index/Backup/DR 与首次 bind 并发；ALTER COPY 在 temp table 前拒绝；逻辑/物理身份不混用 |
+| GA-P0-D retained commit control、pre-PUT Root 与 owner cleanup | 8.4、13.3、14.4、16、18：TTL/Archive Control 冻结 txn identity/result；Archive Root 在首个 PUT 前；DROP tombstone；迟到 PUT quiescence | durable intent-to-txn resolver、system/tenant/TAE 同事务、TTL/Archive response lost + DROP、stale executor 迟到上传 |
+| GA-P0-E table-only Snapshot/GC 可见性与释放 | 5.1、12：lifecycle kind/target/owner generation；commit -> flush -> GC visible/old-cycle drain -> object selection；deadline 非 lease | 现有 user/branch 语义不变；Merge/GC/Snapshot chaos、owner handoff、10 TiB sustained Merge、硬限额 fence |
 | GA-P0-F Backup/DR fail-closed | 1.1、8.2、17.1：逐项支持矩阵、双向 Guard、DR target 显式 unavailable | Backup/PITR/Snapshot/Clone/Branch/DR 创建与 bind 的并发拒绝；无静默缺行 |
 
 之前 Review 中仍然有效的正确性要求没有因范围收敛而消失：
@@ -1864,7 +2050,7 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 | NULL/ZoneMap whole-object fast path | 10.1 |
 | hard budgets 与 bounded transaction | 9.2、13.2、18 |
 | Dataset/Root/Payload 不可逆删除 | 16 |
-| one child Job / one Snapshot / one final transaction；Archive child 另有一个 Root/Dataset | 9.2 |
+| one child Job / one Snapshot / one Attempt Control / one final transaction；Archive child 另有一个 Root/Dataset | 8.4、9.2 |
 | Object Index generation 与 obsolete GC | 8.3 |
 | table-only Policy、time/calendar semantics | 1.1、8.1 |
 | late `commit_seq` 与 exact source object CAS | 13.2 |
@@ -1872,13 +2058,15 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 | oversize single-object streaming | 9.2、22.4 |
 | 高频冲突进入 `CONFLICT_BLOCKED` | 9.3、14.3、18.2 |
 | SLO、公平性和真实 provider drill | 19.3、21、22 |
+| 500～1000 表认证、1/10 TiB 与 staged rollout | 1.1、9、21.1、22.4 |
 
 方案级最终判断：
 
 - Read-only Planner / Dry-run / Export-only：**Go**；
 - Safety Protocol 原型：**Conditional Go**，先实现并证明 GA-P0-A～F；
-- TTL/Archive 数据退休 Preview：六项 P0 原型和故障矩阵通过后 **Go**；
-- 首个 Commercial GA：按本收敛支持矩阵为 **Conditional Go**，只有 Gate E 与全部实现/测试证据通过后才能发布；
+- TTL 数据退休 Candidate：GA-P0-A/C/D/E/F 原型和故障矩阵通过后 **Conditional Go**；
+- Archive/Restore Candidate：六项 P0 与 provider 故障矩阵通过后 **Conditional Go**；
+- 首个 Commercial GA：按本收敛支持矩阵为 **Conditional Go**，只有 1/10 TiB、Stage 4、Gate E 与全部实现/测试证据通过后才能发布；
 - restore-required Deep Archive：不阻塞 GA，仍为 Optional Gate F。
 
 因此，“文档方案已闭环”不等于“当前代码已经 Commercial GA”。实现进入 Commercial GA 的唯一判据是 Gate E、六项 P0 证明义务和验收报告，而不是文档中已经描述。
