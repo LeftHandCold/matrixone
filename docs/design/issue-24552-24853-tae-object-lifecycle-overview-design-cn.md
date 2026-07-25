@@ -10,7 +10,7 @@
 >
 > 设计日期：2026-07-25
 >
-> 代码复核基线：`54b63cb8ebfc2169e457b4cab3ee09e1ac12b562`
+> 代码复核基线：`0d7eeb38b43b6b89f746b0a634662349a4b01de2`
 >
 > 架构决策：[以 TAE Object 而不是 SQL Partition 作为生命周期执行边界](issue-24552-24853-object-lifecycle-boundary-adr-cn.md)
 >
@@ -28,8 +28,8 @@ MO 应建设独立的 **TAE 对象级 Lifecycle Service 与 Lifecycle Rewrite Ex
 1. 以一组有上限、精确标识的不可变 TAE Object 为一个原子 Job；
 2. 用增量对象索引计算到期时间，不按天全库扫描数据；
 3. 先实现只读 Planner/Object Index/Dry-run 和 Export-only Archive，用真实表验证候选选择、文件格式和成本；
-4. Whole Object 直接进入有界退休协议；Mixed Object 通过 `LifecycleRewriteExecutor` 将过期行送入 `DiscardSink` 或 `ArchiveSink`，将仍存活行写回正常 TAE Object；
-5. Rewrite Executor 可以复用现有 `mergesort.DoMergeAndWrite` 的读、排序、写 ObjectIO 和 transfer-map 生成能力，但不是第二套 Merge Engine，也不进入普通 Merge scheduler；
+4. Whole Object TTL 不读 payload；Whole Object Archive 用 exact-object Snapshot Reader 只导出该 Snapshot 的逻辑可见行；Mixed Object 通过 `LifecycleRewriteExecutor` 将过期行送入 `DiscardSink` 或 `ArchiveSink`，将仍存活行写回正常 TAE Object；
+5. 数据读取不自建 ObjectIO Scanner：整对象归档、Export-only 和源侧覆盖性统计复用 MO 的 Snapshot Reader/RemoteDataSource；Mixed Object 复用 Reader 下层的 `BlockDataReadNoCopy` 获得原始 Batch 与 tombstone mask，再组合 `mergesort.DoMergeAndWrite` 的排序、ObjectIO writer 和 transfer-map 能力；
 6. 在现有 `PrecommitWriteCmd.EntryList` 中新增有 tag、可版本化和可重放的 `LifecycleCommitEntry`，在一个短事务内原子完成：
    - Archive Job 发布已校验的 Manifest；
    - 注册新 TAE Object；
@@ -228,7 +228,22 @@ MO 当前 Partition 模块不是“假的”，但它是 SQL 逻辑路由和隐�
    - [`pkg/objectio/writer.go`](../../pkg/objectio/writer.go)
    - [`pkg/vm/engine/disttae/txn_table.go`](../../pkg/vm/engine/disttae/txn_table.go) 的 `GetColumMetadataScanInfo`
 
-2. **Merge 的流式重写原语**
+2. **MO 的 Snapshot/Exact-range 读取原语**
+
+   [`pkg/vm/engine/types.go`](../../pkg/vm/engine/types.go) 的 `Relation.BuildReaders` 接受调用方提供的 `RelData`，[`pkg/vm/engine/readutil/relation_data.go`](../../pkg/vm/engine/readutil/relation_data.go) 可以把精确 `ObjectStats` 展开成 Block 列表。Reader 已负责列裁剪、ObjectIO 解码、批次输出、隐藏 `__mo_rowid` 和 Snapshot 可见 Tombstone。
+
+   [`pkg/vm/engine/disttae/snapshot_scan.go`](../../pkg/vm/engine/disttae/snapshot_scan.go) 已提供显式 `snapshotTS + RelData` 的流式扫描基础，磁盘分支通过 `RemoteDataSource` 和 `SimpleReaderWithDataSource` 读取，不需要为 Lifecycle 再实现 S3/OSS/COS Range Read 或 ObjectIO decoder。
+
+   Lifecycle 不能原样调用当前 `ScanSnapshotWithCurrentRanges` 读取 exact source set：该函数为 Data Branch 语义还会补充表级 committed in-memory rows，而 Lifecycle Job 的权威输入只能是已持久化的 exact source Objects。应增加一个很薄的内部 `ScanExactObjectSnapshot` 变体：
+
+   - 输入固定 `source_snapshot_ts`、table schema 和 exact persisted `RelData`；
+   - 只使用指定 Object/Block，不加入表级内存行或事务 workspace；
+   - Tombstone 只按 `source_snapshot_ts` 收集和应用；
+   - 可请求 `__mo_rowid`，流式回调 Batch；
+   - 生命周期谓词由 Lifecycle 对 Batch 向量化计算，不能假设 Reader 会执行任意非 PK 表达式；
+   - 不持有长 SQL 事务，持久化 Lifecycle Snapshot 才是 GC 保护 Owner。
+
+3. **Merge 的流式重写原语**
 
    [`pkg/vm/engine/tae/mergesort/task.go`](../../pkg/vm/engine/tae/mergesort/task.go) 定义了 `MergeTaskHost` 和 `DoMergeAndWrite`。现有 merger/reshaper 已能：
 
@@ -237,25 +252,25 @@ MO 当前 Partition 模块不是“假的”，但它是 SQL 逻辑路由和隐�
    - 写出新的 ObjectIO；
    - 为实际写出的存活行生成 transfer map。
 
-3. **多对象 scope 冲突控制**
+4. **多对象 scope 冲突控制**
 
    [`pkg/vm/engine/tae/db/merge/executor.go`](../../pkg/vm/engine/tae/db/merge/executor.go) 将源对象作为 multi-scope task 调度；[`pkg/vm/engine/tae/db/dispatcher.go`](../../pkg/vm/engine/tae/db/dispatcher.go) 会拒绝本 TN 内 scope 冲突。
 
-4. **TaskService 接管**
+5. **TaskService 接管**
 
    [`pkg/taskservice/task_service.go`](../../pkg/taskservice/task_service.go) 在任务重新分配时增加 epoch，并在完成时按 epoch 更新。可以复用其 cron、任务持久化和 executor 接管，但不能把 task epoch 当作对象存储副作用的 fence。
 
-5. **Snapshot/PITR GC 引用模型**
+6. **Snapshot/PITR GC 引用模型**
 
    [`pkg/vm/engine/tae/logtail/snapshot.go`](../../pkg/vm/engine/tae/logtail/snapshot.go) 和 [`pkg/vm/engine/tae/db/gc/v3/exec_v1.go`](../../pkg/vm/engine/tae/db/gc/v3/exec_v1.go) 已有 Snapshot 保护源版本的 GC 模型，可以复用引用和删除谓词。
 
    Data Branch 已在 [`pkg/frontend/data_branch_snapshot.go`](../../pkg/frontend/data_branch_snapshot.go) 中演示“业务系统元数据与保护 Snapshot 同事务写入”。这证明 system-owned Lifecycle Snapshot 可以沿现有模式实现。但当前 GC loader 不保留 snapshot ID/kind，`AccountToTableSnapshots` 还会把 table Snapshot 的 TS 应用到同 database 的其他表，不能直接当作 Lifecycle 的 table-only 实现；Lifecycle 必须增加隔离的 kind/target 分支。另一个限制是 [`pkg/frontend/check_snapshot_flushed.go`](../../pkg/frontend/check_snapshot_flushed.go) 的 `CheckSnapshotFlushed` 只证明 Base/Index Table 的 `flushTS >= snapshotTS`，不证明 GC loader 已把 `mo_snapshots` 记录装入保护集合；仍需新增 GC metadata-visible gate。
 
-6. **DROP 的轻量系统表 Hook**
+7. **DROP 的轻量系统表 Hook**
 
    [`pkg/sql/compile/ddl.go`](../../pkg/sql/compile/ddl.go) 已在 DROP TABLE 主路径中以 system tenant 更新 Merge Settings 和 Data Branch 元数据。Lifecycle 复用相同扩展点写一个常数级 owner tombstone，不在 DROP 中执行 provider Delete 或等待后台 Job。
 
-7. **Parquet 基础**
+8. **Parquet 基础**
 
    [`pkg/iceberg/write`](../../pkg/iceberg/write) 已有 MO Batch 到 Parquet、row group 和统计信息的实现。生命周期可复用类型转换和 row-group 逻辑，但必须新增流式 `ArchiveStore` 输出，不能用可能把整文件留在内存中的缓冲输出。
 
@@ -267,23 +282,31 @@ MO 当前 Partition 模块不是“假的”，但它是 SQL 逻辑路由和隐�
 
    当前 `MergeTaskHost.GetCommitEntry()` 的返回类型固定为 `*api.MergeCommitEntry`。`LifecycleRewriteHost` 可以把它作为 `DoMergeAndWrite` 所需的**进程内输出载体**，随后将 created objects/transfer table 转入 `LifecycleCommitEntry`；不能把这个临时对象直接作为最终 RPC，也不能调用现有 `NewMergeObjectsEntry` 提交。若实现时抽出中性的 `RewriteResult`，只允许做接口解耦，不改变普通 Merge 行为。
 
-2. **TN 内存 scope 作为 fence**
+2. **高层 Reader 直接替代 Mixed Object Rewrite**
+
+   普通 Reader 会把 Snapshot 已删除的行过滤掉，并把输出压缩成逻辑可见 Batch。查询和整对象 Archive 需要的正是这个结果，但现有 `mergesort` 的 transfer map 以原始 source block/row offset 为索引。仅用 Reader 输出重写 Mixed Object，会丢失构造完整 transfer map 所需的原始位置和 delete mask。
+
+   理论上可以读取 `__mo_rowid` 后重新实现排序、writer 与 RowID 映射，但这比复用当前 `BlockDataReadNoCopy + DoMergeAndWrite` 改动更大、风险更高。Mixed Object 因而必须在固定 Snapshot 下逐 Block 读取原始 Batch 与 Tombstone mask；高层 exact-object Reader 用于整对象 Archive、Export-only、验证和未来独立只读用途。
+
+   同样禁止用普通 `SELECT/Reader -> DELETE WHERE lifecycle_predicate` 完成活动数据退休。TB 级逐行 DELETE 会制造海量 Tombstone、WAL/Logtail/GC/Merge 放大，也无法代替 Archive publish 与 exact source Object retirement 的短原子事务。
+
+3. **TN 内存 scope 作为 fence**
 
    scope 只覆盖一个 TN 进程，不持久化，不覆盖 CN 手工 Merge、DDL 和 TN 重启。它只能减少冲突，不能证明提交安全。
 
-3. **当前 ObjectStorage 接口**
+4. **当前 ObjectStorage 接口**
 
    [`pkg/fileservice/object_storage.go`](../../pkg/fileservice/object_storage.go) 只有 List、Stat、Exists、Write、Read、Delete，没有 storage class、version ID、restore/thaw、条件删除和 provider checksum。不能用它承诺深归档语义。
 
-4. **直接 SoftDeleteObject**
+5. **直接 SoftDeleteObject**
 
    只退休 Base Object 不会自动清理隐藏索引表，也不一定产生 CDC 所需的逐行 delete。生命周期不能绕过 SQL 删除的依赖语义。
 
-5. **ALTER COPY 的单一 table ID**
+6. **ALTER COPY 的单一 table ID**
 
    [`pkg/sql/compile/alter.go`](../../pkg/sql/compile/alter.go) 的 `ALTER TABLE ... COPY` 保留 logical ID，但会创建新 relation、内部 DROP 原 relation 并换成新 physical table ID。因此 Lifecycle 不能沿用“一个 table_id 同时表示 Archive owner 和 TAE source”的模型；首个 GA 先通过 Guard 拒绝 bound table 的 physical replacement。
 
-6. **把固定 ObjectStats 布局继续加字段**
+7. **把固定 ObjectStats 布局继续加字段**
 
    `ObjectStats` 是固定二进制布局。生命周期索引是可重建派生数据，不应为它改变所有对象的固定格式和兼容边界。
 
@@ -316,12 +339,20 @@ MO 当前 Partition 模块不是“假的”，但它是 SQL 逻辑路由和隐�
 采用该方案：
 
 - 独立控制面、Job、Manifest、ArchiveStore 和提交协议；
-- 新 `LifecycleRewriteHost` 组合 `DoMergeAndWrite`；
+- Whole Object Archive、Export-only 和源侧覆盖性统计复用 exact-object Snapshot Reader；
+- Mixed Object 的薄 `LifecycleRewriteHost` 复用 `BlockDataReadNoCopy + DoMergeAndWrite`；
 - 普通 Merge 策略零改动；
 - 通用 scope dispatcher 只增加可过期 reservation；
 - 正确性由新的事务 Entry 和 CAS 负责。
 
 这是“加一层并复用基础能力”，而不是“把 Feature 塞进 Merge”，也不是创建新的 Merge Engine。
+
+另外两种看似更简单的 Reader 方案不采用：
+
+- 不让一个普通 SQL Snapshot 事务在整个 export/rewrite 期间保持打开；
+- 不用高层 Reader 输出自行重写一套排序、ObjectIO writer 和 transfer map。
+
+这里的 Reader 是执行层，不是调度索引。它只在 Job 已经通过 Snapshot/GC gate 并冻结 exact source set 后读取数据；不能用 Reader 每天扫描全部绑定表来判断哪些数据到期。Object Index 或当前 Metadata Planner 仍负责低成本候选发现。
 
 ### 6.4 功能优先的实现切片
 
@@ -356,16 +387,25 @@ Planner 可以先直接通过当前 `GetColumMetadataScanInfo` 分析一张白�
            +--> optional TN scope reservation
            |
            v
-  LifecycleRewriteHost
-     | expired rows                 | live rows
-     +--> Discard / ArchiveSink     +--> mergesort.DoMergeAndWrite
-                |                            |
-                v                            v
-       Parquet staging payload       new TAE Object + transfer map
-                \                            /
-                 \                          /
-                  v                        v
-             verify payload and rewrite result
+  exact source Object router
+     |
+     +--> Whole TTL: no payload read
+     |
+     +--> Whole Archive / Export-only
+     |      -> ScanExactObjectSnapshot
+     |      -> visible Batch -> ArchiveSink -> Parquet staging
+     |
+     +--> Mixed Object: LifecycleRewriteHost
+            -> BlockDataReadNoCopy -> raw Batch + tombstone mask
+            -> lifecycle mask
+            +--> expired visible rows -> Discard / ArchiveSink
+            +--> merged mask -> mergesort.DoMergeAndWrite
+                                      |
+                                      v
+                           new TAE Object + transfer map
+                                      |
+                                      v
+                         verify payload and rewrite result
                            |
                            v
               conditional distributed transaction
@@ -386,14 +426,16 @@ Planner 可以先直接通过当前 `GetColumMetadataScanInfo` 分析一张白�
 | Object Indexer | 为活动对象建立生命周期列 min/max/null 和 next action 派生索引 |
 | Scanner | 只扫描到期索引项，生成 dry-run 或执行计划 |
 | Coordinator | child 取得执行配额后创建 Lifecycle Snapshot 与 Attempt Control；Archive Job 另建 Attempt Root；通过 GC gate 后形成独立 bounded source set |
-| Job Executor | 读取固定 Snapshot、输出活动对象和归档文件 |
+| Exact Snapshot Source/Reader | 统一组装 fixed Snapshot、exact persisted RelData 和 TombstoneData；高层流式输出逻辑可见 Batch，Mixed 下层保留原始行位置；不加入表级内存行、不持有长 SQL 事务 |
+| Rewrite Adapter | Mixed Object 逐 Block 取得原始 Batch/tombstone mask，计算 lifecycle mask，并组合现有 mergesort 写出存活行和 transfer map |
+| Job Executor | 按 Whole/Mixed 路由读取，输出活动对象和归档文件 |
 | ArchiveStore | 提供版本化、可校验、可恢复的云归档能力 |
 | Commit Handler | 执行对象级 CAS、tombstone 协调和原子 retirement |
 | Reconciler | 处理接管、commit unknown、staging orphan 和 provider eventual consistency |
 | Purger | 按不可逆删除协议清理 Archive Payload |
 | Restore Service | 读取已发布归档、验证、写隐藏 staging 表并原子发布为新表；可选 Profile 在读取前扩展 thaw |
 
-Lifecycle Job Executor 运行在 CN TaskService worker，而不是塞入 TN 后台 Merge task：CN 负责跨云归档、Parquet 和正常分布式事务；TN 只提供 scope reservation、对象级 PrepareCommit 校验和 TAE transaction entry。长时间 copy/export 不保持 MO 事务，只有创建 Snapshot/Attempt Control/Archive Root 和最终 publish/retire 是短事务。
+Lifecycle Job Executor 运行在 CN TaskService worker，而不是塞入 TN 后台 Merge task：CN 负责 exact-object 读取、跨云归档、Parquet 和正常分布式事务；TN 只提供 scope reservation、对象级 PrepareCommit 校验和 TAE transaction entry。长时间 copy/export 不保持 MO 事务；Reader 的 Snapshot 可见性来自显式 `source_snapshot_ts`，源文件保留来自 system Lifecycle Snapshot。只有创建 Snapshot/Attempt Control/Archive Root 和最终 publish/retire 是短事务。
 
 ## 8. 元数据模型
 
@@ -857,6 +899,16 @@ CN 手工 Merge 不受 TN 内存 reservation 完全覆盖，仍可能竞争；�
 
 reservation 通过新的 TN lifecycle scope RPC 获取、续租和释放。它不占住一个工作线程，不持有事务或表锁。连续冲突的 Job 缩小 object set、指数退避并暴露 conflict metric；超过配置的最大冲突时间后进入 `CONFLICT_BLOCKED`，不再承诺该表的 Archive Lag SLO。系统宁可延迟归档，也不能为了追求进度修改普通 Merge 策略、持有长表锁或放松最终 CAS。
 
+Reader 与普通 Merge 的并发语义固定为：
+
+1. Lifecycle Snapshot 只保证 source Object 在 Job 明确结束前仍可读取，不保证它仍是活动表的当前 Object；
+2. normal Merge 可以在 Lifecycle 读取期间把 source Object 替换为新 Object，Lifecycle Reader 仍按已冻结位置读取旧版本；
+3. Reader 成功、Archive 校验成功或新 Object 写完都不代表可以退休源数据；
+4. final transaction 必须 CAS exact source Object 仍是当前可退休版本；若已被 Merge 替换，整体 abort，不发布本 attempt 的 Dataset，也不注册其 live Object；
+5. abort 后由 Attempt Root 清理 staging，明确 aborted 后释放 Snapshot，再从当前有效 Object 重建候选。
+
+Exact Snapshot Reader 遇到 source file/object identity 不匹配、读取缺块或校验失败时必须 fail closed，不能退化为重新调用当前表 `Ranges()`、补扫整表 committed in-memory rows或跳过缺失 Object。否则一个 Job 会混入不同 Snapshot/不同 Object generation 的数据。
+
 ## 10. 数据执行路径
 
 每个 Job 固定：
@@ -867,18 +919,47 @@ reservation 通过新的 TN lifecycle scope RPC 获取、续租和释放。它�
 - schema/policy/binding/generation
 - archive profile
 
-`LifecycleRewriteHost.LoadNextBatch`：
+读取层先构造一个共同的 `ExactObjectSnapshotSource`：把 `PINNED` source Objects 展开为 persisted `BlockListRelData`，按 `source_snapshot_ts` 收集并附加 TombstoneData，再创建 `RemoteDataSource`。它不读取表级内存行，也不包含当前事务 workspace。上层分成两个适配器，共享这一个 source 语义：
 
-1. 在固定 Snapshot 读取源批次；
-2. 应用该 Snapshot 已可见的 tombstone；
-3. 计算生命周期谓词；
-4. 将过期行加入 overlay delete mask；
-5. TTL 将过期行交给 `DiscardSink`；
-6. Archive 将过期行交给 `ArchiveSink`；
-7. 返回原 Batch + 合并后的 delete mask 给 `DoMergeAndWrite`；
-8. `DoMergeAndWrite` 只对存活行排序、写新 ObjectIO 并建立 transfer map。
+| 适配器 | 输入 | 输出 | 用途 |
+|---|---|---|---|
+| `ScanExactObjectSnapshot` | `source_snapshot_ts + exact persisted RelData + schema` | 已应用 Snapshot Tombstone 的逻辑可见 Batch | Whole Object Archive、Export-only、源侧覆盖性统计 |
+| `LifecycleRewriteHost.LoadNextBatch` | exact source Object 的一个原始 Block | 原始 Batch + Snapshot Tombstone/lifecycle 合并 mask | Mixed Object live rewrite 与 transfer map |
+
+`ScanExactObjectSnapshot` 是现有 Snapshot Reader 的窄化变体，不是一套新 Reader。它在 `ExactObjectSnapshotSource` 上复用 `SimpleReaderWithDataSource`、列 seqnum/type 解析和 TombstoneData。Mixed Rewrite 则把同一 source 交给 `BlockDataReadNoCopy`，从而只保留一套 Snapshot/Tombstone 组装逻辑。共同约束为：
+
+- 只接受 Coordinator 已持久化为 `PINNED` 的 exact source Objects；
+- 只读 persisted Block，不加入事务 workspace 或表级 committed in-memory rows；
+- Tombstone 的收集、文件读取和可见性判断全部使用同一个 `source_snapshot_ts`；
+- 可把 `__mo_rowid` 作为内部列用于覆盖性 digest，但 Archive Payload 只写用户 schema；
+- Reader 的 filter 只作为安全的 metadata/block pruning 优化；生命周期列必须随 Batch 读取并由 Lifecycle 向量化计算最终谓词；
+- Context cancel、I/O deadline 或回调失败立即关闭 Reader/Batch，attempt 保持可协调状态，不自行释放 Snapshot 或删除可能已发布的 payload。
+
+禁止在长 Job 中保持普通 `Relation.BuildReaders` 所绑定的 SQL transaction。Coordinator 可以用短 snapshot handle 取得 schema、PartitionState 和 exact RelData，但实际 data scan 使用冻结的 `source_snapshot_ts` 和持久化 source identity；事务结束不等于 Snapshot 保护结束。
+
+Reader 资源所有权必须是显式的：
+
+- `ScanExactObjectSnapshot` 独占并最终关闭 Reader、DataSource 和可复用 read Batch；
+- `onBatch` 只借用 Batch 到回调返回，ArchiveSink 必须在回调内同步消费，或把需要的数据复制/落入受 quota 约束的 spill 后再返回；
+- Mixed `LoadNextBatch` 返回的 Batch、mask 和 release callback 由 RewriteHost 转交给 `DoMergeAndWrite`，release 在 ArchiveSink 与 mergesort 都不再访问该批次后执行且只执行一次；
+- cancel/error 不能绕过 release，也不能让异步上传继续引用已释放 Vector。
+
+Exact source set 有上限不等于 Tombstone 元数据天然有上限。当前 `PartitionState.CollectTombstoneObjects` 会枚举该表在 Snapshot 可见的全部 Tombstone Objects，再由 RowID ZoneMap 判断是否命中目标 Block。首个 GA 可以复用这条正确性路径，但在 Reader open 前必须把 tombstone object count/metadata bytes 纳入 Job/table hard budget；超限进入 `RESOURCE_CAPACITY_BLOCKED`，不能无界装入内存。以后增加按 source ObjectID/RowID prefix 的过滤 collector 只属于性能优化，不改变可见性语义。
+
+Mixed Object 的 `LifecycleRewriteHost.LoadNextBatch`：
+
+1. 按 exact Object 的原始 Block 顺序调用现有 `BlockDataReadNoCopy`；
+2. 得到未压缩原始 Batch 和该 Snapshot 的 `tombstone_mask`，保留 source block/row offset；
+3. 对生命周期列做向量化比较，得到 `predicate_expired_mask`；
+4. 计算 `expired_visible_mask = predicate_expired_mask AND NOT tombstone_mask`；
+5. TTL 将 `expired_visible_mask` 交给 `DiscardSink`；Archive 将同一批行交给 `ArchiveSink`；
+6. 计算 `rewrite_delete_mask = tombstone_mask OR expired_visible_mask`；
+7. 返回原始 Batch 和 `rewrite_delete_mask` 给 `DoMergeAndWrite`；
+8. `DoMergeAndWrite` 只对存活行排序、写新 ObjectIO，并按未压缩的 source block/row offset 建立 transfer map。
 
 所有 Sink 都是流式、有上限且可取消的。任一 Sink 失败，Job 不进入 `READY_TO_COMMIT`，Archive Dataset 不进入 `VERIFIED_NOT_PUBLISHED`。
+
+不能把步骤 1–8 改成“高层 Reader 输出可见行，再手工写 ObjectIO”。高层 Reader 已压缩 Tombstone 行；即使请求 `__mo_rowid` 可以推导部分映射，也需要重新实现排序后的目标位置、全删除 Block、spill、对象切分和 transfer staging，等价于复制一套 Merge。当前方案用一个很薄的 Host 保留原始行位置，把这些责任继续交给现有 mergesort。
 
 Job 在进入 `READY_TO_COMMIT` 前验证：
 
@@ -935,7 +1016,7 @@ TTL：
 
 Archive：
 
-- 即使整个对象过期，也要读取已经应用 tombstone 的逻辑行；
+- 即使整个对象过期，也要通过 `ScanExactObjectSnapshot` 读取已经应用 `source_snapshot_ts` Tombstone 的逻辑行；
 - 输出 Parquet 并校验后退休源对象；
 - 不是简单复制原 ObjectIO，因为归档格式、schema contract、加密、已删除行和长期兼容性不同。
 
@@ -945,7 +1026,8 @@ Archive：
 
 系统只读一次：
 
-- 过期行写 Archive/Discard 和依赖 delta；
+- `BlockDataReadNoCopy` 的同一个原始 Batch 同时派生 expired/live 两个互斥集合；
+- 过期可见行写 Archive/Discard 和依赖 delta；
 - 存活行写新 TAE Object；
 - 最终原子替换旧对象。
 
@@ -1811,7 +1893,8 @@ operational isolation saving: measurable but workload-dependent
 
 建议新增：
 
-- `pkg/vm/engine/tae/lifecycle`：RewriteHost、transaction entry、source validation；
+- `pkg/vm/engine/disttae` 的窄化 Lifecycle 文件：`ExactObjectSnapshotSource`、`ScanExactObjectSnapshot`、exact RelData 构造和 `LifecycleRewriteHost`；不改变普通 Relation/Reader API 语义；
+- TAE 现有 transaction-entry 组织下的 Lifecycle entry/source validation：消费版本化 `LifecycleCommitEntry`，不把 CN RewriteHost 下沉为第二套 TN Merge；
 - `pkg/lifecycle/catalog`：Policy/Binding/FeatureGuard/Job/Receipt/Collection/Manifest/AccessLease；
 - `pkg/lifecycle/ownership`：system-owned Attempt/Commit Control、Archive Cleanup Root、Owner Tombstone、Sweeper；
 - `pkg/lifecycle/scheduler`：indexer、scanner、coordinator、reconciler；
@@ -1824,10 +1907,12 @@ operational isolation saving: measurable but workload-dependent
 
 | 现有模块 | 改动 | 不改什么 |
 |---|---|---|
-| `tae/mergesort` | 必要时抽出可组合的小接口；优先零行为改动 | 排序、reshape、writer 和普通 Merge 调用语义 |
+| `disttae/readutil` | 增加 exact persisted RelData Snapshot source/scan 的窄接口，复用 RemoteDataSource/SimpleReader；明确不加入表级内存行 | 普通 `BuildReaders`、SQL scan 和 Data Branch `ScanSnapshotWithCurrentRanges` 语义 |
+| `tae/blockio` | Lifecycle 直接复用 `BlockDataReadNoCopy`；原则上零行为改动 | 普通 Block Reader、Tombstone 和 cache 语义 |
+| `tae/mergesort` | 以现有 Host 组合为首选；只有协议原型证明接口阻塞时才抽中性 `RewriteResult` | 排序、reshape、writer、transfer 和普通 Merge 调用语义 |
 | `tae/db/dispatcher` | 增加有租期 external reservation 和空表快速路径 | 普通 Merge 候选和优先级 |
 | `tae/rpc` | 现有 Precommit parser/iterator 增加 tagged Lifecycle Entry handler | MergeCommitEntry 语义和原请求 retry 链 |
-| `disttae` | 新 lifecycle relation/txn 调用 | 普通 DML/Merge API |
+| `disttae` | 新 lifecycle exact-reader/rewrite/txn 调用 | 普通 DML/Merge API |
 | Snapshot frontend | 增加 `kind='lifecycle'` 的系统管理、用户隐藏、table-only target 和 flush gate | 其他用户 Snapshot 语义 |
 | TaskService | 注册 lifecycle task code/runner | epoch 的通用语义 |
 | FileService | 不破坏 ObjectStorage；旁路增加 ArchiveStore | 活动 ObjectIO 读写 |
@@ -1897,8 +1982,9 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 6. direct-readable ArchiveStore 和 Restore staging/schema/publish；
 7. Backup/PITR/Snapshot/Clone/Branch/DR fail-closed；
 8. 仅 Binding 表的 Object Index generation/backfill/reconciliation/obsolete GC；
-9. oversize streaming、resource budget、scheduler、公平性和 SLO；
-10. audit/reconciliation 工具和 Runbook。
+9. exact-object Snapshot Reader、Mixed Block Reader/Mask、Reader 资源 Owner 和与 mergesort 的进程内适配；
+10. oversize streaming、resource budget、scheduler、公平性和 SLO；
+11. audit/reconciliation 工具和 Runbook。
 
 `RESTORE_REQUIRED_ARCHIVE` 另行增加 provider-specific ADR 和实现设计，不阻塞上述 Commercial GA 详细设计包。
 
@@ -1907,6 +1993,10 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 ### 22.1 正确性
 
 - 无过期、部分过期、全部过期；
+- exact-object Reader 只返回指定 persisted Objects；不得夹带表级 committed in-memory/workspace 行或当前 `Ranges()` 的新 Object；
+- Reader 在同一个 `source_snapshot_ts` 正确应用 in-memory/persisted Tombstone；`__mo_rowid` 只用于内部覆盖性证明，不进入 Archive 用户 schema；
+- Mixed Rewrite 的 `tombstone_mask`、`expired_visible_mask`、`rewrite_delete_mask` 三者关系和原始 block/row offset transfer map；
+- Reader callback 借用 Batch、Mixed release callback 和 ArchiveSink 同步/复制边界在 success/error/cancel 下均恰好释放一次，无异步 Vector 悬挂；
 - lifecycle 列是/不是 sort key；
 - NOT NULL admission；全 NULL/部分 NULL schema 或坏数据必须拒绝/fail closed；
 - 时区边界、DST、闰日、月末、epoch 单位/溢出、精度、cutoff 等值；
@@ -1929,6 +2019,7 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 - reservation 到期、TN restart；
 - 用户 Snapshot/PITR/Backup/Clone/Branch/DR 创建与 Lifecycle bind 首次并发；
 - Lifecycle Snapshot Catalog commit、GC metadata load、旧 GC cycle 和普通 Merge 同时推进；
+- exact Reader 读取期间普通 Merge 替换 source Object：旧文件仍可读，但 final exact-object CAS 必须整体 abort；
 - Restore access lease 与 owner DROP/`DELETE_PENDING` 同时推进。
 
 ### 22.3 Crash point
@@ -1937,6 +2028,7 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 
 - Lifecycle Snapshot/Job/Attempt Control/`REGISTERED` Root 事务前后；
 - flush gate、GC metadata-visible gate 和旧 GC cycle drain 前后；
+- exact Reader open、Block Read、Batch callback、Reader Close 和 Mixed Sink 分流前后；
 - Root `REGISTERED -> UPLOADING` 后、第一次 PUT 前后；
 - 每个 payload multipart；
 - payload complete/verify；
@@ -1963,6 +2055,8 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 - 1 TiB/10 TiB 表，32 B/256 B/4 KiB 行宽；
 - 10 TiB 表持续普通 Merge 时的 `snapshot_exclusive_retained_bytes`、硬限额 fence 与明确结果后释放；
 - whole/mixed `0%/50%/100%`，tombstone `0%/1%/20%`；
+- Whole Archive exact Reader 与 Mixed Block Reader 分别统计 source read bytes，证明 Mixed 单次读取且没有误扫全表；
+- 大量 Tombstone Objects 时 metadata count/bytes hard limit 生效，超限进入 `RESOURCE_CAPACITY_BLOCKED` 而不是 OOM 或无界重试；
 - 当前版本最大 rows/object、blocks/object、bytes/object、单 block varlen、几乎全存活 Mixed rewrite、spill/file hard limit；
 - Job 拆分和多租户/TTL/Restore 公平性；
 - table/database/account/cluster `1/2/4/8` child 并发与 7 天 chaos/soak；
@@ -1989,6 +2083,11 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 | 几十万普通表进入日常 Lifecycle 扫描 | Catalog/调度负载污染普通业务 | 只扫描显式 Binding registry；未绑定表不建 Object Index、不读 footer |
 | 1000 张 TB 表产生数千万索引行 | metadata 膨胀和调度退化 | rows/bytes/generation hard cap、分页、obsolete GC、千万/亿级基准 |
 | Mixed Object 比例高 | 重写放大大 | index dry-run、sort key 建议、bounded job |
+| 误用普通 Reader/当前 Ranges | Job 夹带非 source Object 或表级内存行，Archive/retirement 集合不一致 | 专用 exact persisted RelData Reader；禁止 current-range fallback；覆盖性 digest |
+| 高层 Reader 直接驱动 Mixed rewrite | Tombstone 压缩后原始 row offset 丢失，transfer 错误或被迫复制 Merge | Mixed 固定使用 `BlockDataReadNoCopy + DoMergeAndWrite` |
+| 长 SQL transaction 承载归档扫描 | 事务状态和超时不可控，失败边界与 Snapshot Owner 混淆 | 显式 Snapshot TS Reader + system Lifecycle Snapshot；只有控制面/最终提交是短事务 |
+| Reader callback/release 所有权不清 | use-after-free、重复释放或 Batch/Vector 泄漏 | callback 借用契约；同步消费或有界复制/spill；release exactly once fault test |
+| exact Job 遇到全表大量 Tombstone metadata | CN 内存和 Tombstone I/O 仍可能失控 | open 前 count/bytes hard budget；超限 fail closed；后续可加 RowID-prefix collector 优化 |
 | 与 Merge/高频更新持续冲突 | 重复导出、永久饥饿 | reservation + CAS/retry；到阈值进入 `CONFLICT_BLOCKED`，不承诺 Lag SLO |
 | 慢 copy 遇到 GC | 源对象消失 | system Lifecycle Snapshot + flush gate + GC metadata-visible/old-cycle-drained gate |
 | 当前 table Snapshot 被扩大到同 DB | unrelated 表旧版本大量保留 | lifecycle kind 独立 table-only loader；现有 user/branch 行为不改 |
@@ -2015,18 +2114,19 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 1. 不使用 SQL Partition 作为生命周期底座；
 2. 不实现生命周期 `ONLINE_COLD` 状态；
 3. 不修改普通 Merge 策略；
-4. 不新增 Merge Engine；Lifecycle Rewrite Executor 可重用流式排序/写对象原语，但使用独立 Host 和 tagged 事务 Entry；
-5. 只为显式 Binding 表建立增量 Object Index，代替每日全库数据扫描；
-6. 以 bounded exact object set 作为原子 Job；单个超限 Object 使用 streaming，不假装还能拆 Object；
-7. 首个 GA 用与现有 user/branch 行为隔离的 `kind='lifecycle'` table-only Snapshot 保护精确 physical table generation，通过 flush + GC metadata-visible/old-cycle-drained gate 后才选择对象；不新增 exact refs；
-8. Archive 用 typed Parquet/ZSTD 和独立 Manifest，不复制原 ObjectIO 充当长期格式；
-9. 首个 GA 拒绝隐藏普通/唯一索引表、CDC、FK、Publication、插件、ALTER COPY 和 archive-unaware Backup/DR；table 依赖 CAS logical-owner Guard，TAE commit CAS physical source identity，account/database 保护 CAS scope Guard；
-10. 每个 child 创建 system Attempt/Commit Control；Archive 在第一次外部 PUT 前另有 Cleanup Root；DROP 写 owner tombstone并异步级联清理；
-11. Dataset 从属于源 table/account；使用 `DELETE_PENDING`、Payload 不可逆状态机和 exact-identity delete；不包含 Legal Hold/WORM；
-12. Profile 的 namespace identity 不可变且版本化，credential rotation 与存储身份分离；
-13. 首个 GA 必须包含 direct-readable archive 和恢复到新表；restore-required deep archive 是 Optional Gate F，不阻塞 GA；
-14. 首个 release profile 同表/库/账户/集群 child 并发从 `1/2/4/8` 起步，最多认证 1000 张绑定表，并同时执行 Object Index、backlog、retained bytes 和外部对象硬上限；
-15. 按 capability gate 实现，完成 Gate A–E 以及 `50 -> 200 -> 500 -> 1000` 分阶段认证后才能称为 Commercial GA；Optional Gate F 通过后才能开放对应 Deep Archive Profile。
+4. 不自建 ObjectIO Scanner：Whole Archive/Export-only 用 exact-object Snapshot Reader；Mixed 用 Reader 下层 `BlockDataReadNoCopy` 保留原始行偏移；
+5. 不新增 Merge Engine；Lifecycle Rewrite Executor 可重用流式排序/写对象/transfer 原语，但使用独立薄 Host 和 tagged 事务 Entry；
+6. 只为显式 Binding 表建立增量 Object Index，代替每日全库数据扫描；Reader 只执行已冻结的 bounded Job，不承担到期发现；
+7. 以 bounded exact object set 作为原子 Job；单个超限 Object 使用 streaming，不假装还能拆 Object；
+8. 首个 GA 用与现有 user/branch 行为隔离的 `kind='lifecycle'` table-only Snapshot 保护精确 physical table generation，通过 flush + GC metadata-visible/old-cycle-drained gate 后才选择对象；不新增 exact refs；
+9. Archive 用 typed Parquet/ZSTD 和独立 Manifest，不复制原 ObjectIO 充当长期格式；
+10. 首个 GA 拒绝隐藏普通/唯一索引表、CDC、FK、Publication、插件、ALTER COPY 和 archive-unaware Backup/DR；table 依赖 CAS logical-owner Guard，TAE commit CAS physical source identity，account/database 保护 CAS scope Guard；
+11. 每个 child 创建 system Attempt/Commit Control；Archive 在第一次外部 PUT 前另有 Cleanup Root；DROP 写 owner tombstone并异步级联清理；
+12. Dataset 从属于源 table/account；使用 `DELETE_PENDING`、Payload 不可逆状态机和 exact-identity delete；不包含 Legal Hold/WORM；
+13. Profile 的 namespace identity 不可变且版本化，credential rotation 与存储身份分离；
+14. 首个 GA 必须包含 direct-readable archive 和恢复到新表；restore-required deep archive 是 Optional Gate F，不阻塞 GA；
+15. 首个 release profile 同表/库/账户/集群 child 并发从 `1/2/4/8` 起步，最多认证 1000 张绑定表，并同时执行 Object Index、backlog、retained bytes 和外部对象硬上限；
+16. 按 capability gate 实现，完成 Gate A–E 以及 `50 -> 200 -> 500 -> 1000` 分阶段认证后才能称为 Commercial GA；Optional Gate F 通过后才能开放对应 Deep Archive Profile。
 
 这套方案的主要价值是：它把 Feature 加在 TAE Object 生命周期之上，最大限度隔离普通 Merge；同时没有用“隔离”换取数据正确性漏洞。即使客户已经把活动数据放在 S3/OSS/COS，MO 仍能通过缩小活动数据集、减少后台重写和查询面，并在 provider 支持时使用更低价归档类别，实现可测量、可解释的降本。
 
@@ -2057,6 +2157,7 @@ Gate 是内部实现和验收顺序，不是对外永久阉割的产品 Phase。
 | Restore staging/schema/atomic publish | 17 |
 | oversize single-object streaming | 9.2、22.4 |
 | 高频冲突进入 `CONFLICT_BLOCKED` | 9.3、14.3、18.2 |
+| exact-object Snapshot Reader、Mixed raw Batch/mask 与无长 SQL 事务 | 5.1、5.2、9.3、10、20、22 |
 | SLO、公平性和真实 provider drill | 19.3、21、22 |
 | 500～1000 表认证、1/10 TiB 与 staged rollout | 1.1、9、21.1、22.4 |
 
