@@ -173,6 +173,13 @@ type Session struct {
 	// tStmt is used only to record the StatementInfo
 	// QueryResult please use feSessionImpl.stmtProfile instead.
 	tStmt *motrace.StatementInfo
+	// responseAccounting keeps failed statement completion open until the
+	// terminal protocol response has actually been written. It is owned by the
+	// routine goroutine and deliberately does not participate in session locks.
+	responseAccounting     bool
+	pendingStatementFailed bool
+	pendingStatementError  error
+	responseOutputWait     *responseOutputWaitTracker
 
 	ast tree.Statement
 
@@ -194,8 +201,6 @@ type Session struct {
 	sentRows atomic.Int64
 	// writeBytes count of bytes send back to client.
 	writeBytes int
-	// writeCsvBytes is used to record bytes sent by `select ... into 'file.csv'` for motrace.StatementInfo
-	writeCsvBytes atomic.Int64
 	// packetCounter count the tcp packet send to client.
 	packetCounter atomic.Int64
 	// payloadCounter count the payload send by `load data LOCAL infile`
@@ -541,19 +546,22 @@ func (ses *Session) CountPayload(length int) {
 	ses.payloadCounter += int64(length)
 }
 
-// CountFlushPackage count the raw conn flush op.
+// CountFlushPackage records MySQL protocol packets whose bytes were fully
+// accepted by the connection writer.
 func (ses *Session) CountFlushPackage(delta int64) {
 	if ses == nil {
 		return
 	}
 	ses.packetCounter.Add(delta)
 }
+
 func (ses *Session) GetFlushPacketCnt() int64 {
 	if ses == nil {
 		return 0
 	}
 	return ses.packetCounter.Load()
 }
+
 func (ses *Session) ResetPacketCounter() {
 	if ses == nil {
 		return
@@ -774,6 +782,7 @@ func NewSession(
 		getPu(ses.GetService()).GetTaskService())
 
 	ses.proc.Base.Lim.Size = pu.SV.ProcessLimitationSize
+	ses.proc.Base.Lim.SpillSize = pu.SV.ProcessLimitationSpillSize
 	ses.proc.Base.Lim.BatchRows = pu.SV.ProcessLimitationBatchRows
 	ses.proc.Base.Lim.MaxMsgSize = pu.SV.MaxMessageSize
 	ses.proc.Base.Lim.PartitionRows = pu.SV.ProcessLimitationPartitionRows
@@ -1080,6 +1089,7 @@ func (ses *Session) InitBackExec(txnOp TxnOperator, db string, callBack outputCa
 	be.backSes.upstream = ses
 	if len(opts) > 0 && opts[0] != nil {
 		be.backSes.fromRealUser = opts[0].fromRealUser
+		be.backSes.forcePessimisticRC = opts[0].forcePessimisticRC
 	}
 	return be
 }
@@ -2006,7 +2016,11 @@ func (ses *Session) reset(ctx context.Context, prev *Session) error {
 	for k, v := range prev.label {
 		ses.label[k] = v
 	}
-	*ses.timeZone = *prev.timeZone
+	// Callers treat time.Location values as immutable and share them by pointer.
+	// New sessions default to time.Local, so copying into the pointed value
+	// would mutate the process-wide location while loggers and other sessions
+	// read it.
+	ses.timeZone = prev.timeZone
 	ses.uuid = prev.uuid
 	ses.fromRealUser = prev.fromRealUser
 	ses.rm = prev.rm

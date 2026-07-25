@@ -76,6 +76,16 @@ func TestNewRoutineGeneratesTraceContext(t *testing.T) {
 	require.False(t, spanContext.IsEmpty())
 }
 
+func TestRequestFinalizationContextPrefersExecutionContext(t *testing.T) {
+	type contextKey struct{}
+	fallback := context.WithValue(context.Background(), contextKey{}, "fallback")
+	enriched := context.WithValue(context.Background(), contextKey{}, "enriched")
+
+	require.Same(t, enriched, requestFinalizationContext(&ExecCtx{reqCtx: enriched}, fallback))
+	require.Same(t, fallback, requestFinalizationContext(&ExecCtx{}, fallback))
+	require.Same(t, fallback, requestFinalizationContext(nil, fallback))
+}
+
 func Test_inc_dec(t *testing.T) {
 	rt := &Routine{}
 	counter := int32(0)
@@ -339,6 +349,8 @@ func TestMigrateConnectionFromPreservesLastAffectedRows(t *testing.T) {
 func TestRoutineResetSessionKeepsReplacementRegistered(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	oldSession := newTestSession(t, ctrl)
+	timeZone := time.FixedZone("reset-session-test", 8*60*60)
+	oldSession.SetTimeZone(timeZone)
 	rm, err := NewRoutineManager(context.Background(), "")
 	require.NoError(t, err)
 	rm.sessionManager = queryservice.NewSessionManager()
@@ -362,6 +374,7 @@ func TestRoutineResetSessionKeepsReplacementRegistered(t *testing.T) {
 
 	require.NotSame(t, oldSession, newSession)
 	require.Equal(t, oldSession.GetUUIDString(), newSession.GetUUIDString())
+	require.Same(t, timeZone, newSession.GetTimeZone())
 
 	registered := rm.sessionManager.GetAllSessions()
 	require.Len(t, registered, 1, "successful reset must keep the replacement session registered")

@@ -69,7 +69,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/multi_update"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/output"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/sample"
-	"github.com/matrixorigin/matrixone/pkg/sql/colexec/shuffle"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/source"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/table_scan"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/value_scan"
@@ -204,7 +203,7 @@ func (c *Compile) GetPlan() *plan.Plan {
 	return c.pn
 }
 
-func (c *Compile) Reset(proc *process.Process, startAt time.Time, fill func(*batch.Batch, *perfcounter.CounterSet) error, sql string) {
+func (c *Compile) Reset(proc *process.Process, startAt time.Time, fill func(*batch.Batch, *perfcounter.CounterSet) error, sql string) error {
 	// clean up the process for a new query.
 	proc.ResetQueryContext()
 	proc.ResetCloneTxnOperator()
@@ -218,8 +217,14 @@ func (c *Compile) Reset(proc *process.Process, startAt time.Time, fill func(*bat
 	if c.lockMeta != nil {
 		c.lockMeta.reset(c.proc)
 	}
+	rejectZeroTemporal, err := util.RejectZeroTemporalWritePolicy(proc)
+	if err != nil {
+		return err
+	}
 	for _, s := range c.scopes {
-		s.Reset(c)
+		if err = s.reset(c, rejectZeroTemporal); err != nil {
+			return err
+		}
 	}
 
 	for _, e := range c.filterExprExes {
@@ -251,6 +256,7 @@ func (c *Compile) Reset(proc *process.Process, startAt time.Time, fill func(*bat
 	if c.queryPlacement.Reason != "" {
 		c.recordQuerySchedulingTrace(c.queryPlacement)
 	}
+	return nil
 }
 
 func UpdateScopeTxnOffset(scope *Scope, txnOffset int) {
@@ -303,6 +309,7 @@ func (c *Compile) clear() {
 	c.startAt = time.Time{}
 	c.needLockMeta = false
 	c.isInternal = false
+	c.resourceAttemptOwnerEligible = false
 	c.isPrepare = false
 	c.hasMergeOp = false
 	c.needBlock = false
@@ -1518,12 +1525,14 @@ func StrictSqlMode(proc *process.Process) (error, bool) {
 	if err != nil {
 		return err, false
 	}
-	if modeStr, ok := mode.(string); ok {
-		if strings.Contains(modeStr, "STRICT_TRANS_TABLES") || strings.Contains(modeStr, "STRICT_ALL_TABLES") {
-			return nil, true
-		}
+	return nil, process.IsStrictMode(mode)
+}
+
+func effectiveExternalStrictMode(proc *process.Process, param *tree.ExternParam, strict bool) bool {
+	if !strict || proc == nil || param == nil || param.ExternType != int32(plan.ExternType_LOAD) {
+		return strict
 	}
-	return nil, false
+	return !proc.GetStmtProfile().GetStatementIgnore()
 }
 
 func (c *Compile) getExternParam(proc *process.Process, externScan *plan.ExternScan, createsql string) (*tree.ExternParam, error) {
@@ -1854,6 +1863,7 @@ func (c *Compile) compileExternScanWithPlanNodeID(node *plan.Node, planNodeID in
 		return nil, err
 	}
 
+	strictSqlMode = effectiveExternalStrictMode(c.proc, param, strictSqlMode)
 	if param.ScanType == tree.INLINE {
 		return c.compileExternValueScan(node, param, strictSqlMode)
 	}
@@ -3591,48 +3601,10 @@ func (c *Compile) compileShuffleJoin(node, left, right *plan.Node, leftscopes, r
 	if len(stageNodes) == 1 && len(leftscopes) == 1 && len(rightscopes) == 1 &&
 		sameExecutionNode(leftscopes[0].NodeInfo, rightscopes[0].NodeInfo) &&
 		leftscopes[0].NodeInfo.Mcpu == int(left.Stats.Dop) &&
-		rightscopes[0].NodeInfo.Mcpu == int(right.Stats.Dop) &&
-		!localShuffleJoinWouldNest(node, leftscopes[0], rightscopes[0]) {
+		rightscopes[0].NodeInfo.Mcpu == int(right.Stats.Dop) {
 		return c.compileLocalShuffleJoin(node, left, right, leftscopes, rightscopes)
 	}
 	return c.compileDistributedShuffleJoin(node, left, right, leftscopes, rightscopes)
-}
-
-// A fixed-bucket local shuffle is implemented by duplicating one pull-based
-// operator tree into DOP workers that share a bounded pool. Stacking another
-// fixed-bucket shuffle in the same tree can form a wait cycle across pools:
-// an outer writer waits for a worker that is waiting for every inner writer,
-// including the outer writer's child. Materializing the second shuffle into
-// producer and consumer scopes keeps the bounded edges in an acyclic graph.
-func localShuffleJoinWouldNest(node *plan.Node, probe, build *Scope) bool {
-	if scopeHasFixedBucketShuffle(build) {
-		return true
-	}
-	return node.Stats.HashmapStats.ShuffleMethod != plan.ShuffleMethod_Reuse &&
-		scopeHasFixedBucketShuffle(probe)
-}
-
-func scopeHasFixedBucketShuffle(scope *Scope) bool {
-	if scope == nil {
-		return false
-	}
-	return operatorTreeHasFixedBucketShuffle(scope.RootOp)
-}
-
-func operatorTreeHasFixedBucketShuffle(op vm.Operator) bool {
-	if op == nil {
-		return false
-	}
-	if shuffleOp, ok := op.(*shuffle.Shuffle); ok && !shuffleOp.DrainAllBuckets {
-		return true
-	}
-	base := op.GetOperatorBase()
-	for i := 0; i < base.NumChildren(); i++ {
-		if operatorTreeHasFixedBucketShuffle(base.GetChildren(i)) {
-			return true
-		}
-	}
-	return false
 }
 
 // canReuseDistributedShuffleJoin reports whether probeScopes already use the
@@ -4572,8 +4544,7 @@ func (c *Compile) compileShuffleGroup(node *plan.Node, inputSS []*Scope, nodes [
 		c.anal.isFirst = false
 		return inputSS
 	}
-	if len(stageNodes) == 1 && len(inputSS) == 1 && inputSS[0].NodeInfo.Mcpu > 1 &&
-		inputSS[0].NodeInfo.Mcpu == int(node.Stats.Dop) && !scopeHasFixedBucketShuffle(inputSS[0]) {
+	if len(stageNodes) == 1 && len(inputSS) == 1 && inputSS[0].NodeInfo.Mcpu > 1 && inputSS[0].NodeInfo.Mcpu == int(node.Stats.Dop) {
 		return c.compileLocalShuffleGroup(node, inputSS, nodes)
 	}
 
@@ -6328,6 +6299,13 @@ func (c *Compile) fatalLog(retry int, err error) {
 
 func (c *Compile) SetOriginSQL(sql string) {
 	c.originSQL = sql
+}
+
+// SetResourceAttemptOwnerEligible marks this Compile as the top-level
+// statement candidate allowed to publish retry generations. The statement
+// resource root enforces that at most one eligible Compile becomes the owner.
+func (c *Compile) SetResourceAttemptOwnerEligible() {
+	c.resourceAttemptOwnerEligible = true
 }
 
 func (c *Compile) SetBuildPlanFunc(buildPlanFunc func(ctx context.Context) (*plan2.Plan, error)) {
