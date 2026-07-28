@@ -11,7 +11,8 @@
 3. **Archive Dataset**：一次成功 Archive child 发布的不可变数据集。
 4. **Lifecycle Job**：系统执行记录，可查询、暂停、重试或重新评估。
 
-不对外暴露 Object Index、Attempt Control、Cleanup Root 和 Receipt 的写接口。它们只通过 `SHOW`/系统视图提供诊断字段。
+不对外暴露 Discovery scan state/Candidate、Attempt Control、Cleanup Root 和 Receipt
+的写接口。它们只通过 `SHOW`/系统视图提供诊断字段。
 
 ## 2. SQL 语法
 
@@ -246,7 +247,8 @@ Binding 只允许：
 - TableDef 能解析实际 delete key；
 - 没有不支持依赖；
 - 当前没有用户 Snapshot/PITR/Backup/Clone/Branch 操作；
-- 集群 capability 满足至少 Index/Dry-run；真正退休还需 Strict Retire capability。
+- 集群 capability 满足至少 Discovery/Dry-run；真正退休还需
+  `OpCommitLifecycle`/reservation/protection capability。
 
 以下表拒绝：
 
@@ -333,12 +335,14 @@ REGISTERED
 READING
 UPLOADING
 VERIFIED
+REWRITING
 FINALIZING
 COMMIT_UNKNOWN
 COMMITTED
 RETRYABLE
 ABORTED
 MIXED_LAYOUT_BLOCKED
+RESOURCE_BLOCKED
 CONFLICT_BLOCKED
 MANUAL_RECONCILE_REQUIRED
 ```
@@ -377,7 +381,8 @@ Manifest、Root 和系统表不得向普通用户显示 credential、签名 URL 
 | `LIFECYCLE_OBJECT_CHANGED` | Merge/DDL 已替换 exact Object，需要 replan |
 | `LIFECYCLE_GUARD_CHANGED` | Binding/schema/dependency generation 变化 |
 | `LIFECYCLE_TOMBSTONE_CHANGED` | Whole Archive 导出后出现新 DELETE/UPDATE |
-| `LIFECYCLE_LOCK_TIMEOUT` | final table lock 超时 |
+| `LIFECYCLE_RESERVATION_CONFLICT` | source Object 已被普通 Merge 或另一 attempt 占用 |
+| `LIFECYCLE_PROTECTION_EXPIRED` | GC protection 丢失或过期，必须 abort/replan |
 | `LIFECYCLE_PROVIDER_RETRYABLE` | Provider 可重试错误 |
 | `LIFECYCLE_TXN_RETRYABLE` | 正常事务冲突或 `ErrTAENeedRetry` |
 
@@ -387,11 +392,13 @@ Manifest、Root 和系统表不得向普通用户显示 credential、签名 URL 
 
 | Symbolic code | 结果 |
 |---|---|
-| `LIFECYCLE_MIXED_BUDGET_EXCEEDED` | `MIXED_LAYOUT_BLOCKED` |
+| `LIFECYCLE_SMALL_MIXED_BUDGET_EXCEEDED` | 不删除，改由 Lifecycle Rewrite 重新规划 |
+| `LIFECYCLE_REWRITE_RESOURCE_EXCEEDED` | `RESOURCE_BLOCKED` |
+| `LIFECYCLE_REWRITE_AMPLIFICATION_EXCEEDED` | `MIXED_LAYOUT_BLOCKED` |
 | `LIFECYCLE_CONFLICT_AGE_EXCEEDED` | `CONFLICT_BLOCKED` |
 | `LIFECYCLE_CAPABILITY_NOT_READY` | 只允许 Dry-run/Export-only |
 | `LIFECYCLE_UNSUPPORTED_DEPENDENCY` | Binding/依赖创建失败 |
-| `LIFECYCLE_INDEX_NOT_READY` | 暂停调度 |
+| `LIFECYCLE_DISCOVERY_NOT_READY` | 暂停调度 |
 | `LIFECYCLE_QUOTA_EXCEEDED` | 延迟执行，不退休源数据 |
 
 ### 7.3 数据或外部依赖错误
@@ -462,7 +469,10 @@ SHOW LIFECYCLE FOR TABLE prod.events;
 
 - 90 天前的 Whole Object 逐批归档并从活动表退休；
 - cutoff 边界的少量 Mixed 行在预算内走普通 DELETE；
-- 乱序导致的大 Mixed Object 显示为 `MIXED_LAYOUT_BLOCKED`；
+- 中/大 Mixed 由独立 Lifecycle Rewrite 一次归档过期行、重写存活行并退休旧
+  Object；
+- 只有 Rewrite 放大或资源超过 release profile 时才显示
+  `MIXED_LAYOUT_BLOCKED`/`RESOURCE_BLOCKED`；
 - 调查历史时：
 
 ```sql

@@ -1,7 +1,8 @@
 # Exact Reader、Archive 格式与校验详细设计
 
-> 本文唯一负责 Exact Reader 接口、Batch 所有权、Archive Writer、Parquet/ZSTD 映射、
-> Manifest、content root 和 Provider 全量 readback。
+> 本文唯一负责 Exact Reader 接口、Rewrite 同步 split sink 的 Batch 所有权、
+> Archive Writer、Parquet/ZSTD 映射、Manifest、content root 和 Provider 全量
+> readback。
 
 ## 1. 目标
 
@@ -12,6 +13,7 @@ Lifecycle Reader 必须同时满足：
 - 在一个固定事务 Snapshot 上输出逻辑可见行；
 - 不把表级 in-memory rows 混入；
 - 支持 Archive 业务列和 Mixed DELETE control 列；
+- 支持 Mixed Rewrite 单次读取时同步输出 expired/live 两个逻辑集合；
 - 能证明完整读到了所有请求 Object/Block；
 - 串行、流式、有背压、有内存上限；
 - 任何短读、Object missing、checksum error、cancel 都失败；
@@ -246,6 +248,29 @@ Consumer：
 - 不调用 Batch.Clean；
 - 不修改 RowID/delete key vector。
 
+### 7.1 Rewrite split consumer
+
+中/大 Mixed 不通过 `ScanLifecycleExpired` 再二次读取 live rows。05 中的
+`LifecycleRewriteHost.LoadNextBatch` 对同一个 borrowed Batch 计算两个互斥集合：
+
+```text
+snapshot_deleted
+expired_visible
+live_visible
+```
+
+并在返回前同步完成：
+
+```text
+expired_visible -> Archive Writer（Archive 模式）或 discard（TTL）
+snapshot_deleted UNION expired_visible -> mergesort delete bitmap
+live_visible -> existing DoMergeAndWrite
+```
+
+split consumer 继承本节全部 exactly-once 规则。Archive Writer、root accumulator
+和 deletes bitmap 都不能在 callback 返回后保留 borrowed Vector 指针。每个物理行
+只能属于上述三个集合之一。
+
 默认：
 
 ```text
@@ -294,9 +319,13 @@ AND source ScanReport/content root冻结
 ```
 
 此后立即结束只读事务，再执行Provider full readback和Manifest PUT；这些步骤不能继续
-访问源TAE。最终Strict CAS仍可能因Merge/DML变化而abort。这样避免把远端GET校验时间
-算进source Snapshot pin。Mixed Archive不能采用该优化，因为Reader和DELETE必须保留
-同一个writable SI事务。
+访问源TAE。最终`OpCommitLifecycle`仍可能因Object/Tombstone变化而abort。这样避免把
+远端GET校验时间算进source Snapshot pin。
+
+小 Mixed Archive 不能采用该优化，因为 Reader 和 `Relation.Delete` 必须保留同一个
+writable SI 事务。Mixed Rewrite 不持有长时间 writable transaction；它使用固定
+`source_snapshot_ts`、exact source reservation 和 GC SyncProtection 完成 build，
+再进入短 final transaction。protection 失效时必须丢弃 staging 并 replan。
 
 ## 9. Canonical row order
 
@@ -311,6 +340,42 @@ Object ID ascending
 ```
 
 为每个选中行分配从 0 开始的 `dataset_row_ordinal`。ordinal 只进 hash/Manifest row-group range，不作为用户列写入 Payload。
+
+Rewrite 的 Archive ordinal 只覆盖 `expired_visible`。`live_visible` 继续按表的物理
+sort/cluster key 进入现有 mergesort；不能为了 Lifecycle content root 改变新 TAE
+Object 的排序语义。
+
+### 9.1 Rewrite callback 交错与 canonical substream
+
+`DoMergeAndWrite`可能按sort merge进度交错调用不同source Object的
+`LoadNextBatch`。callback到达顺序不是Archive canonical顺序，不能直接追加到一个
+全局Writer。
+
+Rewrite Archive Sink按`source_object_ordinal`分片：
+
+```text
+source object ordinal
+  -> block ordinal
+  -> physical row offset
+  -> expired visible rows only
+```
+
+规则：
+
+- 每个source substream内部必须按block/row递增；
+- callback只同步写入对应substream，返回后不保留borrowed Vector；
+- substream可以产生多个Parquet Payload，payload ordinal包含source ordinal和局部
+  ordinal；
+- Manifest按source Object ID顺序拼接substream；
+- global dataset row ordinal由各substream verified row count的前缀和计算，不写业务
+  列；
+- content root先计算每个source subroot，再按source Object ID组合；
+- callback交错、Batch大小、Parquet文件切分和CN调度不能改变最终root。
+
+若当前mergesort不能保证“同一source内部LoadNextBatch按block/row递增”，substream
+必须先写受控本地加密spill，并按source/block/row做有界外排；不能使用callback顺序。
+所有substream共享一个aggregate memory/file-handle semaphore，不能按source数线性
+放大独立128MiB buffer。
 
 ## 10. Canonical value encoding
 
@@ -672,7 +737,12 @@ Manifest `encryption` 固定保存：
 - 每个 Payload/Manifest 的 provider encryption result 进入 Root Object 诊断字段或 Manifest；
 - GET/readback/Restore 必须校验冻结的 encryption digest，不能静默降级为无加密写；
 - HTTP、跳过证书校验、无法确认服务端加密的 provider 配置不允许用于 GA Archive；
-- 本地 Mixed/Restore spill 使用 CN 受控临时加密，密钥不持久化，文件由 attempt Owner 清理。
+- 本地 Mixed/Rewrite/Restore spill 使用 CN 受控临时加密，密钥不持久化。目录名包含
+  CN boot ID、attempt ID和executor epoch；正常退出由attempt executor exactly-once
+  清理，CN crash后由startup/periodic local janitor清理旧boot ID目录。janitor只处理
+  不属于当前boot/active attempt且超过I/O quiescence的目录，不与活executor竞争。
+- 每CN spill总bytes/目录数有hard limit；达到上限停止新Reader/Rewrite，不依赖磁盘
+  写满触发失败。
 
 如果未来增加客户端 envelope encryption，必须升级 Manifest version、定义 data-key
 生命周期和 Restore/Purge 协议，不能复用本节字段假装兼容。
@@ -761,6 +831,9 @@ Binding ACTIVE 时首个 GA拒绝 schema change，因此一个 Dataset 内只有
 ```text
 Reader Batch             <= 64 MiB
 Parquet encoding buffers <= 128 MiB
+Rewrite substream buffers<= 128 MiB aggregate
+Rewrite open substreams  <= source Object hard limit
+Rewrite local spill      <= release profile
 Merkle accumulator       <= 64 levels
 Manifest in memory       <= 16 MiB
 in-flight multipart      <= 4 parts
@@ -779,6 +852,11 @@ Reader unit：
 - 排除 in-memory rows；
 - Snapshot Tombstone；
 - Mixed cutoff；
+- Rewrite split 三集合互斥、完备和单次消费；
+- expired Archive sink 与 live mergesort sink 任一失败时 exactly-once release；
+- source callback交错和Batch/file切分变化时substream root不变；
+- 单source内部乱序时spill排序，或P0证明该路径不可达；
+- spill error/cancel/panic、CN crash和新boot janitor exactly-once清理；
 - hidden RowID/fake PK projection；
 - empty complete vs empty short read；
 - callback error/panic/cancel；

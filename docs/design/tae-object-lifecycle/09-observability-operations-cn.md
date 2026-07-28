@@ -136,7 +136,8 @@ lifecycle column
 action duration/retention
 profile name/version/namespace
 schema/physical generation
-index generation/state/watermark/lag
+discovery cycle/state/cursor/watermark/lag
+candidate rows/bytes/backpressure
 next scan
 active child/attempt/epoch/state
 whole due objects/bytes
@@ -157,7 +158,11 @@ evaluation time/cutoff
 source Object count/bytes/digest short form
 snapshot TS
 executor CN/epoch/lease expiry
-rows read/selected/deleted
+execution path: WHOLE / SMALL_MIXED_DELETE / MIXED_REWRITE
+rows read/expired/live/deleted
+live staging Object count/bytes
+transfer entries/booking files/bytes
+reservation/protection status and expiry
 payload count/bytes
 retry/conflict age
 final txn ID/status
@@ -214,16 +219,18 @@ last error
 mo_lifecycle_
 ```
 
-### 5.1 Binding/Index
+### 5.1 Binding/Discovery
 
 ```text
 bindings{state,mode}
-index_rows{state}
-index_bytes
-index_backfill_seconds
-index_catchup_lag_seconds
-index_obsolete_rows
-index_metadata_invalid_total{reason}
+discovery_cycles{state}
+discovery_page_seconds
+discovery_cursor_age_seconds
+discovery_collect_lag_seconds
+candidate_rows{state,class}
+candidate_bytes{state,class}
+candidate_backpressure{scope}
+discovery_metadata_invalid_total{reason}
 policy_scan_seconds
 policy_scan_candidates{class}
 ```
@@ -375,17 +382,20 @@ error code
 
 ```text
 LifecycleChild
-  IndexValidate
+  DiscoveryRevalidate
+  SourceReservation
+  SourceProtection
   ExactReader
   ArchivePayload[n]
     Put
     Readback
+  RewriteLiveObject[n]
+  TransferBooking
   Manifest
   RootFinalizing
   FinalTxn
-    TableLock
     CatalogCAS
-    StrictPrepare / RelationDelete
+    OpCommitLifecycle / RelationDelete
     Commit
   Reconcile
 ```
@@ -402,7 +412,9 @@ Provider object ordinal可以span attribute，full key不进入普通trace。
 - Dataset PUBLISHED无Root；
 - Root PUBLISHED无Dataset且owner未DROP；
 - DELETING出现新lease；
-- Strict protocol unknown被跳过/提交；
+- 未知/不支持的`OpCommitLifecycle`协议被跳过或当普通Merge提交；
+- Rewrite row-conservation/transfer root不匹配；
+- protection失效后仍成功退休source；
 - staging上传发生在Root创建前；
 - activity retired但Archive未VERIFIED；
 - invariant checker failure。
@@ -414,6 +426,7 @@ Provider object ordinal可以span attribute，full key不进入普通trace。
 - COMMIT_UNKNOWN > 10分钟；
 - MANUAL_RECONCILE_REQUIRED > 0；
 - DELETE_FAILED > 1小时；
+- POST_COMMIT_CLEANUP/temporary booking > 1小时；
 - cleanup oldest > 6小时；
 - Root/staging bytes > 80% hard limit；
 - Restore staging > 24小时；
@@ -423,7 +436,7 @@ Provider object ordinal可以span attribute，full key不进入普通trace。
 
 ### P2 warning
 
-- Index catchup lag > 30分钟；
+- Discovery full-cycle/cursor lag > 30分钟；
 - blocked比例 > 10%；
 - Archive cost model连续7天净负收益；
 - compression ratio异常；
@@ -524,13 +537,22 @@ Restore
 
 ### 12.3 `MIXED_LAYOUT_BLOCKED`
 
-1. 查看expired ratio/rows/key bytes/blocks；
-2. 查看Tombstone/Merge backlog；
-3. 建议增加晚到grace或改善event time局部性；
-4. 不直接调大hard limit；
-5. 数据布局变化后显式RECHECK创建新generation。
+1. 查看重复 Rewrite 的 source/live bytes 和 rewrite amplification；
+2. 查看生命周期列与 physical sort/cluster key 的相关性；
+3. 查看 Tombstone/Merge backlog 和迟到写入分布；
+4. 建议增加晚到 grace 或改善 event-time 局部性；
+5. 不直接调大 hard limit；
+6. 数据布局变化后显式 `RECHECK` 创建新 generation。
 
-### 12.4 Root mismatch
+### 12.4 `RESOURCE_BLOCKED`
+
+1. 查看 source、spill、live staging、transfer 和 Provider 分项预算；
+2. 确认是否为单个合法大 Object；若是，检查 streaming 实现而不是无限重试；
+3. 确认 Root 已拥有全部 staging，source 仍可见；
+4. 释放集群资源或调整经认证的 release profile；
+5. 显式 `RECHECK`，禁止直接把 blocked child 改回 running。
+
+### 12.5 Root mismatch
 
 1. cluster retirement kill switch；
 2. 保留source数据、Root、Payload和日志；
@@ -539,7 +561,7 @@ Restore
 5. 修复并新attempt/new prefix；
 6. 原attempt cleanup需保留审计副本到事故结论。
 
-### 12.5 Restore卡住
+### 12.6 Restore卡住
 
 1. 查看current chunk txn；
 2. unknown先Txn/Receipt对账；
@@ -548,7 +570,7 @@ Restore
 5. staging count/receipt不一致不发布；
 6. cancel后等待unknown收敛再DROP staging。
 
-### 12.6 Provider事故
+### 12.7 Provider事故
 
 ```text
 PUT/GET失败:
@@ -595,7 +617,7 @@ Stage 4前必须完成1TiB常见/10TiB认证。
 内部初始目标：
 
 ```text
-Index catchup p99       < 30 min
+Discovery cycle p99     < 30 min
 due Whole start p99     < 6 h
 Cleanup normal p99      < 24 h
 commit unknown auto     < 10 min for 99.9%

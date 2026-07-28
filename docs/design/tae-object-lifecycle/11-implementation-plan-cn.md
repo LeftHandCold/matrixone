@@ -1,954 +1,703 @@
-# TAE Object Lifecycle Commercial GA 实施计划
+# 实施计划、代码边界与交付 Gate
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> 本文把概要设计拆成可直接领取的开发任务。分阶段只表示依赖和放量顺序，不允许把
+> 缺少安全协议的数据退休路径当作 Preview 交付。
 
-**Goal：** 在不改变普通查询、普通 Merge 和现有 TAE GC 策略的前提下，交付可面向商业客户的表级 TTL/Archive：Whole Object 快速退休、小比例 Mixed Row DELETE、direct-readable Parquet/ZSTD、Restore 新表，以及失败后的可靠对账和清理。
+## 1. 交付目标
 
-**Architecture：** Lifecycle 是独立后台控制面。候选发现复用 `CollectObjectList` 和 Object Footer；数据导出使用固定 SI Snapshot 的高层 Reader；Whole Object 通过 tagged `StrictObjectRetire` 事务协议退休；Mixed 小尾部通过现有 `Relation.Delete` 退休；活动对象最终仍由现有 TAE GC 回收。第一次外部 PUT 前注册 system-owned Root，任何未知事务结果都由 Reconciler 查询事务状态并在一致性事务中读取 Receipt 后决策。
+最终 Commercial GA 同时交付：
 
-**Tech Stack：** Go、MatrixOne CN/TN 事务与 TAE、TaskService、MO Catalog cluster/system tables、ObjectStorage、Parquet/ZSTD、protobuf、SQL BVT、Go unit/integration/chaos tests。
+```text
+TTL:
+  Whole Object retire
+  + small Mixed DELETE
+  + medium/large Mixed Rewrite
 
----
+Archive:
+  direct-readable Parquet/ZSTD
+  + Whole Object retire
+  + small Mixed DELETE
+  + medium/large Mixed Rewrite
+  + Restore to a new table
+  + Purge/owner-drop async cleanup
+```
 
-## 1. 执行规则
+不在 GA 内：
 
-### 1.1 开发循环
+- ONLINE_COLD；
+- restore-required Deep Archive；
+- Legal Hold/WORM/maximum retention；
+- DROP 后保证归档仍可恢复；
+- archive-aware Backup/PITR/DR；
+- CDC、Publication、FK、隐藏二级/唯一索引、Fulltext、Vector 和插件表。
 
-每个 Gate 都是一个可独立评审、可关闭开关、可回滚的新能力集合。只有当前 Gate 的测试全部通过，才允许进入下一个 Gate。
+以上依赖必须在 Binding 和依赖创建两侧通过 Feature Guard fail closed。
 
-每个 Task 遵守同一循环：
+## 2. 不可破坏的边界
 
-1. 先增加失败测试，证明当前代码缺少该能力；
-2. 只实现使当前测试通过的最小代码；
-3. 运行包级、相关 CGo 和故障注入测试；
-4. 按资源 Owner、失败路径、等待终止条件和重启恢复自审；
-5. 形成一个语义完整的小提交；
-6. 通过 Gate Review 后再进入下一 Gate。
+1. 普通 Merge 的 selector、level、sort-key overlap、small/vacuum、目标 Object 大小
+   和调度频率不变。
+2. 未绑定表不进行 Lifecycle Catalog 查询，不写 Discovery/Candidate，不创建
+   reservation/protection。
+3. Planner/Candidate 不是权威；当前 Relation Metadata 和 TN Prepare exact CAS 才是
+   Object 权威。
+4. Archive Verify 完成前绝不退休源行。
+5. Dataset/Receipt 与活动数据退休必须在同一个 tenant transaction。
+6. 外部副作用前必须有 system-owned Cleanup Root。
+7. 普通 TAE GC 只看到正常 DropIntent；Lifecycle 不直接删除 source Object 文件。
+8. `OpCommitLifecycle` 是独立 opcode；老 TN 不能把它当普通 Merge 忽略。
+9. Mixed Rewrite 复用现有 Merge 原语，不 fork 一份 mergesort/Object Writer/transfer
+   实现。
 
-禁止在同一个 PR 中顺带实施：
-
-- 普通 Merge 策略优化；
-- 普通 Reader 性能重构；
-- TAE GC 算法重构；
-- 通用事务 wire envelope 重构；
-- ObjectStorage 全局 versioning 抽象；
-- archive-aware Backup/DR；
-- Deep Archive、Legal Hold、WORM。
-
-### 1.2 推荐包边界
+## 3. 推荐代码布局
 
 ```text
 pkg/lifecycle/
-├── catalog/        # Catalog DAO、CAS、状态机，不执行对象 I/O
-├── coordinator/    # 扫描、配额、公平调度、Job/Attempt 编排
-├── objectindex/    # 仅绑定表的派生 Object Index
-├── reader/         # 固定 Snapshot 精确对象读取
-├── archive/        # Parquet、Manifest、校验、ArchiveStore
-├── retire/         # Whole/Mixed 提交客户端与 Receipt 对账
-├── cleanup/        # Root、Sweeper、Reconciler、Purge
-├── restore/        # Restore Attempt、Chunk、发布
-├── admission/      # Feature Guard 与支持矩阵
-├── observability/  # 指标、状态摘要、诊断信息
-└── testutil/       # fake provider、故障注入和状态机断言
+  catalog/          # Binding、Guard、Dataset、Receipt、scan state、Candidate
+  control/          # system Attempt、Cleanup Root、owner tombstone、Reconcile
+  discovery/        # metadata page scanner、classification、optional summary
+  planner/          # cutoff、batch、path、budget
+  scheduler/        # fairness、quota、child claim
+  reader/           # exact Reader adapter、projection、canonical root
+  archive/          # Parquet/ZSTD、Manifest、Provider readback
+  executor/         # Whole、小 Mixed、Rewrite 编排
+  restore/          # hidden staging、chunk receipt、atomic publish
+  sweeper/          # payload/live staging/orphan cleanup
+  observability/    # metrics、trace、invariant checker
+
+pkg/vm/engine/disttae/
+  lifecycle_scan.go
+  lifecycle_rewrite.go
+  lifecycle_commit.go
+
+pkg/vm/engine/tae/db/merge/
+  reservation.go
+
+pkg/vm/engine/tae/rpc/
+  handle_lifecycle.go
+
+pkg/vm/engine/tae/tables/txnentries/
+  lifecycle.go       # 组合/复用现有 merge create/drop/transfer entry
 ```
 
-依赖方向：
+目录名是建议边界，可以按仓库 package cycle 调整；协议和 Owner 边界不能因目录调整
+而合并。
+
+## 4. Gate A：Catalog、Feature Guard 与只读 Discovery
+
+Gate A 没有 Provider PUT 和活动数据退休。
+
+### A1. Bootstrap/upgrade Catalog
+
+实现：
+
+- Archive Profile/version 和 immutable storage namespace；
+- Feature Guard；
+- Binding；
+- Discovery Scan State；
+- 有界 Candidate；
+- Dataset/Receipt；
+- system Attempt/Cleanup Root/Root Object；
+- owner tombstone；
+- Restore Attempt/chunk Receipt。
+
+要求：
+
+- 所有唯一键包含 account incarnation；
+- Binding 以 logical table identity 唯一；
+- Candidate ID 使用确定性 digest；
+- Root 与 tenant cluster table 分属 system retained/tenant plane；
+- upgrade 可重复执行；
+- downgrade 不删除未知状态和 Root；
+- system 表均有分页键，禁止一行全局 cursor。
+
+验收：
+
+- bootstrap、upgrade、rollback fence 测试；
+- 首次并发创建 Guard 只能有一个唯一行；
+- DROP ACCOUNT 后 Root/owner tombstone 仍可枚举；
+- Profile version 被 Dataset/Root 引用时不能删除或重指 namespace。
+
+### A2. Feature Guard 双向准入
+
+所有相关 DDL 使用同一个 `table_id` 唯一 Guard 行：
 
 ```text
-coordinator
-  -> catalog/objectindex/reader/archive/retire/cleanup/restore
-
-archive/cleanup/restore
-  -> ArchiveStore
-
-retire
-  -> engine.Relation / txn operator
-
-TAE rpc
-  -> 只认识 StrictObjectRetire wire，不依赖 pkg/lifecycle
+Lifecycle bind/unbind
+CDC create/drop
+Publication create/drop
+FK create/drop
+hidden index create/drop
+TRUNCATE/ALTER COPY/DROP
 ```
 
-`pkg/lifecycle` 可以调用稳定的 engine/fileservice/txn 接口；TAE 内核不能反向 import `pkg/lifecycle`。
+每次操作：
 
-### 1.3 Catalog 版本
+1. lazy insert Guard；
+2. 唯一键冲突后重读；
+3. CAS dependency generation；
+4. 检查 support matrix；
+5. 与 DDL 在同一事务提交。
 
-本文按当前树中的 `pkg/bootstrap/versions/v4_0_5` 写实施路径。开发开始前由 Release Owner 确认：
+不能先做“没有 Binding”快照检查再跳过 Guard。
 
-- 该版本尚未冻结：直接增加升级项；
-- 该版本已经冻结：先建立下一个版本目录，再机械替换本文的 `v4_0_5`；
-- 禁止把新表放入已经发布且不会再次执行的旧升级步骤。
+### A3. 分页 Metadata Discovery API
 
----
+在 DistTAE 增加只读接口：
 
-## 2. Gate A：产品契约、Catalog 与 Feature Guard
+```go
+type LifecycleObjectMetadata struct {
+    Stats            objectio.ObjectStats
+    StatsDigest      [32]byte
+    LifecycleZoneMap objectio.ZoneMap
+    RowCount         uint64
+    BlockCount       uint32
+    CompressedBytes  uint64
+}
 
-### Task A1：冻结 SQL AST 和错误码
-
-**Files：**
-
-- Modify: `pkg/sql/parsers/dialect/mysql/mysql_sql.y`
-- Add: `pkg/sql/parsers/tree/lifecycle.go`
-- Modify: `proto/plan.proto`
-- Modify: `pkg/sql/plan/build_ddl.go`
-- Modify: `pkg/frontend/stmt_kind.go`
-- Modify: `pkg/common/moerr/error.go`
-- Test: `pkg/sql/parsers/dialect/mysql/mysql_sql_test.go`
-- Test: `pkg/sql/plan/build_ddl_test.go`
-
-**实现：**
-
-- [ ] 按 `01-product-sql-contract-cn.md` 增加 Profile、Binding、Pause/Resume、Dry-run、Restore、Purge 和 Show AST。
-- [ ] Duration 同时保存原始 SQL 和规范化微秒；禁止用字符串比较周期。
-- [ ] 校验 `expire_after/archive_after/late_arrival_grace/purge_after` 的顺序和互斥关系。
-- [ ] 稳定区分“不支持、Guard 冲突、状态冲突、预算阻断、Mixed 布局阻断、结果未知”。
-- [ ] 覆盖引用标识符、UTC 时间列、负周期、相同阈值、未知选项的 parser round-trip。
-
-**验证：**
-
-```bash
-make generate
-go test ./pkg/sql/parsers/dialect/mysql ./pkg/sql/plan
+func ScanLifecycleObjectMetadataPage(
+    ctx context.Context,
+    rel engine.Relation,
+    snapshot types.TS,
+    lifecycleSeqnum uint16,
+    afterObjectID []byte,
+    maxObjects int,
+    maxFooterBytes int64,
+) (items []LifecycleObjectMetadata, next []byte, complete bool, err error)
 ```
 
-**提交：** `feat(lifecycle): add lifecycle SQL syntax and stable errors`
-
-### Task A2：创建 Catalog 表和升级测试
-
-**Files：**
-
-- Add: `pkg/bootstrap/versions/v4_0_5/lifecycle_catalog.go`
-- Modify: `pkg/bootstrap/versions/v4_0_5/cluster_upgrade_list.go`
-- Modify: `pkg/bootstrap/versions/v4_0_5/tenant_upgrade_list.go`
-- Modify: `pkg/bootstrap/versions/v4_0_5/upgrade_test.go`
-- Modify: `pkg/catalog/types.go`
-- Add: `pkg/lifecycle/catalog/schema.go`
-- Add: `pkg/lifecycle/catalog/schema_test.go`
-
-**实现：**
-
-- [ ] 按 `02-catalog-state-machine-cn.md` 创建 tenant cluster tables 和 system-account retained tables。
-- [ ] 需要 CAS/索引的状态、version、epoch、identity 必须是独立列，不以 JSON 代替。
-- [ ] 为调度查询建立有界索引：`binding.next_scan_at`、`job.state/lease_deadline`、`root.state/next_retry_at`。
-- [ ] Object Index 主键为 `(account_incarnation, table_id, index_generation, object_id)`，不能使用全局自增 ID。
-- [ ] 所有 tenant Lifecycle 表把 `account_incarnation` 放入主键/查询条件，防止 account ID 复用或迟到旧事务跨租户污染。
-- [ ] Account identity/current 冻结权威 `mo_account` RowID；找不到或不匹配时禁止 Profile/Binding/Root 懒创建。
-- [ ] Root Object 使用 attempt-scoped 主键，确保每个外部 key 只有一个清理 Owner。
-- [ ] 测试空集群、已有租户、重复升级、中断后重试、多个 CN 同时观察版本。
-- [ ] 降级前必须先关闭 Feature Guard 和后台任务；旧节点不得删除新 Catalog。
-
-**验证：**
-
-```bash
-go test ./pkg/bootstrap/versions/v4_0_5 ./pkg/lifecycle/catalog
-```
-
-**提交：** `feat(lifecycle): bootstrap lifecycle catalog`
-
-### Task A3：实现 Catalog DAO 和状态 CAS
-
-**Files：**
-
-- Add: `pkg/lifecycle/catalog/model.go`
-- Add: `pkg/lifecycle/catalog/store.go`
-- Add: `pkg/lifecycle/catalog/cas.go`
-- Add: `pkg/lifecycle/catalog/state_machine_test.go`
-
-**实现：**
-
-- [ ] 每次转换都带旧 `state/version/epoch` 条件。
-- [ ] DAO 返回 `Applied/NotApplied/Unknown`，不能把零 affected rows 一律解释成幂等成功。
-- [ ] Job、Attempt、Root、Dataset、Restore Attempt 使用独立表驱动状态测试。
-- [ ] 测试 stale executor、重复请求、反向转换、并发 lease 和版本溢出。
-- [ ] 并发测试覆盖 Profile rotate/Root register/DROP Account、Root/Purge/Restore lease 的固定 system lock order；禁止持锁跨 provider/tenant RPC。
-- [ ] 正确性不依赖进程内 mutex；mutex 只能减少重复工作。
-- [ ] CAS 失败返回当前权威状态，供调用者选择退出、对账或重试。
-
-**验证：**
-
-```bash
-go test -race ./pkg/lifecycle/catalog
-```
-
-**提交：** `feat(lifecycle): add durable lifecycle state machines`
-
-### Task A4：实现 Profile 和 Table Feature Guard
-
-**Files：**
-
-- Add: `pkg/lifecycle/catalog/profile.go`
-- Add: `pkg/lifecycle/admission/guard.go`
-- Add: `pkg/lifecycle/admission/guard_test.go`
-- Modify: CDC、Publication、FK、index/plugin 的 create/drop 入口
-- Modify: `pkg/sql/compile/ddl.go`
-
-**实现：**
-
-- [ ] Profile 冻结 `(profile_id, profile_version, storage_namespace_id, endpoint, bucket, prefix)`。
-- [ ] 实现 `ADD VERSION` 和指定 version 的 credential rotation；Binding 只冻结创建时最新 ACTIVE version，后台永不按名称漂移到新版本。
-- [ ] Credential rotation 只产生新 credential generation，不能改变 namespace。
-- [ ] 强制 authenticated TLS 和 provider server-side encryption；Profile/Dataset/Root/Manifest 冻结 encryption/KMS identity digest。
-- [ ] 更换 KMS key identity 创建新 Profile version；不能把历史 Dataset 静默指向新 key。
-- [ ] 被 Dataset/Root/Restore 引用的 Profile 只能停用，不能删除或重指向。
-- [ ] Lifecycle、CDC、Publication、FK、索引/插件都 CAS 同一 `(account_incarnation, table_id)` Guard 行。
-- [ ] 首次使用任一特性都懒创建 Guard；唯一键冲突关闭“双方同时看见不存在”的竞态。
-- [ ] Guard 保存 table generation、feature bitset、dependency epoch 和 version。
-- [ ] DROP/TRUNCATE/ALTER COPY 更新 generation；最终退休事务 CAS captured generation/epoch/version。
-- [ ] 首个 GA 拒绝隐藏二级/唯一索引表，不实现索引联动删除。
-- [ ] Snapshot/PITR/Clone/Branch/Backup 与 Lifecycle Binding 双向互斥。
-
-**验证：**
-
-```bash
-go test -race ./pkg/lifecycle/catalog ./pkg/lifecycle/admission ./pkg/frontend ./pkg/sql/compile
-```
-
-**提交：** `feat(lifecycle): add profile identity and serialize feature admission`
-
-### Gate A 门禁
-
-- [ ] SQL 契约、Catalog DDL 与设计逐字段核对；
-- [ ] `Bind || Create CDC/Index` 首次竞态测试通过；
-- [ ] 升级中断和重复升级测试通过；
-- [ ] 总开关关闭时新 DDL fail-closed，后台不运行。
-
----
-
-## 3. Gate B：Object Index、Planner、Reader 与 Archive
-
-### Task B1：实现仅绑定表的派生 Object Index
-
-**Files：**
-
-- Add: `pkg/lifecycle/objectindex/index.go`
-- Add: `pkg/lifecycle/objectindex/backfill.go`
-- Add: `pkg/lifecycle/objectindex/reconcile.go`
-- Add: `pkg/lifecycle/objectindex/index_test.go`
-- Reference: `pkg/frontend/object_list.go`
-- Reference: `pkg/vm/engine/test/object_list_test.go`
-
-**实现：**
-
-- [ ] 使用 `engine.Relation.CollectObjectList(from,to,...)` 分页采集，不订阅内部 Logtail 回调。
-- [ ] 初次绑定：记录 W0、全量分页、补扫 `(W0,W1]`、CAS READY。
-- [ ] Index 只保存 Planner 摘要和 exact identity；Footer 才是退休前权威。
-- [ ] `last_seen_ts/delete_ts/index_version` 使重复扫描幂等。
-- [ ] 每表 object 数、backfill bytes、分页 rows 和单轮 wall time 都有硬上限。
-- [ ] 崩溃后从 Catalog watermark 继续，不依赖内存 replay。
-- [ ] 抽样与 `CollectObjectList`/Footer 对账；漂移时进入 `INDEX_REBUILDING`，禁止退休。
-- [ ] 测试 Merge 在 backfill 中替换对象、重复页、CN 重启和旧 checkpoint。
-
-**验证：**
-
-```bash
-go test -race ./pkg/lifecycle/objectindex ./pkg/vm/engine/test
-```
-
-**提交：** `feat(lifecycle): add rebuildable bound-table object index`
-
-### Task B2：实现候选 Planner 和 Dry-run
-
-**Files：**
-
-- Add: `pkg/lifecycle/coordinator/planner.go`
-- Add: `pkg/lifecycle/coordinator/candidate.go`
-- Add: `pkg/lifecycle/coordinator/dryrun.go`
-- Add: `pkg/lifecycle/coordinator/planner_test.go`
-
-**实现：**
-
-- [ ] 只查询到期 Binding，不扫描 `mo_tables`。
-- [ ] ZoneMap 仅把对象分为 `WHOLE_CANDIDATE/MIXED_CANDIDATE/NOT_ELIGIBLE/NEED_FOOTER`。
-- [ ] Whole 最终判定必须由 exact Footer 和固定 Snapshot Reader 确认。
-- [ ] 按天形成有界 child Job；一个 child Job 只对应一个 table generation 和一个 Dataset。
-- [ ] 估算 source bytes、expired/live rows、tombstone bytes、affected blocks 和 retained bytes。
-- [ ] 超限返回可解释阻断，不创建无限任务。
-- [ ] Dry-run 不创建 Root、不读取 payload、不执行写事务。
-
-**验证：** `go test ./pkg/lifecycle/coordinator`
-
-**提交：** `feat(lifecycle): plan bounded lifecycle candidates`
-
-### Task B3：实现固定 Snapshot Exact Reader
-
-**Files：**
-
-- Add: `pkg/lifecycle/reader/spec.go`
-- Add: `pkg/lifecycle/reader/exact_reader.go`
-- Add: `pkg/lifecycle/reader/report.go`
-- Add: `pkg/lifecycle/reader/exact_reader_test.go`
-- Modify/Add: `pkg/vm/engine/disttae/` 中必要的最小 exact RelData helper
-- Reference: `pkg/vm/engine/readutil/reader.go`
-
-**实现：**
-
-- [ ] 输入为持久化 RelData/Object identity、固定 SI Snapshot、投影和谓词，禁止传入内存 rows。
-- [ ] 首版 callback 串行，Borrowed Batch exactly-once release。
-- [ ] 复用 `readutil.NewReader`、MVCC、Tombstone 和 transfer，不绕过可见性。
-- [ ] 报告实际 Object/Block/Row、visible/expired/live、物理 bytes 和逻辑 digest。
-- [ ] 使用 `DeleteKeyProjection` 描述单 PK、复合 PK 编码或无 PK fake key。
-- [ ] 达到 rows/bytes/time/cancel 时释放 Reader、Batch、mpool 和 spill。
-- [ ] 支持单 Object 2,097,152 rows、3 GiB、最大 varlen block 的 streaming。
-- [ ] 测试 tombstone、并发 Merge、RowID transfer、callback error/panic 和 cancel。
-
-**验证：**
-
-```bash
-.agents/skills/mo-dev/scripts/mo-cgo-test ./pkg/lifecycle/reader ./pkg/vm/engine/disttae
-```
-
-**提交：** `feat(lifecycle): add fixed-snapshot exact object reader`
-
-### Task B4：实现 Root-before-PUT 和 ArchiveStore
-
-**Files：**
-
-- Add: `pkg/lifecycle/archive/store.go`
-- Add: `pkg/lifecycle/archive/object_key.go`
-- Add: `pkg/lifecycle/cleanup/root_writer.go`
-- Add: `pkg/lifecycle/archive/fake_store_test.go`
-- Add: `pkg/lifecycle/cleanup/root_writer_test.go`
-
-**实现：**
-
-- [ ] 每个 Put/MultipartCreate/Copy 前先提交 Root 和预期 deterministic key。
-- [ ] key 包含 account incarnation、table generation、job、attempt、ordinal 和角色，不含可变表名。
-- [ ] adapter 提供 `PutImmutable/Open/Head/DeleteExact/AbortMultipart`。
-- [ ] 已有 key 只有 size+SHA 一致才算幂等成功。
-- [ ] provider 无 version ID 时依赖不可覆盖 key 和 Head checksum；有 version ID 时冻结具体 version。
-- [ ] multipart ID 在创建成功后立即登记；响应丢失时由 deterministic key、provider lifecycle rule 和孤儿审计兜底。
-- [ ] provider 无 conditional-create PUT 时，REGISTERED/UPLOADING 丢失 writer epoch 必须废弃旧 attempt/root 并用新 prefix 重做；禁止同 key 原地接管上传。
-- [ ] 只有完整 VERIFIED 且无未收敛 I/O 的 Root 可由新 epoch 接手 finalize；FINALIZING 只对账原 txn。
-- [ ] 测试 Root 失败不 PUT、PUT 成功 Root 更新失败、response lost、stale runner、同 key 不同内容。
-
-**验证：** `go test -race ./pkg/lifecycle/archive ./pkg/lifecycle/cleanup`
-
-**提交：** `feat(lifecycle): register cleanup ownership before archive writes`
-
-### Task B5：实现 Parquet/ZSTD、Manifest 和全量校验
-
-**Files：**
-
-- Add: `pkg/lifecycle/archive/parquet_writer.go`
-- Add: `pkg/lifecycle/archive/type_mapping.go`
-- Add: `pkg/lifecycle/archive/manifest.go`
-- Add: `pkg/lifecycle/archive/verify.go`
-- Add: corresponding tests
-
-**实现：**
-
-- [ ] 实现 MO 到 Parquet 类型映射；默认 ZSTD。
-- [ ] 目标文件 128–512 MiB、Row Group 64–128 MiB；文件数和单文件均有硬上限。
-- [ ] canonical row encoding 规范化 NULL、NaN、时区、Decimal scale、JSON/Binary。
-- [ ] Manifest 保存 schema version、source snapshot/table/schema/objects、files/root/profile identity。
-- [ ] PUT 后必须从 provider 重新 Open 并全量验证 checksum、schema、row count 和 logical Merkle root。
-- [ ] Verify 失败 Root 可清理，但不能发布或退休源数据。
-- [ ] 测试所有支持类型、最大 varlen、损坏、截断、错误 metadata 和并发 writer。
-
-**验证：** `go test -race ./pkg/lifecycle/archive`
-
-**提交：** `feat(lifecycle): write and verify canonical parquet archives`
-
-### Gate B 门禁
-
-- [ ] 非绑定表和 Dry-run 无扫描/PUT；
-- [ ] Reader Batch 所有权和取消路径通过 race/leak test；
-- [ ] Root-before-PUT 故障注入通过；
-- [ ] 最大单 Object streaming 通过；
-- [ ] Manifest 包含 Restore 所有必需字段。
-
----
-
-## 4. Gate C：Strict Whole Object Retire P0
-
-### Task C1：定义 protobuf 和版本能力
-
-**Files：**
-
-- Modify: `proto/api.proto`
-- Regenerate: protobuf generated files
-- Add: `pkg/vm/engine/cmd_util/lifecycle.go`
-- Modify: `pkg/vm/engine/cmd_util/type.go`
-- Add: `pkg/vm/engine/cmd_util/lifecycle_test.go`
-
-**实现：**
-
-- [ ] 在 `api.Entry.EntryType` 追加 `StrictObjectRetire`，不复用 `file_name`。
-- [ ] 在 `api.Entry` 追加 typed payload，保持 protobuf 编号向后兼容。
-- [ ] Payload 保存 table/schema generation、Guard/Binding version、attempt/epoch、snapshot/cutoff、exact objects、footer/read root。
-- [ ] `ParseEntryList` 返回 typed request，普通 Entry 行为不变。
-- [ ] CN 在集群协议版本不足时 fail-closed，不把新 Entry 发给旧 TN。
-- [ ] 测试 unknown enum/field、缺字段、超大 payload、重复 Object。
-
-**验证：**
-
-```bash
-make generate
-go test ./pkg/vm/engine/cmd_util
-```
-
-**提交：** `feat(tae): define strict object retire wire entry`
-
-### Task C2：CN workspace 发送 typed Entry
-
-**Files：**
-
-- Modify: `pkg/vm/engine/disttae/txn_table.go`
-- Modify: `pkg/vm/engine/disttae/txn_table_delegate.go`
-- Add: `pkg/vm/engine/disttae/strict_object_retire_test.go`
-
-**实现：**
-
-- [ ] 增加仅 Lifecycle 使用的内部 `StrictRetireObjects` 接口。
-- [ ] Payload 进入原始 txn writes 和 `PrecommitWriteCmd.EntryList`。
-- [ ] Entry 与 Dataset/Receipt cluster-table writes 使用同一 txn operator。
-- [ ] 不调用现有 SoftDeleteObject filename magic。
-- [ ] CN 限制 Object 数和 payload bytes；TN 仍独立验证。
-- [ ] 1PC、2PC、workspace dump/retry 测试 payload 不丢失。
-
-**验证：**
-
-```bash
-.agents/skills/mo-dev/scripts/mo-cgo-test ./pkg/vm/engine/disttae
-```
-
-**提交：** `feat(disttae): emit strict object retire entries`
-
-### Task C3：TN fail-closed 验证
-
-**Files：**
-
-- Modify: `pkg/vm/engine/tae/rpc/handle.go`
-- Add: `pkg/vm/engine/tae/rpc/strict_object_retire.go`
-- Add: `pkg/vm/engine/tae/rpc/strict_object_retire_test.go`
-- Modify/Add: `pkg/vm/engine/tae/catalog/` validation helpers
-
-**实现：**
-
-- [ ] iterator/handler 明确认识 typed request。
-- [ ] 验证 account/database/table、table generation、schema digest、Guard/Binding version、attempt/epoch。
-- [ ] Object 在事务验证 Snapshot 上必须仍是 live exact object，footer/row count/ZoneMap 与 payload 一致。
-- [ ] TN 重新验证所有可见行满足 cutoff，不能信任 Planner。
-- [ ] Object-not-found 不算成功；只有同 attempt 已确定提交才幂等，被 Merge 替换必须冲突。
-- [ ] 任一条件失败整事务 abort，不允许只写 Dataset。
-- [ ] malformed/unknown version 返回稳定错误，不 panic。
-
-**验证：**
-
-```bash
-.agents/skills/mo-dev/scripts/mo-cgo-test ./pkg/vm/engine/tae/rpc
-```
-
-**提交：** `feat(tae): validate strict object retire requests`
-
-### Task C4：有界 Tombstone 探测和 Strict DropIntent
-
-**Files：**
-
-- Modify/Add: `pkg/vm/engine/tae/txn/txnimpl/`
-- Modify/Add: `pkg/vm/engine/tae/tables/`
-- Modify: `pkg/vm/engine/tae/catalog/object.go`
-- Modify: `pkg/vm/engine/tae/catalog/object_list.go`
-- Modify: corresponding command/replay files
-- Add: package-local tests
-
-**实现：**
-
-- [ ] `HasCommittedObjectTombstoneInRange` 是 early-exit boolean/error，不返回完整集合。
-- [ ] 搜索 committed object、in-memory tombstone 和事务可见范围，按 object/block/RowID ZoneMap 剪枝。
-- [ ] 同时验证 apply high watermark 覆盖 final TS、history/GC low watermark 未越过 source Snapshot；历史不完整必须冲突重导出。
-- [ ] 设置对象数、bytes、wall time 上限；上限返回 retryable conflict，不能返回 false。
-- [ ] 不分配现有 1 GiB delete buffer，不持锁等待 I/O。
-- [ ] Strict retire 为 exact Object 注册 DropIntent；同 attempt 重复幂等，不同 attempt/普通 Merge 互斥。
-- [ ] Prepare 再验证 Object/generation/tombstone；Commit 复用现有 Object delete MVCC node。
-- [ ] WAL/replay 带齐 identity；Abort 释放 intent。
-- [ ] 测试 `Lifecycle || Merge/DELETE/Lifecycle`、Prepare twice、commit/abort replay。
-
-**验证：**
-
-```bash
-.agents/skills/mo-dev/scripts/mo-cgo-test ./pkg/vm/engine/tae/catalog ./pkg/vm/engine/tae/txn/... ./pkg/vm/engine/tae/tables
-```
-
-**提交：** `feat(tae): commit strict object retirement with replay`
-
-### Task C5：协议故障矩阵
-
-**Files：**
-
-- Add: `pkg/lifecycle/retire/strict_client.go`
-- Add: `pkg/lifecycle/retire/strict_client_test.go`
-- Add: existing distributed transaction suite integration tests
-
-**实现：**
-
-- [ ] Dataset、Receipt、Strict Entry 在同一事务。
-- [ ] 覆盖 1PC、2PC、重复 Prepare、CN/TN kill、ErrTAENeedRetry、response lost、replay。
-- [ ] 断言 Dataset 与 Object 退休同存同无，未 Verify 永不退休，Merge 抢先则 abort，unknown 保留 Root。
-- [ ] 旧 CN/TN 混部时 capability guard 阻止发送。
-
-**提交：** `test(lifecycle): prove strict retire transaction semantics`
-
-### Gate C 门禁
-
-- [ ] TAE/Transaction Maintainer 完成 wire/replay 专审；
-- [ ] 普通 Merge/GC 路径无策略变化；
-- [ ] 1PC/2PC/replay/混部矩阵自动化；
-- [ ] 任一 exact 条件失败均整事务 abort。
-
----
-
-## 5. Gate D：Whole Job、对账与清理
-
-### Task D1：Whole Archive Job
-
-**Files：**
-
-- Add: `pkg/lifecycle/coordinator/whole_job.go`
-- Add: `pkg/lifecycle/coordinator/whole_job_test.go`
-- Add: `pkg/lifecycle/retire/receipt.go`
-
-**实现：**
-
-- [ ] 固定顺序：Candidate → Root → Read → Put → Verify → Finalizing → Commit → Reconcile。
-- [ ] 每阶段检查 job/attempt/executor epoch 和 lease。
-- [ ] Snapshot 只覆盖有界事务窗口，不创建长生命周期 GC pin。
-- [ ] Reader report、Manifest、Strict payload 的 Object/root/rows 完全一致。
-- [ ] Whole 在 Reader EOF、Payload PUT complete、source root 冻结后立即关闭只读 txn，再做 Provider readback/Manifest；Mixed 仍保留同一 SI txn 到 DELETE commit。
-- [ ] Final txn 原子写 Dataset、Receipt、watermark 并发送 Strict Entry。
-- [ ] 明确 abort 时 Root 转 DELETE_PENDING；unknown 保持 FINALIZING。
-- [ ] 测试每两个状态之间 kill、重试、stale runner 和 pause。
-
-**提交：** `feat(lifecycle): execute verified whole-object archive jobs`
-
-### Task D2：事务结果 Reconciler
-
-**Files：**
-
-- Add: `pkg/lifecycle/cleanup/reconciler.go`
-- Add: `pkg/lifecycle/cleanup/reconciler_test.go`
-- Add: `pkg/lifecycle/catalog/receipt.go`
-
-**实现：**
-
-- [ ] 事务服务返回 committed/aborted/unknown 三态。
-- [ ] committed 后在正常一致性事务中读取 Receipt/Dataset/root；暂不可见只 WAIT/RETRY。
-- [ ] aborted 后确认 Receipt 不存在再清 staging。
-- [ ] unknown 保留 Root 和对象，deadline 只告警，不自动释放。
-- [ ] txn status 接近保留上限时升级人工处置，不能猜 abort。
-- [ ] root mismatch 只有在明确 committed 且一致性读后才判 corruption。
-
-**提交：** `feat(lifecycle): reconcile in-doubt archive commits`
-
-### Task D3：不可逆 Sweeper
-
-**Files：**
-
-- Add: `pkg/lifecycle/cleanup/sweeper.go`
-- Add: `pkg/lifecycle/cleanup/delete_protocol.go`
-- Add: `pkg/lifecycle/cleanup/sweeper_test.go`
-
-**实现：**
-
-- [ ] 删除前要求 purge eligible/owner dropped、无 lease、grace 到期，并 CAS DELETE_PENDING。
-- [ ] `DELETE_PENDING -> DELETING` 后禁止新增 lease/reference 和取消。
-- [ ] 按 Root Object 精确 key/version 删除，不靠 prefix LIST 决定所有权。
-- [ ] 重复 Delete 幂等；每个对象 HEAD 不存在后才 CLEANED。
-- [ ] CLEANED tombstone 至少保留 30 天，且不得短于最大 I/O deadline + multipart convergence + quiescence window，防止迟到 PUT。
-- [ ] provider 错误进入有界退避和 DELETE_FAILED，不忙循环。
-- [ ] 测试 response lost、eventual LIST、HEAD stale、旧 runner 迟到、部分删除。
-
-**提交：** `feat(lifecycle): sweep archive objects with irreversible ownership`
-
-### Gate D 门禁
-
-- [ ] Root/Attempt/Job/Dataset 每种状态都有唯一 Owner；
-- [ ] COMMIT_UNKNOWN 永不自动清理；
-- [ ] DELETE_PENDING 与 Restore lease CAS 同一 access generation；
-- [ ] Coordinator 关闭后 Reconciler/Sweeper 仍可收敛。
-
----
-
-## 6. Gate E：小比例 Mixed SI DELETE
-
-### Task E1：固定 SI、Delete key 和并发证明
-
-**Files：**
-
-- Add: `pkg/lifecycle/retire/mixed_txn.go`
-- Add: `pkg/lifecycle/retire/delete_key.go`
-- Add: `pkg/lifecycle/retire/mixed_txn_test.go`
-- Modify only if required: normal DELETE key preprocessing helper
-
-**实现：**
-
-- [ ] 一个普通 writable SI transaction 覆盖 Reader、provider readback、`Relation.Delete`、Dataset/Receipt。
-- [ ] 禁止用悲观 RC 的两个独立 SQL 拼接 SELECT/DELETE。
-- [ ] 复用正常 DELETE 的实际 key：单 PK、复合 PK encoded key、无 PK fake key。
-- [ ] 证明 user DELETE/UPDATE/transfer 产生冲突；若存在静默双提交，停止 Gate 并补 TN 协议。
-- [ ] 同一 txn 的 Root 在外部写前已登记；commit unknown 进入 Gate D 对账。
-
-**验证：**
-
-```bash
-.agents/skills/mo-dev/scripts/mo-cgo-test ./pkg/lifecycle/retire ./pkg/sql/compile
-```
-
-**提交：** `feat(lifecycle): prepare mixed deletes in one SI transaction`
-
-### Task E2：Spill 和预算
-
-**Files：**
-
-- Add: `pkg/lifecycle/retire/delete_spill.go`
-- Add: `pkg/lifecycle/retire/budget.go`
-- Add: corresponding tests
-
-**实现：**
-
-- [ ] RowID/Delete key 按批 spill；内存只保留当前窗口。
-- [ ] spill 路径 attempt-scoped，成功/abort/cancel/restart 都有唯一清理 Owner。
-- [ ] rows、raw key bytes、affected blocks、source/txn/spill bytes、wall time 双阶段门禁。
-- [ ] 预计超限在 Delete 前进入 `MIXED_LAYOUT_BLOCKED`；执行越界则 abort。
-- [ ] rolling cluster budget 纳入当前 Tombstone/Merge backlog。
-- [ ] blocked 不无限自动重试，只在 layout/policy/version 变化或 RECHECK 后重试。
-- [ ] 测试磁盘满、spill 损坏、cancel、重启和估算偏低。
-
-**提交：** `feat(lifecycle): bound mixed delete resources`
-
-### Task E3：Mixed 最终事务
-
-**Files：**
-
-- Add: `pkg/lifecycle/coordinator/mixed_job.go`
-- Add: `pkg/lifecycle/coordinator/mixed_job_test.go`
-
-**实现：**
-
-- [ ] 同一 SI txn 内读取、归档全量重读校验、Delete、Dataset/Receipt。
-- [ ] Root FINALIZING 后才 commit；unknown 进入 Reconciler。
-- [ ] commit 后普通 SELECT 仅靠现有 MVCC/Tombstone 不可见，无 TTL filter。
-- [ ] Lifecycle 不要求 Merge 立即回收 Tombstone 或物理空间。
-- [ ] 测试边界预算、user DML、Merge、commit unknown。
-
-**提交：** `feat(lifecycle): archive bounded mixed rows with normal deletes`
-
-### Gate E 门禁
-
-- [ ] Mixed 只复用普通 DELETE；
-- [ ] 并发 DML 不丢行、不重复归档；
-- [ ] Tombstone 最坏成本有集群硬上限；
-- [ ] 大 Mixed 明确阻断，不降级为不受控 DELETE。
-
----
-
-## 7. Gate F：DROP、Purge 与 Restore
-
-### Task F1：轻量 Owner Tombstone
-
-**Files：**
-
-- Modify: `pkg/sql/compile/ddl.go`
-- Modify: `pkg/frontend/authenticate.go`
-- Add: `pkg/lifecycle/catalog/owner.go`
-- Add: `pkg/lifecycle/catalog/owner_test.go`
-- Extend: existing DROP tests
-
-**实现：**
-
-- [ ] DROP TABLE/DATABASE 在原 Catalog 事务中写 owner tombstone，不等待 provider。
-- [ ] DROP ACCOUNT 在同一个 system-account DROP 事务中写 account identity/tombstone、删除匹配 incarnation/version 的 current row，再清 tenant cluster rows。
-- [ ] DROP rollback 时 tombstone 不可见。
-- [ ] DROP 覆盖正常 purge 时间，但等待已有 read/restore lease 收敛。
-- [ ] in-flight Job 看到 tombstone 后 fence/abort 或对账。
-- [ ] 测试 DROP 与 Root、PUT、Final Commit、Restore、Purge 的所有边界竞态。
-
-**验证：**
-
-```bash
-go test -race ./pkg/lifecycle/catalog ./pkg/sql/compile ./pkg/frontend
-```
-
-**提交：** `feat(lifecycle): record lightweight archive owner drops`
-
-### Task F2：异步 Purge
-
-**Files：**
-
-- Add: `pkg/lifecycle/cleanup/purge.go`
-- Add: `pkg/lifecycle/cleanup/purge_test.go`
-- Modify: Frontend dispatch
-
-**实现：**
-
-- [ ] Purge 先 CAS Dataset PURGE_PENDING/access generation，不直接删 provider。
-- [ ] 新 Restore lease 与 PURGE_PENDING/DELETING 互斥。
-- [ ] 已有 lease 有 deadline，超时 fence/告警，不能永久阻塞。
-- [ ] Sweeper 删除完成后再将 Manifest/Dataset 标 PURGED。
-- [ ] 保留最小 Dataset 审计 tombstone，ID 不复用。
-- [ ] Dry-run 返回 objects/bytes/lease/阻断原因。
-
-**提交：** `feat(lifecycle): purge datasets asynchronously`
-
-### Task F3：Restore 分块导入
-
-**Files：**
-
-- Add: `pkg/lifecycle/restore/attempt.go`
-- Add: `pkg/lifecycle/restore/chunk.go`
-- Add: `pkg/lifecycle/restore/import.go`
-- Add: corresponding tests
-
-**实现：**
-
-- [ ] 解析 Dataset/Profile/Manifest 后获取 access-generation lease。
-- [ ] staging 表位于受保护隐藏 namespace，名字包含 attempt ID。
-- [ ] Manifest 验证后按 Parquet Row Group 生成 deterministic chunk。
-- [ ] 每 chunk 独立普通事务插入 staging，并在同事务写 chunk receipt。
-- [ ] response lost 读取 chunk receipt 对账，禁止重复插入。
-- [ ] 复用正常 INSERT 预处理，覆盖 composite/fake PK、Decimal、时区、AUTO_INCREMENT 元数据。
-- [ ] AUTO_INCREMENT 原值恢复后将 sequence 水位推进到 `max+1` 并测试后续 INSERT；若现有路径无法保证则准入拒绝。
-- [ ] 每 chunk 有 rows/bytes/time/memory/spill 上限。
-- [ ] 测试 CN kill、重复 chunk、坏文件、provider 暂失、配额不足。
-
-**提交：** `feat(lifecycle): restore archive chunks into hidden staging`
-
-### Task F4：Restore 全量验证和原子发布
-
-**Files：**
-
-- Add: `pkg/lifecycle/restore/verify.go`
-- Add: `pkg/lifecycle/restore/publish.go`
-- Add: `pkg/lifecycle/restore/publish_test.go`
-- Add: lifecycle SQL BVT under `test/distributed/cases/`
-
-**实现：**
-
-- [ ] 按 Manifest 顺序再次全量重读所有 Payload，校验 checksum、schema、row count 和每个 Dataset logical root。
-- [ ] 校验所有 chunk Receipt、staging schema 和 `SELECT COUNT(*)`；不按 staging 物理行序重算有序 Dataset root。
-- [ ] Payload root、Receipt rows 和 staging count 全部匹配才进入 PUBLISHING；正常 INSERT/事务路径负责已写 Batch 的原子持久化。
-- [ ] 发布事务 CAS Dataset/access generation、attempt、目标 database generation 和目标名不存在。
-- [ ] 原子发布为独立新表，不覆盖源表。
-- [ ] publish response lost 通过目标 table identity + restore receipt 对账。
-- [ ] 失败 staging 由 attempt owner 清理，不误删已发布表。
-- [ ] BVT 覆盖完整查询、schema、重复 Restore、同名冲突、权限。
-
-**提交：** `feat(lifecycle): verify and atomically publish restored tables`
-
-### Task F5：fail-closed 支持矩阵
-
-**Files：**
-
-- Add: `pkg/lifecycle/admission/support_matrix.go`
-- Modify: Snapshot/PITR/Clone/Branch/Backup/DR 入口
-- Add: corresponding tests
-
-**实现：**
-
-- [ ] Lifecycle-bound 表的普通 Snapshot/PITR Restore、Clone、Branch、Backup 明确拒绝。
-- [ ] Bind 前检查已有对象/任务，反向也拒绝。
-- [ ] DR/failover 无 archive Catalog/payload 时返回 `ARCHIVE_NOT_AVAILABLE_IN_DR`，不能返回空 Dataset。
-- [ ] 错误明确“不支持”，不能显示“恢复成功但历史行缺失”。
-- [ ] 新增相关能力默认 fail-closed。
-
-**提交：** `feat(lifecycle): fail closed for non archive-aware recovery`
-
-### Gate F 门禁
-
-- [ ] DROP 主路径无 provider I/O，rollback 不误删；
-- [ ] Restore chunk exactly-once、发布 response-lost 通过；
-- [ ] Purge/Restore CAS 竞态通过；
-- [ ] Backup/DR 不会静默产生不完整数据。
-
----
-
-## 8. Gate G：调度、容量、观测与运维
-
-### Task G1：TaskService Runner
-
-**Files：**
-
-- Add: `pkg/lifecycle/coordinator/task.go`
-- Add: `pkg/lifecycle/coordinator/runner.go`
-- Add: `pkg/lifecycle/coordinator/runner_test.go`
-- Modify: CN task executor registration path
-
-**实现：**
-
-- [ ] TaskService 仅负责投递/lease，Catalog 才是业务状态权威。
-- [ ] runner 每步读取 job/attempt epoch；外部 I/O 前后都检查 stale。
-- [ ] 初始并发：单表 1、数据库 2、账户 4、集群 8。
-- [ ] account/database/table 分层公平，单一大表不能占满集群。
-- [ ] pause/kill switch 停止新任务；FINALIZING 交 Reconciler。
-- [ ] TaskService 记录丢失后可从 Catalog 重建。
-- [ ] 测试 duplicate delivery、lease steal、runner crash、task cleanup/rebuild。
-
-**提交：** `feat(lifecycle): schedule durable bounded lifecycle jobs`
-
-### Task G2：容量控制
-
-**Files：**
-
-- Add: `pkg/lifecycle/coordinator/quota.go`
-- Add: `pkg/lifecycle/coordinator/quota_test.go`
-- Add: `pkg/lifecycle/observability/capacity.go`
-
-**实现：**
-
-- [ ] 对 active jobs、read/write bytes、Root/Object、Index rows、Tombstone、spill、cleanup backlog、retained bytes、restore staging 分层限额。
-- [ ] 资源预约使用 CAS；success/abort/unknown 分别释放，unknown 不释放可能仍在用的资源。
-- [ ] 等待有 deadline 和 `CAPACITY_BLOCKED`，不无限占 worker。
-- [ ] 越界 fence 当前读写阶段；FINALIZING 只对账。
-- [ ] 测试计数漂移重算、double release、runner kill、集群重启。
-
-**提交：** `feat(lifecycle): enforce hierarchical lifecycle budgets`
-
-### Task G3：SHOW、指标和管理动作
-
-**Files：**
-
-- Add: `pkg/lifecycle/observability/metrics.go`
-- Add: `pkg/lifecycle/observability/status.go`
-- Add: `pkg/lifecycle/coordinator/admin.go`
-- Add: corresponding tests
-- Modify: Frontend SHOW/admin dispatch
-
-**实现：**
-
-- [ ] SHOW 输出 Binding、Candidate、Job、Attempt、Dataset、Restore、Root/Purge 和最后错误。
-- [ ] Prometheus 只用低基数 label；ID 放结构化日志/trace。
-- [ ] 告警覆盖 COMMIT_UNKNOWN、FINALIZING timeout、DELETE_FAILED、Index 漂移、orphan、Mixed blocked、quota saturation。
-- [ ] 日志带 account incarnation/table generation/job/attempt/root/txn，禁止输出 credential。
-- [ ] PAUSE/RESUME/RECHECK/CANCEL 使用状态 CAS；FINALIZING 不能强制当 abort。
-- [ ] 不提供跳过 checksum、强制删除有 lease Dataset 等破坏不变量的命令。
-- [ ] 管理动作写审计日志和操作人。
-
-**提交：** `feat(lifecycle): expose status and safe administration`
-
-### Gate G 门禁
-
-- [ ] 所有队列、表、缓存、重试有硬上限；
-- [ ] 所有等待有 deadline、cancel 和退出 Owner；
-- [ ] kill switch 不破坏 unknown 对账；
-- [ ] SRE 能区分配置、资源、冲突和系统故障。
-
----
-
-## 9. Gate H：P0 证明、规模认证和 GA
-
-### Task H1：P0 自动化
-
-- [ ] 将 `10-p0-test-ga-acceptance-cn.md` 每个 case ID 映射到测试名和 CI job。
-- [ ] Reader、Strict、Mixed、Root、Reconcile、Cleanup、Restore 分包运行。
-- [ ] 1PC/2PC/replay/kill 使用确定性故障注入，不依赖人工看日志。
-- [ ] 每次测试自动检查 active rows、Dataset/Receipt、payload、Root/lease、staging、goroutine、memory、spill 和 orphan。
-- [ ] 无法自动断言的状态先补诊断，不能以“进程未报错”代替数据不变量。
-
-**提交：** `test(lifecycle): automate commercial ga p0 matrix`
-
-### Task H2：1 TiB 常见规模认证
-
-- [ ] 时间有序、5% late arrival、1% Mixed 的 1 TiB 表。
-- [ ] 同时运行 INSERT/UPDATE/DELETE、普通 Merge、Archive、Restore 和 GC。
-- [ ] 连续 72 小时，覆盖 CN/TN 重启、TaskService 接管和 provider 限流。
-- [ ] 记录吞吐、查询 P50/P99、Merge backlog、Tombstone、retained bytes、对象数、Restore RTO 和 provider 成本。
-- [ ] 与关闭 Lifecycle 的基线对比普通查询/Merge 回归。
-- [ ] 验证 `active ∪ archive = 基准 Snapshot` 且 `active ∩ archive = ∅`。
-
-### Task H3：10 TiB 单表认证
-
-- [ ] 使用真实 10 TiB 逻辑表和最大 Object/varlen 边界，不做等比缩小模拟。
-- [ ] 覆盖时间有序、高度乱序；乱序表应稳定阻断，不拖垮集群。
-- [ ] 连续 7 天，覆盖每日 Archive、持续 Merge、滚动重启、provider 慢/错和 Restore 抽样。
-- [ ] 证明 Index 无单行热点、不扫描非绑定表、Catalog/Task queue 有界。
-- [ ] 证明 retained bytes、spill、memory 和 cleanup backlog 有硬上限。
-
-### Task H4：滚动升级与回滚
-
-- [ ] 新旧 CN/TN 混部时 Feature Guard 关闭。
-- [ ] 所有 TN 能力就绪后才允许 Bind/Strict retire。
-- [ ] 关闭功能时 FINALIZING 仍由兼容 Reconciler 处理。
-- [ ] 回滚前停止新 Job、收敛 unknown、清 staging、保留 Dataset/Root Catalog。
-- [ ] 旧节点不误解析 tagged Entry、不删除 Lifecycle Catalog。
-
-### Task H5：分阶段放量
+实现约束：
+
+- 从当前 Relation Metadata/PartitionState 分页；
+- 每页先检查 object count/footer bytes/deadline；
+- 不构造全表 slice 后再截断；
+- Object ID 顺序在同一 Snapshot 稳定；
+- ZoneMap 缺失、截断、类型未知只能分类为 `NEEDS_SCAN`；
+- Merge 导致 cursor 前出现新 Object 时，由下一 full cycle 保证最终发现；
+- `CollectObjectList`仅更新优先队列/watermark，断档时回退 full cycle。
+
+### A4. Planner 与 Candidate
+
+分类：
 
 ```text
-Stage 0  内部 synthetic
-Stage 1  最多 50 张表
-Stage 2  最多 200 张表
-Stage 3  最多 500 张表
-Stage 4  最多 1000 张显式绑定表
+max < cutoff                    -> WHOLE
+min >= cutoff                   -> NOT_DUE
+otherwise / metadata unknown    -> MIXED_NEEDS_SCAN
 ```
 
-每阶段必须：
+Planner 按 release profile 决定：
 
-- [ ] 完成规定观察周期；
-- [ ] 无数据不变量失败、无法解释的 Root/orphan；
-- [ ] 无普通查询/Merge/GC 严重回归；
-- [ ] unknown、cleanup、Mixed blocked、Restore failure 可运维；
-- [ ] Lifecycle、TAE、Transaction、Frontend、SRE、QA Owner 联合签字。
+```text
+WHOLE
+SMALL_MIXED_DELETE
+MIXED_REWRITE
+RESOURCE_BLOCKED
+MIXED_LAYOUT_BLOCKED
+```
 
-任一数据不变量失败立即关闭新 Bind/Job、保留 unknown 供对账、停止放量，完成 RCA 和重新认证后再恢复。
+Candidate 每表、每账户和集群总量均有硬上限。达到上限暂停该 scope 的 Discovery，
+不能扫描更多再丢弃结果。
 
-### Task H6：Commercial GA 签字
+Gate A exit：
 
-- [ ] Gate A–G 全部通过；
-- [ ] P0 文档无豁免项；
-- [ ] 1/10 TiB 和 Stage 4 认证通过；
-- [ ] 文档明确不支持 Legal Hold/WORM、Deep Archive、archive-aware Backup/DR；
-- [ ] Restore/Purge 使用真实 provider 演练；
-- [ ] 数据丢失、重复归档、误清理、静默不完整恢复均为零；
-- [ ] SRE Runbook、告警、容量仪表盘和 kill switch 可用。
+- 1000 Binding 不访问任何未绑定表；
+- 百万 Object 表 Catalog 仍只有 O(1) scan state + 有界 Candidate；
+- crash 前后 cursor/Candidate 无丢页或错误退休；
+- Dry-run 报告 Whole/Mixed/bytes 和估算放大；
+- feature disabled 时普通 DML/Merge/GC 无新增写。
 
----
+## 5. Gate B：Exact Reader、Archive 与 Export-only
 
-## 10. PR 拆分与核心改动预算
+Gate B 可以写 staging/export，但不退休活动数据。
 
-推荐 PR：
+### B1. Exact Reader
 
-1. SQL AST + Catalog migration；
-2. Catalog DAO + Feature Guard；
-3. Object Index + Planner；
-4. Exact Reader；
-5. ArchiveStore + Root；
-6. Parquet/Manifest/Verify；
-7. Strict wire；
-8. TN validation + replay；
-9. Whole Job + Reconciler；
-10. Sweeper/Purge；
-11. Mixed SI DELETE；
-12. Restore chunk + publish；
-13. DROP/support matrix；
-14. Scheduler/quota/observability；
-15. P0 chaos/scale certification。
+实现 `ScanExactObjects`：
 
-每个 PR 必须写明：对应设计章节/P0 case、新不变量、失败 Owner、是否改变普通 DML/查询/Merge/GC、测试结果、Feature flag/回滚方式、尚未实现能力。
+- 输入持久化 exact ObjectStats/digest；
+- 绑定固定 Snapshot；
+- 排除 table workspace/in-memory row；
+- 应用 Snapshot-visible Tombstone；
+- 串行 callback；
+- Batch borrowed ownership exactly once；
+- Object/Block coverage 到 EOF；
+- stable canonical root。
 
-| 既有核心路径 | 允许改动 | 禁止顺带改动 |
-|---|---|---|
-| `proto/api.proto` | 新 tagged Entry/payload | 通用事务 envelope |
-| DistTAE workspace | Strict entry；复用正常 Delete | 普通 DML 编码重写 |
-| TAE RPC | 解析/验证 Strict | 改普通 Entry 语义 |
-| TAE Catalog/Txn | strict intent、exact CAS、replay | 改普通 Merge 策略 |
-| DDL | Guard、Owner tombstone | provider 同步清理 |
-| Snapshot/Backup 入口 | fail-closed | archive-aware 恢复 |
-| Reader | 独立 exact helper | 普通 SELECT TTL filter |
-| GC | 零策略改动 | Lifecycle 专属回收策略 |
+先完成 fault injection：
 
-任何 PR 超出该表，必须先修改 ADR 并重新评审，不能以“顺便优化”为理由合入。
+- Object missing；
+- block short read/checksum；
+- callback error/panic/cancel；
+- Batch reuse/double clean；
+- 0 visible complete；
+- 3 GiB Object streaming；
+- oversize varlen row。
 
----
+### B2. Archive Writer
 
-## 11. Definition of Done
+实现：
 
-- 功能：Whole Archive、受限 Mixed Archive、TTL、Restore、Purge、DROP cleanup、Dry-run 可用；
-- 安全：未 Verify 不删源、unknown 不清理、发布与退休原子、Restore 全量校验；
-- 并发：Merge/DML/DDL/双 Job/双 Sweeper/双 Restore 竞态有测试；
-- 重启：CN/TN/TaskService/provider response lost 后仅靠 Catalog 可对账；
-- 资源：内存、spill、任务、Index、Root、对象、Tombstone、retained bytes 有上限；
-- 运维：状态、告警、kill switch、recheck、cleanup Runbook 齐全；
-- 兼容：滚动升级 fail-closed，旧节点不接收新 wire；
-- 性能：1/10 TiB 和 1000 绑定表认证通过；
-- 产品：支持矩阵和非目标无歧义，不宣传为七年不可删的合规归档。
+- Parquet + ZSTD；
+- field ID 和 MO type/schema digest；
+- multipart bounded pipeline；
+- deterministic immutable key；
+- Manifest V1；
+- full Provider readback；
+- payload/root/content root 校验。
 
-只有以上全部满足，才可以把 Issue #24552/#24853 对应的首个 Commercial GA 标记为完成。
+ETag、HEAD size、Footer 或 sample 不能替代全量 readback。
+
+### B3. Cleanup Root observer
+
+ArchiveStore 每次副作用前：
+
+```text
+Root committed
+Root Object ALLOCATED committed
+then PUT/multipart
+```
+
+每次 multipart create、part complete、PUT response、provider version 都通过 observer
+写回 Root。observer 持久化失败时停止后续 I/O，把所有权交给 Sweeper。
+
+Gate B exit：
+
+- Export-only 可恢复解码且 root 一致；
+- 任一 crash 后没有不可枚举外部对象；
+- stale writer 使用 new attempt/new prefix；
+- Provider 429/5xx/timeout 下 memory/goroutine 有界；
+- 不存在活动数据 DropIntent/DELETE。
+
+## 6. Gate C：Reservation、GC Protection 与 Lifecycle Wire
+
+Gate C 先在测试表上验证协议，不对客户表开放。
+
+### C1. Exact source reservation
+
+在 TN 增加 in-memory manager：
+
+```go
+type LifecycleReservationToken struct {
+    AttemptID     uuid.UUID
+    ExecutorEpoch uint64
+    TableID       uint64
+    Generation    uint64
+    ObjectDigest  [32]byte
+    ExpiresAt     time.Time
+}
+
+ReserveLifecycleSources(...)
+RenewLifecycleReservation(...)
+ValidateLifecycleReservation(...)
+ReleaseLifecycleReservation(...)
+IsReservedByOther(...)
+BeginMergeAdmission(...)
+EndMergeAdmission(...)
+```
+
+接入点：
+
+- Merge scheduler 在选择时跳过 reserved Object；
+- TN `OpCommitMerge` final admission 在 manager shard 中取得短
+  `MergeAdmissionTicket`；它覆盖检查 reservation 到安装全部 source DropIntent 的
+  窗口；
+- DropIntent/txn entry安装后释放 ticket，由 Object MVCC 接管互斥；
+- CN/user forced Merge 最终也走相同 TN admission；
+- `OpCommitLifecycle`校验自己的 token。
+
+reservation 不写 WAL。TN restart 后 token 丢失，Lifecycle final 必须失败并 replan；
+不能从 Job row 猜测恢复。
+
+普通 Merge ticket 的 success/error/panic 路径都 exactly-once 释放。manager 必须按
+table/object 分片；禁止单全局 mutex。ticket 不覆盖 `DoMergeAndWrite` 或 commit
+等待，因此不会把 Lifecycle lease 变成普通 Merge 长锁。
+
+### C2. Exact source GC protection
+
+复用 `pkg/vm/engine/tae/db/gc/v3/sync_protection.go`：
+
+1. capture `source_snapshot_ts`；
+2. 枚举 exact source Data Object 和相关 Tombstone Object filename；
+3. Rewrite预先创建Root并冻结live segment ordinal range和booking page range；
+4. 把source文件和全部未来可能生成的live/booking文件名加入同一BloomFilter；
+5. GC cycle 空闲时注册；
+6. 注册成功后才允许读取或写staging；
+7. build 期间续租；
+8. TN Prepare 调用 `ValidateSyncProtection`；
+9. commit/abort 明确后释放。
+
+GC 正在运行时注册失败必须 retry。deadline 只能触发停止和告警，不能把
+`COMMIT_UNKNOWN`猜成 aborted。
+
+当前manager不支持扩展已有BloomFilter；Writer越过已冻结range必须在下一次物理写前
+停止，不能写完后补保护。
+
+### C3. 独立 wire
+
+在 `proto/api.proto` 增加：
+
+```text
+OpCommitLifecycle = 2018
+LifecycleCommitEntry V1
+LifecycleCommitMode:
+  WHOLE_TTL
+  WHOLE_ARCHIVE
+  MIXED_REWRITE_TTL
+  MIXED_REWRITE_ARCHIVE
+```
+
+Entry 冻结：
+
+- protocol/version/mode；
+- account/table/schema/Binding/Guard generation；
+- attempt/executor/reservation/protection identity；
+- source Snapshot 和 exact source Object/digest；
+- created live Object/digest；
+- transfer booking/digest；
+- Archive Dataset/Manifest/root；
+- source/expired/live counts 和 conservation roots；
+- deterministic entry digest。
+
+路由：
+
+- `pkg/txn/storage/tae/write.go`识别新 opcode；
+- `pkg/vm/engine/tae/rpc/handle_lifecycle.go`解析；
+- 未知 opcode/version/mode/field fail closed；
+- 进入正常 1PC/2PC、WAL、retry 和 replay；
+- Dataset/Receipt 必须通过唯一 finalizer API 与 entry 一起加入同一 txn。
+
+不得把可选字段塞入 `OpCommitMerge`，否则老 TN 可能忽略字段后错误提交。
+
+### C4. TN Prepare 顺序
+
+```text
+validate protocol/capability/digest
+validate table/schema/Guard generation
+validate reservation token
+validate SyncProtection
+validate exact current source Objects
+validate created live Objects/checksum
+validate row-conservation/transfer roots
+collect and validate Tombstone delta
+register/reuse merge create-drop-transfer txn entry
+append WAL through normal transaction path
+```
+
+任一条件失败，整个 transaction abort。
+
+Gate C exit：
+
+- 1PC、2PC、duplicate Prepare、`ErrTAENeedRetry`、response lost 全矩阵通过；
+- old/new CN/TN 混部只允许 Dry-run/Export-only；
+- TN restart 丢 reservation/protection 后不会退休；
+- ordinary `OpCommitMerge`回归通过；
+-现有GC最终回收已提交DropIntent，未提交source不受Lifecycle直接Delete。
+
+## 7. Gate D：三条退休执行路径
+
+### D1. Whole Object
+
+Whole TTL：
+
+```text
+Metadata max < cutoff
+  -> reservation/protection
+  -> short final txn
+  -> Receipt + OpCommitLifecycle(WHOLE_TTL)
+```
+
+Whole Archive：
+
+```text
+reservation/protection
+  -> Exact Reader at S
+  -> Parquet/ZSTD + readback VERIFIED
+  -> Root FINALIZING with txn identity/digest
+  -> Dataset + Receipt + OpCommitLifecycle(WHOLE_ARCHIVE)
+```
+
+final 只写 DropIntent；FileService source delete 交给 existing GC。
+
+### D2. 小 Mixed DELETE
+
+只服务经认证的小尾部：
+
+```text
+one bounded writable SI transaction
+  -> exact Reader at txn Snapshot
+  -> optional Archive PUT/readback
+  -> Relation.Delete(RowID + actual delete key)
+  -> Dataset/Receipt in same txn
+```
+
+必须共享普通 DELETE 的单 PK、复合 PK、fake PK 编码。预测超限时在第一次 Delete 前
+完整 rollback，并重plan为 Rewrite。
+
+### D3. 中/大 Mixed Rewrite
+
+Build 阶段不持有 writable transaction：
+
+1. 获取 reservation/protection；
+2. 创建 Root，并提交一个 deterministic
+   `TAE_LIVE_SEGMENT_RANGE(segmentID, ordinal hard limit)` ownership envelope；
+3. 以 `source_snapshot_ts`逐 block 读取；
+4. 得到 Snapshot delete bitmap `D`；
+5. 计算 expired bitmap `E`；
+6. Archive 模式同步把 `E` 行写入按source ordinal分片的Archive substream；
+7. 把 `D ∪ E`交给现有 `DoMergeAndWrite`；
+8. 只有 live row 写入 normal TAE Object；
+9. live row 产生 destination，`D/E`保持 `api.NoTransfer`；
+10. actual writer只消费range内ordinal，Sync后追加exact child并冻结
+    ObjectStats/checksum；
+11. transfer booking每页在FileService write前动态分配Root child；
+12. Archive full readback 后进入短 final transaction。
+
+当前 `PrepareNewWriter()`没有 error 返回值，禁止在其中做 Catalog transaction。
+P0先证明 writer name 可由`segmentID + ordinal`稳定枚举，crash时 Sweeper遍历有限
+range；证明不了时增加共享`BeforeCreateObject(name) error` hook，不允许写后才取得
+所有权。
+
+mergesort可能交错拉取多个source；Archive sink不能使用callback到达顺序。每个
+substream内部按block/row递增，Manifest/content root按source Object ID组合。若
+现有host不能证明同一source内部有序，使用受控本地spill排序。所有substream共享
+aggregate memory/file-handle semaphore。
+
+本地spill目录包含CN boot ID/attempt/epoch，正常退出由executor清理，crash后由新boot
+janitor清理旧目录。per-CN spill bytes/dir count必须先admission，不能等磁盘写满。
+
+Build 完成硬不变量：
+
+```text
+source_physical = snapshot_deleted + expired + live
+source_visible  = expired + live
+archive_rows    = expired                 # Archive
+new_live_rows   = live
+each live row has exactly one destination
+snapshot_deleted/expired are NoTransfer
+```
+
+新 live Object 仍按表的 physical sort/cluster key 使用现有 mergesort。不能按 lifecycle
+column 伪装成 sorted。
+
+### D4. Tombstone transfer
+
+直接复用现有 Merge txn entry 的两阶段协议：
+
+- phase 1 收集 build Snapshot 后、Prepare 前的 Tombstone；
+- phase 2 覆盖 Prepare 并发窗口；
+- survivor delete transfer 到新 RowID；
+- expired row 的 `NoTransfer` 触发正常冲突并使 Lifecycle abort；
+- transfer page missing/expired/digest mismatch 均 fail closed。
+
+不得复制一份 Lifecycle-only transfer 实现。
+
+外部transfer booking只复用encoding，不复用普通Merge的Prepare即删语义。重构
+`writeTransferMapsToS3/marshalTransferMaps`：
+
+- 普通Merge仍使用random temp key和load-and-delete；
+- Lifecycle通过Root分配deterministic page key并在write前提交child；
+- Lifecycle TN Prepare只读和校验，不删除，且不原地改写request；
+- duplicate Prepare/`ErrTAENeedRetry`可重新打开同一immutable page；
+- final结果明确后由Root child Sweeper删除booking。
+
+### D5. Final result/Root
+
+明确 committed：
+
+```text
+Txn GetStatus == COMMITTED
+AND consistent read at snapshot >= commit_ts sees matching Receipt
+AND Archive sees matching Dataset/Manifest root
+```
+
+然后：
+
+- Archive Root -> `PUBLISHED`；
+- Rewrite live/range child -> `TAE_OWNED`；
+- Rewrite booking child -> `DELETE_PENDING`；
+- TTL Rewrite Root -> `POST_COMMIT_CLEANUP`，booking全部删除后 -> `TRANSFERRED`；
+- normal TAE/WAL/GC 接管 live/source Object。
+
+明确 aborted 才允许 Root -> `DELETE_PENDING`。仍 unknown 时保留
+reservation/protection、Root 和 staging，释放 worker slot并进入 Reconciler。
+
+Gate D exit：
+
+- 八项 P0 中 Reader、SI、wire、reservation/protection、Root、Rewrite、budget 全部
+  通过；
+- Whole/small Mixed/Rewrite 每条路径都有 crash matrix；
+- source visible row 不出现缺失、重复或未归档即删除；
+- 普通 Merge/SELECT/DML/GC 回归在阈值内。
+
+## 8. Gate E：Restore、Purge、DROP 与 Reconcile
+
+### E1. Restore
+
+```text
+select immutable Dataset set
+  -> acquire access_generation lease
+  -> create hidden staging table
+  -> read/verify each Manifest/Payload
+  -> bounded insert transaction per chunk
+  -> immutable chunk Receipt
+  -> full row/root verification
+  -> atomic publish as a new table
+```
+
+要求：
+
+- 不覆盖已有目标表；
+- payload/Manifest/schema/root 任一不符不发布；
+- response lost 依赖 Receipt 恢复；
+- AUTO_INCREMENT 水位正确推进；
+- cancel/worker loss 后 staging 可清；
+- Purge 与 Restore lease CAS 同一 access generation。
+
+### E2. DROP
+
+保持普通 DROP 主流程：
+
+- DROP TABLE/DATABASE/ACCOUNT 在本地事务写有界 owner tombstone；
+- 不等待 Provider；
+- 产品合同明确 DROP 后不再保证 Archive Restore；
+- system Sweeper 按 account incarnation/table generation 异步清理。
+
+不把 Archive payload 数量放大到 DROP 事务。
+
+### E3. Purge/Cleanup
+
+进入 `DELETING` 前：
+
+```text
+owner dropped OR purge_eligible_at reached
+AND no Restore/read lease
+AND final txn not in-doubt
+AND CAS access_generation
+```
+
+`DELETING`不可逆，不允许新 reference。按 exact key/version 删除；Provider 支持 version
+ID/CAS 时按具体版本删除。全部 HEAD/LIST 确认不存在后 Root/Dataset 才进入终态。
+
+Gate E exit：
+
+- Restore round-trip root/row/type一致；
+- Purge/Restore/DROP竞态只胜一方；
+- account drop后所有Root最终可枚举清理；
+- unavailable Backup/PITR/DR入口在执行前明确拒绝；
+- Provider credential失效只进入`DELETE_FAILED`，不丢证据。
+
+## 9. Gate F：运维、认证与 GA
+
+### F1. Release profile
+
+冻结至少：
+
+```text
+bound tables: 500 -> 1000 staged rollout
+child concurrency: table 1 / database 2 / account 4 / cluster 8
+Discovery page object/footer-byte limit
+Candidate table/account/cluster limit
+Reader batch/memory limit
+small Mixed rows/ratio/delete-key/WAL limit
+Rewrite source/live/spill/transfer/staging limit
+Provider I/O/deadline/concurrency limit
+Root/Object/orphan/backlog limit
+reservation/protection lease and renew interval
+```
+
+任何默认无限值非法。
+
+### F2. Observability
+
+交付：
+
+- `SHOW LIFECYCLE`、JOBS、DATASETS、RESTORE；
+- Discovery cursor/lag/Candidate；
+- execution path、expired/live/transfer；
+- reservation/protection 状态；
+- Root/staging/orphan/unknown；
+- Rewrite amplification；
+- Tombstone/Merge/GC backlog；
+- Provider requests/bytes/cost；
+- invariant checker 和 kill switch。
+
+### F3. 认证矩阵
+
+必须完成：
+
+- 当前最大 rows/block、blocks/object、bytes/object；
+- single block max varlen；
+- 1 TiB 常见表全流程；
+- 10 TiB 单表持续 Insert/Merge 七天；
+- 高时间局部性、1%边界 Mixed、高度乱序三种 layout；
+- “几乎全部存活”的最大 Rewrite；
+- 1000 Binding、公平调度和无全局热点；
+- 真实支持的 S3/OSS/COS/S3-compatible Provider；
+- rolling upgrade/downgrade fence；
+- 30 天 soak；
+- Restore/Purge/DROP/GC/2PC chaos。
+
+放量：
+
+```text
+50 -> 200 -> 500 -> 1000 bound tables
+```
+
+任一数据不变量失败立即关闭新 retirement，继续 Cleanup/Reconcile，不扩大下一阶段。
+
+## 10. 开发依赖图
+
+```text
+A1 Catalog ──┬── A2 Guard
+             ├── A3 Discovery ── A4 Planner
+             └── B3 Root
+
+B1 Reader ────── B2 Archive
+
+C1 Reservation ─┐
+C2 Protection  ─┼── C3 Wire ── C4 TN Prepare
+B3 Root        ─┘
+
+A4 + B1 + C4 ───── D1 Whole
+A4 + B1 + B2 ───── D2 Small Mixed
+B2 + C4 + merge primitives ── D3/D4 Rewrite
+
+D1/D2/D3 + E1 Restore + E2/E3 Cleanup ── F GA certification
+```
+
+可以并行开发 Catalog、Reader/Archive、reservation/protection，但第一个会退休数据的
+测试必须等 C1～C4 和 Root 协议全部完成。
+
+## 11. Code Review Owner
+
+| 变更 | 必须 Review |
+|---|---|
+| SQL/Binding/Guard/support matrix | Frontend + Catalog |
+| Exact Reader/delete projection | DistTAE + Transaction |
+| Archive/Manifest/Provider | FileService + Restore |
+| reservation/SyncProtection | TAE Merge + GC |
+| opcode/TN Prepare/WAL/replay | TAE Transaction + TxnService |
+| Rewrite/transfer | TAE Merge + MVCC |
+| Attempt/Root/Sweeper | TaskService + FileService |
+| scale/kill switch/runbook | SRE + Release |
+
+协议、MVCC、GC 和 replay 变更不能仅由 Lifecycle 模块自审。
+
+## 12. 每个任务的 Definition of Done
+
+每个任务提交必须包含：
+
+1. 正常、失败、cancel、panic、restart/epoch 路径；
+2. 资源 Owner 和终态；
+3. 所有等待的 deadline/通知方/终止条件；
+4. 有界增长和 hard limit；
+5. unit + race + package integration；
+6. fault injection；
+7. metrics/trace/error contract；
+8. 升级/降级行为；
+9. 对普通 DML/Merge/GC 的回归证据；
+10. 对应设计章节同步更新。
+
+只有实现和[GA 验收矩阵](10-p0-test-ga-acceptance-cn.md)全部关闭后，才能把
+Conditional Go 改为 Commercial GA。

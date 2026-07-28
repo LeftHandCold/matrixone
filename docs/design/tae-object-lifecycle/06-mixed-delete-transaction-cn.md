@@ -1,11 +1,14 @@
 # 小 Mixed Object 普通 DELETE 详细设计
 
 > 本文唯一负责小 Mixed 的可写 SI 事务、delete key、Relation.Delete、Archive/TTL
-> 原子性、预算、并发冲突和 blocked 语义。
+> 原子性、预算和并发冲突。中/大 Mixed 的 Rewrite 协议由
+> [05-strict-object-retire-protocol-cn.md](05-strict-object-retire-protocol-cn.md)
+> 定义。
 
 ## 1. 结论
 
-首个 GA 不重写 Mixed Object。只有一个 Mixed Object 的少量到期行满足全部硬预算时：
+只有一个 Mixed Object 的少量到期行满足全部硬预算时，才使用普通 DELETE 快速
+路径：
 
 ```text
 one normal writable SI transaction
@@ -24,7 +27,7 @@ one normal writable SI transaction
 - 普通 Merge/Vacuum/GC按现有逻辑处理 Tombstone；
 - Lifecycle 不写隐藏查询 filter；
 - Lifecycle 不生成新 live Object/transfer map；
-- 超预算进入 `MIXED_LAYOUT_BLOCKED`，源行继续可见。
+- 超预算先完整回滚，再交给 Lifecycle Rewrite 重新规划；源行继续可见。
 
 ## 2. 为什么必须是 SI
 
@@ -148,7 +151,7 @@ txn is not Snapshot Operator
 5. Object不存在或变化：rollback/replan；
 6. exact Reader只读该一个 Object。
 
-Index 的 Mixed分类不是最终条件。
+Discovery Metadata 的 Mixed分类不是最终条件。
 
 ## 6. 实际 delete key
 
@@ -322,7 +325,7 @@ begin writable SI txn
 - rollback read-only SI txn；
 - Job标记 `NOOP_COMMITTED`；
 - 不写Receipt，因为没有退休副作用；
-- Index row更新 `next_action_at`。
+- Candidate完成，Binding/scan state更新 `next_action_at`。
 
 ## 11. Catalog 写如何保持同一事务
 
@@ -375,12 +378,16 @@ Hard limit任一超过：
 before Delete:
   rollback txn
   Root DELETE_PENDING if present
-  MIXED_LAYOUT_BLOCKED
+  enqueue bounded Lifecycle Rewrite candidate
 
 after Delete:
   no new work should make budget grow beyond precomputed hard bound
   unexpected overflow -> rollback/commit-unknown protocol + P0 alert
 ```
+
+普通 DELETE 超限本身不是布局终态。只有 Rewrite 也超过 spill/staging/transfer 硬
+预算时进入 `RESOURCE_BLOCKED`，或者重复 Rewrite 放大超过 release profile 时进入
+`MIXED_LAYOUT_BLOCKED`。
 
 ### 12.1 Tombstone估算
 
@@ -481,7 +488,7 @@ Guard/Binding CAS：
 
 ## 14. 锁
 
-Mixed不拿Whole Archive的exclusive table lock。它只使用：
+小 Mixed 不获取额外的 Lifecycle table lock。它只使用：
 
 - 普通 SI pessimistic transaction；
 - `Relation.Delete`现有Row/PK锁；
@@ -530,7 +537,8 @@ source exact read（无写锁）
 因此：
 
 - expired ratio/rolling backlog是硬门槛；
-- 大Mixed进入blocked；
+- 超过小 Mixed 门槛后切换为 Lifecycle Rewrite；
+- Rewrite 自身超过资源或重复放大门槛才进入 blocked；
 - 不用“多跑几千个小Job”绕过。
 
 ## 17. 测试要求

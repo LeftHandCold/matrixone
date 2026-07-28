@@ -15,8 +15,9 @@
 
 - 对外提供哪些 SQL、状态和错误语义；
 - 新增哪些 Catalog 表，谁创建、更新和清理每一行；
-- Object Index 如何复用现有 Metadata，又不变成新的权威目录或 replay 热点；
-- Reader、Parquet Writer、Strict Object Retire 和 Mixed DELETE 的具体接口；
+- Object Discovery 如何复用现有 Metadata，而不创建每 Object Catalog 行；
+- Reader、Parquet Writer、conditional Lifecycle retire、Mixed Rewrite 和小 Mixed
+  DELETE 的具体接口；
 - Archive PUT、最终事务、commit unknown、DROP、Purge、Restore 如何收敛；
 - 每个等待、租约、重试和积累项的上限；
 - P0 原型必须证明什么，Commercial GA 必须通过哪些测试和放量门禁；
@@ -24,7 +25,8 @@
 
 本文档集坚持四条工程约束：
 
-1. 不修改普通 Merge 的候选、排序、重写、transfer、提交和 GC 策略。
+1. 不修改普通 Merge 的候选算法、排序、普通重写语义、transfer 格式和 GC
+   谓词；只为正在执行的 exact source Object 增加窄 reservation admission。
 2. 不把 SQL Partition 当成数据安全边界。
 3. 退休活动数据之前必须先证明 TTL 可安全删除，或 Archive 已可完整恢复。
 4. 任何不确定、超限、版本不兼容或并发条件不满足的情况都 fail closed，源数据继续可见。
@@ -35,15 +37,15 @@
 |---|---|
 | [01-product-sql-contract-cn.md](01-product-sql-contract-cn.md) | 产品边界、SQL、权限、时间语义、支持矩阵和用户可见错误 |
 | [02-catalog-state-machine-cn.md](02-catalog-state-machine-cn.md) | Catalog DDL、身份、版本、状态机、事务边界和资源 Owner |
-| [03-object-index-planner-scheduler-cn.md](03-object-index-planner-scheduler-cn.md) | Object Index、候选分类、Dry-run、Job 切分、调度和硬配额 |
-| [04-reader-archive-format-cn.md](04-reader-archive-format-cn.md) | exact Reader、Batch 所有权、Parquet/ZSTD、Manifest、root 和 readback |
-| [05-strict-object-retire-protocol-cn.md](05-strict-object-retire-protocol-cn.md) | Whole TTL/Archive、表锁、protobuf wire、TN Prepare、WAL/replay 和升级 |
+| [03-object-index-planner-scheduler-cn.md](03-object-index-planner-scheduler-cn.md) | Object Discovery、分页游标、候选分类、Dry-run、Job 切分、调度和硬配额 |
+| [04-reader-archive-format-cn.md](04-reader-archive-format-cn.md) | exact Reader、Batch 所有权、双输出分类、Parquet/ZSTD、Manifest、root 和 readback |
+| [05-strict-object-retire-protocol-cn.md](05-strict-object-retire-protocol-cn.md) | Whole/Mixed Rewrite、reservation/source protection、Lifecycle opcode、TN Prepare、transfer、WAL/replay 和升级 |
 | [06-mixed-delete-transaction-cn.md](06-mixed-delete-transaction-cn.md) | 小 Mixed 的可写 SI 事务、普通 DELETE、预算和并发冲突 |
 | [07-attempt-cleanup-reconcile-cn.md](07-attempt-cleanup-reconcile-cn.md) | Attempt/Root、immutable key、commit unknown、迟到 PUT 和 Sweeper |
 | [08-drop-purge-restore-cn.md](08-drop-purge-restore-cn.md) | DROP cascade、Purge、Restore lease、隐藏 staging table 和限制矩阵 |
 | [09-observability-operations-cn.md](09-observability-operations-cn.md) | 指标、SHOW、告警、kill switch、容量模型和运维 Runbook |
 | [10-p0-test-ga-acceptance-cn.md](10-p0-test-ga-acceptance-cn.md) | P0 证明义务、故障/并发/升级/规模测试和 GA 放量门禁 |
-| [11-implementation-plan-cn.md](11-implementation-plan-cn.md) | 可执行的代码任务、文件边界、测试命令、提交拆分和 Review checkpoint |
+| [11-implementation-plan-cn.md](11-implementation-plan-cn.md) | 可执行代码任务、文件边界、依赖 Gate、认证顺序和 Review Owner |
 
 ## 3. 规范优先级
 
@@ -77,6 +79,7 @@
 - TTL Whole Object；
 - Archive Whole Object；
 - 在硬预算内的小 Mixed Object 普通 RowID DELETE；
+- 中/大 Mixed Object 使用独立 Lifecycle Rewrite；
 - 无显式主键的普通表，使用 MO 已持久化 fake PK 作为 delete key；
 - Parquet/ZSTD direct-readable Archive；
 - 全量 readback 校验；
@@ -91,8 +94,8 @@
 - restore-required Deep Archive；
 - SQL Partition 依赖；
 - 大 Mixed 普通 DELETE；
-- Lifecycle Mixed Rewrite；
-- 修改普通 Merge；
+- 在普通 Merge worker 中执行 Lifecycle/Provider I/O；
+- 修改普通 Merge 的候选、物理排序或 GC 策略；
 - CDC、FK、Publication、Fulltext、Vector、插件和隐藏二级/唯一索引表；
 - Lifecycle-aware Snapshot/PITR/Backup/Clone/Branch/DR；
 - Legal Hold、WORM、maximum retention；
@@ -107,26 +110,33 @@
 ALTER TABLE ... SET LIFECYCLE
   -> Feature Guard 串行化准入
   -> Binding ACTIVE
-  -> Object Index generation READY
-  -> Planner 只读取 READY Index 形成候选
-  -> Child Executor 在当前事务重新确认 exact Object
+  -> Object Discovery 分页扫描当前 TAE Metadata
+  -> Planner 形成有界 Candidate/Child
+  -> Child Executor reserve exact Object 并注册 source protection
        |
        +-- Whole TTL
        |     -> final transaction
-       |     -> StrictObjectRetire + Receipt
+       |     -> OpCommitLifecycle + Receipt
        |
        +-- Whole Archive
        |     -> exact Reader
        |     -> Root -> Parquet PUT -> readback -> VERIFIED
-       |     -> final table lock
-       |     -> Dataset + Receipt + StrictObjectRetire
+       |     -> Dataset + Receipt + OpCommitLifecycle
        |
        +-- small Mixed TTL/Archive
-             -> one writable SI transaction
-             -> exact Reader
-             -> optional Root/Parquet/readback
-             -> Relation.Delete(RowID + delete key)
-             -> optional Dataset + Receipt
+       |     -> one writable SI transaction
+       |     -> exact Reader
+       |     -> optional Root/Parquet/readback
+       |     -> Relation.Delete(RowID + delete key)
+       |     -> optional Dataset + Receipt
+       |
+       +-- medium/large Mixed TTL/Archive
+             -> one-pass split:
+                  expired -> Archive/discard
+                  live -> new TAE Objects
+             -> verify outputs
+             -> Dataset/Receipt + OpCommitLifecycle
+             -> source DropIntent + survivor transfer
 
 final transaction response lost
   -> Attempt/Root FINALIZING
@@ -149,8 +159,11 @@ Object retired
 ```text
 all payload PUT complete
 AND all payload full readback complete
-AND archive_rows == source_visible_rows
-AND archive_content_root == source_content_root
+AND archive_rows == expired_visible_rows
+AND source_visible_rows == expired_visible_rows + live_visible_rows
+AND archive_content_root == verified expired-row root
+AND created TAE Object rows == live_visible_rows
+AND transfer map covers every live row exactly once
 AND immutable Manifest VERIFIED
 AND Root state == FINALIZING for the exact final transaction
 ```
@@ -165,17 +178,23 @@ Dataset/Receipt 和活动数据退休必须在同一个 tenant 正常事务中�
 
 - Root/Attempt Control 保留；
 - Payload 不删除；
+- live staging和external transfer booking不删除；
 - 不创建新的 final transaction 重做相同退休；
 - 不释放会导致错误 Restore/Purge 的所有权。
 
-### I-4 Index is a hint
+source protection 应尽力续租；若因 TN restart/TTL 失效，也只能让未提交 final
+transaction失败，不能据此判断已经提交但响应丢失的事务结果。
 
-Object Index、ZoneMap 分类和 Dry-run 只负责少读。最终事务必须重新校验：
+### I-4 Discovery is a hint
+
+Scan cursor、Candidate、可选 packed Summary、ZoneMap 分类和 Dry-run 只负责少读。
+最终事务必须重新校验：
 
 - 物理 table ID/schema generation；
 - exact Object identity/state/stats digest；
 - Binding/Guard/active attempt generation；
-- Archive Whole Object 的新 Tombstone 条件。
+- reservation/protection token；
+- Whole/Rewrite 的 Tombstone delta、row-conservation 和 transfer 条件。
 
 ### I-5 Existing GC owns TAE file deletion
 
@@ -187,11 +206,17 @@ Archive key 永不覆盖、永不复用。Profile 的 namespace identity 不可�
 
 ### I-7 One resource, one owner
 
-Batch、txn、multipart、staging Payload、Dataset、Restore staging table 和 Object Index generation 在任何时刻只有一个清理 Owner。Owner 转移必须持久化并 CAS。
+Batch、txn、multipart、staging Payload、staging live TAE Object、Dataset、
+Restore staging table和Discovery scan state/Candidate在任何时刻只有一个清理 Owner。
+Owner转移必须持久化并CAS。
+
+普通Merge的temporary `BookingLoc`可以在Prepare读取后删除；Lifecycle booking不可以。
+它由Root持有到final transaction结果明确，之后才作为temporary child单独清理。
 
 ### I-8 All waits and growth are bounded
 
-锁、Provider I/O、Reader、事务、重试、Index backlog、Job backlog、Root、Tombstone、retained bytes 和 staging table 都必须有：
+锁、Provider I/O、Reader、事务、重试、Discovery/Job backlog、Root、Tombstone、
+transfer、retained bytes和staging object/table都必须有：
 
 - 上限；
 - 计量；
@@ -201,14 +226,18 @@ Batch、txn、multipart、staging Payload、Dataset、Restore staging table 和 
 
 ### I-9 Ordinary Merge remains independent
 
-Merge 可以在 Lifecycle 导出期间替换 source Object。Lifecycle 通过 exact Object CAS abort/replan；不能让 Merge 等待远端 Archive，也不能让 Lifecycle 操纵 Merge 的删除文件。
+Lifecycle只对实际执行中的exact source set申请短期reservation。普通Merge跳过或
+拒绝该exact set，但不等待远端Archive、不读取Policy、不改变候选和排序。
+final提交前reservation丢失时Lifecycle通过TN validation/exact Object CAS
+abort/replan；final结果未知时不能启动第二次提交。旧TAE文件仍只能由现有GC删除。
 
 ### I-10 Capability before retirement
 
-滚动升级期间，只有全部相关 CN/TN 支持同一 `StrictObjectRetire` 协议版本，才允许真正退休数据。否则只允许：
+滚动升级期间，只有全部相关CN/TN支持同一`OpCommitLifecycle`协议版本，才允许
+真正退休数据。否则只允许：
 
 - DDL；
-- Object Index；
+- Object Discovery；
 - Dry-run；
 - Export-only；
 - Restore 已有且兼容的 Dataset。
@@ -219,10 +248,10 @@ Merge 可以在 Lifecycle 导出期间替换 source Object。Lifecycle 通过 ex
 |---|---|---|
 | Binding/Feature Guard | 权威 | 禁止执行或提交 Lifecycle |
 | 当前 Relation/PartitionState/TAE Catalog | 当前 source Object 权威 | 无法校验则 fail closed |
-| Object Index | 派生 hint | 重建，期间暂停该 generation |
+| Scan state/Candidate/Packed Summary | 派生 hint | 重建或重新分页扫描，源数据不受影响 |
 | Dataset Catalog + immutable Receipt | Archive 可见性权威 | 不允许猜测发布状态 |
 | Manifest/Payload | Archive 内容权威 | 校验失败则 Dataset 不可恢复 |
-| Attempt/Cleanup Root | 外部副作用所有权权威 | 不允许在 Root 前 PUT |
+| Attempt/Cleanup Root | 外部副作用所有权权威 | 不允许在 Root 前 PUT/live staging/booking write |
 | TaskService task/epoch | 投递 hint | 从 Catalog lease 重新接管 |
 | 普通 Merge/GC metadata | TAE 旧版本回收权威 | Lifecycle 不复制其职责 |
 
@@ -263,12 +292,15 @@ dataset_identity =
 | Whole Object | Metadata 能严格证明 Object 所有物理行均到期 |
 | Mixed Object | 同一 Object 同时有到期和未到期行，或 Metadata 无法证明 Whole |
 | Exact Reader | 只读调用方给出的持久化 Object/Block 集合，并应用指定 Snapshot Tombstone 的 Reader |
-| Strict Retire | 条件不匹配即 abort 的 Object DropIntent；不同于普通 Merge 的宽松 SoftDelete |
+| Conditional Lifecycle Retire | 通过`OpCommitLifecycle`提交，任一准入条件不匹配即整体 abort |
+| Lifecycle Rewrite | 到期行写 Archive/丢弃、存活行写新 TAE Object，并在短事务中整体替换 source Object |
+| Source Reservation | TN 内存中的 exact Object 短租约，线性化普通 Merge/Lifecycle 准入；不替代 final CAS |
+| Source Protection | 复用 GC SyncProtection 保护 source Data/Tombstone 以及 Rewrite final 前未入 Catalog 的 live/booking staging 文件 |
 | Dataset | 一次原子发布的 Archive 逻辑单元 |
 | Payload | Dataset 引用的不可变 Parquet 文件 |
 | Manifest | Dataset schema、Payload exact identity、统计、checksum 和 content root |
 | Attempt Control | system-owned 的执行和 final transaction 对账记录 |
-| Cleanup Root | system-owned 的外部对象写前所有权记录 |
+| Cleanup Root | Archive PUT、TAE live staging 或 transfer booking 前创建的 system-owned 所有权记录 |
 | Receipt | 与退休同事务提交的不可变成功证据 |
 | Commit unknown | final transaction 已发送，但客户端不能确定 committed/aborted |
 | Tombstone delta | Archive source Snapshot 之后新提交、且指向 source Object 的删除记录 |

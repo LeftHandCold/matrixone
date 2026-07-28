@@ -15,7 +15,7 @@ Lifecycle 有两个 Catalog 平面：
 
 - Binding；
 - Feature Guard；
-- Object Index；
+- Discovery Scan State 和有界 Candidate；
 - Dataset；
 - Receipt；
 - Restore chunk Receipt；
@@ -226,7 +226,6 @@ CREATE CLUSTER TABLE mo_catalog.mo_lifecycle_bindings (
     active_child_generation BIGINT UNSIGNED NOT NULL,
     active_attempt_id       BINARY(16) NULL,
     active_executor_epoch   BIGINT UNSIGNED NOT NULL,
-    index_generation        BIGINT UNSIGNED NOT NULL,
     next_scan_at            TIMESTAMP(6) NOT NULL,
     last_error_code         VARCHAR(64) NULL,
     last_error_message      VARCHAR(1024) NULL,
@@ -249,8 +248,8 @@ Binding 状态机：
 
 ```text
 ENABLING
-  -> ACTIVE              Index generation READY
-  -> ERROR               准入/Index terminal error
+  -> ACTIVE              Guard准入完成且Discovery scan state已创建
+  -> ERROR               准入/Discovery terminal error
 
 ACTIVE
   -> PAUSED              用户/配额/kill switch
@@ -284,63 +283,83 @@ WHERE account_incarnation = ?
 
 final transaction affected rows 不是 1 时必须整体 abort。
 
-### 3.3 Object Index
+### 3.3 Discovery Scan State 和 Candidate
+
+当前 Relation Metadata/PartitionState 是当前有效 Object 的唯一权威来源。Lifecycle
+不把全部 Object 复制到 Catalog，也不要求 Logtail/Merge 双写一个新索引。
+
+每个 Binding 只有一行分页扫描状态：
 
 ```sql
-CREATE CLUSTER TABLE mo_catalog.mo_lifecycle_object_index (
+CREATE CLUSTER TABLE mo_catalog.mo_lifecycle_scan_state (
     account_incarnation    BINARY(16) NOT NULL,
-    logical_table_id       BIGINT UNSIGNED NOT NULL,
-    index_generation       BIGINT UNSIGNED NOT NULL,
+    binding_id             BINARY(16) NOT NULL,
+    binding_generation     BIGINT UNSIGNED NOT NULL,
     physical_table_id      BIGINT UNSIGNED NOT NULL,
     schema_generation      BIGINT UNSIGNED NOT NULL,
-    object_id              VARBINARY(60) NOT NULL,
-    object_stats           VARBINARY(256) NOT NULL,
-    object_stats_digest    BINARY(32) NOT NULL,
-    create_ts              VARBINARY(16) NOT NULL,
-    delete_ts              VARBINARY(16) NULL,
-    row_count              BIGINT UNSIGNED NOT NULL,
-    block_count            INT UNSIGNED NOT NULL,
-    compressed_bytes       BIGINT UNSIGNED NOT NULL,
-    origin_bytes           BIGINT UNSIGNED NOT NULL,
-    lifecycle_min          VARBINARY(64) NULL,
-    lifecycle_max          VARBINARY(64) NULL,
-    lifecycle_null_count   BIGINT UNSIGNED NOT NULL,
-    zonemap_status         TINYINT UNSIGNED NOT NULL,
-    classification         TINYINT UNSIGNED NOT NULL,
+    cycle_id               BIGINT UNSIGNED NOT NULL,
+    cycle_snapshot_ts      VARBINARY(16) NOT NULL,
+    after_object_id        VARBINARY(60) NULL,
+    collect_watermark_ts   VARBINARY(16) NOT NULL,
+    state                  TINYINT UNSIGNED NOT NULL,
+    next_scan_at           TIMESTAMP(6) NOT NULL,
+    cycle_started_at       TIMESTAMP(6) NOT NULL,
+    cycle_completed_at     TIMESTAMP(6) NULL,
+    last_error_code        VARCHAR(64) NULL,
+    last_error_message     VARCHAR(1024) NULL,
+    version                BIGINT UNSIGNED NOT NULL,
+    updated_at             TIMESTAMP(6) NOT NULL,
+    PRIMARY KEY (account_incarnation, binding_id)
+);
+```
+
+`after_object_id` 只在固定 `cycle_snapshot_ts` 内解释。Binding/schema/physical table
+generation 变化时旧 cursor 作废，新 cycle 从空 cursor 开始。
+
+只有进入近期执行窗口的 Object 才形成有界 Candidate：
+
+```sql
+CREATE CLUSTER TABLE mo_catalog.mo_lifecycle_candidates (
+    account_incarnation    BINARY(16) NOT NULL,
+    candidate_id           BINARY(32) NOT NULL,
+    binding_id             BINARY(16) NOT NULL,
+    binding_generation     BIGINT UNSIGNED NOT NULL,
+    discovery_cycle_id     BIGINT UNSIGNED NOT NULL,
+    child_generation       BIGINT UNSIGNED NOT NULL,
+    physical_table_id      BIGINT UNSIGNED NOT NULL,
+    schema_generation      BIGINT UNSIGNED NOT NULL,
+    source_snapshot_ts     VARBINARY(16) NOT NULL,
+    source_object_id       VARBINARY(60) NOT NULL,
+    source_object_digest   BINARY(32) NOT NULL,
+    lifecycle_zm_digest    BINARY(32) NOT NULL,
+    classification        TINYINT UNSIGNED NOT NULL,
+    estimated_source_bytes BIGINT UNSIGNED NOT NULL,
+    estimated_expired_rows BIGINT UNSIGNED NOT NULL,
+    estimated_live_rows    BIGINT UNSIGNED NOT NULL,
+    cutoff_utc             TIMESTAMP(6) NOT NULL,
     next_action_at         TIMESTAMP(6) NOT NULL,
     state                  TINYINT UNSIGNED NOT NULL,
-    last_verified_at       TIMESTAMP(6) NOT NULL,
     version                BIGINT UNSIGNED NOT NULL,
-    PRIMARY KEY (
+    created_at             TIMESTAMP(6) NOT NULL,
+    updated_at             TIMESTAMP(6) NOT NULL,
+    PRIMARY KEY (account_incarnation, candidate_id),
+    KEY lifecycle_candidate_due (
         account_incarnation,
-        logical_table_id,
-        index_generation,
-        object_id
-    ),
-    KEY lifecycle_due (
-        account_incarnation,
-        logical_table_id,
-        index_generation,
+        binding_id,
         state,
         next_action_at
     )
 );
 ```
 
-Object row 状态：
+`candidate_id` 是
+`H(binding_id, binding_generation, cycle_id, object_id, cutoff)`，分页事务重试时幂等。
+每表、每账户和集群 Candidate 数都有硬上限；完成、stale 或 replan 后只保留短审计
+窗口。
 
-```text
-CURRENT
-DELETED_HINT
-CLAIMED
-OBSOLETE
-```
-
-它不保存权威 DropIntent，也不驱动 GC。Index row 的 delete 只是 hint；当前 Relation Metadata 才是执行权威。
-
-Index generation 元数据不另建全局表，保存在 Binding 的 `index_generation` 和
-system Job Control 的 `INDEX_BACKFILL/INDEX_CATCHUP` child 中。未 READY generation
-通过 Job Control state 判断，不能被 Planner 使用。
+Candidate 不是 retirement authority。Executor 必须重新读取当前 Relation Metadata，
+获取 source reservation/GC protection，并在 TN Prepare 再校验 exact Object。可选
+packed Discovery Summary 只能是可丢弃优化，Catalog 仅保存 root/version/watermark。
 
 ### 3.4 Dataset
 
@@ -665,17 +684,48 @@ CREATE TABLE mo_catalog.mo_lifecycle_job_control (
 
 ```text
 POLICY_SCAN
-INDEX_BACKFILL
-INDEX_CATCHUP
+DISCOVERY_SCAN
 WHOLE_TTL
 WHOLE_ARCHIVE
-MIXED_TTL
-MIXED_ARCHIVE
+SMALL_MIXED_TTL
+SMALL_MIXED_ARCHIVE
+MIXED_REWRITE_TTL
+MIXED_REWRITE_ARCHIVE
 RESTORE
 PURGE
 CLEANUP
 RECONCILE
 ```
+
+退休 child 状态机：
+
+```text
+PLANNED
+  -> REGISTERED
+  -> READING | REWRITING
+
+REGISTERED | READING | REWRITING
+  -> UPLOADING             # Archive output finalization
+  -> VERIFIED              # TTL or completed Archive verification
+  -> RETRYABLE | ABORTED
+  -> RESOURCE_BLOCKED | MIXED_LAYOUT_BLOCKED | CONFLICT_BLOCKED
+
+UPLOADING
+  -> VERIFIED
+  -> RETRYABLE | ABORTED
+
+VERIFIED
+  -> FINALIZING
+
+FINALIZING
+  -> COMMITTED | ABORTED | COMMIT_UNKNOWN
+
+COMMIT_UNKNOWN
+  -> COMMITTED | ABORTED | MANUAL_RECONCILE_REQUIRED
+```
+
+blocked 是当前 child generation 的终态；重新执行必须由 Planner 创建新 generation。
+`MANUAL_RECONCILE_REQUIRED`仍保留原 transaction identity 和所有权，不代表 aborted。
 
 Job Control 是调度和对账权威；TaskService task 只是唤醒/投递。
 
@@ -706,9 +756,10 @@ CREATE TABLE mo_catalog.mo_lifecycle_cleanup_roots (
     job_id                  BINARY(16) NOT NULL,
     attempt_id              BINARY(16) NOT NULL,
     executor_epoch          BIGINT UNSIGNED NOT NULL,
-    dataset_id              BINARY(16) NOT NULL,
-    profile_id              BINARY(16) NOT NULL,
-    profile_version         BIGINT UNSIGNED NOT NULL,
+    root_kind               TINYINT UNSIGNED NOT NULL,
+    dataset_id              BINARY(16) NULL,
+    profile_id              BINARY(16) NULL,
+    profile_version         BIGINT UNSIGNED NULL,
     storage_namespace_id    BINARY(16) NOT NULL,
     encryption_digest       BINARY(32) NOT NULL,
     deterministic_prefix    VARCHAR(2048) NOT NULL,
@@ -737,6 +788,10 @@ CREATE TABLE mo_catalog.mo_lifecycle_cleanup_roots (
 );
 ```
 
+`root_kind` 区分 `ARCHIVE`、`ARCHIVE_REWRITE` 和 `TTL_REWRITE`。TTL Rewrite 的
+Profile/Dataset字段为空，`storage_namespace_id`冻结当前 TAE shared FileService
+namespace identity；它不能伪造 Archive Profile。
+
 Root 状态机：
 
 ```text
@@ -753,12 +808,19 @@ VERIFIED
   -> DELETE_PENDING
 
 FINALIZING
-  -> PUBLISHED             committed + matching Receipt/Dataset
+  -> PUBLISHED             Archive committed + matching Receipt/Dataset
+  -> POST_COMMIT_CLEANUP   TTL Rewrite committed + matching Receipt
   -> DELETE_PENDING        explicitly aborted
   -> FINALIZING            in-doubt
 
 PUBLISHED
   -> DELETE_PENDING        retention/PURGE/owner drop
+
+POST_COMMIT_CLEANUP
+  -> TRANSFERRED           temporary booking全部确认删除
+
+TRANSFERRED
+  -> TRANSFERRED           TAE已经接管live且booking已删；短审计期后Catalog GC
 
 DELETE_PENDING
   -> DELETING
@@ -779,6 +841,8 @@ CLEANED
 - `FINALIZING -> DELETE_PENDING` 仅凭 timeout；
 - `DELETING -> PUBLISHED`；
 - `CLEANED -> UPLOADING`；
+- `TRANSFERRED -> DELETE_PENDING`；
+- `POST_COMMIT_CLEANUP -> DELETE_PENDING`；
 - 新 executor 复用旧 deterministic prefix。
 
 ### 4.4 Root Object
@@ -794,6 +858,8 @@ CREATE TABLE mo_catalog.mo_lifecycle_cleanup_objects (
     immutable_key_digest    BINARY(32) NOT NULL,
     provider_version        VARCHAR(512) NULL,
     upload_id               VARCHAR(1024) NULL,
+    tae_segment_id          BINARY(16) NULL,
+    tae_ordinal_limit       SMALLINT UNSIGNED NULL,
     size_bytes              BIGINT UNSIGNED NOT NULL,
     sha256                  BINARY(32) NULL,
     state                   TINYINT UNSIGNED NOT NULL,
@@ -819,11 +885,20 @@ Catalog 不变量检查器抽样校验。
 `object_kind`：
 
 ```text
-PAYLOAD
-MANIFEST
-SIDECAR
-MULTIPART
+ARCHIVE_PAYLOAD
+ARCHIVE_MANIFEST
+ARCHIVE_SIDECAR
+TAE_LIVE_SEGMENT_RANGE
+TAE_LIVE_STAGING_OBJECT
+TAE_TRANSFER_BOOKING
 ```
+
+Root Object 状态除上传态外增加 `TAE_OWNED`。只有一致性读取确认 final transaction
+committed 后，live/range child 才能从 `VERIFIED` 转为`TAE_OWNED`；Sweeper永远
+不能删除`TAE_OWNED`。这里的`TAE_OWNED`只适用于live/range child；temporary
+booking在committed后走`DELETE_PENDING -> DELETING -> DELETED`。
+`TAE_LIVE_SEGMENT_RANGE`冻结attempt专属segmentID和ordinal hard limit，负责枚举
+尚未来得及写exact child的FileService对象。
 
 状态：
 
@@ -1010,11 +1085,10 @@ Whole Archive：
 ```text
 Root VERIFIED -> FINALIZING committed in system transaction
   -> begin tenant pessimistic transaction
-  -> acquire table lock
   -> CAS Guard/Binding/active attempt
   -> insert Dataset
   -> insert Receipt
-  -> append StrictObjectRetire entry
+  -> txnOp.Write(OpCommitLifecycle, WHOLE_ARCHIVE)
   -> commit
 ```
 
@@ -1033,7 +1107,27 @@ begin tenant writable SI transaction
 
 注意：system Root transaction 与 tenant SI transaction 不共享锁。Root CAS 完成后才向 tenant txn 写 DELETE/Catalog；Root 失败则 tenant txn rollback。
 
-TTL：
+Mixed Rewrite：
+
+```text
+Root VERIFIED -> FINALIZING committed in system transaction
+  -> begin short tenant transaction
+  -> CAS Guard/Binding/active attempt
+  -> insert Dataset/Receipt               # Archive
+     or insert Receipt only               # TTL
+  -> txnOp.Write(
+       OpCommitLifecycle,
+       exact source Objects + staged live Objects + transfer booking
+     )
+  -> commit
+```
+
+TTL Whole/Rewrite 不写 Dataset，但同样在一个事务中提交 Receipt 和
+`OpCommitLifecycle`。TTL Rewrite committed 后把live/range child标为`TAE_OWNED`，
+Root进入`POST_COMMIT_CLEANUP`；temporary booking全部删除后才标`TRANSFERRED`。
+所有模式都不依赖长时间 SQL 表锁。
+
+TTL Whole：
 
 ```text
 Attempt Control -> FINALIZING committed in system transaction
@@ -1083,8 +1177,8 @@ last_error
 | Blocked/Manual reconcile | 原因解除或人工审计后 30 天 |
 | CLEANED Root tombstone | `max(30 天, max_io_deadline + multipart convergence + 24h quiescence)` |
 | PURGED Dataset stub | 30 天 |
-| Table/database owner tombstone | matching Dataset PURGED、Root CLEANED、无 in-doubt 后 30 天 |
-| Account tombstone | 全部 Root CLEANED 后 30 天 |
+| Table/database owner tombstone | matching Dataset PURGED、Root CLEANED/TRANSFERRED、无 in-doubt 后 30 天 |
+| Account tombstone | 全部 Root CLEANED/TRANSFERRED 后 30 天 |
 | DROPPED account identity | matching Account tombstone 和全部 Root 清理后 30 天 |
 
 保留期到达也必须由有界 GC Job 分页删除，不能在业务事务中批量清空。
@@ -1096,13 +1190,16 @@ last_error
 | 资源 | 创建 Owner | Owner 转移 | 最终清理 Owner |
 |---|---|---|---|
 | Binding generation | DDL txn | Scheduler CAS | Binding GC |
-| Index generation | Index Job | READY CAS | Index GC Job |
+| Discovery scan state/Candidate | Scanner epoch | Child claim CAS | Planner/Reconciler |
 | Reader Batch | Reader | 不转移 | Reader |
 | writable SI txn | Mixed Executor | commit unknown 时 txn client resolver | txn client |
 | multipart | Root Object row | Writer lease -> Sweeper generation | Sweeper |
 | staging Payload | Cleanup Root | Root PUBLISHED 后仍由 Root/Dataset共同引用 | Purge/owner-drop Sweeper |
 | published Dataset | tenant Dataset | DELETE_PENDING CAS | Sweeper |
-| final table lock | tenant txn | unknown 时 LockService resolver | LockService |
+| source Object reservation | Lifecycle attempt | 不转移；TTL/epoch fence | TN reservation manager |
+| source GC protection | Lifecycle attempt | 不转移；TTL/epoch fence | TN SyncProtection manager |
+| live TAE staging Object | Cleanup Root | final commit 后转给 TAE Catalog | Sweeper/TAE GC |
+| transfer booking/page | final transaction | WAL/replay | TAE txn entry |
 | Restore staging table | Restore Attempt | executor epoch CAS | Restore Sweeper |
 | Restore lease | Restore Attempt | 不转移；过期/fence | Lease Reconciler |
 
@@ -1158,7 +1255,8 @@ ClaimAttemptInSystemTxn(...)
 
 降级规则：
 
-- 存在 ACTIVE Binding 或未 PURGED Dataset 时，不允许降到不认识 Lifecycle Catalog/Strict Retire 的版本；
+- 存在 ACTIVE Binding 或未 PURGED Dataset 时，不允许降到不认识 Lifecycle
+  Catalog/`OpCommitLifecycle`的版本；
 - emergency downgrade 必须先 cluster kill switch、等待 finalizing/unknown 收敛、暂停 Binding；
 - 旧版本不得把未知系统表当普通 tenant 表清理；
 - protobuf unknown entry 必须返回不支持，不能跳过后继续 commit。
@@ -1172,9 +1270,11 @@ Dataset PUBLISHED -> exactly one matching Root and Receipt
 Root PUBLISHED -> matching Dataset/Receipt or owner already dropped
 Root FINALIZING -> final_txn_id and entry_digest non-empty
 Root DELETING/CLEANED -> no new ACTIVE lease at same/higher access generation
+Root POST_COMMIT_CLEANUP -> matching Receipt; live/range TAE_OWNED
+Root TRANSFERRED -> matching Receipt; live/range TAE_OWNED; booking DELETED
 Receipt -> immutable digest and unique txn ID
 Binding ACTIVE -> Guard dependency_bits == 0 and generation matches
-READY Index generation -> Binding generation matches
+Discovery scan state -> Binding/physical/schema generation matches
 Job active -> Binding active attempt/epoch matches
 Account current -> exactly one matching ACTIVE identity
 Account tombstone -> no matching current row for the same incarnation

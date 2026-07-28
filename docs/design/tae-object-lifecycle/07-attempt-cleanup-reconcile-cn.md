@@ -1,7 +1,8 @@
 # Attempt、Cleanup Root 与 Reconciliation 详细设计
 
-> 本文唯一负责 system-owned Attempt/Root、external PUT write-ahead ownership、
-> immutable key、multipart、commit unknown、迟到 PUT、Sweeper 和删除收敛。
+> 本文唯一负责 system-owned Attempt/Root、Provider/TAE staging write-ahead
+> ownership、immutable key、multipart、commit unknown、迟到写、Sweeper 和删除
+> 收敛。
 
 ## 1. 两种 Control
 
@@ -10,12 +11,14 @@
 所有 child 在执行前创建 system-owned Job/Attempt Control：
 
 - TTL：负责 final transaction identity 和结果对账；
-- Archive：除上述职责外，关联 Cleanup Root；
-- Object Index/Restore/Purge：负责 lease、epoch和终态。
+- Archive 和 Mixed Rewrite：除上述职责外，关联 Cleanup Root；
+- Discovery/Restore/Purge：负责 lease、epoch和终态。
 
 ### 1.2 Cleanup Root
 
-Archive 在第一次外部 PUT/multipart 前创建 Cleanup Root。Root 是：
+Archive 或 Mixed Rewrite 在第一次外部副作用前创建 Cleanup Root。外部副作用包括
+Archive Provider PUT，也包括写入 TAE shared FileService 的 live staging Object 和
+transfer booking。Root 是：
 
 - 所有 staging/published external objects 的唯一清理 Owner；
 - tenant DROP 后仍可枚举的 retained metadata；
@@ -53,15 +56,15 @@ deadline
 
 attempt ID一旦关联 source digest，不得原地换 source set。
 
-## 3. Root-before-first-PUT
+## 3. Root-before-first-side-effect
 
-首次选中 Archive row时：
+首次准备写 Archive payload、live TAE Object 或 transfer booking 时：
 
 1. system transaction重新锁定/校验account current的incarnation与`mo_account` RowID；
 2. 用 attempt/dataset/profile 构造 deterministic immutable prefix；
 3. 插入 Root `REGISTERED`；
 4. 等待 commit；
-5. 为第一个 payload插 Root Object `ALLOCATED`；
+5. 为第一个外部 Object 插 Root Object `ALLOCATED`；
 6. 等待 commit；
 7. 才调用 ArchiveStore 创建 multipart/PUT。
 
@@ -71,9 +74,8 @@ attempt ID一旦关联 source digest，不得原地换 source set。
 Attempt REGISTERED
   -> Root REGISTERED committed
   -> Root Object ALLOCATED committed
-  -> multipart create
-  -> upload ID persisted
-  -> first part
+  -> Provider multipart/PUT or TAE FileService write
+  -> exact identity persisted
 ```
 
 禁止：
@@ -172,9 +174,29 @@ ALLOCATED
   -> PUTTING
   -> PUT_COMPLETE
   -> VERIFIED
+  -> TAE_OWNED          # committed Rewrite only
+  -> DELETE_PENDING -> DELETING -> DELETED   # temporary booking only
 ```
 
 单PUT可以跳过 `MULTIPART_CREATED`，但仍必须从 `ALLOCATED -> PUTTING` 持久化后执行。
+
+每一行还冻结 `object_kind`：
+
+```text
+ARCHIVE_PAYLOAD
+ARCHIVE_MANIFEST
+ARCHIVE_SIDECAR
+TAE_LIVE_SEGMENT_RANGE
+TAE_LIVE_STAGING_OBJECT
+TAE_TRANSFER_BOOKING
+```
+
+前 3 种冻结 namespace/key/provider version/size/SHA；后 3 种冻结 FileService
+namespace以及segment range或exact object name/size/checksum。
+`TAE_LIVE_SEGMENT_RANGE`在 `DoMergeAndWrite` 前冻结 attempt 专属 segmentID 和
+ordinal hard limit；它为“FileService write成功、exact child尚未提交”的窗口提供
+可枚举Owner。Root Object 唯一键包含 attempt 和 immutable object/range ordinal，
+不允许在同一 attempt 下重指向另一物理文件。
 
 `PUT_COMPLETE` 条件：
 
@@ -191,10 +213,11 @@ ALLOCATED
 Root `VERIFIED` 条件：
 
 ```text
-all payload Root Objects VERIFIED
-AND Manifest Root Object VERIFIED
+all required Root Objects VERIFIED
+AND Archive mode has VERIFIED Manifest Root Object
 AND payload count/bytes bounded
-AND root.manifest identity/root frozen
+AND Archive mode freezes manifest identity/root
+AND Rewrite mode freezes live-object and transfer digests
 ```
 
 ## 7. Final transaction write-ahead
@@ -211,7 +234,7 @@ allocate tenant final txn
   -> tenant final txn may retire
 ```
 
-TTL：
+TTL Whole：
 
 ```text
 allocate tenant final txn
@@ -222,6 +245,9 @@ allocate tenant final txn
   -> commit system txn
   -> tenant final txn may retire
 ```
+
+TTL Rewrite 与 Archive 一样先把 Cleanup Root 置为 `FINALIZING`，因为它已经拥有 live
+staging Object/transfer booking；不能只依赖可随 tenant 删除的 Attempt row。
 
 系统写前记录不和tenant txn持锁交叉：
 
@@ -251,12 +277,25 @@ AND non-empty Archive sees Dataset(dataset_id, manifest_root)
 然后：
 
 ```text
-Archive:
+Archive Whole/Rewrite:
   Root FINALIZING -> PUBLISHED
+  Rewrite live/range child -> TAE_OWNED
+  Rewrite booking child -> DELETE_PENDING
 
-TTL/EMPTY_ARCHIVE:
+TTL Rewrite:
+  live/range Root Object -> TAE_OWNED
+  booking Root Object -> DELETE_PENDING
+  Root FINALIZING -> POST_COMMIT_CLEANUP
+  all booking deleted -> TRANSFERRED
+
+TTL Whole/EMPTY_ARCHIVE:
   Attempt FINALIZING -> COMMITTED
 ```
+
+`TAE_OWNED/POST_COMMIT_CLEANUP/TRANSFERRED` 只在一致性读取确认 Receipt 且 txn
+service确认committed之后写入。`TAE_OWNED`表示normal TAE Catalog/WAL/GC已接管
+live文件，Sweeper禁止删除。`POST_COMMIT_CLEANUP`期间只允许删除temporary
+booking，不能删除live Object。
 
 ### 8.2 明确 aborted
 
@@ -372,9 +411,9 @@ LIMIT 1000
 
 Root进入`DELETE_PENDING`的合法原因：
 
-1. Archive attempt明确aborted/cancelled且未发布；
+1. Archive/Rewrite attempt明确aborted/cancelled且未发布；
 2. final transaction明确aborted；
-3. Dataset达到purge_eligible且tenant Dataset已CAS；
+3. Dataset达到purge_eligible且tenant Dataset已CAS（Archive payload）；
 4. table/database/account owner dropped；
 5. Restore/verify前的staging失效；
 6. immutable identity已被新Dataset显式复制并旧Dataset正常Purge。
@@ -387,6 +426,32 @@ Root进入`DELETE_PENDING`的合法原因：
 - 暂时读不到Dataset；
 - TaskService把task分配给新worker；
 - Profile credential暂时失败。
+
+### 12.1 committed Rewrite 的 temporary booking
+
+`TAE_TRANSFER_BOOKING`不属于Archive Dataset，也不需要等待Purge。只有满足：
+
+```text
+final txn authoritatively committed
+AND matching Receipt visible
+AND child kind == TAE_TRANSFER_BOOKING
+AND child state == VERIFIED/DELETE_FAILED
+```
+
+才允许child级CAS：
+
+```text
+VERIFIED -> DELETE_PENDING -> DELETING -> DELETED
+```
+
+这个路径：
+
+- 不改变`PUBLISHED` Archive Root；
+- 不读取或删除Archive Payload/Manifest；
+- 不删除`TAE_OWNED` live/range child；
+- TTL Rewrite全部booking为`DELETED`后才把Root
+  `POST_COMMIT_CLEANUP -> TRANSFERRED`；
+- Delete失败只把该child置为`DELETE_FAILED`并重试，不回滚已提交数据。
 
 ## 13. Delete协议
 
@@ -434,16 +499,21 @@ new sweeper executor_epoch
 1. ListAttemptUploads(prefix)
 2. abort all multipart
 3. list Root Object rows page
-4. delete Payload/SIDECAR
-5. delete Manifest last
-6. ListAttemptObjects(prefix)
-7. reconcile Catalog未记录的orphan/late objects
-8. HEAD/Stat exact keys确认不存在
-9. repeat empty LIST/HEAD confirmation
-10. Root -> CLEANED
+4. delete unpublished transfer booking
+5. delete unpublished TAE live staging Object
+6. delete Archive Payload/SIDECAR
+7. delete Manifest last
+8. ListAttemptObjects(prefix)
+9. reconcile Catalog未记录的orphan/late objects
+10. HEAD/Stat exact keys确认不存在
+11. repeat empty LIST/HEAD confirmation
+12. Root -> CLEANED
 ```
 
-Manifest最后删，便于中途故障诊断；进入DELETING后不再允许Restore，因此这不是可见性要求。
+已经由 committed final transaction 发布到 TAE Catalog 的 live Object 和 transfer
+信息不再由 Root 删除，而由正常 TAE Merge/GC/WAL replay 所有；temporary booking
+仍由Root按child状态单独删除。Manifest 最后删，
+便于中途故障诊断；进入DELETING后不再允许Restore，因此这不是可见性要求。
 
 每批：
 
@@ -568,22 +638,29 @@ last error visible
 Root始终保留外部清理Owner。`PUBLISHED`表示：
 
 - tenant Dataset允许Restore；
-- Root禁止staging cleanup；
+- Root禁止清理 Archive payload；已提交 live/range 子对象标为 `TAE_OWNED`，
+  temporary booking按child状态清理；
 - Root等待Dataset Purge/owner drop。
 
 不是把所有权完全转给可随tenant DROP消失的Dataset。这样DROP ACCOUNT后system Root仍能清理。
 
+`TRANSFERRED` 只用于没有 Archive Dataset 的 TTL Rewrite：Root 已把全部
+live/range子对象转给TAE，并已删除temporary booking，不再拥有可删除对象。它
+保留短审计期后可分页GC，不能走Provider Purge。
+
 ## 18. Attempt终态清理
 
-TTL Attempt：
+TTL Whole Attempt：
 
 - COMMITTED/ABORTED后保留30天；
 - COMMIT_UNKNOWN/Manual不删除；
 - 无外部对象。
 
-Archive Attempt：
+Archive/Rewrite Attempt：
 
 - Root CLEANED后Job Control可按30天清理；
+- Root POST_COMMIT_CLEANUP必须继续调度temporary booking清理；
+- Root TRANSFERRED后Job Control和Root可按30天清理；
 - Root PUBLISHED时Attempt可终态，但Root保留到Purge；
 - blocked/cancelled必须确认Root DELETE_PENDING/CLEANED。
 
@@ -595,8 +672,9 @@ Archive Attempt：
 |---|---|---|---|
 | Provider PUT | ArchiveStore；失联后Root Sweeper | ctx/observer/Root epoch | PUT complete、error或2m deadline |
 | multipart | Root Object/Sweeper | upload observer + LIST | abort/complete且provider确认 |
+| TAE live staging write | Rewrite Executor；失联后 Root Sweeper | ctx/Root epoch/FileService Stat | published 或 exact staging 已删除 |
+| source reservation/protection | Lifecycle attempt | renew/expiry/TN Prepare | final result确定或 attempt abort |
 | final txn | txn client resolver + Reconciler | GetStatus/Receipt | committed或aborted；unknown转manual不猜测 |
-| table lock | txn client/LockService | lock waiter | grant、30s timeout、txn cancel |
 | worker lease | Job Control | heartbeat/expiry | terminal或new epoch接管 |
 | Restore lease | Restore Attempt/Lease Reconciler | renew/release/expiry | released、expired、fenced |
 | Payload Delete | Sweeper | Delete+HEAD/LIST | 两次确认不存在 |
@@ -606,9 +684,9 @@ Archive Attempt：
 
 ## 20. 故障测试
 
-Root-before-PUT：
+Root-before-side-effect：
 
-- Root insert前禁止provider调用；
+- Root insert前禁止 Provider/FileService 写；
 - Root commit后、multipart前crash；
 - multipart create后observer前crash；
 - first part/last part/complete response各点crash。
@@ -635,7 +713,7 @@ Cleanup：
 
 Scale：
 
-- 1 million Root Objects分页；
+- 1 million Root Objects（含 archive/live staging/booking）分页；
 - 1000 active roots + 1 million terminal rows；
 - cleanup minimum worker share；
 - orphan multipart上限；
