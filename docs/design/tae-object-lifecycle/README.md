@@ -258,8 +258,9 @@ live-visible     -> new TAE Object, exactly one transfer destination
 ```
 
 transfer 永远不修改 Archive Payload。`S` 后并发 DELETE 命中 live 行时转移到新
-RowID；命中 Archive 到期行且在 Lifecycle Prepare 前可见时，整个 attempt abort 并
-re-export；命中 TTL 到期行是冗余删除。不能受普通 Merge 的
+RowID；找不到有效destination（包括expired、snapshot-deleted、`NoTransfer`、
+nil Block map或越界）时，整个attempt统一abort/rebuild。首个GA不区分Archive和TTL
+的NoTransfer策略；TTL冗余DELETE忽略留作后续优化。不能受普通 Merge 的
 `MO_COMMENT_NO_DEL_HINT` 配置影响。
 
 ### I-12 Root owns Lifecycle physical staging
@@ -281,9 +282,10 @@ external booking；不允许 inline transfer 或多 source Rewrite。
 Whole child允许最多64个source，但每个source必须有同序、包含Object ID和ObjectStats
 digest的`SourceLayoutProof`；source digest覆盖source与proof全集。Rewrite仍严格单源。
 
-Lifecycle Booking V1独立编码每Block实际物理行数、D/E/L 2-bit class和L行destination，
-全D/E block也不能省略；文件必须绑定Root child和TAE namespace。普通Merge codec
-会省略`NoTransfer`项，不能直接作为Lifecycle行守恒协议。
+Lifecycle Booking V1原样运输`DoMergeAndWrite`生成的TransferTable：编码每Block
+实际物理行数和稀疏live destination，零mapping Block也不能省略；未出现的source
+slot统一重建为`NoTransfer`。文件必须绑定Root child、TAE namespace、source layout
+和`CreatedObjs`顺序。它不编码D/E业务语义，也不允许重新生成或排序mapping。
 
 ### I-14 Rewrite 内存和读取前准入
 

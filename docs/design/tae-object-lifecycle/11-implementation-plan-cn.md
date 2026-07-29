@@ -376,9 +376,8 @@ Entry 冻结：
 - attempt/executor/reservation/protection identity和expected filename-set digest；
 - source Snapshot、exact source Object/digest和TN生成的同序
   `repeated SourceLayoutProof`；
-- created live Object/digest；
+- created live Object/digest及writer Sync顺序digest；
 - immutable external transfer booking exact identity/layout digest；
-- D/E/L row-class layout digest；
 - Archive Dataset/Manifest/root；
 - source/expired/live counts 和 conservation roots；
 - deterministic entry digest。
@@ -391,9 +390,10 @@ reservation冻结初始mode，只允许Rewrite退化为同类Whole/Empty；禁�
 和TTL/Archive互换。
 
 Lifecycle external booking使用独立Booking V1 envelope，冻结magic/version、Root
-child/TAE namespace binding、每Block actual rows、2-bit D/E/L class、L sparse
-destination、created layout、长度和digest。不得直接使用会省略`NoTransfer`项的普通
-`TransferHashPage.Marshal()`。
+child/TAE namespace binding、每Block actual rows、原始sparse destination、
+`CreatedObjs`顺序、created layout、长度和digest。零mapping Block仍有record，未出现
+的source slot重建为`NoTransfer`。Booking不编码D/E业务分类，也不得直接使用会省略
+全空Block和Root/layout binding的普通`TransferHashPage.Marshal()`。
 
 路由：
 
@@ -420,7 +420,7 @@ validate SyncProtection expected filename-set digest
 validate exact current source Objects
 validate one-to-one SourceLayoutProof list
 validate created live Objects/checksum
-stream-validate Booking V1 and row-conservation/transfer roots
+stream-validate Booking V1, CreatedObjs order and mapping bounds/count/digest
 bounded/cancelable collect and validate Tombstone delta
 register/reuse Root-owned merge create-drop-transfer txn entry
 append WAL through normal transaction path
@@ -492,11 +492,13 @@ one bounded writable SI transaction
 8. 首次L行、把Batch返回给mergesort前创建Root（若无）并提交
    `TAE_LIVE_SEGMENT_RANGE`；只有live row写入normal TAE Object；
 9. live row 产生 destination，`D/E`保持 `api.NoTransfer`；
-10. actual writer只消费range内ordinal，Sync后追加exact child并冻结
-    ObjectStats/checksum；
-11. 只有`live > 0`才按Booking V1生成immutable external booking；每页在FileService
+10. `TransferTable`只能使用本次`DoMergeAndWrite`的返回值；禁止Lifecycle重建、
+    修改、排序或合并destination mapping；
+11. actual writer只消费range内ordinal，Sync后按原始顺序追加exact child并冻结
+    ObjectStats/checksum/order digest；
+12. 只有`live > 0`才按Booking V1生成immutable external booking；每页在FileService
     write前动态分配Root child；inline transfer禁止；
-12. Archive full readback 后进入短 final transaction。
+13. Archive full readback 后进入短 final transaction。
 
 当前 `PrepareNewWriter()`没有 error 返回值，禁止在其中做 Catalog transaction。
 P0先证明 writer name 可由`segmentID + ordinal`稳定枚举，crash时 Sweeper遍历有限
@@ -527,7 +529,8 @@ snapshot_deleted/expired are NoTransfer
 
 `source_visible==0`走EMPTY_ARCHIVE/Whole退休空Object；`expired==0 && live>0`结束为
 no-op并清理staging；`live==0 && expired>0`必须把final mode切为Whole，Archive走
-独立post-S delete validator。禁止提交`createdObjs==0`的`MIXED_REWRITE_*` entry。
+与TTL相同的独立post-S delete validator。禁止提交`createdObjs==0`的
+`MIXED_REWRITE_*` entry。
 `visible==0`不创建Root；`live==0`不得创建TAE range/booking；Planner预测为Rewrite
 不能成为预创建空child的理由。退化路径必须有独立Root crash matrix。
 
@@ -539,15 +542,22 @@ column伪装成sorted。output level按普通Merge的晋级规则从source level
 
 复用现有Merge两阶段算法，但必须通过Lifecycle wrapper参数化：
 
-- phase 1 收集 build Snapshot 后、Prepare 前的 Tombstone；
-- phase 2 覆盖 Prepare 并发窗口；
-- 两个phase使用同一个有deadline ctx和流式visitor；
+- `CollectDeletesFrom`必须等于`source_snapshot_ts`，不能使用几分钟后才创建的final
+  transaction `StartTS`；
+- phase 1收集`(source_snapshot_ts, collect_ts]`；
+- phase 2收集`(collect_ts, prepare_ts.Prev()]`，覆盖Prepare并发窗口；
+- phase 1使用request ctx；由于`PrepareCommit()`没有caller ctx，phase 2使用txn
+  entry在首次构造时冻结的TN内部绝对deadline，并继续消费同一个visitor预算；
+- duplicate Write/Prepare不得重置deadline或rows/bytes/blocks预算，禁止无界
+  `context.Background()`；
 - delta rows/encoded bytes/affected blocks都有hard limit；
 - 任何scan/transfer error向上返回，不能吞掉；
 - survivor delete transfer 到新 RowID；
-- Archive expired row的`NoTransfer`使Lifecycle abort/re-export；
-- TTL expired row的`NoTransfer`是冗余删除；
-- transfer page missing/expired/digest mismatch 均 fail closed。
+- 任一post-S Tombstone遇到nil Block map、`NoTransfer`、越界或其他missing mapping，
+  整个Lifecycle final transaction统一abort/rebuild；
+- transfer page missing/expired/digest mismatch 均 fail closed；
+- 首个GA不区分Archive/TTL/snapshot-deleted的NoTransfer策略；TTL冗余DELETE忽略只
+  作为后续优化。
 
 `LifecycleRewriteHost.DoTransfer()`固定true，不受普通Merge comment影响；但只有live
 行有destination。运行时transfer page、destination语义和WAL不fork第二套实现；
@@ -561,6 +571,9 @@ Prepare即删语义。实现独立Booking V1 writer/streaming validator，并保
 - Lifecycle通过Root分配deterministic page key并在write前提交child；
 - Lifecycle TN Prepare只读和校验，不删除，且不原地改写request；
 - duplicate Prepare/`ErrTAENeedRetry`可重新打开同一immutable page；
+- `SetTransferTable`后CN host唯一拥有producer slab，Booking VERIFIED或任一失败路径
+  exactly-once Release；TN每次Prepare解码独立TransferTable并在移交txn entry后由其
+  exactly-once Release，移交前验证失败/cancel则由decoder释放；
 - final结果明确后由Root child Sweeper删除booking。
 
 复用的Merge txn entry增加构造期物理Owner：
@@ -585,7 +598,8 @@ pkg/vm/engine/tae/tables/table_scan.go
   add bounded/cancelable Tombstone delta visitor
 
 pkg/vm/engine/tae/tables/txnentries/mergeobjects.go
-  parameterize collect-from/context/delta limits/NoTransfer policy
+  parameterize collect-from/context/delta limits
+  Lifecycle wrapper uses strict post-S missing-mapping abort
   parameterize PhysicalCreatedObjectOwner
   preserve upstream #26333 phase-2 error propagation
 
@@ -600,7 +614,7 @@ pkg/vm/engine/disttae/lifecycle_rewrite.go
 ```
 
 这些改动必须保持普通Merge constructor的默认行为和wire字节兼容。不能直接让普通
-Merge使用Lifecycle Root、row-class或delta limit。
+Merge使用Lifecycle Root、strict missing-mapping规则或delta limit。
 
 ### D5. Final result/Root
 
@@ -631,6 +645,11 @@ Gate D exit：
 - Whole/small Mixed/Rewrite 每条路径都有 crash matrix；
 - Whole Prepare/commit后旧RowID事务（含TN restart）必须冲突；Rewrite旧事务只能
   成功transfer或冲突，不能静默提交；
+- producer属性测试证明`DoMergeAndWrite`生成mapping与writer输出顺序一致，Booking
+  round-trip保持TransferTable逐项相同；
+- `DELETE`提交于`(source_snapshot_ts, finalTxn.StartTS]`时仍被收集并正确transfer；
+- post-S Tombstone命中nil map/`NoTransfer`/越界时Dataset、source退休和new live
+  publish整体abort；
 - source visible row 不出现缺失、重复或未归档即删除；
 - 普通 Merge/SELECT/DML/GC 回归在阈值内。
 

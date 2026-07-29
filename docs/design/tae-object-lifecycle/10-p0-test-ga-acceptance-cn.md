@@ -193,6 +193,8 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WAL-028 | commit前/后crash | 前者source保留+Root清理，后者Replay恢复Drop/live |
 | WAL-029 | TN restart丢失已提交运行时transfer page | 旧RowID事务RW/WW conflict，不静默成功 |
 | WAL-030 | duplicate Prepare/NeedRetry | 由immutable Booking V1重建当前final txn page |
+| WAL-031 | final commit明确失败 | source始终可见，Dataset和new live Object都不可发布 |
+| WAL-032 | final commit成功的一致性读 | source与new live Object不允许双重可见或同时不可见 |
 
 ## 6. P0-4 Source Reservation、GC Protection 与并发 Tombstone
 
@@ -239,8 +241,10 @@ Scheduler skip 只是性能优化；`OpCommitMerge`和`OpCommitLifecycle`的TN�
 |---|---|---|
 | TMB-001 | source Snapshot前Tombstone | 归入snapshot-deleted/NoTransfer |
 | TMB-002 | build中删除survivor | phase-1/2 transfer到new RowID |
+| TMB-002A | DELETE提交于`(S, finalTxn.StartTS]` | 必须从S收集并transfer；不得因final txn较晚创建而漏掉 |
 | TMB-003A | build中删除Archive expired row | NoTransfer使Lifecycle abort/re-export |
-| TMB-003B | build中删除TTL expired row | 冗余删除，仍无destination |
+| TMB-003B | build中删除TTL expired row | NoTransfer使Lifecycle abort/rebuild |
+| TMB-003C | post-S删除命中snapshot-deleted/nil Block map | final txn abort，不按普通Merge规则skip |
 | TMB-004 | memory Tombstone | 被增量检查覆盖 |
 | TMB-005 | persisted Tombstone Object | 被增量检查覆盖 |
 | TMB-006 | unrelated Object Tombstone | 不误报 |
@@ -249,12 +253,14 @@ Scheduler skip 只是性能优化；`OpCommitMerge`和`OpCommitLifecycle`的TN�
 | TMB-009 | delta rows/bytes/blocks limit±1 | 超限abort/blocked，不退休 |
 | TMB-010 | phase-1/phase-2 context deadline | 有界退出并保留正确Owner |
 | TMB-011 | phase-2 scan返回error | error不被吞，final txn abort |
-| TMB-012 | Whole Archive post-S delete | 独立validator发现并abort/re-export |
-| TMB-013 | Whole Archive delta超限 | fail closed，不发布Dataset |
+| TMB-012 | Whole Archive/TTL post-S delete | 独立validator发现并abort/rebuild |
+| TMB-013 | Whole Archive/TTL delta超限 | fail closed，不发布Dataset/不退休source |
 | TMB-014 | 多Whole source分别未超、合计超限 | 按final transaction聚合后abort |
 | TMB-015 | 用户先读旧RowID，Whole Prepare/commit后DELETE | commit冲突，不能静默成功 |
 | TMB-016 | TMB-015中Lifecycle commit后TN restart | 仍冲突，不依赖WAL恢复page |
 | TMB-017 | 用户DELETE先Prepare，Whole Archive后Prepare | validator发现并abort/re-export |
+| TMB-018 | duplicate Write/Prepare | 复用原entry的absolute deadline和delta预算，不能重新获得60s/全额预算 |
+| TMB-019 | client在Prepare后断连 | 不任意取消已Prepare事务，但TN内部deadline保证有界终止 |
 
 ## 7. P0-5 Root-before-side-effect 与 commit unknown
 
@@ -335,7 +341,7 @@ Scheduler skip 只是性能优化；`OpCommitMerge`和`OpCommitLifecycle`的TN�
 | ID | 场景 | 通过条件 |
 |---|---|---|
 | RWT-001 | 0 expired、live>0 | no-op，不产生空live替换，已写staging由Root清理 |
-| RWT-002 | 0 live、expired>0 | final mode切为Whole；Archive执行独立post-S delete validator |
+| RWT-002 | 0 live、expired>0 | final mode切为Whole；Archive/TTL执行独立post-S delete validator |
 | RWT-002A | source visible为0 | EMPTY_ARCHIVE/Whole退休空Object，不创建Dataset |
 | RWT-003 | 1 live row | 新Object/transfer正确 |
 | RWT-004 | max legal Object | streaming有界 |
@@ -371,7 +377,12 @@ new_live_rows   = live_visible
 | RWT-018 | response lost/replay | 不重复create/drop；当前final txn可从booking重建page |
 | RWT-019 | table comment关闭普通transfer | Lifecycle仍为live行生成destination |
 | RWT-020 | Archive expired post-S delete | abort且不修改已写Archive |
-| RWT-021 | TTL expired post-S delete | 可提交且不产生destination |
+| RWT-021 | TTL expired post-S delete | 与Archive统一abort/rebuild |
+| RWT-022 | post-S delete命中nil map/NoTransfer/越界 | typed error使整个final transaction abort |
+| RWT-023 | CreatedObjs被重排 | order digest不匹配，Prepare拒绝 |
+| RWT-024 | producer后注入mapping修改/重排 | 冻结的producer transfer digest不匹配，Prepare拒绝 |
+| RWT-025 | CN booking success/error/cancel | producer slab都exactly-once Release |
+| RWT-026 | duplicate Prepare并发解码 | 每次使用私有TransferTable，无共享修改或double Release |
 
 ### 8.3 Review P0-1：Root-owned staging
 
@@ -393,21 +404,24 @@ new_live_rows   = live_visible
 
 - `DoTransfer()`固定true，不读普通Merge comment；
 - D/E为NoTransfer，L恰好一个destination；
-- Archive E的并发DELETE导致abort/re-export；
-- TTL E的并发DELETE冗余收敛；
+- Archive/TTL E及D槽位的并发DELETE都导致abort/rebuild；
 - L的并发DELETE/UPDATE转到new RowID；
-- Whole Archive独立post-S delete validator。
+- Whole Archive/TTL独立post-S delete validator。
 
 ### 8.6 Review P0-4：external booking only
 
 - Lifecycle inline字段非空时TN拒绝；
 - entry只有按ordinal排列的exact booking key/version/size/SHA/layout digest；
 - Booking V1只覆盖actual physical rows，不覆盖BlockMaxRows尾部；
-- 全D/E block仍有record，D/E无destination，L恰有一个destination；
+- 零mapping Block仍有record，未出现的source slot统一为`NoTransfer`；
+- mapping按source offset严格升序，`CreatedObjs`顺序digest冻结；
+- destination使用`uint8 ObjIdx + uint16 BlkIdx + uint32 RowIdx`且无padding；最大
+  2,097,152-row全live Object连同envelope必须低于32 MiB认证上限；
 - magic/version/flags/endian/字段顺序/length/digest范围按05固定；
 - Root ID、kind-local ordinal和TAE namespace digest必须与Root child一致；
 - duplicate Prepare和NeedRetry可重复读取同一immutable booking；
-- booking被篡改、短读、错version或row-class digest错均fail closed；
+- booking被篡改、短读、错version、缺Block或order/transfer digest错均fail closed；
+- producer TransferTable编码再解码后每个mapping和`CreatedObjs`顺序完全一致；
 - committed/aborted前booking不会被任何handler删除。
 
 ### 8.7 Review P0-5：单源与资源峰值
@@ -421,11 +435,16 @@ new_live_rows   = live_visible
 ### 8.8 Review P0-6：TN信任边界
 
 - TN按source Object同序重算exact ObjectStats和全部`SourceLayoutProof`；
-- TN从Object metadata独立验证物理行数，并从booking重算D/E/L计数、created rows、
-  mapping/layout的结构守恒；
+- TN从Object metadata验证物理行数，校验CN计数等式、created rows、mapping
+  bounds/count/digest和`CreatedObjs`顺序；
+- destination bitmap可拒绝重复destination和created row缺口，但不声称重新证明
+  source row的TTL分类或destination业务语义；
 - TN不读取TTL业务值或Provider Parquet；
 - CN classifier做属性测试、mutation test和1/10 TiB源/Archive/live对账；
-- 伪造count、bitmap、destination、layout/digest的每一种组合均被TN拒绝。
+- `DoMergeAndWrite` producer属性测试覆盖source mapping唯一性和writer输出顺序；
+- Booking编解码round-trip必须保持TransferTable逐项相同；
+- 伪造count、source offset、destination、created order、layout/digest的每一种组合
+  均被TN拒绝。
 
 ### 8.9 Block读取和统一内存令牌
 
