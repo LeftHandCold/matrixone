@@ -42,20 +42,215 @@ const (
 	spillWriteCoalesceSize = 64 << 10
 )
 
-// spillBudgetBytes is intentionally conservative.  The input batch remains
-// owned by the upstream operator while HashBuild evaluates and partitions it,
-// so its footprint is included in the temporary peak alongside hash values,
-// row selections, the selected bucket, and marshal scratch.
+type spillMaterializationMode uint8
+
+const (
+	// spillDirectMaterialization models UnionInt32 on the current upstream
+	// batch. A const varlen source copies its out-of-line payload once and
+	// broadcasts the resulting descriptor.
+	spillDirectMaterialization spillMaterializationMode = iota
+	// spillRetainedMaterialization models the compact non-const batch produced
+	// by CopyIntoBatches. A later UnionInt32 treats every retained row as an
+	// independent value, even when the ingress vector was const.
+	spillRetainedMaterialization
+)
+
+func spillCheckedAdd(total, value uint64) (uint64, error) {
+	if total > math.MaxUint64-value {
+		return 0, process.ErrHashBuildBudgetInvalid
+	}
+	return total + value, nil
+}
+
+func spillCheckedMul(left, right uint64) (uint64, error) {
+	if left != 0 && right > math.MaxUint64/left {
+		return 0, process.ErrHashBuildBudgetInvalid
+	}
+	return left * right, nil
+}
+
+func spillCapacityReplacementOverlap(rows, keys, hashCap, rowIDCap, keyCap int) (uint64, error) {
+	var overlap uint64
+	add := func(required, current int, width uint64) error {
+		if required < 0 || current < 0 {
+			return process.ErrHashBuildBudgetInvalid
+		}
+		if required <= current {
+			return nil
+		}
+		old, err := spillCheckedMul(uint64(current), width)
+		if err != nil {
+			return err
+		}
+		overlap, err = spillCheckedAdd(overlap, old)
+		return err
+	}
+	if err := add(keys, keyCap, 8); err != nil {
+		return 0, err
+	}
+	if err := add(rows, hashCap, 8); err != nil {
+		return 0, err
+	}
+	if err := add(rows, rowIDCap, 4); err != nil {
+		return 0, err
+	}
+	return overlap, nil
+}
+
+// spillMaterializedBytes models the batch that spillBatchBounded creates with
+// UnionInt32. It follows vector materialization semantics instead of retained
+// capacity or stale logical length: fixed-width descriptors are per output
+// row, null payload is skipped, and direct const varlen payload is copied once.
+func spillMaterializedBytes(
+	bat *batch.Batch,
+	targetRows uint64,
+	mode spillMaterializationMode,
+) (uint64, error) {
+	if bat == nil || bat.RowCount() <= 0 || targetRows == 0 {
+		return 0, nil
+	}
+	liveRows := uint64(bat.RowCount())
+	var materialized uint64
+	for _, vec := range bat.Vecs {
+		if vec == nil {
+			return 0, process.ErrHashBuildBudgetInvalid
+		}
+		typeSize := vec.GetType().TypeSize()
+		if typeSize < 0 {
+			return 0, process.ErrHashBuildBudgetInvalid
+		}
+		descriptors, err := spillCheckedMul(targetRows, uint64(typeSize))
+		if err != nil {
+			return 0, err
+		}
+		if materialized, err = spillCheckedAdd(materialized, descriptors); err != nil {
+			return 0, err
+		}
+		if !vec.GetType().IsVarlen() || vec.IsConstNull() {
+			continue
+		}
+
+		values, _ := vector.MustVarlenaRawData(vec)
+		valueRows := liveRows
+		if vec.IsConst() {
+			valueRows = 1
+		}
+		if valueRows == 0 || valueRows > uint64(len(values)) {
+			return 0, process.ErrHashBuildBudgetInvalid
+		}
+		var livePayload uint64
+		hasNull := !vec.GetNulls().EmptyByFlag()
+		for row := uint64(0); row < valueRows; row++ {
+			if hasNull && vec.GetNulls().Contains(row) {
+				continue
+			}
+			if values[row].IsSmall() {
+				continue
+			}
+			_, length := values[row].OffsetLen()
+			if livePayload, err = spillCheckedAdd(livePayload, uint64(length)); err != nil {
+				return 0, err
+			}
+		}
+
+		projectedPayload := livePayload
+		if !(mode == spillDirectMaterialization && vec.IsConst()) {
+			// A retained CopyIntoBatches destination is non-const. Repeating
+			// the complete live sample is a conservative bound for any compact
+			// target batch assembled from ingress batches whose individual
+			// high-water estimates were admitted before copying.
+			roundedRows, err := spillCheckedAdd(targetRows, valueRows-1)
+			if err != nil {
+				return 0, err
+			}
+			repeats := roundedRows / valueRows
+			if projectedPayload, err = spillCheckedMul(livePayload, repeats); err != nil {
+				return 0, err
+			}
+		}
+		if materialized, err = spillCheckedAdd(materialized, projectedPayload); err != nil {
+			return 0, err
+		}
+	}
+	return materialized, nil
+}
+
+func spillMarshalSlack(columns uint64) (uint64, error) {
+	const (
+		fixedSlack     = uint64(64 << 10)
+		perColumnSlack = uint64(128)
+	)
+	if columns > (math.MaxUint64-fixedSlack)/perColumnSlack {
+		return 0, process.ErrHashBuildBudgetInvalid
+	}
+	return fixedSlack + columns*perColumnSlack, nil
+}
+
+func spillMaterializationSlack(columns uint64) (uint64, error) {
+	const (
+		fixedSlack     = uint64(64 << 10)
+		perColumnSlack = uint64(16 << 10)
+	)
+	if columns > (math.MaxUint64-fixedSlack)/perColumnSlack {
+		return 0, process.ErrHashBuildBudgetInvalid
+	}
+	return fixedSlack + columns*perColumnSlack, nil
+}
+
+// spillPeakBudgetFor accounts each simultaneously live component explicitly.
+// inputBytes is zero for a retained batch whose source reservation is already
+// owned by HashBuild.
+func spillPeakBudgetFor(rows, inputBytes, selectedBytes, columns uint64) (uint64, error) {
+	rowScratch, err := spillCheckedMul(rows, 12) // hashes + one row-id array
+	if err != nil {
+		return 0, err
+	}
+	total, err := spillCheckedAdd(rowScratch, inputBytes)
+	if err != nil {
+		return 0, err
+	}
+	if total, err = spillCheckedAdd(total, selectedBytes); err != nil {
+		return 0, err
+	}
+	// MarshalBinary creates one serialized payload. The selected estimate
+	// already includes its fixed-width data and varlen area, so charge that
+	// payload once plus bounded framing/allocation slack.
+	marshalSlack, err := spillMarshalSlack(columns)
+	if err != nil {
+		return 0, err
+	}
+	marshalBytes, err := spillCheckedAdd(selectedBytes, marshalSlack)
+	if err != nil {
+		return 0, err
+	}
+	if total, err = spillCheckedAdd(total, marshalBytes); err != nil {
+		return 0, err
+	}
+	if total > uint64(^uint(0)>>1) {
+		return 0, process.ErrHashBuildBudgetInvalid
+	}
+	return total, nil
+}
+
+// spillBudgetBytes admits only the actual direct-spill path for the current
+// input. It never projects a hypothetical retained batch.
 func spillBudgetBytes(bat *batch.Batch) (uint64, error) {
 	if bat == nil || bat.RowCount() <= 0 {
 		return 0, nil
 	}
 	rows := uint64(bat.RowCount())
-	source := uint64(bat.Allocated())
-	if size := uint64(bat.Size()); size > source {
-		source = size
+	selected, err := spillMaterializedBytes(bat, rows, spillDirectMaterialization)
+	if err != nil {
+		return 0, err
 	}
-	return spillBudgetFor(rows, source)
+	materializationSlack, err := spillMaterializationSlack(uint64(len(bat.Vecs)))
+	if err != nil {
+		return 0, err
+	}
+	if selected, err = spillCheckedAdd(selected, materializationSlack); err != nil {
+		return 0, err
+	}
+	return spillPeakBudgetFor(rows, uint64(bat.Allocated()), selected, uint64(len(bat.Vecs)))
 }
 
 // spillScratchBudgetBytes returns the incremental spill charge. A copied
@@ -76,78 +271,60 @@ func spillScratchBudgetBytes(bat *batch.Batch, sourceAlreadyCharged bool) (uint6
 	return need - source, nil
 }
 
-func spillBudgetFor(rows, source uint64) (uint64, error) {
-	if rows > math.MaxUint64/12 {
-		return 0, process.ErrHashBuildBudgetInvalid
-	}
-	// hash values + one reusable selection array.  The selected batch and its
-	// varlen area may overlap the source capacity, hence a full additional
-	// source allocation is charged rather than just logical Size().
-	total := rows * 12
-	if source > math.MaxUint64-total {
-		return 0, process.ErrHashBuildBudgetInvalid
-	}
-	total += source
-	// A selected bucket can contain every input row.  MarshalBinary emits
-	// vector metadata and varlen area; 2x payload plus fixed headers is a safe
-	// upper bound before bytes.Buffer grows.
-	if source > (math.MaxUint64-64*1024)/2 {
-		return 0, process.ErrHashBuildBudgetInvalid
-	}
-	marshal := source*2 + 64*1024
-	if total > math.MaxUint64-marshal {
-		return 0, process.ErrHashBuildBudgetInvalid
-	}
-	total += marshal
-	if total > uint64(^uint(0)>>1) {
-		return 0, process.ErrHashBuildBudgetInvalid
-	}
-	return total, nil
-}
-
-// spillEmergencyBudgetBytes covers both the upstream ingress batch and the
-// largest physical batch CopyIntoBatches can form by coalescing small inputs.
-func spillEmergencyBudgetBytes(bat *batch.Batch) (uint64, error) {
-	need, err := spillBudgetBytes(bat)
-	if err != nil || bat == nil || bat.RowCount() <= 0 || bat.RowCount() >= colexec.DefaultBatchSize {
-		return need, err
+// spillRetainedBudgetBytes is the future-drain proof required before
+// CopyIntoBatches may retain a small input. The destination loses constness,
+// so its selected payload follows retained rather than direct semantics.
+func spillRetainedBudgetBytes(bat *batch.Batch) (uint64, error) {
+	if bat == nil || bat.RowCount() <= 0 {
+		return 0, nil
 	}
 	rows := uint64(bat.RowCount())
-	source := uint64(bat.Allocated())
-	if size := uint64(bat.Size()); size > source {
-		source = size
+	targetRows := rows
+	if rows < uint64(colexec.DefaultBatchSize) {
+		targetRows = uint64(colexec.DefaultBatchSize)
 	}
-	if source > math.MaxUint64/uint64(colexec.DefaultBatchSize) {
-		return 0, process.ErrHashBuildBudgetInvalid
-	}
-	scaled := (source*uint64(colexec.DefaultBatchSize) + rows - 1) / rows
-	metadata, ok := retainedMetadataAllowance(bat)
-	if !ok || metadata > math.MaxUint64/uint64(colexec.DefaultBatchSize) {
-		return 0, process.ErrHashBuildBudgetInvalid
-	}
-	scaledMetadata := (metadata*uint64(colexec.DefaultBatchSize) + rows - 1) / rows
-	if scaled > math.MaxUint64-scaledMetadata {
-		return 0, process.ErrHashBuildBudgetInvalid
-	}
-	scaled += scaledMetadata
-	physicalNeed, err := spillBudgetFor(uint64(colexec.DefaultBatchSize), scaled)
+	selected, err := spillMaterializedBytes(bat, targetRows, spillRetainedMaterialization)
 	if err != nil {
 		return 0, err
 	}
-	if physicalNeed > need {
-		need = physicalNeed
+	metadata, ok := retainedMetadataAllowance(bat)
+	if !ok || metadata > math.MaxUint64/targetRows {
+		return 0, process.ErrHashBuildBudgetInvalid
 	}
-	return need, nil
+	projectedMetadata := metadata
+	if targetRows > rows {
+		projectedMetadata, err = spillCheckedMul(metadata, targetRows)
+		if err != nil {
+			return 0, err
+		}
+		projectedMetadata, err = spillCheckedAdd(projectedMetadata, rows-1)
+		if err != nil {
+			return 0, err
+		}
+		projectedMetadata /= rows
+	}
+	if selected, err = spillCheckedAdd(selected, projectedMetadata); err != nil {
+		return 0, err
+	}
+	materializationSlack, err := spillMaterializationSlack(uint64(len(bat.Vecs)))
+	if err != nil {
+		return 0, err
+	}
+	if selected, err = spillCheckedAdd(selected, materializationSlack); err != nil {
+		return 0, err
+	}
+	// The retained source itself is covered by batchReservations.
+	return spillPeakBudgetFor(targetRows, 0, selected, uint64(len(bat.Vecs)))
 }
 
-func (ctr *container) ensureSpillScratchReservation(bat *batch.Batch, analyzer process.Analyzer) error {
+func (ctr *container) ensureSpillScratchReservationBytes(need uint64, analyzer process.Analyzer) error {
 	if ctr.hashmapBuilder.budget == nil {
 		return nil
 	}
-	need, err := spillEmergencyBudgetBytes(bat)
-	if err != nil || need == 0 {
-		return err
+	if need == 0 {
+		return nil
 	}
+	var err error
 	if ctr.spillScratchReservation == nil {
 		ctr.spillScratchReservation, err = ctr.hashmapBuilder.budget.Reserve(need)
 		if err == nil {
@@ -171,6 +348,42 @@ func (ctr *container) ensureSpillScratchReservation(bat *batch.Batch, analyzer p
 	ctr.spillScratchBase = need
 	ctr.spillScratchEmergency = true
 	return nil
+}
+
+func (ctr *container) growSpillScratchTransient(required uint64) (uint64, bool, error) {
+	if ctr.hashmapBuilder.budget == nil || ctr.spillScratchReservation == nil ||
+		required <= ctr.spillScratchBase {
+		return 0, false, nil
+	}
+	oldSize := ctr.spillScratchReservation.Size()
+	if err := ctr.spillScratchReservation.Grow(required - ctr.spillScratchBase); err != nil {
+		return 0, false, err
+	}
+	return oldSize, true, nil
+}
+
+func (ctr *container) restoreSpillScratchTransient(oldSize uint64, grew bool) error {
+	if !grew {
+		return nil
+	}
+	_, err := ctr.spillScratchReservation.ReconcileDown(oldSize)
+	return err
+}
+
+func (ctr *container) ensureDirectSpillScratchReservation(bat *batch.Batch, analyzer process.Analyzer) error {
+	need, err := spillBudgetBytes(bat)
+	if err != nil {
+		return err
+	}
+	return ctr.ensureSpillScratchReservationBytes(need, analyzer)
+}
+
+func (ctr *container) ensureRetainedSpillScratchReservation(bat *batch.Batch, analyzer process.Analyzer) error {
+	need, err := spillRetainedBudgetBytes(bat)
+	if err != nil {
+		return err
+	}
+	return ctr.ensureSpillScratchReservationBytes(need, analyzer)
 }
 
 func (ctr *container) releaseSpillScratchReservation() {
@@ -200,6 +413,18 @@ func (ctr *container) dropSpillScratchBuffers() {
 	ctr.spillWriteBuf = bytes.Buffer{}
 }
 
+func spillMarshalGrowBytes(bat *batch.Batch) (uint64, error) {
+	base := uint64(bat.Allocated())
+	if size := uint64(bat.Size()); size > base {
+		base = size
+	}
+	columns := uint64(len(bat.Vecs))
+	if columns > (math.MaxUint64-24)/128 {
+		return 0, process.ErrHashBuildBudgetInvalid
+	}
+	return spillCheckedAdd(base, columns*128+24)
+}
+
 func marshalSpillRecord(bat *batch.Batch, buf *bytes.Buffer) (int64, error) {
 	if bat == nil || bat.RowCount() == 0 {
 		return 0, nil
@@ -207,6 +432,19 @@ func marshalSpillRecord(bat *batch.Batch, buf *bytes.Buffer) (int64, error) {
 
 	cnt := int64(bat.RowCount())
 	buf.Reset()
+	grow, err := spillMarshalGrowBytes(bat)
+	if err != nil {
+		return 0, err
+	}
+	if grow > uint64(math.MaxInt) {
+		return 0, process.ErrHashBuildBudgetInvalid
+	}
+	if uint64(buf.Cap()) < grow {
+		// Drop a smaller retained buffer before allocating the final capacity;
+		// otherwise bytes.Buffer's geometric growth recreates the multiplier
+		// that admission intentionally removed.
+		*buf = *bytes.NewBuffer(make([]byte, 0, int(grow)))
+	}
 	buf.Write(types.EncodeInt64(&cnt))
 	// Reserve space for batchSize (filled in after marshalling)
 	batchSizePos := buf.Len()
@@ -380,8 +618,37 @@ func (ctr *container) spillBatchBounded(proc *process.Process, bat *batch.Batch,
 		}
 	}
 
+	rows := bat.RowCount()
+	replacementOverlap, err := spillCapacityReplacementOverlap(
+		rows,
+		len(executors),
+		cap(ctr.spillHashValues),
+		cap(ctr.spillBucketRowIds),
+		cap(ctr.spillKeyVecs),
+	)
+	if err != nil {
+		return err
+	}
+	replacementPeak, err := spillCheckedAdd(need, replacementOverlap)
+	if err != nil {
+		return err
+	}
+	oldScratchSize, grewScratch, err := ctr.growSpillScratchTransient(replacementPeak)
+	if err != nil {
+		return err
+	}
+
 	if cap(ctr.spillKeyVecs) < len(executors) {
 		ctr.spillKeyVecs = make([]*vector.Vector, len(executors))
+	}
+	if cap(ctr.spillHashValues) < rows {
+		ctr.spillHashValues = make([]uint64, rows)
+	}
+	if cap(ctr.spillBucketRowIds) < rows {
+		ctr.spillBucketRowIds = make([]int32, rows)
+	}
+	if err := ctr.restoreSpillScratchTransient(oldScratchSize, grewScratch); err != nil {
+		return err
 	}
 	keyVecs := ctr.spillKeyVecs[:len(executors)]
 	expressionReservation, err := ctr.reserveSpillExpressionPeak(proc, bat.RowCount())
@@ -420,15 +687,8 @@ func (ctr *container) spillBatchBounded(proc *process.Process, bat *batch.Batch,
 	ctr.hashmapBuilder.observeNullKeys(keyVecs)
 
 	// Reuse hashValues buffer
-	rows := bat.RowCount()
-	if cap(ctr.spillHashValues) < rows {
-		ctr.spillHashValues = make([]uint64, rows)
-	}
 	hashes := ctr.spillHashValues[:rows]
 	computeXXHash(keyVecs, hashes)
-	if cap(ctr.spillBucketRowIds) < rows {
-		ctr.spillBucketRowIds = make([]int32, rows)
-	}
 	// Keep the legacy spillSelection field as an alias for callers/tests that
 	// inspect it. It intentionally points at the same backing array: no second
 	// row-id allocation is made.
@@ -492,7 +752,7 @@ func (ctr *container) spillBatchBounded(proc *process.Process, bat *batch.Batch,
 			var file *os.File
 			file, spillErr = ctr.ensureSpillFile(proc, files, int(bucket))
 			if spillErr == nil {
-				spillErr = ctr.appendSpillRecord(file, int(bucket), selected, analyzer)
+				spillErr = ctr.appendSpillRecord(file, int(bucket), selected, need, analyzer)
 			}
 		}
 		selected.CleanOnlyData()
@@ -507,11 +767,30 @@ func (ctr *container) spillBatchBounded(proc *process.Process, bat *batch.Batch,
 // buffer. Full buffers are written before accepting the next record. A record
 // larger than the coalescing target is written directly, so no unbounded
 // temporary copy can be retained.
-func (ctr *container) appendSpillRecord(file *os.File, bucket int, bat *batch.Batch, analyzer process.Analyzer) error {
+func (ctr *container) appendSpillRecord(file *os.File, bucket int, bat *batch.Batch, scratchNeed uint64, analyzer process.Analyzer) error {
 	if bucket < 0 || bucket >= spillNumBuckets {
 		return process.ErrHashBuildBudgetInvalid
 	}
+	grow, err := spillMarshalGrowBytes(bat)
+	if err != nil {
+		return err
+	}
+	var oldScratchSize uint64
+	var grewScratch bool
+	if old := uint64(ctr.spillWriteBuf.Cap()); ctr.hashmapBuilder.budget != nil && old > 0 && old < grow {
+		peak, addErr := spillCheckedAdd(scratchNeed, old)
+		if addErr != nil {
+			return addErr
+		}
+		oldScratchSize, grewScratch, err = ctr.growSpillScratchTransient(peak)
+		if err != nil {
+			return err
+		}
+	}
 	cnt, err := marshalSpillRecord(bat, &ctr.spillWriteBuf)
+	if restoreErr := ctr.restoreSpillScratchTransient(oldScratchSize, grewScratch); restoreErr != nil {
+		return restoreErr
+	}
 	if err != nil {
 		return err
 	}
@@ -529,7 +808,9 @@ func (ctr *container) appendSpillRecord(file *os.File, bucket int, bat *batch.Ba
 		if !ctr.ensureSpillCoalesceCapacity(buf, analyzer) {
 			return ctr.writeSpillPayload(file, payload, cnt, analyzer)
 		}
-		buf.Grow(spillWriteCoalesceSize)
+		if buf.Cap() < spillWriteCoalesceSize {
+			*buf = *bytes.NewBuffer(make([]byte, 0, spillWriteCoalesceSize))
+		}
 	}
 	_, _ = buf.Write(payload)
 	ctr.spillBucketWriteRows[bucket] += cnt
@@ -546,7 +827,7 @@ func (ctr *container) ensureSpillCoalesceCapacity(buf *bytes.Buffer, analyzer pr
 	if ctr.hashmapBuilder.budget == nil || ctr.spillScratchReservation == nil {
 		return ctr.hashmapBuilder.budget == nil
 	}
-	additional := uint64(spillWriteCoalesceSize-buf.Cap()) * 2
+	additional := uint64(spillWriteCoalesceSize - buf.Cap())
 	if err := ctr.spillScratchReservation.Grow(additional); err != nil {
 		analyzer.GetOpStats().AddExtraStat("HashBuildCoalesceGrowRejects", 1)
 		return false

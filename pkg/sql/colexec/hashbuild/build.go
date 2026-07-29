@@ -263,18 +263,34 @@ func (hashBuild *HashBuild) build(proc *process.Process, analyzer process.Analyz
 		// same upstream batch a second time when it is spilled directly.
 		ctr.hashmapBuilder.InputBatchRowCount += result.Batch.RowCount()
 		if hashBuild.IsShuffle {
-			if err := ctr.ensureSpillScratchReservation(result.Batch, analyzer); err != nil {
-				// A larger ingress batch may require growing the emergency lease.
-				// If retained copies are consuming the missing headroom, drain them
-				// under the already-admitted lease, then retry for the current batch.
+			// First prove that the current upstream batch can always be spilled
+			// directly. This uses its actual materialization semantics and never
+			// projects a hypothetical retained batch.
+			if err := ctr.ensureDirectSpillScratchReservation(result.Batch, analyzer); err != nil {
+				// Existing retained batches were admitted with a future-drain
+				// proof. Drain them under that lease, then retry the direct proof
+				// after their source reservations have been released.
 				if spillMode || !errors.Is(err, process.ErrHashBuildBudgetAdmission) || len(ctr.hashmapBuilder.Batches.Buf) == 0 {
 					return err
 				}
 				if err := startSpill(); err != nil {
 					return err
 				}
-				if err := ctr.ensureSpillScratchReservation(result.Batch, analyzer); err != nil {
+				if err := ctr.ensureDirectSpillScratchReservation(result.Batch, analyzer); err != nil {
 					return err
+				}
+			}
+			if !spillMode {
+				// A batch may become retained only after its future spill scratch
+				// is admitted. If that proof does not fit, do not copy it: switch
+				// to the already-proven direct-spill path.
+				if err := ctr.ensureRetainedSpillScratchReservation(result.Batch, analyzer); err != nil {
+					if !errors.Is(err, process.ErrHashBuildBudgetAdmission) {
+						return err
+					}
+					if err := startSpill(); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -462,6 +478,9 @@ func (hashBuild *HashBuild) handleRuntimeFilter(proc *process.Process) error {
 
 		data, release, err := ctr.hashmapBuilder.marshalRuntimeFilterVector(keyVec)
 		if err != nil {
+			if hashBuild.fallbackRuntimeFilterOnBudgetAdmission(err, &runtimeFilter, spec, proc) {
+				return nil
+			}
 			return err
 		}
 		runtimeFilter.Card = int32(rowCount)
@@ -511,6 +530,9 @@ func (hashBuild *HashBuild) handleRuntimeFilter(proc *process.Process) error {
 		data, release, err := ctr.hashmapBuilder.marshalRuntimeFilterVector(ctr.hashmapBuilder.UniqueJoinKeys[0])
 
 		if err != nil {
+			if hashBuild.fallbackRuntimeFilterOnBudgetAdmission(err, &runtimeFilter, spec, proc) {
+				return nil
+			}
 			return err
 		}
 
@@ -522,6 +544,36 @@ func (hashBuild *HashBuild) handleRuntimeFilter(proc *process.Process) error {
 		ctr.runtimeFilterIn = true
 	}
 	return nil
+}
+
+// Runtime filters are optional probe-side optimizations. If serializing one
+// cannot be admitted under the query/CN hash-build budget, PASS preserves
+// correctness and avoids turning a successful hash build into a query error.
+// Lifecycle and accounting errors remain fatal.
+func (hashBuild *HashBuild) fallbackRuntimeFilterOnBudgetAdmission(
+	err error,
+	runtimeFilter *message.RuntimeFilterMessage,
+	spec *plan.RuntimeFilterSpec,
+	proc *process.Process,
+) bool {
+	var budgetErr *process.HashBuildBudgetError
+	if !errors.As(err, &budgetErr) || budgetErr.Kind != process.HashBuildBudgetErrorAdmission {
+		return false
+	}
+
+	if hashBuild.OpAnalyzer != nil {
+		stats := hashBuild.OpAnalyzer.GetOpStats()
+		stats.AddExtraStat("HashBuildRuntimeFilterBudgetFallbacks", 1)
+		stats.SetMaxExtraStat("HashBuildRuntimeFilterBudgetFallbackRequestedBytes", hashBuildStatInt64(budgetErr.Requested))
+		stats.SetMaxExtraStat("HashBuildRuntimeFilterBudgetFallbackUsedBytes", hashBuildStatInt64(budgetErr.Used))
+		stats.SetMaxExtraStat("HashBuildRuntimeFilterBudgetFallbackCapBytes", hashBuildStatInt64(budgetErr.Cap))
+	}
+	*runtimeFilter = message.RuntimeFilterMessage{
+		Tag: spec.Tag,
+		Typ: message.RuntimeFilter_PASS,
+	}
+	hashBuild.sendRuntimeFilter(*runtimeFilter, spec, proc)
+	return true
 }
 
 func (hashBuild *HashBuild) sendRuntimeFilter(rt message.RuntimeFilterMessage, spec *plan.RuntimeFilterSpec, proc *process.Process) {

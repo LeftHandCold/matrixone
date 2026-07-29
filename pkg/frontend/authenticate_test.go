@@ -60,6 +60,15 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
+func TestTemporaryTableSkipsPersistentOwnershipChanges(t *testing.T) {
+	require.NoError(t, doGrantPrivilegeImplicitly(
+		context.Background(), nil, &tree.CreateTable{Temporary: true},
+	))
+	require.NoError(t, doRevokePrivilegeImplicitly(
+		context.Background(), nil, &tree.DropTable{}, nil,
+	))
+}
+
 func TestGetTenantInfo(t *testing.T) {
 	convey.Convey("tenant", t, func() {
 		type input struct {
@@ -10081,7 +10090,7 @@ func Test_doAlterAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10136,7 +10145,7 @@ func Test_doAlterAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10191,7 +10200,7 @@ func Test_doAlterAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10242,7 +10251,7 @@ func Test_doAlterAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10294,7 +10303,7 @@ func Test_doAlterAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10342,7 +10351,7 @@ func Test_doAlterAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10397,7 +10406,7 @@ func Test_doAlterAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10442,7 +10451,7 @@ func Test_doAlterAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10491,7 +10500,7 @@ func Test_doAlterAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10540,7 +10549,7 @@ func Test_doAlterAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10615,7 +10624,7 @@ func Test_doDropAccount(t *testing.T) {
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 		ctx = defines.AttachAccountId(ctx, 0)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10680,7 +10689,7 @@ func Test_doDropAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10727,7 +10736,7 @@ func Test_doDropAccount(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		//no result set
@@ -10775,7 +10784,7 @@ func Test_doDropAccount_InTransaction(t *testing.T) {
 			ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 			ctx = defines.AttachAccountId(ctx, 0)
 
-			rm, _ := NewRoutineManager(ctx, "")
+			rm := newTestRoutineManager(t, ctx)
 			ses.rm = rm
 
 			// Setup SQL results
@@ -10845,7 +10854,7 @@ func Test_doDropAccount_InTransaction(t *testing.T) {
 			ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 			ctx = defines.AttachAccountId(ctx, 0)
 
-			rm, _ := NewRoutineManager(ctx, "")
+			rm := newTestRoutineManager(t, ctx)
 			ses.rm = rm
 
 			// Setup SQL results (no begin; needed)
@@ -14123,7 +14132,7 @@ func TestDoDropStage(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		tenant := &TenantInfo{
@@ -14178,7 +14187,7 @@ func TestDoDropStage(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		tenant := &TenantInfo{
@@ -14233,7 +14242,7 @@ func TestDoDropStage(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		tenant := &TenantInfo{
@@ -14286,7 +14295,7 @@ func TestDoDropStage(t *testing.T) {
 		pu.SV.KillRountinesInterval = 0
 		ctx := context.WithValue(context.TODO(), config.ParameterUnitKey, pu)
 
-		rm, _ := NewRoutineManager(ctx, "")
+		rm := newTestRoutineManager(t, ctx)
 		ses.rm = rm
 
 		tenant := &TenantInfo{

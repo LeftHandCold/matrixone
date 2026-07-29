@@ -88,9 +88,10 @@ type container struct {
 	// consuming the scratch required to recover from hard-budget rejection.
 	spillScratchReservation *process.HashBuildReservation
 	// spillScratchEmergency marks a lease pre-admitted by
-	// ensureSpillScratchReservation. An uncharged upstream batch may not grow
-	// beyond this lease. A retained batch may grow it because its source memory
-	// remains charged separately while the batch is drained.
+	// ensureDirectSpillScratchReservation or
+	// ensureRetainedSpillScratchReservation. An uncharged upstream batch may
+	// not grow beyond this lease. A retained batch may grow it because its
+	// source memory remains charged separately while the batch is drained.
 	spillScratchEmergency bool
 	// spillScratchBase is the transient emergency floor. Coalesce-buffer
 	// growth is charged on top and must never be mistaken for this floor.
@@ -381,6 +382,7 @@ func (hashBuild *HashBuild) logDiagnostics(proc *process.Process, pipelineFailed
 	extra := hashBuild.OpAnalyzer.GetOpStats().ExtraStats
 	if extra["HashBuildSpillStarts"] == 0 &&
 		extra["QueryHashBudgetRejects"] == 0 &&
+		extra["HashBuildRuntimeFilterBudgetFallbacks"] == 0 &&
 		extra["HashBuildEmergencyScratchGrowRejects"] == 0 &&
 		extra["HashBuildSpillScratchGrowRejects"] == 0 &&
 		extra["HashBuildRetainedEmergencyGrowCount"] == 0 &&

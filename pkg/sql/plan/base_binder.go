@@ -31,6 +31,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/dialect"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/function"
+	"github.com/matrixorigin/matrixone/pkg/sql/plan/rule"
 	"github.com/matrixorigin/matrixone/pkg/sql/util"
 	"github.com/matrixorigin/matrixone/pkg/util/errutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
@@ -155,6 +156,16 @@ func (b *baseBinder) baseBindExpr(astExpr tree.Expr, depth int32, isRoot bool) (
 		b.numericParamType = parentParamType
 		if err != nil {
 			return
+		}
+		if b.builder != nil {
+			var rewritten bool
+			expr, rewritten, err = b.builder.rewriteProjectedEnumOrSetDisplayValueToJSONCast(expr, expr, typ)
+			if err != nil {
+				return
+			}
+			if rewritten {
+				return
+			}
 		}
 		if useExplicitCastOverload(exprImpl.Type) {
 			expr, err = appendExplicitCastBeforeExpr(b.GetContext(), expr, typ)
@@ -2847,8 +2858,47 @@ func bindSerialFuncOverExprList(ctx context.Context, name string, args []*Expr) 
 	return args[0], true, nil
 }
 
+func validateApproxPercentileArgs(ctx context.Context, args []*Expr) error {
+	if len(args) != 2 {
+		return nil
+	}
+	percentile := args[1]
+	if percentile == nil || isNullExpr(percentile) || !rule.IsConstant(percentile, false) {
+		return moerr.NewInvalidInput(ctx,
+			"percentile argument of approx_percentile must be a non-null constant")
+	}
+	return nil
+}
+
+// bindMixedInListComparison applies MySQL's REAL comparison semantics for a
+// string left operand and a numeric IN-list value. It is deliberately limited
+// to IN/NOT IN fallback comparisons: applying it to every comparison would
+// lose precision for numeric columns compared with string constants.
+func bindMixedInListComparison(ctx context.Context, operator string, left, right *Expr) (*plan.Expr, error) {
+	leftType := makeTypeByPlan2Expr(left)
+	rightType := makeTypeByPlan2Expr(right)
+	if leftType.Oid.IsMySQLString() && (rightType.IsNumeric() || rightType.Oid == types.T_bool) {
+		targetType := types.T_float64.ToType()
+		operands := []*Expr{left, right}
+		for i := range operands {
+			var err error
+			operands[i], err = appendCastBeforeExpr(ctx, operands[i], makePlan2Type(&targetType))
+			if err != nil {
+				return nil, err
+			}
+		}
+		left, right = operands[0], operands[1]
+	}
+	return BindFuncExprImplByPlanExpr(ctx, operator, []*Expr{left, right})
+}
+
 func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) (*plan.Expr, error) {
 	var err error
+	if name == NameApproxPercentile {
+		if err = validateApproxPercentileArgs(ctx, args); err != nil {
+			return nil, err
+		}
+	}
 
 	// deal with some special function
 	if listExpr, ok, err := bindSerialFuncOverExprList(ctx, name, args); ok || err != nil {
@@ -3242,7 +3292,7 @@ func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) 
 			}
 			if name == "in" {
 				for _, expr := range orExprList {
-					tmpExpr, err := BindFuncExprImplByPlanExpr(ctx, "=", []*Expr{DeepCopyExpr(args[0]), expr})
+					tmpExpr, err := bindMixedInListComparison(ctx, "=", DeepCopyExpr(args[0]), expr)
 					if err != nil {
 						return nil, err
 					}
@@ -3251,7 +3301,7 @@ func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) 
 				return combinePlanExprsBalanced(ctx, "or", expanded)
 			} else {
 				for _, expr := range orExprList {
-					tmpExpr, err := BindFuncExprImplByPlanExpr(ctx, "!=", []*Expr{DeepCopyExpr(args[0]), expr})
+					tmpExpr, err := bindMixedInListComparison(ctx, "!=", DeepCopyExpr(args[0]), expr)
 					if err != nil {
 						return nil, err
 					}
@@ -3583,6 +3633,17 @@ func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) 
 				}
 				if argsType[idx].Oid == castType.Oid && castType.Oid.IsDecimal() && argsType[idx].Scale == castType.Scale {
 					continue
+				}
+				// A direct BIT-to-text cast preserves the BIT payload bytes. In the
+				// LEAST/GREATEST type lattice BIT is numeric, so stringify its
+				// unsigned value instead when the comparison target is text.
+				if (name == "least" || name == "greatest") && argsType[idx].Oid == types.T_bit &&
+					(castType.Oid == types.T_char || castType.Oid == types.T_varchar || castType.Oid == types.T_text) {
+					uint64Type := types.T_uint64.ToType()
+					args[idx], err = appendCastBeforeExpr(ctx, args[idx], makePlan2Type(&uint64Type))
+					if err != nil {
+						return nil, err
+					}
 				}
 				typ := makePlan2Type(&castType)
 				args[idx], err = appendCastBeforeExpr(ctx, args[idx], typ)
@@ -3927,6 +3988,13 @@ func appendExplicitCastBeforeExpr(ctx context.Context, expr *Expr, toType Type) 
 func appendCastBeforeExprWithOverload(
 	ctx context.Context, expr *Expr, toType Type, overloadID int32, isBin ...bool,
 ) (*Expr, error) {
+	expr, rewritten, err := rewriteEnumDisplayValueToJSONCast(ctx, expr, toType)
+	if err != nil {
+		return nil, err
+	}
+	if rewritten {
+		return expr, nil
+	}
 	toType.NotNullable = expr.Typ.NotNullable
 	argsType := []types.Type{
 		makeTypeByPlan2Expr(expr),
@@ -3958,6 +4026,38 @@ func appendCastBeforeExprWithOverload(
 		},
 		Typ: typ,
 	}, nil
+}
+
+func rewriteEnumDisplayValueToJSONCast(ctx context.Context, expr *Expr, toType Type) (*Expr, bool, error) {
+	if toType.Id != int32(types.T_json) {
+		return expr, false, nil
+	}
+	if expr.Typ.Id == int32(types.T_enum) {
+		return nil, false, moerr.NewInvalidArg(ctx, "operator cast", "[ENUM JSON]")
+	}
+	if isEnumOrSetDisplayValueExpr(expr) {
+		quoted, err := quoteEnumOrSetDisplayValueAsJSON(ctx, expr)
+		return quoted, err == nil, err
+	}
+	return expr, false, nil
+}
+
+func isEnumOrSetDisplayValueExpr(expr *Expr) bool {
+	if expr == nil {
+		return false
+	}
+	fn := expr.GetF()
+	return fn != nil && fn.Func != nil &&
+		(fn.Func.ObjName == moEnumCastIndexToValueFun || fn.Func.ObjName == moSetCastIndexToValueFun)
+}
+
+func quoteEnumOrSetDisplayValueAsJSON(ctx context.Context, expr *Expr) (*Expr, error) {
+	quoted, err := BindFuncExprImplByPlanExpr(ctx, "json_quote", []*Expr{expr})
+	if err != nil {
+		return nil, err
+	}
+	quoted.Typ.NotNullable = expr.Typ.NotNullable
+	return quoted, nil
 }
 
 func resetDateFunctionArgs(ctx context.Context, dateExpr *Expr, intervalExpr *Expr) ([]*Expr, error) {
