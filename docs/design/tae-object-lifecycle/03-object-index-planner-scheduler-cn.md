@@ -573,6 +573,7 @@ source protection count/age
 TAE staging object bytes/count
 archive staging bytes/count
 Rewrite physical slots/dense transfer reservation
+max certified decoded Block estimate and task peak memory token
 external booking bytes/pages
 Tombstone delta rows/bytes/blocks
 Provider request/egress budget
@@ -652,6 +653,21 @@ Lifecycle:
 
 它是 fail-closed，不代表 archived。
 
+判断不依赖逐Object Index，而读取02定义的每Binding固定大小runtime stats：
+
+```text
+rewrite_amplification =
+  attempted_source_bytes
+  / max(committed_retired_expired_bytes, 1)
+```
+
+`attempted`包含成功、失败、conflict和abort的Rewrite source bytes，防止失败任务不计
+成本后无限重试；分母只计final transaction已commit的退休到期字节。Scheduler同时看
+24h/7d rolling source/retired/aborted read/write bytes和consecutive blocked count。
+hour/day bucket ring大小固定，重启后从Catalog恢复，不因进程重启清零。默认阈值必须
+在1/10 TiB认证后冻结，超过后终止当前child generation并等待显式`RECHECK`或窗口
+自然滚动，不能继续占用Rewrite队列。
+
 ### 13.3 `CONFLICT_BLOCKED`
 
 同一 source set 持续发生：
@@ -687,6 +703,9 @@ TAE Metadata 重新规划。
 - tiny Mixed 选 DELETE；
 - medium/large Mixed 选 Rewrite；
 - Rewrite 超预算 `RESOURCE_BLOCKED`。
+- 单Block metadata estimate未知/溢出/超过认证上限时，payload读取前
+  `LIFECYCLE_OVERSIZE_UNSUPPORTED -> RESOURCE_BLOCKED`；
+- 24h/7d rewrite amplification超阈值时`MIXED_LAYOUT_BLOCKED`，重启不能清零。
 
 ### 14.3 Merge/GC
 
@@ -706,3 +725,5 @@ TAE Metadata 重新规划。
 5. Packed Summary 是可重建性能优化，不是 GA 正确性依赖。
 6. Lifecycle Rewrite 解决大 Mixed 的退休；它不自动保证未来物理时间局部性。
 7. 普通 Merge 只感知正在执行的 exact reservation，不感知 Policy/Scanner。
+8. Rewrite成本使用每Binding固定bucket ring统计，不建立逐Object Catalog Index，
+   也不更新权威Binding CAS行。

@@ -53,7 +53,7 @@ Archive:
 
 ```text
 pkg/lifecycle/
-  catalog/          # Binding、Guard、Dataset、Receipt、scan state、Candidate
+  catalog/          # Binding、Guard、Dataset、Receipt、scan state、Candidate、runtime stats
   control/          # system Attempt、Cleanup Root、owner tombstone、Reconcile
   discovery/        # metadata page scanner、classification、optional summary
   planner/          # cutoff、batch、path、budget
@@ -96,6 +96,7 @@ Gate A 没有 Provider PUT 和活动数据退休。
 - Binding；
 - Discovery Scan State；
 - 有界 Candidate；
+- 每Binding固定hour/day bucket ring的Rewrite runtime stats；
 - Dataset/Receipt；
 - system Attempt/Cleanup Root/Root Object；
 - owner tombstone；
@@ -112,6 +113,8 @@ Gate A 没有 Provider PUT 和活动数据退休。
 - upgrade 可重复执行；
 - downgrade 不删除未知状态和 Root；
 - system 表均有分页键，禁止一行全局 cursor。
+- Root Object主键固定为`(root_id, object_kind, kind-local ordinal)`，不同kind不共享
+  全局ordinal分配器。
 
 验收：
 
@@ -201,6 +204,19 @@ MIXED_LAYOUT_BLOCKED
 Candidate 每表、每账户和集群总量均有硬上限。达到上限暂停该 scope 的 Discovery，
 不能扫描更多再丢弃结果。
 
+Rewrite成本写入每Binding固定hour/day bucket ring，而不是Binding权威行或逐Object
+Index：
+
+```text
+amplification =
+  attempted_source_bytes
+  / max(committed_retired_expired_bytes, 1)
+```
+
+failed/aborted attempt也计attempted和实际aborted read/write bytes；只有final commit
+增加committed retired expired bytes。bucket CAS、rollover、restart恢复和阈值阻断
+必须有并发测试。
+
 Gate A exit：
 
 - 1000 Binding 不访问任何未绑定表；
@@ -233,8 +249,10 @@ Gate B 可以写 staging/export，但不退休活动数据。
 - callback error/panic/cancel；
 - Batch reuse/double clean；
 - 0 visible complete；
-- 3 GiB Object streaming；
-- oversize varlen row。
+- Object metadata extent未知/溢出/认证上限±1；
+- 实现可供Rewrite复用的保守Block峰值估算器，Reader在payload读取前准入；
+- 3 GiB多Block Object streaming；
+- 未认证oversize Block/varlen row在payload读取前拒绝。
 
 ### B2. Archive Writer
 
@@ -285,7 +303,9 @@ type LifecycleReservationToken struct {
     ExecutorEpoch uint64
     TableID       uint64
     Generation    uint64
+    ReservedMode  LifecycleCommitMode
     ObjectDigest  [32]byte
+    SourceLayouts []SourceLayoutProof
     ExpiresAt     time.Time
 }
 
@@ -321,7 +341,7 @@ table/object 分片；禁止单全局 mutex。ticket 不覆盖 `DoMergeAndWrite`
 
 1. capture `source_snapshot_ts`；
 2. 枚举 exact source Data Object 和相关 Tombstone Object filename；
-3. Rewrite预先创建Root并冻结live segment ordinal range和booking page range；
+3. Rewrite预分配Root/segment/range/booking确定性名称，但不创建Root/child；
 4. 把source文件和全部未来可能生成的live/booking文件名加入同一BloomFilter；
 5. GC cycle 空闲时注册；
 6. 注册成功后才允许读取或写staging；
@@ -354,13 +374,26 @@ Entry 冻结：
 - protocol/version/mode；
 - account/table/schema/Binding/Guard generation；
 - attempt/executor/reservation/protection identity和expected filename-set digest；
-- source Snapshot、exact source Object/digest和TN生成的`SourceLayoutProof`；
+- source Snapshot、exact source Object/digest和TN生成的同序
+  `repeated SourceLayoutProof`；
 - created live Object/digest；
 - immutable external transfer booking exact identity/layout digest；
 - D/E/L row-class layout digest；
 - Archive Dataset/Manifest/root；
 - source/expired/live counts 和 conservation roots；
 - deterministic entry digest。
+
+Whole的`source_objects`与`source_layouts`必须一一对应、同按Object ID排序，
+source digest覆盖两者；Rewrite两者基数都严格为1。每条proof再次包含Object ID和
+ObjectStats digest，禁止proof跨Object错绑。
+
+reservation冻结初始mode，只允许Rewrite退化为同类Whole/Empty；禁止Whole升级Rewrite
+和TTL/Archive互换。
+
+Lifecycle external booking使用独立Booking V1 envelope，冻结magic/version、Root
+child/TAE namespace binding、每Block actual rows、2-bit D/E/L class、L sparse
+destination、created layout、长度和digest。不得直接使用会省略`NoTransfer`项的普通
+`TransferHashPage.Marshal()`。
 
 路由：
 
@@ -372,6 +405,11 @@ Entry 冻结：
 
 不得把可选字段塞入 `OpCommitMerge`，否则老 TN 可能忽略字段后错误提交。
 
+WAL/Replay只恢复source DropIntent、新live Object和final transaction的
+Tombstone/Catalog状态，不恢复已提交事务的历史运行时transfer page。External
+Booking只用于同一final transaction的duplicate Prepare/NeedRetry重建page；TN
+restart后旧事务缺页必须RW/WW conflict。
+
 ### C4. TN Prepare 顺序
 
 ```text
@@ -380,9 +418,9 @@ validate table/schema/Guard generation
 validate reservation token
 validate SyncProtection expected filename-set digest
 validate exact current source Objects
-validate SourceLayoutProof
+validate one-to-one SourceLayoutProof list
 validate created live Objects/checksum
-validate row-conservation/transfer roots
+stream-validate Booking V1 and row-conservation/transfer roots
 bounded/cancelable collect and validate Tombstone delta
 register/reuse Root-owned merge create-drop-transfer txn entry
 append WAL through normal transaction path
@@ -445,19 +483,19 @@ one bounded writable SI transaction
 每个child严格只有一个source Object，Build阶段不持有writable transaction：
 
 1. 获取 reservation/protection；
-2. 创建 Root，并提交一个 deterministic
-   `TAE_LIVE_SEGMENT_RANGE(segmentID, ordinal hard limit)` ownership envelope；
+2. 只预分配Root ID、segment/range/booking名称和protection set，不创建Root child；
 3. 以 `source_snapshot_ts`逐 block 读取；
 4. 得到 Snapshot delete bitmap `D`；
 5. 计算 expired bitmap `E`；
-6. Archive模式按该source的block/row顺序同步把`E`行写入Archive Writer；
+6. Archive模式首次E行准备PUT前创建Root/Archive child，再按block/row顺序同步写入；
 7. 把 `D ∪ E`交给现有 `DoMergeAndWrite`；
-8. 只有 live row 写入 normal TAE Object；
+8. 首次L行、把Batch返回给mergesort前创建Root（若无）并提交
+   `TAE_LIVE_SEGMENT_RANGE`；只有live row写入normal TAE Object；
 9. live row 产生 destination，`D/E`保持 `api.NoTransfer`；
 10. actual writer只消费range内ordinal，Sync后追加exact child并冻结
     ObjectStats/checksum；
-11. immutable external transfer booking每页在FileService write前动态分配Root
-    child；inline transfer禁止；
+11. 只有`live > 0`才按Booking V1生成immutable external booking；每页在FileService
+    write前动态分配Root child；inline transfer禁止；
 12. Archive full readback 后进入短 final transaction。
 
 当前 `PrepareNewWriter()`没有 error 返回值，禁止在其中做 Catalog transaction。
@@ -469,6 +507,12 @@ range；证明不了时增加共享`BeforeCreateObject(name) error` hook，不�
 证明单source内部按block/row递增，Lifecycle host显式按block ordinal驱动
 `BlockDataReadNoCopy`。输入第二个source必须在任何Root/FileService/Provider副作用
 前拒绝。
+
+进入`DoMergeAndWrite`前必须取得覆盖dense slab、最大认证source Block、mergesort
+output、Object Writer/index、Archive encoder、TN booking copy和安全余量的task父
+memory token。每次`BlockDataReadNoCopy`前再以metadata column extent保守估算并取得
+Block子token；估算未知、溢出或超过`max_certified_block_read_bytes`时，在payload
+读取前fail closed。
 
 Build 完成硬不变量：
 
@@ -484,6 +528,8 @@ snapshot_deleted/expired are NoTransfer
 `source_visible==0`走EMPTY_ARCHIVE/Whole退休空Object；`expired==0 && live>0`结束为
 no-op并清理staging；`live==0 && expired>0`必须把final mode切为Whole，Archive走
 独立post-S delete validator。禁止提交`createdObjs==0`的`MIXED_REWRITE_*` entry。
+`visible==0`不创建Root；`live==0`不得创建TAE range/booking；Planner预测为Rewrite
+不能成为预创建空child的理由。退化路径必须有独立Root crash matrix。
 
 新 live Object 仍按表的 physical sort/cluster key 使用现有 mergesort。不能按 lifecycle
 column伪装成sorted。output level按普通Merge的晋级规则从source level计算，不能默认
@@ -504,10 +550,12 @@ column伪装成sorted。output level按普通Merge的晋级规则从source level
 - transfer page missing/expired/digest mismatch 均 fail closed。
 
 `LifecycleRewriteHost.DoTransfer()`固定true，不受普通Merge comment影响；但只有live
-行有destination。不得复制第二套transfer encoding/page/WAL实现。
+行有destination。运行时transfer page、destination语义和WAL不fork第二套实现；
+外部持久化载体按本设计使用独立Booking V1 envelope。
 
-外部transfer booking只复用encoding，不复用普通Merge的Prepare即删语义。重构
-`writeTransferMapsToS3/marshalTransferMaps`：
+外部transfer booking只复用必要的destination原语，不复用普通Merge的文件codec和
+Prepare即删语义。实现独立Booking V1 writer/streaming validator，并保持
+`writeTransferMapsToS3/marshalTransferMaps`普通路径不变：
 
 - 普通Merge仍使用random temp key和load-and-delete；
 - Lifecycle通过Root分配deterministic page key并在write前提交child；
@@ -543,7 +591,7 @@ pkg/vm/engine/tae/tables/txnentries/mergeobjects.go
 
 pkg/vm/engine/tae/model/pages.go
   keep ordinary transfer codec compatible
-  add Lifecycle external booking + row-class layout codec
+  add versioned Lifecycle Booking V1 envelope/streaming validator
 
 pkg/vm/engine/disttae/lifecycle_rewrite.go
   single-source host
@@ -571,6 +619,7 @@ AND Archive sees matching Dataset/Manifest root
 - Rewrite booking child -> `DELETE_PENDING`；
 - TTL Rewrite Root -> `POST_COMMIT_CLEANUP`，booking全部删除后 -> `TRANSFERRED`；
 - normal TAE/WAL/GC 接管 live/source Object。
+- runtime transfer page仍由现有transfer table TTL管理，不是WAL replay对象。
 
 明确 aborted 才允许 Root -> `DELETE_PENDING`。仍 unknown 时保留
 reservation/protection、Root 和 staging，释放 worker slot并进入 Reconciler。
@@ -580,6 +629,8 @@ Gate D exit：
 - 八项 P0 中 Reader、SI、wire、reservation/protection、Root、Rewrite、budget 全部
   通过；
 - Whole/small Mixed/Rewrite 每条路径都有 crash matrix；
+- Whole Prepare/commit后旧RowID事务（含TN restart）必须冲突；Rewrite旧事务只能
+  成功transfer或冲突，不能静默提交；
 - source visible row 不出现缺失、重复或未归档即删除；
 - 普通 Merge/SELECT/DML/GC 回归在阈值内。
 
@@ -653,8 +704,10 @@ Rewrite concurrency: table 1 / cluster 1 default / 4 certified hard max
 Discovery page object/footer-byte limit
 Candidate table/account/cluster limit
 Reader batch/memory limit
+max certified Block read bytes and pre-DoMergeAndWrite task memory token
 small Mixed rows/ratio/delete-key/WAL limit
 Rewrite single-source/live/dense-transfer/external-booking/delta/staging limit
+Rewrite 24h/7d attempted/committed/aborted bytes and amplification threshold
 Provider I/O/deadline/concurrency limit
 Root/Object/orphan/backlog limit
 reservation/protection lease and renew interval

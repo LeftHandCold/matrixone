@@ -15,7 +15,7 @@ Lifecycle 有两个 Catalog 平面：
 
 - Binding；
 - Feature Guard；
-- Discovery Scan State 和有界 Candidate；
+- Discovery Scan State、有界 Candidate和固定大小Rewrite runtime stats；
 - Dataset；
 - Receipt；
 - Restore chunk Receipt；
@@ -360,6 +360,54 @@ CREATE CLUSTER TABLE mo_catalog.mo_lifecycle_candidates (
 Candidate 不是 retirement authority。Executor 必须重新读取当前 Relation Metadata，
 获取 source reservation/GC protection，并在 TN Prepare 再校验 exact Object。可选
 packed Discovery Summary 只能是可丢弃优化，Catalog 仅保存 root/version/watermark。
+
+### 3.3.1 Binding Rewrite Runtime Stats
+
+为限制高度乱序表反复整Object Rewrite，只增加每Binding固定大小的rolling统计，
+不建立逐Object Index，也不把高频计数更新写入Binding权威CAS行：
+
+```sql
+CREATE CLUSTER TABLE mo_catalog.mo_lifecycle_binding_runtime_stats (
+    account_incarnation       BINARY(16) NOT NULL,
+    binding_id                BINARY(16) NOT NULL,
+    window_kind               TINYINT UNSIGNED NOT NULL,
+    bucket_ordinal            TINYINT UNSIGNED NOT NULL,
+    bucket_start              TIMESTAMP(6) NOT NULL,
+    attempted_source_bytes    BIGINT UNSIGNED NOT NULL,
+    committed_retired_expired_bytes BIGINT UNSIGNED NOT NULL,
+    aborted_read_bytes        BIGINT UNSIGNED NOT NULL,
+    aborted_write_bytes       BIGINT UNSIGNED NOT NULL,
+    consecutive_blocked_count INT UNSIGNED NOT NULL,
+    version                   BIGINT UNSIGNED NOT NULL,
+    updated_at                TIMESTAMP(6) NOT NULL,
+    PRIMARY KEY (
+        account_incarnation,
+        binding_id,
+        window_kind,
+        bucket_ordinal
+    )
+);
+```
+
+`window_kind`固定为24小时的hour bucket ring和7天的day bucket ring；bucket数量是
+release-profile常量，禁止按Job/Object无限追加。更新只CAS当前bucket，不修改Binding
+generation、active attempt或Feature Guard，因此不会把Scanner/finalizer集中到同一
+热点行。bucket rollover先按`bucket_start + version` CAS清零后复用ordinal。
+`consecutive_blocked_count`不跨bucket求和；rollover时从最近有效bucket复制，后续
+成功commit清零、blocked加一，因此重启和跨整点都不会绕过阻断。
+
+权威计算：
+
+```text
+rewrite_amplification =
+  sum(attempted_source_bytes, window)
+  / max(sum(committed_retired_expired_bytes, window), 1)
+```
+
+`attempted_source_bytes`在Rewrite开始读取前记账，失败/abort也保留；只有final
+transaction committed后才增加`committed_retired_expired_bytes`。读写一部分后失败分别进入
+`aborted_read_bytes/aborted_write_bytes`。阈值由认证结果冻结，超限只生成
+`MIXED_LAYOUT_BLOCKED`，不能修改数据或通过重启清空历史。
 
 ### 3.4 Dataset
 
@@ -804,6 +852,23 @@ namespace，不能用一个父级`storage_namespace_id`表示。两个identity�
 未启用额外encryption时仍使用canonical `NO_ENCRYPTION`配置digest，不以NULL绕过
 Object级identity校验；父字段NULL只表示该Root不使用这一类namespace。
 
+`root_kind`表示attempt可能产生的外部namespace集合，不等同于最终
+`LifecycleCommitEntry.mode`。计划为Archive Rewrite的attempt可以在首次E行前创建
+`ARCHIVE_REWRITE`父Root并冻结双namespace，随后因`live == 0`退化为
+`WHOLE_ARCHIVE`；此时允许只有Archive child，禁止TAE range/live/booking child。
+计划为Rewrite不意味着必须预创建child：
+
+| 实际分类结果 | Root | TAE range/live child | Booking child |
+|---|---|---|---|
+| `visible == 0` | 无 | 无 | 无 |
+| `expired == 0, live > 0` | 仅在已开始live写入时存在，随后清理 | 可存在但不得`TAE_OWNED` | 无 |
+| `expired > 0, live == 0` Archive | `ARCHIVE_REWRITE`可退化Whole | 无 | 无 |
+| `expired > 0, live == 0` TTL | 无 | 无 | 无 |
+| `expired > 0, live > 0` | 按计划创建 | 必须 | 必须 |
+
+Root ID、segment/range/booking名称可以在读前预分配并加入SyncProtection，但Catalog
+Root/child只在对应第一次外部副作用前持久化。
+
 Root 状态机：
 
 ```text
@@ -862,10 +927,10 @@ CLEANED
 ```sql
 CREATE TABLE mo_catalog.mo_lifecycle_cleanup_objects (
     root_id                 BINARY(16) NOT NULL,
+    object_kind             TINYINT UNSIGNED NOT NULL,
     ordinal                 INT UNSIGNED NOT NULL,
     storage_namespace_id    BINARY(16) NOT NULL,
     encryption_digest       BINARY(32) NOT NULL,
-    object_kind             TINYINT UNSIGNED NOT NULL,
     immutable_key           VARCHAR(2048) NOT NULL,
     immutable_key_digest    BINARY(32) NOT NULL,
     provider_version        VARCHAR(512) NULL,
@@ -880,7 +945,7 @@ CREATE TABLE mo_catalog.mo_lifecycle_cleanup_objects (
     state_version           BIGINT UNSIGNED NOT NULL,
     created_at              TIMESTAMP(6) NOT NULL,
     updated_at              TIMESTAMP(6) NOT NULL,
-    PRIMARY KEY (root_id, ordinal),
+    PRIMARY KEY (root_id, object_kind, ordinal),
     UNIQUE KEY lifecycle_immutable_key (
         storage_namespace_id,
         immutable_key_digest
@@ -940,7 +1005,10 @@ DELETE_FAILED
 ABORTED_MULTIPART
 ```
 
-Root 不保存无限数组。每个对象一行，按 `(root_id, ordinal)` 分页。
+`ordinal`是`object_kind`内的确定性局部序号，不是Root内全局分配器。Archive
+Payload、live Object和booking可各自从0开始；它们不会因kind不同发生主键冲突。
+Root不保存无限数组。每个对象一行，按
+`(root_id, object_kind, ordinal)`分页。
 
 Lifecycle Rewrite创建的live/range/booking在final结果确定前，其物理Owner始终是
 Cleanup Root。复用的TAE Merge txn entry只借用这些文件，不能在
@@ -1082,7 +1150,7 @@ account current/identity
   -> Profile version
   -> Job/Attempt Control（按attempt ID）
   -> Cleanup Root（按root ID）
-  -> Root Object（按root ID, ordinal）
+  -> Root Object（按root ID, object kind, ordinal）
   -> Access Lease（按dataset ID, restore ID）
 ```
 
@@ -1241,7 +1309,7 @@ last_error
 | Rewrite dense-memory admission/slab | Rewrite Executor/mergesort task | final entry可短暂借用copy；不持久转移 | task release/txn rollback or commit |
 | live TAE staging Object | Cleanup Root | final commit 后转给 TAE Catalog | Sweeper/TAE GC |
 | Lifecycle external transfer booking | Cleanup Root | 不转移；txn entry只读借用 | committed/aborted明确后Root Sweeper |
-| TAE in-memory transfer page | final transaction | WAL/replay | TAE txn entry/transfer table TTL |
+| TAE in-memory transfer page | final transaction | external booking在同一final txn的Prepare/retry中重建；commit后不转移 | TAE txn entry/transfer table TTL；TN restart后旧事务缺页必须冲突 |
 | Restore staging table | Restore Attempt | executor epoch CAS | Restore Sweeper |
 | Restore lease | Restore Attempt | 不转移；过期/fence | Lease Reconciler |
 
@@ -1255,7 +1323,8 @@ Executor 的 `defer` 只能清理仍由该 executor 独占、且未持久转移 
 pkg/lifecycle/catalog/
   binding.go
   guard.go
-  object_index.go
+  discovery_state.go
+  runtime_stats.go
   dataset.go
   receipt.go
   profile.go

@@ -168,6 +168,55 @@ MaxBatchRows/Bytes within release profile
 
 如果调用方没有排序，返回 `LIFECYCLE_INVALID_SOURCE_ORDER`，不在 Reader 内静默重排并改变 source digest。
 
+### 4.1 读取前的 Block 峰值准入
+
+`MaxBatchBytes`只约束能主动切分Batch的高层Reader，不能被解释为
+`BlockDataReadNoCopy`的物理内存上限。Rewrite Reader一次装入完整物理Block；MO只
+限制Block行数，没有以64 MiB约束整个Block所有列的解压后字节。
+
+首个GA增加release-profile常量`max_certified_block_read_bytes`，候选值为256 MiB，
+最终值只能在GA认证中保持或调低。每次读取前必须从
+Object metadata取得该Block全部投影列的column extent `OriginSize`，使用checked
+`uint64`求和并乘以经认证的type/decode overhead。两个预算不能混淆：
+
+```text
+block_read_estimate =
+  source Block decoded vectors
+  + Tombstone/delete bitmap
+  + decompression/metadata safety margin
+
+task_peak =
+  dense transfer slab
+  + max(block_read_estimate)
+  + mergesort output Batch/Object Writer/index buffer
+  + Archive encoding buffer
+  + TN booking load/copy and detached page
+  + task safety margin
+```
+
+Rewrite在调用`DoMergeAndWrite`前先取得覆盖整个task峰值的父memory token，因为dense
+transfer slab会在首次Block读取前分配；随后每个Block在
+`BlockDataReadNoCopy`前取得source/decode子token，borrowed Batch释放后归还。
+父token由Rewrite task拥有，在`DoMergeAndWrite`、Archive writer和booking build全部
+结束后exactly once释放；success/error/cancel/panic都走同一Owner收敛，不能交给
+Root Sweeper或TN事务释放CN内存令牌。
+
+token必须从与CN global mpool同一容量域原子预留，不能只读取一次`Available()`后
+乐观记账。Block decoder、mergesort output和Archive encoder仍使用checked
+allocation；实际分配超过估算或global mpool返回OOM时，错误沿Job路径返回并释放
+Owner，不能把可恢复OOM升级为进程panic。
+
+以下情况必须在payload GET/解压前返回
+`LIFECYCLE_OVERSIZE_UNSUPPORTED`或`LIFECYCLE_REWRITE_RESOURCE_EXCEEDED`：
+
+- metadata缺失，无法给出保守估算；
+- extent求和或overhead计算溢出；
+- 单Block估算超过`max_certified_block_read_bytes`；
+- 父memory token或Block子token在deadline内无法取得。
+
+3 GiB Object可以由多个处于认证范围内的Block组成并顺序处理；首个GA不承诺任意合法
+256 MiB单行或超认证单Block。支持范围必须由认证profile明确，不能先读取再发现超限。
+
 ## 5. Exact RelData 构造
 
 为每个 ObjectStats 按 block ordinal 生成 exact block list：
@@ -279,14 +328,17 @@ split consumer 继承本节全部 exactly-once 规则。Archive Writer、root ac
 和 deletes bitmap 都不能在 callback 返回后保留 borrowed Vector 指针。每个物理行
 只能属于上述三个集合之一。
 
-默认：
+能主动切分的高层Reader默认：
 
 ```text
 MaxBatchRows  = 8,192
 MaxBatchBytes = 64 MiB
 ```
 
-单行 varlen 超过 64 MiB 时允许一个 oversize row batch，但受单行 256 MiB hard limit；超过则 Binding/Job fail closed。
+如果`ScanExactObjects`底层实现同样一次返回完整物理Block、不能在读取前切分，它也
+不适用上述64 MiB承诺，必须执行4.1节Block准入。Rewrite host明确属于这种情况。
+高层Reader遇到单行超过64 MiB时也不能自动放宽到256 MiB，只有该行/Block已在当前
+release profile完成峰值认证才允许oversize batch，否则fail closed。
 
 ## 8. Coverage 证明
 
@@ -825,7 +877,9 @@ Binding ACTIVE 时首个 GA拒绝 schema change，因此一个 Dataset 内只有
 每个 Archive child：
 
 ```text
-Reader Batch             <= 64 MiB
+split-capable Reader Batch <= 64 MiB
+block-based decoded Block  <= max_certified_block_read_bytes
+task parent memory token covers source + output + archive + transfer + margin
 Parquet encoding buffers <= 128 MiB
 Rewrite Archive buffer   <= 128 MiB
 Rewrite source Objects   == 1
@@ -837,7 +891,9 @@ per I/O deadline         = 2 minutes
 full child wall time     <= 2 hours
 ```
 
-Writer 必须使用 memory semaphore；达到上限向 Reader callback施加背压，不继续拉取 Batch。
+Reader/Writer必须使用同一个层级memory semaphore；达到上限向callback施加背压，不
+继续拉取Batch。Rewrite的父token在调用`DoMergeAndWrite`前取得，Block子token在每次
+payload读取前取得；不能在分配dense slab或完成Block读取后才记账。
 
 ## 19. 测试要求
 
@@ -856,7 +912,10 @@ Reader unit：
 - empty complete vs empty short read；
 - callback error/panic/cancel；
 - Batch reuse/double clean；
-- oversize varlen row；
+- metadata extent估算、溢出和limit-1/limit/limit+1；
+- 3 GiB多Block Object有界通过，超认证Block/varlen行在payload读取前拒绝；
+- 父token不足时不调用`DoMergeAndWrite`，Block子token不足时不调用
+  `BlockDataReadNoCopy`；
 - checksum/Object missing。
 
 Canonical/root：

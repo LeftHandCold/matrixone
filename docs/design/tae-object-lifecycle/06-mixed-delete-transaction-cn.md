@@ -565,8 +565,9 @@ Budget：
 
 - 每个hard边界-1/等于/+1；
 - 2,097,152 rows单Object；
-- 3 GiB source streaming；
-- 256 MiB单varlen限制；
+- 3 GiB source只有在每个Block均通过04的认证读取上限时streaming；
+- metadata extent未知/溢出/超认证Block或varlen行在payload读取前
+  `LIFECYCLE_OVERSIZE_UNSUPPORTED`；
 - rolling backlog；
 - spill crash cleanup。
 

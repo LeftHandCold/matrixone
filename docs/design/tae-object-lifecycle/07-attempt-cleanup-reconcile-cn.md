@@ -58,16 +58,19 @@ attempt ID一旦关联 source digest，不得原地换 source set。
 
 ## 3. Root-before-first-side-effect
 
-首次准备写 Archive payload、live TAE Object 或 transfer booking 时：
+attempt开始时只预分配确定性Root ID、segment/range/booking名称和SyncProtection
+集合；这不是外部副作用，也不创建Root行。首次真正准备写Archive payload、live TAE
+Object或transfer booking时：
 
 1. system transaction重新锁定/校验account current的incarnation与`mo_account` RowID；
 2. 按root kind冻结Archive和/或TAE两个namespace/encryption identity，并用
    attempt/dataset/profile构造deterministic immutable prefix；
 3. 插入 Root `REGISTERED`；
 4. 等待 commit；
-5. 为第一个外部 Object 插 Root Object `ALLOCATED`；
+5. 为第一个外部Object按`(root_id, object_kind, kind-local ordinal)`插Root Object
+   `ALLOCATED`；
 6. 等待 commit；
-7. 才调用 ArchiveStore 创建 multipart/PUT。
+7. 才调用Archive Provider或TAE FileService执行对应multipart/PUT/write。
 
 正确时序：
 
@@ -195,10 +198,14 @@ TAE_TRANSFER_BOOKING
 
 前 3 种冻结 namespace/key/provider version/size/SHA；后 3 种冻结 FileService
 namespace以及segment range或exact object name/size/checksum。
-`TAE_LIVE_SEGMENT_RANGE`在 `DoMergeAndWrite` 前冻结 attempt 专属 segmentID 和
-ordinal hard limit；它为“FileService write成功、exact child尚未提交”的窗口提供
-可枚举Owner。Root Object 唯一键包含 attempt 和 immutable object/range ordinal，
-不允许在同一 attempt 下重指向另一物理文件。
+Root Object主键是`(root_id, object_kind, ordinal)`，其中ordinal只在kind内确定性
+递增；不同kind可以各自从0开始。唯一key约束仍阻止同一物理key被重指向另一Root。
+同一attempt/kind/ordinal不得重指向另一物理文件。
+
+`TAE_LIVE_SEGMENT_RANGE`只在分类首次发现L行后、把该Batch返回给mergesort/writer前
+冻结attempt专属segmentID和ordinal hard limit；它为“FileService write成功、exact
+child尚未提交”的窗口提供可枚举Owner。若没有L行则不创建range；range已创建但实际
+未写出Object时走删除终态，不能转`TAE_OWNED`。
 
 Archive Rewrite父Root同时冻结`archive_storage_namespace_id`和
 `tae_storage_namespace_id`。前3种object kind只能使用前者，后3种只能使用后者；
@@ -229,6 +236,23 @@ AND Archive mode has VERIFIED Manifest Root Object
 AND payload count/bytes bounded
 AND Archive mode freezes manifest identity/root
 AND Rewrite mode freezes live-object and transfer digests
+```
+
+其中“required”由实际分类结果决定，不由Planner初始mode猜测：
+
+```text
+visible == 0:
+  no Root
+
+expired > 0, live == 0:
+  Archive可有Payload/Manifest；不得有TAE range/live/booking
+  TTL无外部副作用，不创建Root
+
+expired == 0, live > 0:
+  no final retirement；若已创建range/live，Root只允许cleanup，不允许TAE_OWNED
+
+expired > 0, live > 0:
+  Archive/TTL按mode要求range/live/booking，Archive再要求Payload/Manifest
 ```
 
 ### 6.1 TAE entry只是物理文件借用者
@@ -306,12 +330,12 @@ AND non-empty Archive sees Dataset(dataset_id, manifest_root)
 ```text
 Archive Whole/Rewrite:
   Root FINALIZING -> PUBLISHED
-  Rewrite live/range child -> TAE_OWNED
-  Rewrite booking child -> DELETE_PENDING
+  仅当live > 0时：Rewrite live/range child -> TAE_OWNED
+  仅当booking存在时：Rewrite booking child -> DELETE_PENDING
 
 TTL Rewrite:
-  live/range Root Object -> TAE_OWNED
-  booking Root Object -> DELETE_PENDING
+  仅当live > 0时：live/range Root Object -> TAE_OWNED
+  仅当booking存在时：booking Root Object -> DELETE_PENDING
   Root FINALIZING -> POST_COMMIT_CLEANUP
   all booking deleted -> TRANSFERRED
 
@@ -737,7 +761,7 @@ Commit：
 
 Cleanup：
 
-- delete每个object ordinal前后crash；
+- delete每个object kind+ordinal前后crash；
 - manifest最后删；
 - Delete success但HEAD仍存在；
 - LIST lag；

@@ -50,6 +50,7 @@ cleanup-min-workers               = 2
 small-mixed-cluster-concurrency   = 2
 rewrite-cluster-concurrency       = 1
 rewrite-certified-hard-concurrency = 4
+max-certified-block-read-bytes    = 256MiB
 restore-cluster-concurrency       = 2
 provider-io-timeout               = 2m
 final-lock-timeout                = 30s
@@ -66,6 +67,10 @@ root-quiescence-window            = 24h
 - cleanup/reconcile不能同时关闭并开启retirement；
 - retention/grace非负；
 - 配置超过已认证profile时拒绝启动retirement。
+
+256 MiB是首个GA的候选认证上限，表示4.1节保守估算后的单个Block
+source/decode峰值，不是单行或压缩extent大小承诺。1/10 TiB、最大varlen和并发峰值
+认证可把发布值调低；未经新一轮认证不得调高。
 
 ## 3. Kill switch
 
@@ -145,6 +150,7 @@ active child/attempt/epoch/state
 whole due objects/bytes
 mixed due objects/bytes
 blocked objects/bytes/reason
+rewrite 24h/7d attempted/retired/aborted bytes and amplification
 last success/error
 quota pause reason
 ```
@@ -319,10 +325,19 @@ restore_seconds{result}
 active_children{scope}
 reader_memory_bytes
 writer_memory_bytes
+rewrite_task_memory_reserved_bytes
+rewrite_block_estimated_bytes
+rewrite_block_admission_rejected_total{reason}
 small_mixed_delete_spill_bytes
 rewrite_dense_transfer_reserved_bytes
 rewrite_external_booking_bytes
 rewrite_source_objects
+rewrite_attempted_source_bytes{window}
+rewrite_committed_retired_expired_bytes{window}
+rewrite_aborted_read_bytes{window}
+rewrite_aborted_write_bytes{window}
+rewrite_amplification_ratio{window}
+rewrite_consecutive_blocked
 txn_workspace_bytes{kind}
 snapshot_age_seconds{kind}
 snapshot_retained_bytes{kind}
@@ -424,10 +439,13 @@ Provider object ordinal可以span attribute，full key不进入普通trace。
 - 未知/不支持的`OpCommitLifecycle`协议被跳过或当普通Merge提交；
 - Rewrite row-conservation/transfer root不匹配；
 - Rewrite source object count不等于1或出现inline transfer；
+- Whole source/layout proof数量、顺序或identity不一致；
+- Booking V1 version/Root/namespace/actual-row/D-E-L覆盖不一致；
 - Lifecycle rollback/NeedRetry后Root live file缺失；
 - Tombstone delta超限后仍提交，或phase scan error被吞掉；
 - protection失效后仍成功退休source；
 - staging上传发生在Root创建前；
+- 超认证Block在payload读取前未被拒绝，或未取得task memory token即进入Rewrite；
 - activity retired但Archive未VERIFIED；
 - invariant checker failure。
 
@@ -550,20 +568,25 @@ Restore
 ### 12.3 `MIXED_LAYOUT_BLOCKED`
 
 1. 查看重复 Rewrite 的 source/live bytes 和 rewrite amplification；
-2. 查看生命周期列与 physical sort/cluster key 的相关性；
-3. 查看 Tombstone/Merge backlog 和迟到写入分布；
-4. 建议增加晚到 grace 或改善 event-time 局部性；
-5. 不直接调大 hard limit；
-6. 数据布局变化后显式 `RECHECK` 创建新 generation。
+2. 对比24h/7d attempted source bytes、committed retired expired bytes及
+   aborted read/write bytes；
+3. 查看生命周期列与 physical sort/cluster key 的相关性；
+4. 查看 Tombstone/Merge backlog 和迟到写入分布；
+5. 建议增加晚到 grace 或改善 event-time 局部性；
+6. 不直接调大 hard limit，也不通过重启清空rolling bucket；
+7. 数据布局变化后显式 `RECHECK` 创建新 generation。
 
 ### 12.4 `RESOURCE_BLOCKED`
 
 1. 查看 source、live staging、dense transfer、external booking、Tombstone delta 和
    Provider分项预算；
-2. 确认是否为单个合法大 Object；若是，检查 streaming 实现而不是无限重试；
-3. 确认 Root 已拥有全部 staging，source 仍可见；
-4. 释放集群资源或调整经认证的 release profile；
-5. 显式 `RECHECK`，禁止直接把 blocked child 改回 running。
+2. 查看Block metadata extent估算、`max_certified_block_read_bytes`和task/Block
+   memory token；未知/溢出必须发生在payload读取前；
+3. 确认是否为单个合法大Object；若是，区分“多Block均已认证的3 GiB Object”和
+   “未认证oversize Block/row”，不能无限重试；
+4. 确认 Root 已拥有全部 staging，source 仍可见；
+5. 释放集群资源或调整经认证的 release profile；
+6. 显式 `RECHECK`，禁止直接把 blocked child 改回 running。
 
 ### 12.5 Root mismatch
 

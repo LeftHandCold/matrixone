@@ -25,8 +25,9 @@
 
 本文档集坚持四条工程约束：
 
-1. 不修改普通 Merge 的候选算法、排序、普通重写语义、transfer 格式和 GC
-   谓词；只为正在执行的 exact source Object 增加窄 reservation admission。
+1. 不修改普通 Merge 的候选算法、排序、普通重写语义、普通transfer格式和 GC
+   谓词；Lifecycle使用独立Booking V1，只为正在执行的exact source Object增加窄
+   reservation admission。
 2. 不把 SQL Partition 当成数据安全边界。
 3. 退休活动数据之前必须先证明 TTL 可安全删除，或 Archive 已可完整恢复。
 4. 任何不确定、超限、版本不兼容或并发条件不满足的情况都 fail closed，源数据继续可见。
@@ -275,6 +276,35 @@ Catalog/transfer 的借用者：
 Lifecycle Rewrite 每个 child 只允许一个 source Object，并且一律使用 immutable
 external booking；不允许 inline transfer 或多 source Rewrite。
 
+### I-13 Whole proof 与 Booking V1
+
+Whole child允许最多64个source，但每个source必须有同序、包含Object ID和ObjectStats
+digest的`SourceLayoutProof`；source digest覆盖source与proof全集。Rewrite仍严格单源。
+
+Lifecycle Booking V1独立编码每Block实际物理行数、D/E/L 2-bit class和L行destination，
+全D/E block也不能省略；文件必须绑定Root child和TAE namespace。普通Merge codec
+会省略`NoTransfer`项，不能直接作为Lifecycle行守恒协议。
+
+### I-14 Rewrite 内存和读取前准入
+
+Rewrite在`DoMergeAndWrite`创建dense slab前取得task级峰值memory token，并在每次
+`BlockDataReadNoCopy`前按metadata column extent取得Block子token。估算未知、溢出或
+超过`max_certified_block_read_bytes`时必须在payload读取前fail closed。3 GiB
+Object仅在由多个认证Block组成时承诺streaming；首个GA不承诺任意oversize单Block/行。
+
+### I-15 退化路径按真实副作用建 Root
+
+attempt可预分配Root/segment/range/booking名称并加入SyncProtection，但不预创建
+Catalog child。首次E行PUT前创建Archive child，首次L行交给writer前创建TAE range，
+只有`live > 0`才生成booking；`visible == 0`没有Root，`live == 0`退化Whole时没有
+TAE range/booking。
+
+### I-16 WAL 不恢复历史 transfer page
+
+WAL/Replay恢复source DropIntent、新live Object和final transaction Catalog/Tombstone，
+不恢复已提交事务的历史运行时transfer page。Booking V1只服务当前final transaction
+的Prepare/retry；TN restart后旧RowID事务缺页必须RW/WW conflict，不能静默成功。
+
 ## 7. 权威数据与派生数据
 
 | 数据 | 权威性 | 丢失后的结果 |
@@ -333,7 +363,7 @@ dataset_identity =
 | Payload | Dataset 引用的不可变 Parquet 文件 |
 | Manifest | Dataset schema、Payload exact identity、统计、checksum 和 content root |
 | Attempt Control | system-owned 的执行和 final transaction 对账记录 |
-| Cleanup Root | Archive PUT、TAE live staging 或 transfer booking 前创建的 system-owned 所有权记录 |
+| Cleanup Root | 第一次真实Archive PUT、TAE live staging或transfer booking副作用前创建的system-owned所有权记录；只预分配ID不算创建 |
 | Receipt | 与退休同事务提交的不可变成功证据 |
 | Commit unknown | final transaction 已发送，但客户端不能确定 committed/aborted |
 | Tombstone delta | Archive source Snapshot 之后新提交、且指向 source Object 的删除记录 |
