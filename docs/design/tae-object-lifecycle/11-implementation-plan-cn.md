@@ -107,6 +107,8 @@ Gate A 没有 Provider PUT 和活动数据退休。
 - Binding 以 logical table identity 唯一；
 - Candidate ID 使用确定性 digest；
 - Root 与 tenant cluster table 分属 system retained/tenant plane；
+- Archive Rewrite Root分别冻结Archive Provider和TAE FileService namespace/encryption
+  identity，Root Object按kind只能选择对应identity；
 - upgrade 可重复执行；
 - downgrade 不删除未知状态和 Root；
 - system 表均有分页键，禁止一行全局 cursor。
@@ -351,10 +353,11 @@ Entry 冻结：
 
 - protocol/version/mode；
 - account/table/schema/Binding/Guard generation；
-- attempt/executor/reservation/protection identity；
-- source Snapshot 和 exact source Object/digest；
+- attempt/executor/reservation/protection identity和expected filename-set digest；
+- source Snapshot、exact source Object/digest和TN生成的`SourceLayoutProof`；
 - created live Object/digest；
-- transfer booking/digest；
+- immutable external transfer booking exact identity/layout digest；
+- D/E/L row-class layout digest；
 - Archive Dataset/Manifest/root；
 - source/expired/live counts 和 conservation roots；
 - deterministic entry digest。
@@ -375,12 +378,13 @@ Entry 冻结：
 validate protocol/capability/digest
 validate table/schema/Guard generation
 validate reservation token
-validate SyncProtection
+validate SyncProtection expected filename-set digest
 validate exact current source Objects
+validate SourceLayoutProof
 validate created live Objects/checksum
 validate row-conservation/transfer roots
-collect and validate Tombstone delta
-register/reuse merge create-drop-transfer txn entry
+bounded/cancelable collect and validate Tombstone delta
+register/reuse Root-owned merge create-drop-transfer txn entry
 append WAL through normal transaction path
 ```
 
@@ -417,7 +421,9 @@ reservation/protection
   -> Dataset + Receipt + OpCommitLifecycle(WHOLE_ARCHIVE)
 ```
 
-final 只写 DropIntent；FileService source delete 交给 existing GC。
+final 只写 DropIntent；但由于没有new live Object/transfer phase，Prepare必须执行独立
+的有界`ValidateNoPostSnapshotDelete(S, prepareTS)`。发现post-S删除或验证超限就
+abort/re-export。FileService source delete交给existing GC。
 
 ### D2. 小 Mixed DELETE
 
@@ -436,7 +442,7 @@ one bounded writable SI transaction
 
 ### D3. 中/大 Mixed Rewrite
 
-Build 阶段不持有 writable transaction：
+每个child严格只有一个source Object，Build阶段不持有writable transaction：
 
 1. 获取 reservation/protection；
 2. 创建 Root，并提交一个 deterministic
@@ -444,13 +450,14 @@ Build 阶段不持有 writable transaction：
 3. 以 `source_snapshot_ts`逐 block 读取；
 4. 得到 Snapshot delete bitmap `D`；
 5. 计算 expired bitmap `E`；
-6. Archive 模式同步把 `E` 行写入按source ordinal分片的Archive substream；
+6. Archive模式按该source的block/row顺序同步把`E`行写入Archive Writer；
 7. 把 `D ∪ E`交给现有 `DoMergeAndWrite`；
 8. 只有 live row 写入 normal TAE Object；
 9. live row 产生 destination，`D/E`保持 `api.NoTransfer`；
 10. actual writer只消费range内ordinal，Sync后追加exact child并冻结
     ObjectStats/checksum；
-11. transfer booking每页在FileService write前动态分配Root child；
+11. immutable external transfer booking每页在FileService write前动态分配Root
+    child；inline transfer禁止；
 12. Archive full readback 后进入短 final transaction。
 
 当前 `PrepareNewWriter()`没有 error 返回值，禁止在其中做 Catalog transaction。
@@ -458,13 +465,10 @@ P0先证明 writer name 可由`segmentID + ordinal`稳定枚举，crash时 Sweep
 range；证明不了时增加共享`BeforeCreateObject(name) error` hook，不允许写后才取得
 所有权。
 
-mergesort可能交错拉取多个source；Archive sink不能使用callback到达顺序。每个
-substream内部按block/row递增，Manifest/content root按source Object ID组合。若
-现有host不能证明同一source内部有序，使用受控本地spill排序。所有substream共享
-aggregate memory/file-handle semaphore。
-
-本地spill目录包含CN boot ID/attempt/epoch，正常退出由executor清理，crash后由新boot
-janitor清理旧目录。per-CN spill bytes/dir count必须先admission，不能等磁盘写满。
+首个GA不允许多source Rewrite、substream merge或Rewrite排序spill。若现有host不能
+证明单source内部按block/row递增，Lifecycle host显式按block ordinal驱动
+`BlockDataReadNoCopy`。输入第二个source必须在任何Root/FileService/Provider副作用
+前拒绝。
 
 Build 完成硬不变量：
 
@@ -477,20 +481,30 @@ each live row has exactly one destination
 snapshot_deleted/expired are NoTransfer
 ```
 
+`source_visible==0`走EMPTY_ARCHIVE/Whole退休空Object；`expired==0 && live>0`结束为
+no-op并清理staging；`live==0 && expired>0`必须把final mode切为Whole，Archive走
+独立post-S delete validator。禁止提交`createdObjs==0`的`MIXED_REWRITE_*` entry。
+
 新 live Object 仍按表的 physical sort/cluster key 使用现有 mergesort。不能按 lifecycle
-column 伪装成 sorted。
+column伪装成sorted。output level按普通Merge的晋级规则从source level计算，不能默认
+为0。
 
 ### D4. Tombstone transfer
 
-直接复用现有 Merge txn entry 的两阶段协议：
+复用现有Merge两阶段算法，但必须通过Lifecycle wrapper参数化：
 
 - phase 1 收集 build Snapshot 后、Prepare 前的 Tombstone；
 - phase 2 覆盖 Prepare 并发窗口；
+- 两个phase使用同一个有deadline ctx和流式visitor；
+- delta rows/encoded bytes/affected blocks都有hard limit；
+- 任何scan/transfer error向上返回，不能吞掉；
 - survivor delete transfer 到新 RowID；
-- expired row 的 `NoTransfer` 触发正常冲突并使 Lifecycle abort；
+- Archive expired row的`NoTransfer`使Lifecycle abort/re-export；
+- TTL expired row的`NoTransfer`是冗余删除；
 - transfer page missing/expired/digest mismatch 均 fail closed。
 
-不得复制一份 Lifecycle-only transfer 实现。
+`LifecycleRewriteHost.DoTransfer()`固定true，不受普通Merge comment影响；但只有live
+行有destination。不得复制第二套transfer encoding/page/WAL实现。
 
 外部transfer booking只复用encoding，不复用普通Merge的Prepare即删语义。重构
 `writeTransferMapsToS3/marshalTransferMaps`：
@@ -500,6 +514,45 @@ column 伪装成 sorted。
 - Lifecycle TN Prepare只读和校验，不删除，且不原地改写request；
 - duplicate Prepare/`ErrTAENeedRetry`可重新打开同一immutable page；
 - final结果明确后由Root child Sweeper删除booking。
+
+复用的Merge txn entry增加构造期物理Owner：
+
+```text
+ordinary Merge    -> CreatedObjectOwnedByMergeEntry
+Lifecycle Rewrite -> CreatedObjectOwnedByCleanupRoot
+```
+
+Lifecycle rollback/NeedRetry只回滚Catalog、transfer page和内存，不能物理删除
+live/booking。committed + Receipt后live child转`TAE_OWNED`；aborted后Root清理；
+unknown保持。Transfer dense slab admission按physical block slots计算，并把当前
+mpool panic路径改成Lifecycle可返回error的checked allocation。
+
+代码任务边界：
+
+```text
+pkg/vm/engine/tae/mergesort/task.go
+  add checked transfer-slab allocation path
+
+pkg/vm/engine/tae/tables/table_scan.go
+  add bounded/cancelable Tombstone delta visitor
+
+pkg/vm/engine/tae/tables/txnentries/mergeobjects.go
+  parameterize collect-from/context/delta limits/NoTransfer policy
+  parameterize PhysicalCreatedObjectOwner
+  preserve upstream #26333 phase-2 error propagation
+
+pkg/vm/engine/tae/model/pages.go
+  keep ordinary transfer codec compatible
+  add Lifecycle external booking + row-class layout codec
+
+pkg/vm/engine/disttae/lifecycle_rewrite.go
+  single-source host
+  DoTransfer always true
+  Root-aware immutable booking writer
+```
+
+这些改动必须保持普通Merge constructor的默认行为和wire字节兼容。不能直接让普通
+Merge使用Lifecycle Root、row-class或delta limit。
 
 ### D5. Final result/Root
 
@@ -596,11 +649,12 @@ Gate E exit：
 ```text
 bound tables: 500 -> 1000 staged rollout
 child concurrency: table 1 / database 2 / account 4 / cluster 8
+Rewrite concurrency: table 1 / cluster 1 default / 4 certified hard max
 Discovery page object/footer-byte limit
 Candidate table/account/cluster limit
 Reader batch/memory limit
 small Mixed rows/ratio/delete-key/WAL limit
-Rewrite source/live/spill/transfer/staging limit
+Rewrite single-source/live/dense-transfer/external-booking/delta/staging limit
 Provider I/O/deadline/concurrency limit
 Root/Object/orphan/backlog limit
 reservation/protection lease and renew interval

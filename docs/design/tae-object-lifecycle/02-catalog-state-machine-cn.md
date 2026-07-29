@@ -760,8 +760,10 @@ CREATE TABLE mo_catalog.mo_lifecycle_cleanup_roots (
     dataset_id              BINARY(16) NULL,
     profile_id              BINARY(16) NULL,
     profile_version         BIGINT UNSIGNED NULL,
-    storage_namespace_id    BINARY(16) NOT NULL,
-    encryption_digest       BINARY(32) NOT NULL,
+    archive_storage_namespace_id BINARY(16) NULL,
+    archive_encryption_digest BINARY(32) NULL,
+    tae_storage_namespace_id BINARY(16) NULL,
+    tae_encryption_digest   BINARY(32) NULL,
     deterministic_prefix    VARCHAR(2048) NOT NULL,
     manifest_key            VARCHAR(2048) NULL,
     manifest_size           BIGINT UNSIGNED NOT NULL,
@@ -788,9 +790,19 @@ CREATE TABLE mo_catalog.mo_lifecycle_cleanup_roots (
 );
 ```
 
-`root_kind` 区分 `ARCHIVE`、`ARCHIVE_REWRITE` 和 `TTL_REWRITE`。TTL Rewrite 的
-Profile/Dataset字段为空，`storage_namespace_id`冻结当前 TAE shared FileService
-namespace identity；它不能伪造 Archive Profile。
+`root_kind` 区分 `ARCHIVE`、`ARCHIVE_REWRITE` 和 `TTL_REWRITE`。字段组合：
+
+| root_kind | Archive namespace/encryption | TAE namespace/encryption |
+|---|---|---|
+| `ARCHIVE` | NOT NULL | NULL |
+| `ARCHIVE_REWRITE` | NOT NULL | NOT NULL |
+| `TTL_REWRITE` | NULL，Profile/Dataset为空 | NOT NULL |
+
+Archive Rewrite同时写Archive Provider和当前TAE shared FileService，两者通常不是同一
+namespace，不能用一个父级`storage_namespace_id`表示。两个identity都在Root创建时
+冻结；credential rotation不能改变对应namespace。Root Object再按kind选择其中一个。
+未启用额外encryption时仍使用canonical `NO_ENCRYPTION`配置digest，不以NULL绕过
+Object级identity校验；父字段NULL只表示该Root不使用这一类namespace。
 
 Root 状态机：
 
@@ -879,8 +891,20 @@ CREATE TABLE mo_catalog.mo_lifecycle_cleanup_objects (
 Provider key 只在 namespace 内唯一，不能对 `immutable_key` 单列建立全局唯一约束。
 也不能把 2048-byte key 直接做宽唯一索引。`immutable_key_digest` 是 canonical UTF-8
 key bytes 的 SHA-256；唯一键冲突后必须读取原 key 做完整比较，digest 相同但 key
-不同按 corruption 处理。Root Object 的 `storage_namespace_id` 必须与父 Root 相同；
-Catalog 不变量检查器抽样校验。
+不同按 corruption 处理。Root Object按`object_kind`校验父Root：
+
+```text
+ARCHIVE_PAYLOAD/MANIFEST/SIDECAR
+  -> storage_namespace_id == root.archive_storage_namespace_id
+  -> encryption_digest == root.archive_encryption_digest
+
+TAE_LIVE_SEGMENT_RANGE/LIVE_STAGING_OBJECT/TRANSFER_BOOKING
+  -> storage_namespace_id == root.tae_storage_namespace_id
+  -> encryption_digest == root.tae_encryption_digest
+```
+
+任何kind对应的父identity为空、namespace不匹配或跨namespace key复用都按corruption
+处理。Catalog不变量检查器持续抽样校验。
 
 `object_kind`：
 
@@ -908,6 +932,7 @@ MULTIPART_CREATED
 PUTTING
 PUT_COMPLETE
 VERIFIED
+TAE_OWNED
 DELETE_PENDING
 DELETING
 DELETED
@@ -916,6 +941,18 @@ ABORTED_MULTIPART
 ```
 
 Root 不保存无限数组。每个对象一行，按 `(root_id, ordinal)` 分页。
+
+Lifecycle Rewrite创建的live/range/booking在final结果确定前，其物理Owner始终是
+Cleanup Root。复用的TAE Merge txn entry只借用这些文件，不能在
+`PrepareRollback`、`ErrTAENeedRetry`或普通error defer中删除。只有：
+
+```text
+committed + matching Receipt -> live/range VERIFIED -> TAE_OWNED
+explicitly aborted           -> live/range/booking -> DELETE_PENDING
+unknown                      -> 保持 VERIFIED
+```
+
+普通Merge不创建这些Root Object，仍由普通Merge entry清理自己的created files。
 
 ### 4.5 Account owner tombstone
 
@@ -1122,6 +1159,9 @@ Root VERIFIED -> FINALIZING committed in system transaction
   -> commit
 ```
 
+这里wire为兼容Whole仍使用`source Objects`集合；`MIXED_REWRITE_*`模式的协议基数
+必须等于1，且只允许immutable external booking。
+
 TTL Whole/Rewrite 不写 Dataset，但同样在一个事务中提交 Receipt 和
 `OpCommitLifecycle`。TTL Rewrite committed 后把live/range child标为`TAE_OWNED`，
 Root进入`POST_COMMIT_CLEANUP`；temporary booking全部删除后才标`TRANSFERRED`。
@@ -1198,8 +1238,10 @@ last_error
 | published Dataset | tenant Dataset | DELETE_PENDING CAS | Sweeper |
 | source Object reservation | Lifecycle attempt | 不转移；TTL/epoch fence | TN reservation manager |
 | source GC protection | Lifecycle attempt | 不转移；TTL/epoch fence | TN SyncProtection manager |
+| Rewrite dense-memory admission/slab | Rewrite Executor/mergesort task | final entry可短暂借用copy；不持久转移 | task release/txn rollback or commit |
 | live TAE staging Object | Cleanup Root | final commit 后转给 TAE Catalog | Sweeper/TAE GC |
-| transfer booking/page | final transaction | WAL/replay | TAE txn entry |
+| Lifecycle external transfer booking | Cleanup Root | 不转移；txn entry只读借用 | committed/aborted明确后Root Sweeper |
+| TAE in-memory transfer page | final transaction | WAL/replay | TAE txn entry/transfer table TTL |
 | Restore staging table | Restore Attempt | executor epoch CAS | Restore Sweeper |
 | Restore lease | Restore Attempt | 不转移；过期/fence | Lease Reconciler |
 
@@ -1278,7 +1320,7 @@ Discovery scan state -> Binding/physical/schema generation matches
 Job active -> Binding active attempt/epoch matches
 Account current -> exactly one matching ACTIVE identity
 Account tombstone -> no matching current row for the same incarnation
-Root Object -> storage namespace matches parent Root
+Root Object -> object_kind matches parent Archive/TAE namespace and encryption identity
 ```
 
 任何安全不变量失败：

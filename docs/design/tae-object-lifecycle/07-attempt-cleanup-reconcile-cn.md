@@ -23,7 +23,7 @@ transfer booking。Root 是：
 - 所有 staging/published external objects 的唯一清理 Owner；
 - tenant DROP 后仍可枚举的 retained metadata；
 - commit unknown 期间禁止误删的 fence；
-- Provider credential/namespace/key identity 的冻结点。
+- Archive Provider与TAE FileService namespace/encryption/key identity的冻结点。
 
 Dataset Catalog 是用户可见性权威；Root 是外部资源所有权权威。两者职责不能互换。
 
@@ -61,7 +61,8 @@ attempt ID一旦关联 source digest，不得原地换 source set。
 首次准备写 Archive payload、live TAE Object 或 transfer booking 时：
 
 1. system transaction重新锁定/校验account current的incarnation与`mo_account` RowID；
-2. 用 attempt/dataset/profile 构造 deterministic immutable prefix；
+2. 按root kind冻结Archive和/或TAE两个namespace/encryption identity，并用
+   attempt/dataset/profile构造deterministic immutable prefix；
 3. 插入 Root `REGISTERED`；
 4. 等待 commit；
 5. 为第一个外部 Object 插 Root Object `ALLOCATED`；
@@ -174,8 +175,9 @@ ALLOCATED
   -> PUTTING
   -> PUT_COMPLETE
   -> VERIFIED
-  -> TAE_OWNED          # committed Rewrite only
-  -> DELETE_PENDING -> DELETING -> DELETED   # temporary booking only
+       |-> TAE_OWNED                          # committed live/range，Root不可再删
+       `-> DELETE_PENDING -> DELETING -> DELETED
+                                               # aborted staging或temporary booking
 ```
 
 单PUT可以跳过 `MULTIPART_CREATED`，但仍必须从 `ALLOCATED -> PUTTING` 持久化后执行。
@@ -198,6 +200,15 @@ ordinal hard limit；它为“FileService write成功、exact child尚未提交�
 可枚举Owner。Root Object 唯一键包含 attempt 和 immutable object/range ordinal，
 不允许在同一 attempt 下重指向另一物理文件。
 
+Archive Rewrite父Root同时冻结`archive_storage_namespace_id`和
+`tae_storage_namespace_id`。前3种object kind只能使用前者，后3种只能使用后者；
+不能因为它们属于同一个attempt就假设两个FileService namespace相同。
+
+Range child在writer关闭、actual ordinal count和全部exact child冻结后从
+`ALLOCATED -> VERIFIED`；其`VERIFIED`只证明命名范围闭合，不表示range内每个ordinal
+都有文件。Sweeper仍需对整个有界range执行Stat来覆盖write/exact-child之间的crash
+窗口。
+
 `PUT_COMPLETE` 条件：
 
 - provider调用返回；
@@ -219,6 +230,22 @@ AND payload count/bytes bounded
 AND Archive mode freezes manifest identity/root
 AND Rewrite mode freezes live-object and transfer digests
 ```
+
+### 6.1 TAE entry只是物理文件借用者
+
+Lifecycle Rewrite必须给复用的Merge txn entry传入
+`CreatedObjectOwnedByCleanupRoot`。从第一个FileService write到权威结果确定：
+
+- live staging、segment range和external booking的物理Owner都是Root；
+- txn entry拥有临时Catalog node、内存transfer table/page和rollback动作；
+- txn entry的`PrepareRollback`不能物理删除Root child；
+- `ErrTAENeedRetry`、duplicate Prepare和response lost不能转移Owner；
+- committed + matching Receipt后live/range转`TAE_OWNED`；
+- explicitly aborted后Root才把staging/booking转`DELETE_PENDING`；
+- unknown时任何一方都不Delete。
+
+普通Merge继续使用`CreatedObjectOwnedByMergeEntry`并保持原rollback删除行为。两种模式
+必须由构造期enum区分，不能靠运行时查询Root是否存在。
 
 ## 7. Final transaction write-ahead
 
@@ -309,6 +336,7 @@ AND consistent tenant read sees no matching Receipt/Dataset
 ```text
 Archive Root -> DELETE_PENDING
 TTL Attempt -> ABORTED
+TTL Rewrite Root -> DELETE_PENDING
 ```
 
 ### 8.3 In-doubt
@@ -496,15 +524,15 @@ new sweeper executor_epoch
 ### 13.3 删除顺序
 
 ```text
-1. ListAttemptUploads(prefix)
-2. abort all multipart
+1. Archive namespace存在时 ListAttemptUploads(prefix)
+2. abort all Archive multipart
 3. list Root Object rows page
 4. delete unpublished transfer booking
 5. delete unpublished TAE live staging Object
 6. delete Archive Payload/SIDECAR
 7. delete Manifest last
-8. ListAttemptObjects(prefix)
-9. reconcile Catalog未记录的orphan/late objects
+8. 分别在Archive namespace LIST prefix，并在TAE namespace枚举segment range/Stat
+9. 按各自namespace reconcile Catalog未记录的orphan/late objects
 10. HEAD/Stat exact keys确认不存在
 11. repeat empty LIST/HEAD confirmation
 12. Root -> CLEANED
@@ -576,7 +604,8 @@ writer发出PUT
 - executor每次I/O前后检查epoch；
 - `CLEANED` Root tombstone保留；
 - deterministic prefix永不复用；
-- Sweeper在quiescence window重复LIST。
+- Sweeper在quiescence window对Archive namespace重复LIST，并对TAE deterministic
+  range重复Stat；两类identity分别验证。
 
 默认：
 
@@ -672,15 +701,21 @@ Archive/Rewrite Attempt：
 |---|---|---|---|
 | Provider PUT | ArchiveStore；失联后Root Sweeper | ctx/observer/Root epoch | PUT complete、error或2m deadline |
 | multipart | Root Object/Sweeper | upload observer + LIST | abort/complete且provider确认 |
-| TAE live staging write | Rewrite Executor；失联后 Root Sweeper | ctx/Root epoch/FileService Stat | published 或 exact staging 已删除 |
+| TAE live staging write | Cleanup Root；txn entry只借用 | ctx/Root epoch/FileService Stat/txn status | committed后TAE_OWNED，或aborted后exact staging已删除；unknown保持 |
+| external transfer booking | Cleanup Root | txn status/Receipt + child CAS | committed/aborted明确后DELETED；unknown保持 |
 | source reservation/protection | Lifecycle attempt | renew/expiry/TN Prepare | final result确定或 attempt abort |
+| Rewrite dense slab/memory token | Rewrite Executor/mergesort task | ctx、allocator error、txn completion | host close或entry commit/rollback；exactly-once release |
+| Tombstone delta scan/watermark wait | final TAE txn entry | caller ctx/deadline/limit/error | EOF、limit、cancel或60s final deadline |
 | final txn | txn client resolver + Reconciler | GetStatus/Receipt | committed或aborted；unknown转manual不猜测 |
 | worker lease | Job Control | heartbeat/expiry | terminal或new epoch接管 |
 | Restore lease | Restore Attempt/Lease Reconciler | renew/release/expiry | released、expired、fenced |
 | Payload Delete | Sweeper | Delete+HEAD/LIST | 两次确认不存在 |
 | late PUT window | Root Sweeper | periodic LIST | quiescence完整无新对象 |
 
-所有等待释放worker槽，不通过永久阻塞goroutine保活。
+Control-plane长等待（I/O重试、commit unknown、lease、quiescence）必须释放worker
+槽，不通过永久阻塞goroutine保活。TN final Prepare内的delta scan是同步短临界路径，
+可以占用当前执行槽，但受60秒deadline和rows/bytes/blocks hard limit约束，退出时不
+遗留goroutine或内存Owner。
 
 ## 20. 故障测试
 

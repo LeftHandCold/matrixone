@@ -497,19 +497,22 @@ TTL Whole 可只做 Metadata/final transaction。Archive Whole 使用 streaming 
 
 ### 9.3 Rewrite child
 
-一个 child 处理一个或少量 source Object：
+一个 child **只处理一个** source Object：
 
 ```text
-source objects          <= 16
-source compressed bytes <= 4 GiB
+source objects          == 1
+source compressed bytes <= current legal Object hard limit
 source rows             <= release profile
 created live objects    < api.NoTransfer (255)
 transfer bytes          <= release profile
 attempt wall time       <= 60 minutes
 ```
 
-实际默认值必须由 P0/10 TiB 测试冻结。单个合法 TAE Object 即使超过普通 child
-目标也必须支持 streaming；不能要求把 source Object 再拆成更小原子对象。
+单源是首个 GA 的协议不变量，不是可调 soft limit。它把 dense transfer slab、
+Tombstone delta、失败范围和 Root staging 上限约束在一个当前合法 Object 内。单个
+合法 TAE Object 即使超过普通 child 目标也必须支持 streaming；不能要求把 source
+Object 再拆成更小原子对象，也不能通过把多个 Object 合并成一个 Rewrite child
+提高吞吐。吞吐由独立 child 调度和认证后的 Rewrite 并发控制。
 
 ## 10. Scheduler
 
@@ -537,7 +540,7 @@ cluster      child = 8
 
 ```text
 active small Mixed SI txn
-active Rewrite
+active Rewrite: per table 1, cluster 1 default, 4 certified hard max
 active source protection
 active Provider PUT/readback
 active Restore/Purge/Cleanup
@@ -569,7 +572,9 @@ active reader/rewrite bytes
 source protection count/age
 TAE staging object bytes/count
 archive staging bytes/count
-transfer map bytes
+Rewrite physical slots/dense transfer reservation
+external booking bytes/pages
+Tombstone delta rows/bytes/blocks
 Provider request/egress budget
 small Mixed tombstone rolling bytes
 Merge/Tombstone/Vacuum backlog
@@ -625,7 +630,7 @@ Lifecycle:
 
 原因：
 
-- Rewrite source/live/transfer/staging 超过硬限额；
+- Rewrite single-source/live/dense-transfer/external-booking/delta/staging超过硬限额；
 - Provider 预算不足；
 - source protection 无法取得或续租；
 - 单对象超过已认证 streaming 边界。

@@ -47,7 +47,9 @@ database-concurrency              = 2
 account-concurrency               = 4
 cluster-concurrency               = 8
 cleanup-min-workers               = 2
-mixed-cluster-concurrency         = 2
+small-mixed-cluster-concurrency   = 2
+rewrite-cluster-concurrency       = 1
+rewrite-certified-hard-concurrency = 4
 restore-cluster-concurrency       = 2
 provider-io-timeout               = 2m
 final-lock-timeout                = 30s
@@ -272,6 +274,10 @@ strict_prepare_seconds{phase}
 strict_conflicts_total{reason}
 tombstone_delta_found_total
 tombstone_delta_overflow_total
+tombstone_delta_rows
+tombstone_delta_bytes
+tombstone_delta_blocks
+tombstone_delta_scan_seconds{phase,result}
 mixed_delete_rows
 mixed_delete_key_bytes
 mixed_tombstone_estimated_bytes
@@ -313,7 +319,10 @@ restore_seconds{result}
 active_children{scope}
 reader_memory_bytes
 writer_memory_bytes
-delete_spill_bytes
+small_mixed_delete_spill_bytes
+rewrite_dense_transfer_reserved_bytes
+rewrite_external_booking_bytes
+rewrite_source_objects
 txn_workspace_bytes{kind}
 snapshot_age_seconds{kind}
 snapshot_retained_bytes{kind}
@@ -414,6 +423,9 @@ Provider object ordinal可以span attribute，full key不进入普通trace。
 - DELETING出现新lease；
 - 未知/不支持的`OpCommitLifecycle`协议被跳过或当普通Merge提交；
 - Rewrite row-conservation/transfer root不匹配；
+- Rewrite source object count不等于1或出现inline transfer；
+- Lifecycle rollback/NeedRetry后Root live file缺失；
+- Tombstone delta超限后仍提交，或phase scan error被吞掉；
 - protection失效后仍成功退休source；
 - staging上传发生在Root创建前；
 - activity retired但Archive未VERIFIED；
@@ -546,7 +558,8 @@ Restore
 
 ### 12.4 `RESOURCE_BLOCKED`
 
-1. 查看 source、spill、live staging、transfer 和 Provider 分项预算；
+1. 查看 source、live staging、dense transfer、external booking、Tombstone delta 和
+   Provider分项预算；
 2. 确认是否为单个合法大 Object；若是，检查 streaming 实现而不是无限重试；
 3. 确认 Root 已拥有全部 staging，source 仍可见；
 4. 释放集群资源或调整经认证的 release profile；

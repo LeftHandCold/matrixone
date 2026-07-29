@@ -8,15 +8,15 @@
 
 ## 1. 结论
 
-Lifecycle 不把归档逻辑塞进普通 Merge，也不复制第二套 Merge/G C。
+Lifecycle 不把归档逻辑塞进普通 Merge，也不复制第二套 Merge/GC。
 
 大 Mixed 的正式路径是一个独立的、对象级 Archive-aware Merge：
 
 ```text
-claim exact source Objects
+claim exactly one source Object
   -> 固定 source_snapshot_ts
   -> 注册 exact source GC protection
-  -> streaming read source Objects once
+  -> streaming read the source Object once
        expired visible rows -> Parquet/ZSTD
        live visible rows    -> new normal TAE Objects
        snapshot-deleted rows-> neither output
@@ -25,7 +25,7 @@ claim exact source Objects
        Dataset/Receipt
        exact source validation
        create new live Objects
-       DropIntent old source Objects
+       DropIntent old source Object
        install transfer pages
   -> commit
   -> existing TAE GC deletes old source files
@@ -66,7 +66,6 @@ pkg/vm/engine/tae/tables/jobs/mergeobjects.go
 pkg/vm/engine/tae/tables/txnentries/mergeobjects.go
   phase-1/phase-2 Tombstone transfer
   transfer page
-  rollback staging object cleanup
   WAL command
 
 pkg/vm/engine/tae/db/gc/v3
@@ -96,6 +95,17 @@ snapshot tombstone bitmap UNION lifecycle-expired bitmap
 
 即可让现有 Merge writer只写存活行，并为存活行生成 transfer map。
 
+但不能直接调用普通 `Relation.MergeObjects`、普通
+`HandleCommitMerge` 或未参数化的 `mergeObjectsEntry`。本设计基线
+`9927d1ff3f1f`中的普通entry会在`PrepareRollback`异步物理删除全部
+`createdObjs`，phase 2使用`context.Background()`；该基线还会吞掉Tombstone scan
+error。后一个独立缺陷已由
+[Issue #26311](https://github.com/matrixorigin/matrixone/issues/26311) /
+[PR #26333](https://github.com/matrixorigin/matrixone/pull/26333)在main修复，rebase后
+不得回退。它仍未替代Lifecycle所需的Root ownership、有界delta和caller deadline。
+Lifecycle只复用排序、写Object、transfer page、create/drop WAL与Replay核心，并使用
+本文定义的wrapper和options。
+
 ### 2.2 不选择的实现
 
 不在普通 Merge worker 中执行 Provider PUT/readback：
@@ -115,6 +125,17 @@ snapshot tombstone bitmap UNION lifecycle-expired bitmap
 
 - DropIntent/checkpoint/logtail/GC 是当前唯一回收权威；
 - Lifecycle 不复制 Snapshot/PITR/ISCP/GC watermark 逻辑。
+
+### 2.3 Object Rewrite 六项 P0 决策
+
+| Review P0 | 固定决策 |
+|---|---|
+| RWT-P0-1 | live staging/booking由Cleanup Root拥有；Lifecycle rollback不物理删除 |
+| RWT-P0-2 | phase 1/2使用有界、可取消、错误不吞的Tombstone delta visitor |
+| RWT-P0-3 | transfer machinery强制开启，但只给live survivor建立destination |
+| RWT-P0-4 | Lifecycle只允许immutable external booking，禁止inline |
+| RWT-P0-5 | 一个Rewrite child严格一个source Object；资源按物理slot admission |
+| RWT-P0-6 | TN验证identity和结构守恒；CN承担TTL/D分类，不做第二次业务值全扫 |
 
 ## 3. 普通 Merge 的代码事实
 
@@ -165,7 +186,15 @@ type LifecycleReservationToken struct {
     ReservationGen uint64
     PhysicalTableID uint64
     SourceDigest   [32]byte
+    SourceLayout   SourceLayoutProof
     ExpireAt       time.Time
+}
+
+type SourceLayoutProof struct {
+    ObjectStatsDigest [32]byte
+    BlockCount        uint32
+    PhysicalRows      uint64
+    BlockLayoutDigest [32]byte
 }
 
 type LifecycleReservationManager interface {
@@ -203,10 +232,15 @@ short merge admission     -> exact source set while DropIntent is being installe
 
 `Acquire` 在 TN：
 
-1. 校验 source Object 当前存在、非 appendable、无 DropIntent；
+1. 校验唯一 source Object 当前存在、非 appendable、无 DropIntent；
 2. 校验 ObjectStats/digest；
-3. 在同一 manager mutex 下检查重复/冲突 reservation；
-4. 插入 exact set 并返回 generation token。
+3. 由 TN 当前 Catalog/ObjectStats生成 `SourceLayoutProof`；
+4. 在同一 manager mutex 下检查重复/冲突 reservation；
+5. 插入 exact set并返回带layout proof的generation token。
+
+`SourceLayoutProof`是TN对物理布局的短期证明：它不包含业务值，也不证明TTL分类。
+final Prepare必须用同一Object当前metadata重新计算并匹配；reservation丢失或proof
+不匹配都abort。
 
 普通 Merge：
 
@@ -320,13 +354,17 @@ Acquire source reservation
 - CN worker按现有 Publication worker模式续 `valid_ts`；
 - 任一次续租失败立即 cancel Reader/Writer；
 - TN `OpCommitLifecycle` Prepare 调用
-  `ValidateSyncProtection(job_id, prepare_ts)`；
+  `ValidateSyncProtection(job_id, prepare_ts, expected_set_digest)`；
 - TN restart 后 protection 丢失，final transaction abort；
 - response unknown 后 protection 不因 worker lease丢失立即 unregister，直到原
   transaction 明确 committed/aborted；
 - committed 后 source files 已有正常 DropIntent/transfer protection，可以
   unregister；
 - aborted 后先清理 staging owner，再 unregister。
+
+校验不能只证明“job ID存在且未过期”。token还必须冻结并验证
+`expected_set_digest`，覆盖source Data/Tombstone filenames、live segment range和
+booking range；否则调用方传入另一个仍有效job ID也可能通过。
 
 ### 5.3 限制
 
@@ -373,7 +411,7 @@ type RewriteSpec struct {
     SourceSnapshotTS  types.TS
     Cutoff             CutoffValue
     LifecycleSeqnum    uint16
-    SourceObjects      []ExactObjectRef
+    SourceObject       ExactObjectRef
     Mode               LifecycleCommitMode
     TargetObjectSize   uint32
     Limits             RewriteLimits
@@ -387,7 +425,7 @@ type RewriteReport struct {
     LiveRows           uint64
     ExpiredBytes       uint64
     LiveBytes          uint64
-    ReachedObjects     uint64
+    ReachedObject      bool
     ReachedBlocks      uint64
     ArchiveRoot        [32]byte
     LiveRoot           [32]byte
@@ -397,6 +435,9 @@ type RewriteReport struct {
     Complete           bool
 }
 ```
+
+`RewriteSpec`只能有一个source Object。Planner、wire和TN handler都必须重复校验，
+不能把“默认1个”实现成可配置到16/64的soft limit。
 
 ### 6.2 单次读取双输出
 
@@ -434,8 +475,8 @@ return bat, rewriteDeletes, release, nil
 ```
 
 Archive append 必须在 `LoadNextBatch` 返回前完成，不得异步保留 borrowed Vector。
-它按04定义写入source-ordinal substream，不能把mergesort callback到达顺序当作
-Archive行序。Batch/release exactly-once规则继续由04定义。
+它按04定义的单source block/row顺序同步写入 Archive Writer。Batch/release
+exactly-once规则继续由04定义。
 
 ### 6.3 物理排序
 
@@ -465,6 +506,24 @@ Whole Archive：
 
 Snapshot visible rows为零时不创建空 Archive Dataset，提交 `EMPTY_ARCHIVE` Receipt。
 
+Rewrite build结束后的退化规则：
+
+```text
+source_visible_rows == 0:
+  EMPTY_ARCHIVE/WHOLE_TTL退休空Object；不创建Dataset
+
+expired_rows == 0 AND live_rows > 0:
+  no-op；不退休source，不发布Dataset，Root清理可能已写的live staging
+
+live_rows == 0 AND expired_rows > 0:
+  final mode切换为WHOLE_TTL/WHOLE_ARCHIVE
+  不允许以createdObjs==0的MIXED_REWRITE entry提交
+  Archive必须执行13.4的独立post-S delete validator
+```
+
+这样不会因为普通Merge entry在`createdObjs==0`时跳过transfer phase而漏掉Archive
+并发删除校验。
+
 ### 6.5 Mixed TTL
 
 ```text
@@ -491,7 +550,7 @@ Object Writer sync/checksum；P0 额外验证 row conservation和 transfer mappi
 ```text
 reservation valid
 source protection valid
-ReachedObjects == requested Objects
+ReachedObject == true
 ReachedBlocks == requested Blocks
 Complete == true
 SourceVisibleRows == ExpiredRows + LiveRows
@@ -614,6 +673,52 @@ Lifecycle handler的错误defer不得调用普通Merge
 本地Catalog/txn entry并返回错误，物理staging由Root在权威transaction结果明确后
 收敛。
 
+### 8.3 Created Object 物理所有权模式
+
+复用的 Merge txn entry必须显式携带：
+
+```go
+type PhysicalCreatedObjectOwner uint8
+
+const (
+    CreatedObjectOwnedByMergeEntry PhysicalCreatedObjectOwner = iota + 1
+    CreatedObjectOwnedByCleanupRoot
+)
+```
+
+唯一语义：
+
+| 调用者 | Owner | `PrepareRollback` |
+|---|---|---|
+| 普通 Merge | `MergeEntry` | 保持现有行为，删除created files |
+| Lifecycle Rewrite | `CleanupRoot` | 只回滚Catalog node、transfer page和内存；禁止物理Delete |
+
+Lifecycle构造entry时必须固定
+`PhysicalCreatedObjectOwner=CreatedObjectOwnedByCleanupRoot`，且不能被调用者覆盖。
+`PrepareRollback`、普通error defer、duplicate Prepare和`ErrTAENeedRetry`都只能释放
+本事务的内存/Catalog状态。Root child按以下权威事实转移：
+
+```text
+txn committed + matching Receipt visible:
+  TAE_LIVE_SEGMENT_RANGE/TAE_LIVE_STAGING_OBJECT -> TAE_OWNED
+
+final txn service authoritatively reports ABORTED:
+  VERIFIED -> DELETE_PENDING
+
+txn unknown:
+  remain VERIFIED; no physical delete
+```
+
+这关闭以下数据文件丢失窗口：
+
+```text
+first Prepare -> ErrTAENeedRetry -> rollback deletes live file
+-> retry reuses ObjectStats -> Catalog commits pointer to missing file
+```
+
+实现应把物理Owner作为构造期只读字段并写单测；不能根据Root的事后查询临时判断，
+否则rollback遇到Catalog不可用时会重新产生误删窗口。
+
 TTL Rewrite Root只有在全部booking确认删除后才能进入`TRANSFERRED`；此前进入
 `POST_COMMIT_CLEANUP`。Archive Root可以进入`PUBLISHED`，但其temporary booking
 child仍由Sweeper清理；不得把整个Root置为`DELETE_PENDING`而误删Archive Payload。
@@ -630,7 +735,7 @@ child仍由Sweeper清理；不得把整个Root置为`DELETE_PENDING`而误删Arc
 提交 aborted时：
 
 - Archive对象按 07 删除；
-- TAE live staging按现有 Merge cleanup方式删除；
+- TAE live staging由Root在权威aborted后删除，普通Merge entry不删除；
 - transfer booking删除；
 - source对象不由 Root删除。
 
@@ -661,6 +766,10 @@ txnOp.Write
   -> same TAE txn identified by TxnMeta
 ```
 
+`txnOp.Write`必须按`source physical_table_id`解析并路由到权威TN shard；不能复用
+调试Merge中“取第一个TN”的辅助路径。路由失败或拓扑generation变化返回可重试错误，
+不得把entry发给任意可用TN。
+
 ### 9.2 Protobuf
 
 ```proto
@@ -675,6 +784,27 @@ message LifecycleReservation {
     uint64 reservation_generation = 3;
     int64 expire_at_unix_nano = 4;
     bytes source_digest = 5;
+    SourceLayoutProof source_layout = 6;
+}
+
+message SourceLayoutProof {
+    bytes object_stats_digest = 1;
+    uint32 block_count = 2;
+    uint64 physical_rows = 3;
+    bytes block_layout_digest = 4;
+}
+
+message LifecycleTransferBooking {
+    uint32 ordinal = 1;
+    string immutable_key = 2;
+    string provider_version = 3;
+    bytes sha256 = 4;
+    uint64 size_bytes = 5;
+    uint32 first_source_block = 6;
+    uint32 source_block_count = 7;
+    uint64 live_mapping_count = 8;
+    bytes transfer_layout_digest = 9;
+    bytes row_class_layout_digest = 10;
 }
 
 message LifecycleCommitEntry {
@@ -729,6 +859,8 @@ message LifecycleCommitEntry {
 
     bytes transfer_digest = 34;
     bytes entry_digest = 35;
+    repeated LifecycleTransferBooking transfer_bookings = 36;
+    bytes source_protection_set_digest = 37;
 }
 ```
 
@@ -736,24 +868,37 @@ message LifecycleCommitEntry {
 
 - `MergedObjs` 必须与 `source_objects` 完全一致；
 - `CreatedObjs` 是新 live TAE ObjectStats；
-- `Booking/BookingLoc` 使用现有 transfer encoding；
+- `Booking`和inline transfer字段必须为空；
+- `transfer_bookings`按ordinal连续递增，冻结每个external booking的exact
+  key/version/SHA/size、source block range、live mapping数、transfer layout digest
+  和row-class layout digest；
+- booking payload复用现有transfer codec，并增加每block的
+  `snapshot_deleted/expired/live` row-class bitmap；TN用它区分NoTransfer原因，
+  但不重新执行TTL表达式；
+- 所有booking的source block range必须连续、无重叠、完整覆盖
+  `SourceLayoutProof.block_count`；
+- `source_protection_set_digest`必须与TN manager当前job冻结值完全相同；
 - `StartTs` 等于 `source_snapshot_ts`；
 - `Err` 必须为空；
-- `Level` 保留现有 Object level规则。
+- `Level` 必须按普通Merge的晋级规则从唯一source Object计算并冻结；不能默认传0，
+  造成高level Object降级后重新进入高频Merge。
 
 ### 9.3 Wire 限额
 
 ```text
 protocol_version          = 1
-source objects            <= 64（Rewrite默认 <= 16）
+source objects            == 1 for Rewrite；<= 64 for Whole
 created objects           < 255
-inline transfer rows      < 500,000
+inline transfer bytes     == 0
+external booking          required for Rewrite
 serialized entry          <= 1 MiB
-booking files/bytes       <= release profile
+booking files/bytes       <= bounded release profile
 ```
 
 所有 repeated source按 Object ID升序。Digest基于 canonical protobuf（排除自身
-digest字段）。
+digest字段）。即使只有一个source，wire仍保留repeated字段以支持Whole和版本兼容；
+TN按mode执行严格基数校验。Lifecycle不保留“少于50万行走inline”的第二条路径，
+避免entry大小、retry和Owner语义分叉。
 
 ## 10. CN Finalizer
 
@@ -802,6 +947,9 @@ pkg/vm/engine/tae/tables/txnentries/lifecycle_objects.go
 5. source/created/booking行数和大小有界；
 6. nested `MergeCommitEntry` 与顶层 identity一致。
 
+`MIXED_REWRITE_*`额外要求`expired_rows > 0`且`live_rows > 0`；
+`createdObjs==0`或`expired_rows==0`直接拒绝，不能在TN临时猜测应退化为何种模式。
+
 未知字段版本、越界、digest mismatch均返回明确错误，不降级普通 Merge。
 
 ### 11.2 Identity/Guard
@@ -826,7 +974,7 @@ TxnOperator。缺失或不同 digest则整个 txn abort。
 
 ```text
 ReservationManager.Validate(token, source)
-SyncProtectionManager.ValidateSyncProtection(jobID, prepareTS)
+SyncProtectionManager.ValidateSyncProtection(jobID, prepareTS, expectedSetDigest)
 ```
 
 任一失败 abort，不自动重新 acquire。
@@ -843,6 +991,7 @@ no DropIntent
 ObjectStats bytes/digest exact match
 not appendable
 source ordering/digest exact
+current block count/physical rows/block-layout digest match SourceLayoutProof
 ```
 
 Object missing或已有 DropIntent不能视为幂等成功。只有一致性 Receipt对账能判断原
@@ -856,31 +1005,73 @@ null_count == 0
 max < cutoff
 ```
 
-### 11.5 Row conservation/transfer
+### 11.5 CN/TN 信任边界与行守恒
 
 Rewrite：
 
 ```text
-sum source visible       == source_visible_rows
-expired + live           == source_visible_rows
-sum CreatedObject.Rows   == live_rows
-non-NoTransfer mappings  == live_rows
-transfer digest          == recomputed digest
+source_physical_rows     == snapshot_deleted + expired + live
+source_visible_rows      == expired + live
+sum CreatedObject.Rows   == live
+non-NoTransfer mappings  == live
+every mapping destination is inside exact CreatedObjs layout
+row-class bitmap covers every physical slot exactly once
+snapshot-deleted/expired slots are NoTransfer
+live slots have exactly one destination
+transfer/row-class digest == recomputed digest
 ```
 
-TN不重读 Archive provider，不信任 Archive ETag。Archive readback证明由 Dataset/
-Manifest/Root状态和同事务 Receipt保证；TN只校验冻结 digest组合。
+TN独立校验：
+
+- exact source Object identity/Stats和`SourceLayoutProof`；
+- source物理行数、block布局和上述结构守恒；
+- created ObjectStats、行数、level和digest；
+- external booking exact identity、size/SHA、page/layout digest；
+- reservation/protection/attempt/entry generation；
+- `S` 后Tombstone delta和对应row-class/transfer行为。
+
+其中`source_physical_rows`来自TN当前Object metadata；D/E/L计数和覆盖从external
+booking的row-class bitmap重新计算。TN验证的是**结构守恒**，不声称重新证明D确实
+来自`S`时刻全部Tombstone、E确实满足TTL表达式。
+
+TN明确不执行：
+
+- 重新计算TTL表达式，或逐行重建D/E分类；
+- 第二次读取全部source业务列；
+- 读取Provider中的Parquet并逐行分类。
+
+TTL分类结果由CN承担，其信任模型与普通SQL DELETE predicate相同。正确性由
+classifier单测、属性测试、Archive full readback和1/10 TiB源/归档/live对账认证。
+TN不重读Archive provider，也不信任ETag；它只校验Root/Manifest/Receipt冻结的
+digest组合。不能同时要求“TN不扫描业务数据”又声称TN独立证明TTL分类语义。
 
 ## 12. 复用 Merge transaction entry
 
 新增 Lifecycle wrapper，但内部复用现有 `mergeObjectsEntry`：
 
 ```go
+type NoTransferDeletePolicy uint8
+
+const (
+    NoTransferDeleteExisting NoTransferDeletePolicy = iota + 1
+    NoTransferDeleteTTLIgnoreExpired
+    NoTransferDeleteArchiveAbortExpired
+)
+
+type TombstoneDeltaLimits struct {
+    MaxRows   uint64
+    MaxBytes  uint64
+    MaxBlocks uint32
+    Deadline  time.Time
+}
+
 type LifecycleMergeOptions struct {
-    CollectDeletesFrom types.TS
-    ExpectedExpiredRows uint64
-    FailOnDeleteOfNoTransfer bool
-    ReservationToken LifecycleReservationToken
+    CollectDeletesFrom          types.TS
+    ExpectedExpiredRows         uint64
+    NoTransferDeletePolicy      NoTransferDeletePolicy
+    PhysicalCreatedObjectOwner  PhysicalCreatedObjectOwner
+    DeltaLimits                 TombstoneDeltaLimits
+    ReservationToken           LifecycleReservationToken
 }
 
 func HandleLifecycleMergeEntryInTxn(
@@ -897,9 +1088,9 @@ func HandleLifecycleMergeEntryInTxn(
 1. 以不修改request、不删除Root资产的loader读取immutable booking；
 2. `rel.SoftDeleteObject` source；
 3. `rel.CreateNonAppendableObject` created live Object；
-4. 构造 `mergeObjectsEntry`；
+4. 构造带`CreatedObjectOwnedByCleanupRoot`的 `mergeObjectsEntry`；
 5. phase-1 Tombstone扫描起点使用 `source_snapshot_ts`，不是 final txn startTS；
-6. prepare transfer pages；
+6. 使用有界、可取消的Lifecycle delta visitor执行phase 1/2并prepare transfer pages；
 7. `txn.LogTxnEntry` 复用 create/drop/transfer/WAL command；
 8. Lifecycle wrapper只保存validation/digest memo，不创建第二套 Object WAL格式。
 
@@ -911,12 +1102,112 @@ immutable，booking location不能被loader原地截短。
 
 ```text
 CollectDeletesFrom = txn.GetStartTS()
-FailOnDeleteOfNoTransfer = existing behavior
+NoTransferDeletePolicy = NoTransferDeleteExisting
+PhysicalCreatedObjectOwner = CreatedObjectOwnedByMergeEntry
 ```
 
 Lifecycle不改变普通调用者。
 
+### 12.1 有界、可取消的 Tombstone delta visitor
+
+现有 `TombstoneRangeScanByObject`会把区间内匹配Tombstone累积成完整Batch，没有
+rows/bytes/blocks上限；设计基线的普通Merge phase 2还使用
+`context.Background()`。基线吞错已由#26333修复，但Lifecycle仍禁止直接调用这条
+无界、无caller deadline路径。普通Merge的独立现有风险跟踪在
+[Issue #26377](https://github.com/matrixorigin/matrixone/issues/26377)。
+
+新增或抽取：
+
+```go
+func VisitTombstoneRangeByObject(
+    ctx context.Context,
+    table *catalog.TableEntry,
+    objectID objectio.ObjectId,
+    start, end types.TS,
+    limits TombstoneDeltaLimits,
+    visit func(TombstoneDelta) error,
+) (TombstoneDeltaReport, error)
+```
+
+要求：
+
+- 按Tombstone Object/Batch流式读取，不构造完整区间Batch；
+- 每次累加rows、encoded bytes、affected source blocks；
+- limits按整个Lifecycle final transaction聚合，不按source Object分别重置；
+- phase 1和phase 2都使用final transaction传入的ctx/deadline；
+- `WaitTombstoneObjectCommitted`也必须可取消/有deadline；
+- 任一scan/transfer/error原样向上返回，不能吞掉；
+- 超限返回typed error，不先安装部分可提交transfer page；
+- 已安装的临时page由txn rollback删除，Root物理文件不删除。
+
+初始认证profile：
+
+```text
+delta rows              <= 1,000,000
+delta affected blocks   <= 256
+delta encoded bytes     <= 32 MiB
+phase 1 + phase 2       <= final transaction 60s deadline
+```
+
+32 MiB不是用户可任意放大的配置。实现必须从当前70 MiB `MaxWalSize`扣除
+Lifecycle entry、Catalog command、create/drop command、transfer page和安全余量后
+计算release profile；若编码变化导致上界不再成立，启动时拒绝retirement。
+
+超限/超时：
+
+```text
+abort final txn
+source remains visible
+Dataset/Receipt not published
+Root keeps staging until authoritative abort
+-> CONFLICT_BLOCKED or RESOURCE_BLOCKED
+```
+
+不能用更长的`context.Background()`让TN Prepare无限等待，也不能在失败后自动立刻
+重试同一source形成饥饿循环。
+
+### 12.2 Transfer slab admission
+
+当前mergesort按物理slot分配dense `[]TransferDestPos`，不是按live行数分配；分配
+失败会panic。Lifecycle admission必须按：
+
+```text
+physical slots = block_count * objectio.BlockMaxRows
+CN dense slab bytes
++ TN load/copy bytes
++ detached page bytes
++ serialization buffer
+```
+
+计算，不使用`live_rows`估算。首个GA单源Object、cluster Rewrite并发默认1；在进入
+`DoMergeAndWrite`前一次性取得memory token。实现还必须为Lifecycle调用链提供checked
+slab allocation并把mpool失败返回error，沿Owner规则cleanup。不能只在最外层recover
+任意panic后宣称安全；recover只可作为最后的进程保护，不能替代可返回error的分配
+接口。普通Merge的独立现有panic风险跟踪在
+[Issue #26376](https://github.com/matrixorigin/matrixone/issues/26376)。
+
 ## 13. 并发 Tombstone 语义
+
+“Lifecycle Rewrite永远启用transfer”的准确含义是**survivor-only transfer
+mandatory**：
+
+```go
+func (*LifecycleRewriteHost) DoTransfer() bool {
+    return true
+}
+```
+
+这个返回值只负责启用现有transfer machinery，不表示每一行都有destination：
+
+```text
+D = snapshot-deleted -> NoTransfer
+E = expired-visible  -> NoTransfer
+L = live-visible     -> exactly one destination
+```
+
+它不受普通 Merge table comment或`MO_COMMENT_NO_DEL_HINT`影响，也从不修改Archive
+Payload。若关闭transfer，`S`后对L行的DELETE/UPDATE无法映射到新Object，会把已删除
+行复活。
 
 ### 13.1 source Snapshot 前
 
@@ -943,13 +1234,16 @@ phase 2: (collect_ts, prepare_ts.Prev()]
 
 若 Tombstone命中 expired/archived row：
 
-- mapping为 `NoTransfer`；
-- Lifecycle final transaction返回冲突并整体 abort；
-- Dataset不发布，旧 source不退休；
-- staging由 Root清理；
-- re-export包含新的 Snapshot可见性。
+- Archive模式：mapping为`NoTransfer`，按
+  `NoTransferDeleteArchiveAbortExpired`使整个final transaction abort；Dataset
+  不发布，旧source不退休，Root在权威aborted后清staging，再以新Snapshot
+  re-export；
+- TTL模式：该行本就要永久退休，按`NoTransferDeleteTTLIgnoreExpired`把并发DELETE
+  作为冗余操作，不要求destination，也不因此重写；
+- Tombstone命中snapshot-deleted槽位同样是冗余，不产生destination。
 
-这是 Archive 不复活并发删除的关键条件。
+external booking的row-class bitmap负责区分D/E/L；只看“mapping missing”无法实现
+上述语义。
 
 ### 13.3 Prepare 后
 
@@ -962,7 +1256,24 @@ Transfer page对 expired row没有 destination。一个更早开始、在 Lifecy
 
 一个 Lifecycle commit之后才开始的用户事务已看不到退休行。
 
-### 13.4 INSERT
+### 13.4 Whole Archive 的并发删除
+
+Whole Archive不创建new live Object，普通Merge entry可能因`createdObjs==0`提前跳过
+transfer phase。因此它必须在final Prepare执行独立且同样有界的：
+
+```text
+ValidateNoPostSnapshotDelete(
+  exact source Object,
+  (source_snapshot_ts, prepare_ts),
+  TombstoneDeltaLimits
+)
+```
+
+发现任何命中Archive行的post-S Tombstone都abort/re-export；超限或无法完成验证也
+abort。Whole TTL不归档这些行，并发DELETE与TTL退休结果相同，可以视为冗余，但仍需
+验证source identity/Whole metadata条件。
+
+### 13.5 INSERT
 
 新 INSERT不在 frozen source set：
 
@@ -1033,6 +1344,10 @@ status unknown
 
 ### 15.1 WAL
 
+Archive Parquet/Manifest字节**不进入TAE WAL**；它们由Archive Provider、Cleanup
+Root和Manifest checksum管理。WAL只记录final transaction对活动TAE Catalog的
+原子变化：
+
 最终 Object变化继续由现有 merge transaction command表示：
 
 ```text
@@ -1042,6 +1357,24 @@ created live Object IDs
 
 Replay不需要重放 Provider I/O、reservation或Scanner。Lifecycle Dataset/Receipt由
 普通 Catalog DML WAL恢复。
+
+这样crash边界保持与普通Merge一致：
+
+```text
+commit前crash:
+  old source remains active
+  Root owns and later cleans staging
+
+commit后、response前crash:
+  WAL/replay restores old source DropIntent + new live Object Active
+  Receipt reconciliation confirms publish
+
+checkpoint/GC后:
+  existing TAE GC physically deletes old source
+```
+
+Lifecycle不新建第二套WAL/Replay引擎；`OpCommitLifecycle`只在Prepare时验证额外的
+Archive/分类/Owner条件，成功后复用create/drop/transfer transaction command。
 
 ### 15.2 Transfer page
 
@@ -1092,10 +1425,12 @@ Merge P95/P99无显著回归。
 每个 Rewrite child：
 
 ```text
-source objects             <= 16 default, 64 hard protocol
-source bytes               <= 4 GiB default
+source objects             == 1 protocol invariant
+source bytes               <= current legal single Object maximum
 created live objects       <= 32 default, <255 hard
-transfer memory/disk       <= 512 MiB default
+transfer dense memory      <= physical slots based admission
+external booking bytes     <= 32 MiB default, certified hard limit
+tombstone delta bytes      <= 32 MiB
 archive staging bytes      <= source expired estimate × profile
 TAE live staging bytes     <= source live estimate × profile
 attempt wall time          <= 60 minutes
@@ -1106,6 +1441,7 @@ protection Bloom bytes      <= 8 MiB default
 snapshot-exclusive bytes   <= account/cluster hard limit
 Provider single I/O        <= 2 minutes
 final transaction          <= 60 seconds
+Rewrite cluster concurrency  = 1 default, 4 certified hard max
 ```
 
 单个当前合法 Object可以达到：
@@ -1126,7 +1462,8 @@ GA必须支持该边界的 streaming，不分配整 Object Batch，也不能因�
 | source protection register/renew失败 | cancel build；不final |
 | source Object被Merge替换 | exact validation失败；replan |
 | Archive/live writer失败 | cleanup staging；源不变 |
-| post-S delete命中expired row | final abort；re-export |
+| post-S delete命中Archive expired row | final abort；re-export |
+| post-S delete命中TTL expired row | 冗余删除；允许按其他CAS条件提交 |
 | post-S delete命中live row | transfer到新RowID |
 | transfer missing/overflow | final abort；`RESOURCE_BLOCKED`或replan |
 | final txn明确aborted | cleanup staging |
@@ -1153,8 +1490,11 @@ GA必须支持该边界的 streaming，不分配整 Object Batch，也不能因�
 - PK、cluster by、fake PK；
 - output 0/1/多 Object；
 - created object count逼近 `api.NoTransfer`；
-- inline/external booking；
-- rollback清理全部created Object/booking；
+- inline booking一律在side effect前拒绝；
+- external booking duplicate load/digest/size/version；
+- ordinary owner rollback删除created Object；
+- Lifecycle owner rollback不删Root live/booking，权威aborted后由Sweeper删除；
+- `ErrTAENeedRetry`后复用同一staging，最终Catalog引用文件仍存在；
 - transfer phase-1/phase-2每个错误都向上返回并abort。
 
 ### 19.3 并发
@@ -1164,7 +1504,11 @@ GA必须支持该边界的 streaming，不分配整 Object Batch，也不能因�
 - reservation expire/renew/TN restart；
 - DELETE/UPDATE在S前、phase1、phase2、Prepare后；
 - delete archived row必须conflict/re-export；
+- TTL expired row并发delete可冗余收敛；
 - delete live row必须transfer；
+- Whole Archive post-S delete validator；
+- delta rows/bytes/blocks/deadline达到limit-1/limit/limit+1；
+- phase2 cancel/error不能被吞掉；
 - INSERT late old/new row；
 - DROP/TRUNCATE/schema/binding generation变化。
 
@@ -1189,7 +1533,18 @@ GA必须支持该边界的 streaming，不分配整 Object Batch，也不能因�
 - WAL replay后active source/live Object集合正确；
 - rolling upgrade老TN明确拒绝2018 opcode。
 
-### 19.6 普通路径回归
+### 19.6 TN信任边界与资源
+
+- `SourceLayoutProof`的stats/block/row/layout任一bit变化都fail closed；
+- CN伪造分类count但结构守恒失败时TN拒绝；
+- TN不重读TTL业务列或Provider Payload；
+- classifier属性测试覆盖所有支持时间类型、cutoff边界和D/E/L完备性；
+- 单源最大blocks/rows/bytes和几乎全部live的dense transfer峰值；
+- 第二个source在Root/FileService/Provider side effect前拒绝；
+- Rewrite并发1/2/4下CN+TN+detached page峰值；
+- mpool分配失败返回error，不panic进程，Root/source所有权收敛。
+
+### 19.7 普通路径回归
 
 - 未绑定表普通Merge selection/task/result不变；
 - reservation为空/少量/大量的并发访问；
@@ -1209,3 +1564,8 @@ GA必须支持该边界的 streaming，不分配整 Object Batch，也不能因�
 7. 存活行复用现有Merge create/drop/两阶段transfer/WAL/GC。
 8. 使用独立`OpCommitLifecycle`，防止老TN把新协议当普通Merge执行。
 9. 首个GA不改变普通Merge的physical layout策略；乱序表的持续成本由budget和SLO限制。
+10. Lifecycle Rewrite严格单源、一律external booking，默认集群并发1。
+11. transfer只映射live survivor；Archive到期行的并发删除abort/re-export，TTL到期
+    行删除冗余收敛。
+12. Cleanup Root拥有Lifecycle物理staging；Merge entry rollback不删除Root资产。
+13. TN证明identity和结构守恒，CN承担TTL/D分类；不在Prepare二次全扫业务值。

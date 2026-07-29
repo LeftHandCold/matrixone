@@ -385,8 +385,9 @@ after Delete:
   unexpected overflow -> rollback/commit-unknown protocol + P0 alert
 ```
 
-普通 DELETE 超限本身不是布局终态。只有 Rewrite 也超过 spill/staging/transfer 硬
-预算时进入 `RESOURCE_BLOCKED`，或者重复 Rewrite 放大超过 release profile 时进入
+普通 DELETE 超限本身不是布局终态。只有单源 Rewrite 也超过
+live-staging/dense-transfer/external-booking/Tombstone-delta硬预算时进入
+`RESOURCE_BLOCKED`，或者重复 Rewrite 放大超过release profile时进入
 `MIXED_LAYOUT_BLOCKED`。
 
 ### 12.1 Tombstone估算

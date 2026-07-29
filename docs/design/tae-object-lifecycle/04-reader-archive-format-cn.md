@@ -1,6 +1,6 @@
 # Exact Reader、Archive 格式与校验详细设计
 
-> 本文唯一负责 Exact Reader 接口、Rewrite 同步 split sink 的 Batch 所有权、
+> 本文唯一负责 Exact 逻辑 Reader 接口、Rewrite host borrowed Batch 的所有权、
 > Archive Writer、Parquet/ZSTD 映射、Manifest、content root 和 Provider 全量
 > readback。
 
@@ -13,7 +13,7 @@ Lifecycle Reader 必须同时满足：
 - 在一个固定事务 Snapshot 上输出逻辑可见行；
 - 不把表级 in-memory rows 混入；
 - 支持 Archive 业务列和 Mixed DELETE control 列；
-- 支持 Mixed Rewrite 单次读取时同步输出 expired/live 两个逻辑集合；
+- 为 Mixed Rewrite 定义一次 block read 中 D/E/L 分类和同步 Archive sink 合同；
 - 能证明完整读到了所有请求 Object/Block；
 - 串行、流式、有背压、有内存上限；
 - 任何短读、Object missing、checksum error、cancel 都失败；
@@ -30,9 +30,9 @@ pkg/vm/engine/types.go
   engine.RelData
 
 pkg/vm/engine/disttae/snapshot_scan.go
-  Snapshot reader construction
+  Snapshot reader construction（只参考，不直接调用table-level scan）
   Tombstone application
-  reusable Batch callback
+  reusable Batch callback contract
 
 pkg/vm/engine/disttae/txn_table.go
   BuildReaders
@@ -53,6 +53,12 @@ pkg/vm/engine/readutil/reader.go
 - 不提供 Root/multipart 所有权回调。
 
 可以抽取和复核其中的 `parquet-go` 类型映射，但 Lifecycle Writer 必须是独立的 streaming library。
+
+`ScanSnapshotWithCurrentRanges` 不能直接作为 Exact Reader：它会把当前
+workspace/in-memory ranges并入table scan。Lifecycle必须构造只包含请求
+`ObjListRelData`、且不带mem block marker的输入，再通过固定Snapshot的
+`BuildReaders(..., num=1)`读取。否则会把source set之外的新行写入Archive并破坏
+coverage证明。
 
 ## 3. 新接口
 
@@ -248,10 +254,12 @@ Consumer：
 - 不调用 Batch.Clean；
 - 不修改 RowID/delete key vector。
 
-### 7.1 Rewrite split consumer
+### 7.1 Rewrite host borrowed Batch 合同
 
 中/大 Mixed 不通过 `ScanLifecycleExpired` 再二次读取 live rows。05 中的
-`LifecycleRewriteHost.LoadNextBatch` 对同一个 borrowed Batch 计算两个互斥集合：
+`LifecycleRewriteHost.LoadNextBatch` 不走上述高层 `engine.Reader`，而是复用 Merge
+的 `BlockDataReadNoCopy` 对一个 source Object逐block读取。它仍遵守相同的
+borrow/release exactly-once合同，并对同一个 borrowed Batch 计算三个互斥集合：
 
 ```text
 snapshot_deleted
@@ -345,37 +353,25 @@ Rewrite 的 Archive ordinal 只覆盖 `expired_visible`。`live_visible` 继续�
 sort/cluster key 进入现有 mergesort；不能为了 Lifecycle content root 改变新 TAE
 Object 的排序语义。
 
-### 9.1 Rewrite callback 交错与 canonical substream
+### 9.1 单源 Rewrite canonical 顺序
 
-`DoMergeAndWrite`可能按sort merge进度交错调用不同source Object的
-`LoadNextBatch`。callback到达顺序不是Archive canonical顺序，不能直接追加到一个
-全局Writer。
-
-Rewrite Archive Sink按`source_object_ordinal`分片：
+首个 GA 的 Rewrite child 固定一个 source Object，因此没有跨 source callback
+交错、substream merge或本地排序spill。`LifecycleRewriteHost`必须按：
 
 ```text
-source object ordinal
-  -> block ordinal
-  -> physical row offset
+source Object
+  -> block ordinal ascending
+  -> physical row offset ascending
   -> expired visible rows only
 ```
 
-规则：
+同步追加 Archive Writer。一个 Object仍可切分多个Parquet Payload；payload ordinal
+和Dataset row ordinal连续递增。Batch大小和Parquet文件切分不得改变content root。
 
-- 每个source substream内部必须按block/row递增；
-- callback只同步写入对应substream，返回后不保留borrowed Vector；
-- substream可以产生多个Parquet Payload，payload ordinal包含source ordinal和局部
-  ordinal；
-- Manifest按source Object ID顺序拼接substream；
-- global dataset row ordinal由各substream verified row count的前缀和计算，不写业务
-  列；
-- content root先计算每个source subroot，再按source Object ID组合；
-- callback交错、Batch大小、Parquet文件切分和CN调度不能改变最终root。
-
-若当前mergesort不能保证“同一source内部LoadNextBatch按block/row递增”，substream
-必须先写受控本地加密spill，并按source/block/row做有界外排；不能使用callback顺序。
-所有substream共享一个aggregate memory/file-handle semaphore，不能按source数线性
-放大独立128MiB buffer。
+如果 P0 证明现有 host 对同一个 source Object的 `LoadNextBatch` 不能保持block/row
+递增，不能用spill掩盖该问题；应在 Lifecycle host显式按block ordinal驱动
+`BlockDataReadNoCopy`。多源 Rewrite 若未来开放，必须单独评审 canonical order、
+内存峰值和失败所有权，不属于本协议版本。
 
 ## 10. Canonical value encoding
 
@@ -737,11 +733,11 @@ Manifest `encryption` 固定保存：
 - 每个 Payload/Manifest 的 provider encryption result 进入 Root Object 诊断字段或 Manifest；
 - GET/readback/Restore 必须校验冻结的 encryption digest，不能静默降级为无加密写；
 - HTTP、跳过证书校验、无法确认服务端加密的 provider 配置不允许用于 GA Archive；
-- 本地 Mixed/Rewrite/Restore spill 使用 CN 受控临时加密，密钥不持久化。目录名包含
+- 本地小 Mixed/Restore spill 使用 CN 受控临时加密，密钥不持久化。目录名包含
   CN boot ID、attempt ID和executor epoch；正常退出由attempt executor exactly-once
   清理，CN crash后由startup/periodic local janitor清理旧boot ID目录。janitor只处理
   不属于当前boot/active attempt且超过I/O quiescence的目录，不与活executor竞争。
-- 每CN spill总bytes/目录数有hard limit；达到上限停止新Reader/Rewrite，不依赖磁盘
+- 每CN spill总bytes/目录数有hard limit；达到上限停止新小 Mixed/Restore，不依赖磁盘
   写满触发失败。
 
 如果未来增加客户端 envelope encryption，必须升级 Manifest version、定义 data-key
@@ -831,9 +827,8 @@ Binding ACTIVE 时首个 GA拒绝 schema change，因此一个 Dataset 内只有
 ```text
 Reader Batch             <= 64 MiB
 Parquet encoding buffers <= 128 MiB
-Rewrite substream buffers<= 128 MiB aggregate
-Rewrite open substreams  <= source Object hard limit
-Rewrite local spill      <= release profile
+Rewrite Archive buffer   <= 128 MiB
+Rewrite source Objects   == 1
 Merkle accumulator       <= 64 levels
 Manifest in memory       <= 16 MiB
 in-flight multipart      <= 4 parts
@@ -854,9 +849,9 @@ Reader unit：
 - Mixed cutoff；
 - Rewrite split 三集合互斥、完备和单次消费；
 - expired Archive sink 与 live mergesort sink 任一失败时 exactly-once release；
-- source callback交错和Batch/file切分变化时substream root不变；
-- 单source内部乱序时spill排序，或P0证明该路径不可达；
-- spill error/cancel/panic、CN crash和新boot janitor exactly-once清理；
+- 单源 Rewrite block/row顺序与Batch/file切分变化时root不变；
+- Rewrite传入多于一个source时在任何FileService/Provider写之前拒绝；
+- 当前host乱序时由显式block ordinal驱动纠正，不创建Rewrite排序spill；
 - hidden RowID/fake PK projection；
 - empty complete vs empty short read；
 - callback error/panic/cancel；

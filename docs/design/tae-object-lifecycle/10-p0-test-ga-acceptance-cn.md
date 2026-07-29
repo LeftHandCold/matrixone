@@ -145,6 +145,12 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WIR-006 | `ErrTAENeedRetry` | 原payload/digest重放 |
 | WIR-007 | old TN看到new protobuf字段 | 不可能降级为普通Merge提交 |
 | WIR-008 | Dataset/Receipt缺少entry | finalizer API拒绝commit |
+| WIR-009 | Rewrite source基数0/1/2 | 只有1通过 |
+| WIR-010 | Rewrite inline transfer非空 | reject |
+| WIR-011 | external booking identity/layout | exact key/version/SHA/digest全部匹配 |
+| WIR-012 | 路由到非source table TN shard | 发送前拒绝/重新解析路由 |
+| WIR-013 | protection job有效但set digest错误 | Prepare拒绝 |
+| WIR-014 | Mixed entry的expired/live任一为0 | TN拒绝；CN必须先no-op或切Whole |
 
 ### 5.2 Condition
 
@@ -160,6 +166,8 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | CMT-017 | Whole lifecycle max不再过期 | abort |
 | CMT-018 | Rewrite created Object/digest不符 | abort |
 | CMT-019 | Nth source/created Object失败 | 全部回滚 |
+| CMT-020 | `SourceLayoutProof`变化 | abort，不二次业务值扫描 |
+| CMT-021 | output level错误/降级 | abort |
 
 ### 5.3 WAL/replay
 
@@ -172,6 +180,8 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WAL-024 | commit后response lost | status+Receipt收敛 |
 | WAL-025 | checkpoint/restart | Object可见性和GC正常 |
 | WAL-026 | ordinary Merge SoftDelete | 原 opcode/语义不变 |
+| WAL-027 | 大Archive Payload | Parquet/Manifest bytes不进入TAE WAL |
+| WAL-028 | commit前/后crash | 前者source保留+Root清理，后者Replay恢复Drop/live |
 
 ## 6. P0-4 Source Reservation、GC Protection 与并发 Tombstone
 
@@ -210,6 +220,7 @@ Scheduler skip 只是性能优化；`OpCommitMerge`和`OpCommitLifecycle`的TN�
 | GCP-009 | live Object写出但未final | orphan GC不能删除 |
 | GCP-010 | external booking未final | duplicate Prepare前GC不能删除 |
 | GCP-011 | writer越过冻结range | 下一物理写前失败 |
+| GCP-012 | 传入另一个有效job ID | expected filename-set digest不匹配，Prepare拒绝 |
 
 ### 6.3 Tombstone 与 transfer
 
@@ -217,14 +228,19 @@ Scheduler skip 只是性能优化；`OpCommitMerge`和`OpCommitLifecycle`的TN�
 |---|---|---|
 | TMB-001 | source Snapshot前Tombstone | 归入snapshot-deleted/NoTransfer |
 | TMB-002 | build中删除survivor | phase-1/2 transfer到new RowID |
-| TMB-003 | build中删除expired row | NoTransfer产生正常冲突，Lifecycle abort |
+| TMB-003A | build中删除Archive expired row | NoTransfer使Lifecycle abort/re-export |
+| TMB-003B | build中删除TTL expired row | 冗余删除，仍无destination |
 | TMB-004 | memory Tombstone | 被增量检查覆盖 |
 | TMB-005 | persisted Tombstone Object | 被增量检查覆盖 |
 | TMB-006 | unrelated Object Tombstone | 不误报 |
-| TMB-007 | delta watermark未到 | NeedRetry，不阻塞goroutine |
+| TMB-007 | delta watermark未到 | deadline内NeedRetry/等待，不永久阻塞goroutine |
 | TMB-008 | transfer page过期/缺失 | fail closed |
-| TMB-009 | delta rows/bytes超限 | abort/replan，不退休 |
-| TMB-010 | context deadline | 有界退出并保留正确Owner |
+| TMB-009 | delta rows/bytes/blocks limit±1 | 超限abort/blocked，不退休 |
+| TMB-010 | phase-1/phase-2 context deadline | 有界退出并保留正确Owner |
+| TMB-011 | phase-2 scan返回error | error不被吞，final txn abort |
+| TMB-012 | Whole Archive post-S delete | 独立validator发现并abort/re-export |
+| TMB-013 | Whole Archive delta超限 | fail closed，不发布Dataset |
+| TMB-014 | 多Whole source分别未超、合计超限 | 按final transaction聚合后abort |
 
 ## 7. P0-5 Root-before-side-effect 与 commit unknown
 
@@ -254,6 +270,12 @@ Scheduler skip 只是性能优化；`OpCommitMerge`和`OpCommitLifecycle`的TN�
 | ROOT-020 | object name不确定 | P0失败，必须实现before-create hook |
 | ROOT-021 | duplicate Prepare/NeedRetry | immutable booking可重复读取，Prepare不删除 |
 | ROOT-022 | Archive Rewrite committed | 只删booking child，不改变PUBLISHED或删除Payload |
+| ROOT-023 | NeedRetry触发PrepareRollback | live staging物理文件仍存在 |
+| ROOT-024 | retry最终commit | Catalog指向的每个created Object可全读 |
+| ROOT-025 | final明确aborted | 只有Root Sweeper删除live/booking |
+| ROOT-026 | final unknown | Merge entry与Root均不删除物理staging |
+| ROOT-027 | Archive Rewrite双namespace | Payload走archive identity，live/booking走TAE identity |
+| ROOT-028 | Root Object kind/namespace错配 | side effect前拒绝并触发invariant告警 |
 
 ### 7.2 final txn
 
@@ -285,21 +307,25 @@ Scheduler skip 只是性能优化；`OpCommitMerge`和`OpCommitLifecycle`的TN�
 
 ## 8. P0-6 Mixed Rewrite 行守恒、Transfer 与清理
 
+本节的“Review P0-1～P0-6”是 Object Rewrite评审发现的六个子证明义务，不重新编号
+本文件顶层P0 Gate；六项必须全部关闭。
+
 ### 8.1 单次 split
 
 | ID | 场景 | 通过条件 |
 |---|---|---|
-| RWT-001 | 0 expired | no-op，不产生空live替换 |
-| RWT-002 | 0 live | 自动退化为Whole退休 |
+| RWT-001 | 0 expired、live>0 | no-op，不产生空live替换，已写staging由Root清理 |
+| RWT-002 | 0 live、expired>0 | final mode切为Whole；Archive执行独立post-S delete validator |
+| RWT-002A | source visible为0 | EMPTY_ARCHIVE/Whole退休空Object，不创建Dataset |
 | RWT-003 | 1 live row | 新Object/transfer正确 |
 | RWT-004 | max legal Object | streaming有界 |
-| RWT-005 | 多Object reshape | 新Object target和ordinal合法 |
+| RWT-005 | 单source reshape成多输出Object | target和ordinal合法 |
 | RWT-006 | Archive sink失败 | live staging/booking清理，source不退 |
 | RWT-007 | live writer失败 | Archive staging清理，source不退 |
 | RWT-008 | callback/release失败 | 无double release/leak |
-| RWT-009 | 多source callback交错 | Archive substream/root仍按source/block/row canonical |
+| RWT-009 | 输入第二个source Object | 首次Root/FileService/Provider副作用前拒绝 |
 | RWT-009A | Batch/file切分变化 | row count/root不变 |
-| RWT-009B | spill中CN crash | 新boot janitor清旧目录，active boot不被删 |
+| RWT-009B | host尝试乱序block | 显式block ordinal驱动保持canonical，不创建排序spill |
 
 必须逐行证明：
 
@@ -323,8 +349,61 @@ new_live_rows   = live_visible
 | RWT-016 | source Drop Nth失败 | live create全部回滚 |
 | RWT-017 | transfer phase-2失败 | final transaction abort |
 | RWT-018 | response lost/replay | 不重复create/drop/transfer |
+| RWT-019 | table comment关闭普通transfer | Lifecycle仍为live行生成destination |
+| RWT-020 | Archive expired post-S delete | abort且不修改已写Archive |
+| RWT-021 | TTL expired post-S delete | 可提交且不产生destination |
 
-### 8.3 普通 Merge 无回归
+### 8.3 Review P0-1：Root-owned staging
+
+- 普通Merge使用`CreatedObjectOwnedByMergeEntry`，rollback仍删除created files；
+- Lifecycle固定`CreatedObjectOwnedByCleanupRoot`；
+- 对Write/Prepare/NeedRetry/rollback/commit response每个crash点验证物理文件Owner；
+- committed后live child才转`TAE_OWNED`；
+- aborted后才`DELETE_PENDING`；unknown保持`VERIFIED`。
+
+### 8.4 Review P0-2：有界 Tombstone delta
+
+- phase 1/2分别注入rows、bytes、blocks和deadline的limit-1/limit/limit+1；
+- `WaitTombstoneObjectCommitted`可取消；
+- scan/visitor/transfer page任一错误向上返回；
+- 序列化总command始终小于70 MiB WAL上限并保留认证安全余量；
+- 超限进入`CONFLICT_BLOCKED/RESOURCE_BLOCKED`，不无限retry。
+
+### 8.5 Review P0-3：survivor-only transfer
+
+- `DoTransfer()`固定true，不读普通Merge comment；
+- D/E为NoTransfer，L恰好一个destination；
+- Archive E的并发DELETE导致abort/re-export；
+- TTL E的并发DELETE冗余收敛；
+- L的并发DELETE/UPDATE转到new RowID；
+- Whole Archive独立post-S delete validator。
+
+### 8.6 Review P0-4：external booking only
+
+- Lifecycle inline字段非空时TN拒绝；
+- entry只有按ordinal排列的exact booking key/version/size/SHA/layout digest；
+- duplicate Prepare和NeedRetry可重复读取同一immutable booking；
+- booking被篡改、短读、错version或row-class digest错均fail closed；
+- committed/aborted前booking不会被任何handler删除。
+
+### 8.7 Review P0-5：单源与资源峰值
+
+- `MIXED_REWRITE_* source_objects != 1`均拒绝；
+- admission按physical block slots，不按live rows；
+- 当前最大Object且几乎全部live时测CN slab、TN copy、detached page和serialization峰值；
+- Rewrite cluster并发1/2/4认证，默认1；
+- mpool分配失败返回error，不触发进程panic，Root/source正确收敛。
+
+### 8.8 Review P0-6：TN信任边界
+
+- TN重算exact ObjectStats和`SourceLayoutProof`；
+- TN从Object metadata独立验证物理行数，并从booking重算D/E/L计数、created rows、
+  mapping/layout的结构守恒；
+- TN不读取TTL业务值或Provider Parquet；
+- CN classifier做属性测试、mutation test和1/10 TiB源/Archive/live对账；
+- 伪造count、bitmap、destination、layout/digest的每一种组合均被TN拒绝。
+
+### 8.9 普通 Merge 无回归
 
 - 未绑定表完全不进入 Lifecycle discovery/reservation；
 - 无 reservation 时普通 Merge 的选择、write、transfer、WAL 和 GC 字节级/语义级
@@ -351,6 +430,9 @@ case前缀 `BGT-*`：
 - actual delete key bytes；
 - workspace/WAL estimate；
 - Archive bytes；
+- Rewrite physical slots/dense transfer reservation；
+- external booking bytes/pages；
+- Tombstone delta rows/bytes/blocks；
 - txn/provider duration；
 - rolling table Tombstone；
 - account/cluster backlog；
@@ -359,7 +441,8 @@ case前缀 `BGT-*`：
 通过条件：
 
 - 小 Mixed `+1` 在第一次 Delete 前回滚并切换 Rewrite；
-- Rewrite `+1` 在 final transaction 前进入 `RESOURCE_BLOCKED`；
+- Build预算`+1`在final transaction前进入`RESOURCE_BLOCKED`；
+- final Tombstone delta `+1`使transaction abort并进入有界blocked状态；
 - source数据可见；
 - staging有Root并可清；
 - 不通过拆分无限小Job绕过rolling limit；
@@ -442,6 +525,8 @@ TRUNCATE/ALTER/DROP
 - `mo_account` RowID变化产生新incarnation，旧进程不能懒创建新current；
 - DROP后迟到旧tenant row按旧incarnation隔离并由quiescence cleanup；
 - DROP ACCOUNT tombstone同txn；
+- Root kind的Archive/TAE namespace字段NULL/NOT NULL组合；
+- Root Object kind只能引用对应Archive或TAE namespace/encryption identity；
 - UNSET后无ACTIVE Binding的Dataset仍按purge_eligible_at清理；
 - invariant checker故障自动kill switch。
 

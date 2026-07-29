@@ -38,7 +38,7 @@
 | [01-product-sql-contract-cn.md](01-product-sql-contract-cn.md) | 产品边界、SQL、权限、时间语义、支持矩阵和用户可见错误 |
 | [02-catalog-state-machine-cn.md](02-catalog-state-machine-cn.md) | Catalog DDL、身份、版本、状态机、事务边界和资源 Owner |
 | [03-object-index-planner-scheduler-cn.md](03-object-index-planner-scheduler-cn.md) | Object Discovery、分页游标、候选分类、Dry-run、Job 切分、调度和硬配额 |
-| [04-reader-archive-format-cn.md](04-reader-archive-format-cn.md) | exact Reader、Batch 所有权、双输出分类、Parquet/ZSTD、Manifest、root 和 readback |
+| [04-reader-archive-format-cn.md](04-reader-archive-format-cn.md) | exact 逻辑 Reader、Rewrite borrowed Batch 合同、Parquet/ZSTD、Manifest、root 和 readback |
 | [05-strict-object-retire-protocol-cn.md](05-strict-object-retire-protocol-cn.md) | Whole/Mixed Rewrite、reservation/source protection、Lifecycle opcode、TN Prepare、transfer、WAL/replay 和升级 |
 | [06-mixed-delete-transaction-cn.md](06-mixed-delete-transaction-cn.md) | 小 Mixed 的可写 SI 事务、普通 DELETE、预算和并发冲突 |
 | [07-attempt-cleanup-reconcile-cn.md](07-attempt-cleanup-reconcile-cn.md) | Attempt/Root、immutable key、commit unknown、迟到 PUT 和 Sweeper |
@@ -131,12 +131,15 @@ ALTER TABLE ... SET LIFECYCLE
        |     -> optional Dataset + Receipt
        |
        +-- medium/large Mixed TTL/Archive
+             -> one source Object per child
+             -> LifecycleRewriteHost 复用 Merge block reader/writer
              -> one-pass split:
+                  snapshot-deleted -> no output / NoTransfer
                   expired -> Archive/discard
-                  live -> new TAE Objects
+                  live -> new TAE Objects + transfer destination
              -> verify outputs
              -> Dataset/Receipt + OpCommitLifecycle
-             -> source DropIntent + survivor transfer
+             -> source DropIntent + survivor-only transfer
 
 final transaction response lost
   -> Attempt/Root FINALIZING
@@ -241,6 +244,36 @@ abort/replan；final结果未知时不能启动第二次提交。旧TAE文件仍
 - Dry-run；
 - Export-only；
 - Restore 已有且兼容的 Dataset。
+
+### I-11 Survivor-only transfer
+
+Lifecycle Rewrite 必须启用现有 transfer 机制，但 transfer 只服务仍留在活动表的
+`live_visible` 行：
+
+```text
+snapshot-deleted -> no output, NoTransfer
+expired-visible  -> Archive/discard, NoTransfer
+live-visible     -> new TAE Object, exactly one transfer destination
+```
+
+transfer 永远不修改 Archive Payload。`S` 后并发 DELETE 命中 live 行时转移到新
+RowID；命中 Archive 到期行且在 Lifecycle Prepare 前可见时，整个 attempt abort 并
+re-export；命中 TTL 到期行是冗余删除。不能受普通 Merge 的
+`MO_COMMENT_NO_DEL_HINT` 配置影响。
+
+### I-12 Root owns Lifecycle physical staging
+
+Lifecycle 的 live staging Object 和 external transfer booking 在 final transaction
+结果权威确定前由 Cleanup Root 唯一拥有。复用的 Merge transaction entry只是
+Catalog/transfer 的借用者：
+
+- Prepare/Rollback/`ErrTAENeedRetry` 不能删除 Root 资产；
+- committed 且 matching Receipt 可见后，live staging 才转为 `TAE_OWNED`；
+- aborted 后才进入 `DELETE_PENDING`；
+- unknown 时保持原状态。
+
+Lifecycle Rewrite 每个 child 只允许一个 source Object，并且一律使用 immutable
+external booking；不允许 inline transfer 或多 source Rewrite。
 
 ## 7. 权威数据与派生数据
 
