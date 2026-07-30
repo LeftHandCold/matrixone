@@ -238,8 +238,10 @@ abort/replan；final结果未知时不能启动第二次提交。旧TAE文件仍
 ### I-10 Capability before retirement
 
 滚动升级期间，只有全部相关CN/TN支持同一tagged Lifecycle commit协议版本，且发送前
-exact target service/shard与topology generation仍匹配，才允许真正退休数据。更老TN
-必须被fence隔离，不能依赖其解释未知enum。否则只允许：
+冻结的`ServiceID + ShardID + ReplicaID + protocol version`仍匹配，才允许真正退休数据。
+Address发送前从权威cluster snapshot重新解析；不新造`TopologyGeneration`。refresh失败、
+capability变化或不能唯一解析一个target shard都fail closed。更老TN必须被fence隔离，
+不能依赖其解释未知enum。否则只允许：
 
 - DDL；
 - Object Discovery；
@@ -313,7 +315,13 @@ WAL/Replay恢复source DropIntent、新live Object和final transaction Catalog/T
 Lifecycle tag必须位于可重放的`PrecommitWriteCmd.EntryList`中，但不能混入普通
 `txn.writes`：CN使用独立、单值、immutable `LifecycleCommitControl`，在普通
 workspace完成dump/compact/sort后由`genWriteReqs`原样追加。外部逻辑attempt冻结
-entry bytes/digest、Root、Booking、绝对deadline和累计预算。
+entry bytes/digest、Root、Booking、绝对deadline和累计预算。Archive finalizer必须先
+写Dataset+Receipt、TTL必须先写Receipt，并从实际workspace pair构造
+`LifecycleCatalogPair`；production不存在合法control-only transaction。
+
+Lifecycle finalizer事务独占状态机：`OPEN -> SEALED -> COMMITTING -> TERMINAL`；Seal后
+任何外部workspace mutation转`POISONED`并只能full rollback。Commit内部使用专用helper
+继续既有merge/dump/transfer；普通transaction不进入此状态机。
 
 每个内部TAE generation在任何SoftDelete/Create前，先从ephemeral TxnMemo取得唯一
 `BUILDING` slot。Catalog node在对应API成功后归整个txn；slab/page/TransferDels在
@@ -322,8 +330,9 @@ Root-owned staging。失败的generation整体rollback，不能原地重建；G2
 私有entry。
 
 累计retry budget由一次`HandleCommit`调用栈持有并传给G1/G2，普通路径不创建该对象。
-并发第二次HandleCommit必须由TxnService串行化/去重；若验证不成立，则使用有界、可回收
-共享registry。V1禁止增加进程全局无界replay memo。
+重叠Commit由TxnService串行；terminal后迟到duplicate在Booking I/O前经deadline、admission
+和exact-source preflight收敛，已退休source返回`LIFECYCLE_RECONCILE_REQUIRED`。V1禁止
+增加进程全局无界replay memo；只有实证storage并行执行同一external txn时才加入有界registry。
 普通Merge的同类注册前缺口由[#26445](https://github.com/matrixorigin/matrixone/issues/26445)
 跟踪。
 

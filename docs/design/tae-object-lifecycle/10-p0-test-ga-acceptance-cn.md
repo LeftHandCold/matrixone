@@ -143,7 +143,7 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WIR-004 | duplicate/reordered source Object | reject |
 | WIR-005 | entry Object/bytes边界 | limit严格 |
 | WIR-006 | `ErrTAENeedRetry` G1 -> G2 | 原payload/digest重放；G2重建私有entry |
-| WIR-007 | old TN仍在目标拓扑 | capability/topology fence在发送前禁止retire |
+| WIR-007 | old TN或route identity变化 | capability与ServiceID/ShardID/ReplicaID fence在发送前禁止retire |
 | WIR-008 | Dataset/Receipt缺少entry | finalizer API拒绝commit |
 | WIR-009 | Rewrite source基数0/1/2 | 只有1通过 |
 | WIR-010 | Rewrite inline transfer非空 | reject |
@@ -171,13 +171,19 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WIR-032 | Root deadline D与commit request不一致/触发fallback | 发送前拒绝，不获得新deadline |
 | WIR-033 | `bat=nil` tag混入普通txn.writes | 测试先证明会被过滤；正式API禁止该路径 |
 | WIR-034 | control穿过dump/compact/merge/sort | payload bytes/digest逐字节不变 |
-| WIR-035 | ordinary writes为空、control非空 | 仍生成唯一Precommit请求 |
+| WIR-035a | 底层append helper：ordinary Entry为空、control非空 | 仍能编码tag，证明`bat=nil`不被静默过滤 |
+| WIR-035b | production finalizer：pair缺失、空Entry或只有无关ordinary write | `ErrLifecycleCatalogPairMissing`，不得发送请求 |
 | WIR-036 | control same/different digest重复设置 | same幂等；different发送前拒绝 |
-| WIR-037 | control与ordinary target/topology generation不一致 | 发送前拒绝 |
+| WIR-037 | ServiceID/ShardID/ReplicaID/capability变化、多候选shard或refresh失败 | 发送前拒绝/replan |
 | WIR-038 | G1/G2 replay budget | 同一HandleCommit Owner累计，不按generation重置 |
 | WIR-039 | generation owner在SoftDelete/Create前竞争 | 恰好一个BUILDING owner |
 | WIR-040 | builder部分mutation失败 | slot FAILED且整代rollback；同代禁止重建 |
-| WIR-041 | 并发第二次HandleCommit | TxnService串行/去重；否则有界registry共享唯一预算 |
+| WIR-041 | overlapping duplicate Commit | TxnService串行；恰好一个storage HandleCommit执行 |
+| WIR-042 | terminal后迟到duplicate | deadline拒绝，或source preflight后进入RECONCILE_REQUIRED；不读Booking |
+| WIR-043 | SEALED事务外部mutation | POISONED；只能full rollback，Commit不得发送请求 |
+| WIR-044 | COMMITTING内部workspace路径 | 专用internal helper可完成merge/dump/transfer，不接受外部mutation |
+| WIR-045 | Lifecycle commit admission饱和/超时/cancel/G1->G2 retry | 一次HandleCommit恰好一次获取/释放；hard cap不被retry绕过，无Booking I/O泄漏或永久等待 |
+| WIR-046 | COMMITTING中route refresh/编码失败或response lost | 前者POISONED+full rollback；后者unknown finalize且Root资产不删 |
 
 ### 5.2 Condition
 
@@ -505,9 +511,13 @@ new_live_rows   = live_visible
 - `Transaction.lifecycleCommit`是单值、深拷贝、immutable；
 - 不进入普通workspace size、statement offset、dump/compact/sort、PK dedup、Batch GC；
 - `genWriteReqs`在普通Entry之后直接追加，不调用`toPBEntry`；
-- ordinary writes为空、Dataset/Receipt路径和TTL路径都能生成正确target请求；
+- 空ordinary Entry只允许私有编码helper单测；Archive必须有Dataset+Receipt，TTL必须有
+  Receipt，production缺pair统一`ErrLifecycleCatalogPairMissing`并禁止发请求；
 - same digest/bytes幂等，different digest/第二条control拒绝；
-- control设置后transaction封闭；statement rollback或后续write使整个txn abort；
+- route只冻结ServiceID/ShardID/ReplicaID/protocol version；Address发送前权威重解析，route
+  refresh不持有txn.Lock，多候选shard fail closed；
+- `OPEN -> SEALED -> COMMITTING -> TERMINAL`，外部mutation转`POISONED`并只能full
+  rollback；内部commit helper不走外部mutation检查；
 - rollback/finalize只释放CN bytes，不删除Root/provider对象。
 
 ### 8.13 Review P0-10：generation-local slot

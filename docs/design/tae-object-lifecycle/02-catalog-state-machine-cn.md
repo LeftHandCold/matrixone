@@ -1207,7 +1207,8 @@ Root VERIFIED -> FINALIZING committed in system transaction
   -> CAS Guard/Binding/active attempt
   -> insert Dataset
   -> insert Receipt
-  -> set immutable single LifecycleCommitControl through finalizer adapter
+  -> finalizer records actual Dataset+Receipt Catalog pair
+  -> SealLifecycleCommit atomically enters SEALED
   -> commit payload contains Catalog writes + Lifecycle tag
   -> commit
 ```
@@ -1235,7 +1236,7 @@ Root VERIFIED -> FINALIZING committed in system transaction
   -> CAS Guard/Binding/active attempt
   -> insert Dataset/Receipt               # Archive
      or insert Receipt only               # TTL
-  -> set immutable single LifecycleCommitControl(
+  -> finalizer records actual Catalog pair then SealLifecycleCommit(
        exact source Objects + staged live Objects + transfer booking)
   -> commit payload contains Catalog writes + Lifecycle tag
   -> commit
@@ -1245,7 +1246,9 @@ Root VERIFIED -> FINALIZING committed in system transaction
 必须等于1，且只允许immutable external booking。
 
 TTL Whole/Rewrite不写Dataset，但同样在一个事务中写普通Receipt Catalog DML，并通过
-独立CN commit-control把tag追加到同一个可重放commit payload。TTL Rewrite committed
+独立CN commit-control把tag追加到同一个可重放commit payload。control-only不是合法生产
+状态：pair缺失时finalizer拒绝提交。Seal后transaction立即Commit，不再进入通用SQL
+statement流程。TTL Rewrite committed
 后把live/range child标为`TAE_OWNED`，
 Root进入`POST_COMMIT_CLEANUP`；temporary booking全部删除后才标`TRANSFERRED`。
 所有模式都不依赖长时间 SQL 表锁。

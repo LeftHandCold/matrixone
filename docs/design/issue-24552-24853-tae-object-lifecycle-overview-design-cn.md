@@ -972,8 +972,10 @@ Whole和Rewrite共用`PrecommitWriteCmd.EntryList`中的版本化
 `TxnOperator.Write`。Dataset/Receipt仍走普通Catalog workspace写入；tag由
 `Transaction.lifecycleCommit`这条独立、最多一条、不可变的commit-control通道持有，
 不进入普通`txn.writes`，不参与workspace dump/compact/sort/GC。`genWriteReqs`先编码
-普通Entry，再把tag直接追加到同一个可重放`PrecommitWriteCmd.EntryList`。因此即使
-tag没有Batch、事务没有其他普通data write，也不能被CN workspace过滤。
+普通Entry，再把tag直接追加到同一个可重放`PrecommitWriteCmd.EntryList`。生产finalizer
+必须同时持有实际写入workspace的Catalog pair：Archive为Dataset+Receipt，TTL为Receipt；
+pair缺失或no-op时禁止control和请求。空Entry编码只允许私有单测用于证明tag不会被CN
+workspace过滤。
 
 协议冻结：
 
@@ -997,7 +999,9 @@ Booking重建私有entry；旧generation的Catalog node、TransferTable和entry�
 generation-local `(attempt_id, entry_digest)`唯一BUILDING slot；失败后整代事务
 rollback，禁止在已部分修改的同一代中重新Build。`HandleCommit`栈上唯一的
 `LifecycleReplayBudget`向全部retry generation传递同一绝对deadline、最大代数和
-累计I/O/CPU/delta预算，不建立无界全局memo。老TN由capability gate阻止接收新tag；
+累计I/O/CPU/delta预算，不建立无界全局memo。Route不使用不存在的TopologyGeneration，
+只冻结ServiceID/ShardID/ReplicaID/protocol version；发送前在txn锁外权威刷新并重新解析
+Address，身份/capability变化或不能唯一解析目标shard即fail closed。老TN由capability gate阻止接收新tag；
 capability未全集群启用时只允许Dry-run/Export-only。
 
 ## 14. 少量 Mixed Object 路径
@@ -1799,11 +1803,27 @@ source reservation/protection
 
 - Lifecycle tag不作为`bat == nil`的普通`txn.writes Entry`进入workspace；
 - `Transaction.lifecycleCommit`最多一条、payload deep-copy后不可变；
-- 普通workspace dump/compact/sort/GC和只读判定不会过滤或改写该control；control设置后
-  禁止局部statement rollback或继续write，失败只能整体abort并清除control；
-- `genWriteReqs`在普通Entry后恰好追加一次tag；没有普通data write时仍会发送；
-- 同digest同payload重复设置幂等，不同payload、目标TN或拓扑身份冲突时fail closed；
+- Archive必须有Dataset+Receipt、TTL必须有Receipt；production control不存在合法空Catalog
+  pair，`genWriteReqs`在最终workspace中按逻辑identity验证exact pair；缺失、空Entry或
+  只有无关write均返回`ErrLifecycleCatalogPairMissing`且不发请求；
+- 普通workspace dump/compact/sort/GC和只读判定不会过滤或改写control/pair；control设置后
+  状态机进入SEALED，禁止局部statement rollback或继续外部write；
+- `genWriteReqs`在普通Entry后恰好追加一次tag；私有编码helper可测试空Entry，production
+  finalizer不得发送control-only；
+- 同digest同payload重复设置幂等；冻结身份仅为ServiceID/ShardID/ReplicaID/protocol
+  version，发送前权威refresh，identity/capability变化或多候选shard时fail closed；
 - Dataset/Receipt普通Catalog写与tag属于同一外部事务，任一缺失整体不能提交。
+
+`Transaction`仅对Lifecycle final transaction增加：
+
+```text
+OPEN -> SEALED -> COMMITTING -> TERMINAL
+              \-> POISONED -> full rollback -> TERMINAL
+```
+
+Seal后，外部Write/statement/snapshot/adjust类入口必须poison；只有Commit的未导出内部
+helper可在COMMITTING执行既有merge/dump/transfer。普通transaction、普通Merge和普通查询
+不进入该状态机。
 
 ### P0-10：内部 TAE generation 的并发与资源 Owner
 
@@ -1819,8 +1839,10 @@ source reservation/protection
 - G2使用新的内部事务、slot、Catalog node、TransferTable和entry；
 - `HandleCommit`级ReplayBudget对所有generation共享绝对deadline、最大代数和累计
   预算，retry不能刷新预算或形成无界memo；
-- 并发第二次`HandleCommit`必须由TxnService按external txn ID串行化/去重；若现有合同
-  不能证明，则使用有界且有终态/deadline/count回收的共享registry，不能各自执行。
+- 重叠Commit由现有TxnService串行；terminal后迟到duplicate必须在Booking I/O前经过deadline、
+  Lifecycle admission、reservation/protection和exact-source preflight，已提交source不exact
+  时返回`LIFECYCLE_RECONCILE_REQUIRED`并由Receipt收敛；仅在实证storage可并行执行同一
+  external txn时才增加有界registry。
 
 十项P0之外，Feature Guard、Profile identity、Discovery scale、DROP cleanup、
 升级capability和support matrix也是GA必备条件；它们不能因为不在编号中被降级

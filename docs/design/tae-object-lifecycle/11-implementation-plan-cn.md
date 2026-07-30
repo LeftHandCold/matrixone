@@ -394,6 +394,20 @@ deadline `D`，把它同时冻结到Root并设为commit context deadline，生�
 bytes/digest、Root、Booking、最大内部generation和累计预算；每个TAE generation从
 Booking重建私有Catalog node、TransferTable和txn entry，严禁复用上一代指针。
 
+生产finalizer没有合法control-only路径：Archive必须先写Dataset+Receipt，TTL必须先写
+Receipt；finalizer从实际已进入workspace的逻辑pair构造`LifecycleCatalogPair`，随后调用
+`SealLifecycleCommit(pair, control)`。pair缺失、pair/payload digest不一致或ordinary
+Catalog pair为空均返回`ErrLifecycleCatalogPairMissing`，禁止生成TxnRequest。空ordinary
+Entry下append control仅保留为私有编码helper测试，证明`bat=nil`不会被过滤。
+`genWriteReqs`在workspace merge/dump后执行
+`ValidateLifecycleCatalogPairAfterWorkspace(entries, pair)`：按Dataset/Receipt逻辑主键确认
+Archive的两条、TTL的一条已留在最终ordinary Entry集合；无关write不能通过该检查。
+
+路由不使用不存在的`TopologyGeneration`。Finalizer和`genWriteReqs`在绝对deadline内、
+在`txn.Lock`外刷新权威cluster snapshot，冻结/比较
+`ServiceID + ShardID + ReplicaID + protocol_version`；Address每次发送前重新解析。身份、
+capability变化、refresh失败或不能唯一解析一个source TN shard都fail closed/replan。
+
 Whole的`source_objects`与`source_layouts`必须一一对应、同按Object ID排序，
 `source_set_digest`覆盖两者；Rewrite两者基数都严格为1。每条proof再次包含Object ID和
 ObjectStats digest，禁止proof跨Object错绑。
@@ -412,7 +426,9 @@ child/TAE namespace binding、每Block actual rows、原始sparse destination、
 ```text
 Lifecycle finalizer adapter
   -> ordinary Dataset/Receipt Catalog writes
-  -> Transaction.lifecycleCommit single immutable control
+  -> actual LifecycleCatalogPair
+  -> SealLifecycleCommit: OPEN -> SEALED
+  -> Commit: SEALED -> COMMITTING
   -> ordinary workspace dump/compact/sort
   -> genWriteReqs appends tag without toPBEntry
   -> PrecommitWriteCmd.EntryList
@@ -424,13 +440,18 @@ Lifecycle finalizer adapter
 
 ```text
 pkg/vm/engine/disttae/types.go
-  LifecycleCommitControl + Transaction single field
+  LifecycleCommitControl/CatalogPair/route identity
+  LifecycleFinalizeState state machine
 
 pkg/vm/engine/disttae/txn.go
-  finalizer Set、commit、rollback/finalize lifecycle
+  SealLifecycleCommit + external mutation poison checks
+  commit-only internal merge/dump/transfer helpers
+  rollback/finalize lifecycle
 
 pkg/vm/engine/disttae/tools.go
-  genWriteReqs final append + empty ordinary writes + target validation
+  production CatalogPair validation + authoritative route refresh
+  ValidateLifecycleCatalogPairAfterWorkspace by logical identity
+  exact single-shard tag append
 
 pkg/catalog/tuplesParse.go（或等价iterator入口）
   preserve/intercept LifecycleCommit tag
@@ -439,10 +460,11 @@ pkg/vm/engine/tae/rpc/handle_lifecycle.go
   parse/validate/register
 ```
 
-control不进入普通dump/compact/sort/PK dedup/statement offset/Batch GC；一次txn最多一
-条，same bytes/digest重复设置幂等，different内容拒绝。payload在workspace dump、
-rollback、commit retry后必须逐字节不变。不得增加独立opcode，也不得把可选字段塞入
-`OpCommitMerge`。
+control/pair不进入普通dump/compact/sort/PK dedup/statement offset/Batch GC；一次txn最多
+一条，same bytes/digest重复设置幂等，different内容拒绝。payload在workspace dump和
+commit retry后必须逐字节不变。`OPEN -> SEALED -> COMMITTING -> TERMINAL`只对Lifecycle
+final transaction生效；SEALED/COMMITTING发生外部mutation时进入POISONED，只能full
+rollback。不得增加独立opcode，也不得把可选字段塞入`OpCommitMerge`。
 
 WAL/Replay只恢复source DropIntent、新live Object和final transaction的
 Tombstone/Catalog状态，不恢复已提交事务的历史运行时transfer page。External
@@ -453,10 +475,14 @@ restart后旧事务缺页必须RW/WW conflict。
 
 ```text
 validate protocol/capability/digest
+validate absolute request deadline
+acquire bounded Lifecycle commit-admission permit
+validate authoritative frozen ServiceID/ShardID/ReplicaID route
 validate table/schema/Guard generation
 validate reservation token
 validate SyncProtection expected filename-set digest
 validate exact current source Objects
+if source is no longer exact: return LIFECYCLE_RECONCILE_REQUIRED before Booking I/O
 validate one-to-one SourceLayoutProof list
 validate created live Objects/checksum
 claim generation-local slot before any TAE txn mutation
@@ -469,6 +495,10 @@ append WAL through normal transaction path
 ```
 
 任一条件失败，整个 transaction abort。
+admission permit由一次`HandleCommit`持有并覆盖其所有internal retry generation；实现以
+`defer`或等价的单一terminal cleanup保证在任一parse/preflight/Booking/TAE失败、commit
+完成或deadline退出时exactly-once释放。不得按G1/G2重复获取，也不得让deadline后的请求
+继续排队。
 generation slot存放在internal txn的ephemeral TxnMemo：
 
 ```text
@@ -487,18 +517,26 @@ Lifecycle Gate C只要求local builder/slot闭环，不强绑普通Merge改造�
 `LifecycleReplayBudget`，同一指针传给G1/G2的`handleRequests`。它持有绝对deadline、
 generation count、累计booking bytes、delta rows/bytes和CPU时间；每次generation及I/O
 前先消费预算，超限terminal abort。budget随HandleCommit调用栈销毁，不建立进程全局
-Map。同一internal txn内的重复注册通过generation slot成为follower；Gate C还必须证明
-TxnService按external txn ID串行化/去重并发的第二次HandleCommit。证明不成立时，改用
-05定义的有界、可回收共享registry，不能让两个调用各自获得一份新预算。
+Map。同一internal txn内的重复注册通过generation slot成为follower。V1复用TxnService
+对overlapping Commit的串行：terminal后迟到duplicate不依赖永久registry，而是在Booking
+I/O前依次检查deadline、Lifecycle bounded admission、route、reservation/protection和
+exact source。已提交source不exact时返回`LIFECYCLE_RECONCILE_REQUIRED`，由CN正常读
+Root/Receipt收敛。只有Gate C实证发现同一external txn可并行进入storage HandleCommit时，
+才增加有hard cap/TTL/terminal/deadline回收的registry。
 
 Gate C exit：
 
 - 1PC、2PC、duplicate Prepare、`ErrTAENeedRetry`多generation、response lost全矩阵通过；
-- CN control穿过dump/compact/sort且普通writes为空时仍原样进入EntryList；
+- 私有空Entry编码helper能保留control；production路径永不允许control-only；
+- production finalizer在Catalog pair缺失时不生成任何request；
+- route refresh不持有txn.Lock，ServiceID/ShardID/ReplicaID/capability或唯一shard不满足时
+  fail closed；
+- Lifecycle state machine拒绝全部外部mutation，但COMMITTING的内部merge/dump/transfer可完成；
 - generation slot在第一次TAE mutation前唯一，失败后同代不能重建；
 - retry不延长绝对deadline/累计预算，budget有明确HandleCommit Owner，G2不复用G1
   可变指针；
-- 并发第二次HandleCommit由现有TxnService串行化/去重，或由有界registry共享预算；
+- overlapping duplicate Commit由现有TxnService串行；迟到duplicate在Booking I/O前按
+  deadline/source preflight收敛，并受Lifecycle admission硬限流；
 - `LogTxnEntry`前后逐点故障注入无runtime资源泄漏或Root物理误删；
 - old/new CN/TN 混部只允许 Dry-run/Export-only；
 - TN restart 丢 reservation/protection 后不会退休；
@@ -695,6 +733,7 @@ pkg/vm/engine/tae/iface/txnif/memo.go
 pkg/vm/engine/tae/rpc/handle.go
   pre-scan max-one tag
   own LifecycleReplayBudget across internal retry generations
+  enforce bounded Lifecycle commit admission before Booking I/O
 
 pkg/vm/engine/tae/rpc/handle_lifecycle.go
   claim slot before TAE mutation

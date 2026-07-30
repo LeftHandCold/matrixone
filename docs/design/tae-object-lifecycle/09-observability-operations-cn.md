@@ -50,6 +50,8 @@ cleanup-min-workers               = 2
 small-mixed-cluster-concurrency   = 2
 rewrite-cluster-concurrency       = 1
 rewrite-certified-hard-concurrency = 4
+lifecycle-commit-concurrency      = 4
+lifecycle-commit-admission-wait   = 30s
 max-certified-block-read-bytes    = 256MiB
 restore-cluster-concurrency       = 2
 provider-io-timeout               = 2m
@@ -65,6 +67,8 @@ root-quiescence-window            = 24h
 - hard >= soft；
 - timeout/lease/quiescence关系合法；
 - cleanup/reconcile不能同时关闭并开启retirement；
+- `lifecycle-commit-concurrency <= cluster-concurrency`，admission wait不得超过
+  final transaction绝对deadline；
 - retention/grace非负；
 - 配置超过已认证profile时拒绝启动retirement。
 
@@ -291,6 +295,12 @@ mixed_txn_seconds{result}
 final_txn{status,mode}
 commit_unknown_age_seconds
 lifecycle_commit_control_total{result}
+lifecycle_catalog_pair_missing_total
+lifecycle_finalize_state{state}
+lifecycle_route_refresh_total{result}
+lifecycle_route_changed_total{reason}
+lifecycle_commit_admission{state}
+lifecycle_reconcile_required_total{reason}
 lifecycle_generation_slot_total{result}
 lifecycle_replay_generations
 lifecycle_replay_budget_exhausted_total{dimension}
@@ -300,6 +310,10 @@ lifecycle_replay_budget_exhausted_total{dimension}
 
 - `lifecycle_commit_control_total{result}`至少区分`set/idempotent/rejected`；生产环境出现
   `missing_after_finalize`必须触发P0 invariant告警并停止retirement；
+- Catalog pair缺失、SEALED/COMMITTING外部mutation、route refresh失败或多候选shard均是
+  P0 invariant事件：停止新retirement，保留Root并进入Reconcile，不允许降级发送control；
+- admission仅记录`waiting/running/rejected`等低基数状态；等待时间、permit泄漏和
+  `LIFECYCLE_RECONCILE_REQUIRED`必须单独告警；
 - slot结果至少区分`builder/follower/registered/failed`，不能把follower重复计为执行；
 - replay generation和累计Booking/delta/CPU预算按一次`HandleCommit`聚合，不创建按
   transaction ID永久保留的高基数时序；

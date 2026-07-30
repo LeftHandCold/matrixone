@@ -1055,10 +1055,17 @@ generation，可能出现Dataset/Receipt重放成功、Object retirement却缺�
 Capability gate必须在CN发起退休前确认所有可能承载该物理表的TN均支持
 `LifecycleCommit Entry V1`；滚动升级中未满足时只允许Planner/Export，不允许退休。
 `database_id/table_id`必须路由到`source physical_table_id`所属权威TN shard，不能复用
-调试Merge中“取第一个TN”的辅助路径。发送前检查必须绑定exact target service/shard
-和topology generation；检查后目标或generation变化则不发送并返回可重试错误。更老
-TN不能靠“收到后理解未知enum”保证安全，它必须被该fence隔离。重试不得改写payload、
-attempt identity或绝对deadline。
+调试Merge中“取第一个TN”的辅助路径。V1不新造当前MO没有权威来源的
+`TopologyGeneration`。冻结的路由身份只能是`ServiceID + ShardID + ReplicaID`；
+`TxnServiceAddress`不是身份，必须在发送前从权威cluster snapshot重新解析。Lifecycle
+capability绑定`ServiceID + ShardID + ReplicaID + protocol_version`。
+
+route refresh可能等待HAKeeper，绝不能在`txn.Lock`内进行。Finalizer和`genWriteReqs`
+都必须在绝对deadline下先调用可返回错误的authoritative refresh，再持锁比较冻结身份；
+任一身份或capability变化均返回`LIFECYCLE_ROUTE_CHANGED`并整体abort/replan。若当前
+拓扑不能唯一解析source到一个TN shard（包括service有多个候选shard），V1 fail closed，
+不得向全部shard广播Lifecycle tag。更老TN不能靠“收到后理解未知enum”保证安全，它
+必须被该fence隔离。重试不得改写payload、attempt identity或绝对deadline。
 
 ### 9.1.1 CN commit-control 通道
 
@@ -1074,9 +1081,26 @@ type LifecycleCommitControl struct {
     PhysicalTableID     uint64
     TargetServiceID     string
     TargetShardID       uint64
-    TopologyGeneration uint64
+    TargetReplicaID     uint64
     ProtocolVersion     uint32
 }
+
+type LifecycleCatalogPair struct {
+    ReceiptDigest [32]byte
+    DatasetID     []byte   // TTL为空
+    ManifestRoot  [32]byte // TTL为全零
+    PairDigest    [32]byte
+}
+
+type LifecycleFinalizeState uint8
+
+const (
+    LifecycleFinalizeOpen LifecycleFinalizeState = iota
+    LifecycleFinalizeSealed
+    LifecycleFinalizeCommitting
+    LifecycleFinalizePoisoned
+    LifecycleFinalizeTerminal
+)
 
 type Transaction struct {
     // existing ordinary DML/DDL workspace
@@ -1084,13 +1108,16 @@ type Transaction struct {
 
     // max one; excluded from dump/compact/sort/GC/statement offsets
     lifecycleCommit *LifecycleCommitControl
+    lifecyclePair   *LifecycleCatalogPair
+    lifecycleState  LifecycleFinalizeState
 }
 ```
 
 唯一写接口：
 
 ```go
-func (txn *Transaction) SetLifecycleCommitControl(
+func (txn *Transaction) SealLifecycleCommit(
+    pair LifecycleCatalogPair,
     control LifecycleCommitControl,
 ) error
 ```
@@ -1098,6 +1125,9 @@ func (txn *Transaction) SetLifecycleCommitControl(
 合同：
 
 - 只允许Lifecycle finalizer adapter调用；普通Relation/DML不能直接构造；
+- adapter先在同一tenant transaction完成Archive的Dataset+Receipt或TTL的Receipt普通
+  Catalog DML，并从实际已加入workspace的逻辑pair构造`LifecycleCatalogPair`。没有
+  pair的no-op不调用本API；production path绝不存在合法control-only transaction；
 - finalizer先完成Dataset/Receipt普通Catalog写，再根据payload中的binding generation、
   Dataset/Manifest root和Receipt digest计算
   `CatalogPairDigest`。canonical输入固定为
@@ -1108,17 +1138,20 @@ func (txn *Transaction) SetLifecycleCommitControl(
   Manifest root为32字节零值。字段值必须来自刚加入workspace的Catalog mutation返回值
   和同一payload，不能由调用方再传一份未验证副本。该值只证明CN finalizer配对，不进入
   wire四种聚合digest；
-- 在`txn.Lock`下验证字段、`CatalogPairDigest`、capability和target route，并深拷贝
-  `Payload`；
+- refresh/route/capability校验先在锁外完成；在`txn.Lock`下只比较其结果、验证
+  `CatalogPairDigest == pair.PairDigest`以及pair与payload identity，并深拷贝`Payload`；
 - 第一次设置把transaction标成非只读；
-- 设置成功后finalizer封闭该transaction：禁止继续普通write和statement rollback；
-  后续任一finalizer错误只能整体abort transaction，不能只撤销Catalog写而保留control；
+- 成功时原子执行`OPEN -> SEALED`，保存pair+control。此后finalizer立即调用同一
+  `TxnOperator.Commit`，不得再把transaction交回通用SQL执行流程；
+- `SEALED`/`COMMITTING`收到任何外部workspace mutation时原子转为`POISONED`，后续
+  只能完整rollback；不能只撤销Catalog写而保留control；
 - same txn/same entry digest/same canonical bytes重复设置幂等；
 - same txn/different digest或bytes返回fatal transaction error；
 - 一次transaction最多一个control，禁止slice和后写覆盖；
-- control不进入statement offset、workspace size、PK dedup、dump、compact、sort、
+- control/pair不进入statement offset、workspace size、PK dedup、dump、compact、sort、
   `toPBEntry`、普通Batch cleanup或CN staging GC；
-- 整体rollback/finalize清除control并只释放该CN本地immutable bytes，不触发
+- 整体rollback/finalize把state置为`TERMINAL`并清除control/pair，只释放该CN本地
+  immutable bytes，不触发
   Provider/Root物理删除；
 - transaction被删除后control不可复用。
 
@@ -1128,10 +1161,13 @@ func (txn *Transaction) SetLifecycleCommitControl(
 merge/dump/compact ordinary txn.writes
   -> encode ordinary api.Entry
   -> if lifecycleCommit != nil:
-       verify finalizer paired Dataset/Receipt proof
-       verify ordinary target（若存在）与control target相同
-       otherwise use control target
-       recheck exact service/shard/topology generation/capability
+       require lifecycleState == COMMITTING
+       require lifecyclePair exists and matches control/payload
+       ValidateLifecycleCatalogPairAfterWorkspace(ordinary entries, pair)
+       # Archive: exact Dataset + Receipt logical insert；TTL: exact Receipt insert
+       resolve authoritative route outside txn.Lock
+       require ServiceID + ShardID + ReplicaID + capability still match
+       require exactly one target shard
        append exactly one api.Entry{
          entry_type: LifecycleCommit,
          database_id/table_id: frozen physical route,
@@ -1142,10 +1178,44 @@ merge/dump/compact ordinary txn.writes
   -> encode one PrecommitWriteCmd
 ```
 
-即使ordinary `writes`为空，control也必须独立生成Precommit请求，不能被
-`len(entries)==0`提前返回。Finalizer API负责保证Dataset/Receipt和control共同存在；
-任何配对缺失在生成request前失败。输出tag bytes必须与Root冻结的canonical bytes逐字节
-相同，workspace dump、merge、sort、rollback/retry都不能重新marshal或改变它。
+底层`appendLifecycleControlForTest`必须能够在空ordinary Entry列表中编码control，以证明
+`bat=nil`不会被helper静默丢弃；它只用于编码单测，不能被production commit调用。
+production `genWriteReqs`在pair缺失、ordinary Catalog pair未由finalizer seal、ordinary
+Entry列表为空，或`ValidateLifecycleCatalogPairAfterWorkspace`未在最终workspace中找到exact
+logical pair时返回`ErrLifecycleCatalogPairMissing`，不得发送请求。仅有无关ordinary write
+不能满足pair验证。该验证按Dataset/Receipt主键/identity在已merge/dump的普通Entry中进行，
+不依赖旧write offset；Archive要求exact Dataset+Receipt，TTL要求exact Receipt。输出tag
+bytes必须与Root冻结的canonical bytes逐字节相同，workspace dump、merge、sort和commit retry
+都不能重新marshal或改变它。
+
+### 9.1.2 Lifecycle finalizer 事务状态机
+
+此状态机只在`lifecycleCommit != nil`的内部Lifecycle final transaction生效；普通用户
+transaction保持当前OPEN路径，不增加Merge、查询或普通DML语义。
+
+```text
+OPEN --SealLifecycleCommit--> SEALED --Commit only--> COMMITTING --> TERMINAL
+  |                                  |
+  +-- full rollback --> TERMINAL      +-- external mutation --> POISONED
+                                                        |
+                                                        +-- full rollback --> TERMINAL
+```
+
+- 只有`Commit(ctx)`可执行`SEALED -> COMMITTING`；它调用专用内部
+  `incrStatementIDForLifecycleCommit`和commit dump/transfer helpers，不能通过公共外部
+  mutation入口绕过状态检查；
+- 外部`WriteBatch`、`WriteFile`及locked variants、`StartStatement`、`EndStatement`、
+  `IncrStatementID(false)`、`AdvanceSnapshot`、`RollbackLastStatement`、
+  `UpdateSnapshotWriteOffset`、`Adjust`和`SetHaveDDL`在SEALED/COMMITTING时都必须
+  poison。返回`error`的入口返回`ErrLifecycleTxnSealed`；void入口只标记POISONED，随后
+  `Commit`返回`ErrLifecycleTxnPoisoned`；
+- Commit内部的workspace merge/dump、Tombstone transfer和`IncrStatementID(true)`必须走
+  未导出的commit helper，允许COMMITTING而不允许任何并发外部mutation；
+- 一旦POISONED，禁止重开、重seal或同一TxnOperator重试；只允许完整`Rollback`。请求
+  已发出后的unknown仍按Root/Receipt reconcile处理，不能用Rollback删除Root资产。
+- `genWriteReqs`/route refresh在请求发出前失败时，`COMMITTING -> POISONED`，调用方执行
+  full Rollback；请求已发出后若response lost，进入`TERMINAL`的unknown finalize，仅释放
+  CN control/pair内存，Root/Booking/Payload继续由Reconciler决定，绝不能回滚物理资产。
 
 实现修改范围固定为：
 
@@ -1302,6 +1372,8 @@ Finalizer只在 Build `VERIFIED` 后开始：
 ```text
 allocate normal tenant txn
   -> choose absolute final_prepare_deadline D and bind commit context deadline = D
+  -> refresh authoritative TN route/capability outside txn.Lock
+  -> freeze ServiceID + ShardID + ReplicaID + protocol_version
   -> system txn CAS Root VERIFIED -> FINALIZING
        freeze final_txn_id
        freeze canonical LifecycleCommitEntry bytes/digest
@@ -1311,15 +1383,18 @@ allocate normal tenant txn
   -> tenant txn CAS Guard/Binding/active attempt
   -> tenant txn insert Dataset/Receipt（Archive）
      or TTL Receipt
-  -> set immutable LifecycleCommitControl through finalizer adapter
+  -> finalizer verifies actual Dataset/Receipt pair, then SealLifecycleCommit
+       atomically enters SEALED
   -> workspace.Commit builds one replayable PrecommitWriteCmd.EntryList
   -> commit
 ```
 
 Dataset/Receipt普通Catalog写和LifecycleCommitControl必须由一个不可拆分的finalizer
-API加入同一`TxnOperator`，control冻结这些Catalog写的identity root。任何一步写入
-workspace失败都rollback同一transaction；缺少control时Dataset/Receipt也不得单独
-提交。`workspace.Commit()`生成的
+API加入同一`TxnOperator`。finalizer用实际已写入workspace的pair构造并冻结
+`LifecycleCatalogPair`；缺pair、control或pair/payload digest不一致均返回
+`ErrLifecycleCatalogPairMissing`，不得生成request。任何一步写入workspace失败都rollback
+同一transaction；缺少control时Dataset/Receipt也不得单独提交。finalizer seal后必须立即
+进入同一`TxnOperator.Commit`，不得执行或接受更多普通statement。`workspace.Commit()`生成的
 `TxnCommitRequest.DeadlineUnixNano`必须精确等于Root已冻结的`D`，不允许使用fallback
 deadline或在发送时重新延长。
 
@@ -1921,13 +1996,30 @@ HandleCommit
 
 同一次`HandleCommit`内部的retry generation只使用这一份预算；同一internal txn内的
 重复注册由generation slot变成follower，不执行第二份Booking I/O、delta scan或
-Catalog mutation。并发的第二次外部`HandleCommit`不能仅凭generation slot假定会命中
-同一TxnMemo：Gate C必须先证明现有TxnService会按external txn ID串行化/去重，只让一个
-调用执行非终态generation，其余调用等待或读取正常事务终态。若证明不成立，发布前
-必须增加有界共享registry，key固定为
-`external txn ID + CommitSequence + attempt ID + entry_digest`，并具有terminal、
-deadline和hard entry-count回收。不得既允许两个独立HandleCommit执行，又各自创建
-一份HandleCommit-local budget；也禁止用无回收的进程全局Map临时补洞。
+Catalog mutation。V1不增加Lifecycle全局duplicate registry：当前TxnService已串行重叠
+Commit，但不会永久保存终态。迟到duplicate的安全与成本边界固定为：
+
+```text
+TxnService absolute request deadline gate
+  -> Lifecycle global bounded commit-admission permit
+  -> parse/tag/route/capability preflight
+  -> reservation + protection + exact source preflight
+  -> only then Booking read/decode and TAE mutation
+```
+
+已提交attempt的source不再exact时，TN必须在Booking I/O前返回
+`LIFECYCLE_RECONCILE_REQUIRED`；CN以正常一致性读Root/Receipt收敛，不能把它当作
+corruption或重新导出。已明确aborted而source仍exact的请求只有在同一绝对deadline、
+attempt/reservation仍有效且调用方结果unknown时才可重新尝试。超过deadline由TxnService
+拒绝。admission permit按Lifecycle commit总数/bytes硬限流，等待也受deadline约束。permit
+由一次`HandleCommit`独占并覆盖其全部G1/G2 retry generation；在parse、preflight、Booking、
+TAE mutation、terminal abort或正常返回的任一出口都必须exactly-once释放。它不随单个
+generation释放或重取，避免retry绕过并发上限，也不得在请求deadline后继续排队。
+
+Gate C只需证明没有两个storage `HandleCommit`会并行执行同一external txn；若该证明
+失败，才增加key为`external txn ID + CommitSequence + attempt ID + entry_digest`、具有
+hard cap、TTL、terminal和deadline回收的专用registry。禁止以普通路径增加进程全局
+无界Map。
 
 每次retry必须：
 
@@ -2102,10 +2194,11 @@ block-streaming Reader完成认证。
 | post-S delete命中live row | transfer到新RowID |
 | post-S delete无mapping/NoTransfer/nil map/越界 | final abort；rebuild或`CONFLICT_BLOCKED` |
 | transfer损坏/overflow | final abort；`RESOURCE_BLOCKED`或replan |
-| CN control被过滤/重复/target generation变化 | 发送前abort；Dataset/Receipt不提交 |
+| CN control缺Catalog pair/被过滤/route identity变化 | 发送前abort；Dataset/Receipt不提交 |
+| SEALED事务收到外部workspace mutation | 置POISONED；只允许完整rollback |
 | generation slot BUILDING follower | 有界等待/返回同一结果；不得重复mutation |
 | generation builder失败 | slot FAILED；整代TAE txn rollback；同代禁止重建 |
-| 并发第二次HandleCommit | TxnService串行/去重；否则共享有界registry，不得双执行 |
+| overlapping duplicate Commit | TxnService串行；迟到请求按deadline/source preflight收敛 |
 | final txn明确aborted | cleanup staging |
 | final txn unknown | 保留全部owner；Reconcile |
 | GC删除已commit旧source | 正常，不由Lifecycle干预 |
@@ -2178,10 +2271,15 @@ block-streaming Reader完成认证。
 - 1PC/2PC；
 - duplicate tagged entry/Prepare；
 - control穿过workspace dump/compact/merge/sort后payload bytes和digest完全不变；
-- ordinary writes为空时control仍生成Precommit请求，不能被`len(entries)==0`丢弃；
+- 底层空Entry编码helper能生成control，证明`bat=nil`不被静默丢弃；production
+  `genWriteReqs`对空ordinary Catalog pair返回`ErrLifecycleCatalogPairMissing`且不发请求；
 - control same digest/bytes重复设置幂等，different digest/第二条control发送前拒绝；
-- control target与ordinary write target、service/shard/topology generation任一不一致时
-  发送前拒绝；
+- control只冻结ServiceID/ShardID/ReplicaID/protocol version；发送前权威refresh重解析
+  Address和capability，identity变化、多候选shard或refresh失败均发送前拒绝；
+- route refresh断言不在`txn.Lock`内等待；
+- Seal后所有外部Workspace mutation入口分别验证：error入口返回
+  `ErrLifecycleTxnSealed`，void入口置POISONED，Commit只允许完整rollback；Commit内部
+  merge/dump/transfer仍可在COMMITTING完成；
 - rollback/finalize释放CN control但不删除Root/provider对象；
 - G1 `ErrTAENeedRetry`后G2仍包含完整Dataset/Receipt和Lifecycle retire；
 - G2不复用G1 entry、Catalog node、TransferTable或runtime page；
@@ -2193,8 +2291,12 @@ block-streaming Reader完成认证。
 - `LogTxnEntry` error发生在append前、nil发生在append后，合同用故障注入冻结；
 - G1/G2各自使用不同TxnMemo slot，不继承slot状态或runtime指针；
 - HandleCommit-local replay budget在G1/G2累计booking/delta/CPU，limit-1/limit/limit+1；
-- concurrent duplicate HandleCommit由TxnService串行/去重；若验证不成立，测试有界
-  registry只有一个budget owner且终态/deadline/count均能回收；
+- overlapping duplicate Commit由TxnService mutex串行，只有一个storage HandleCommit执行；
+- terminal后迟到duplicate：deadline后被拒绝；已提交source不exact时不读Booking、不mutation、
+  返回`LIFECYCLE_RECONCILE_REQUIRED`；
+- Lifecycle commit admission permit在大量迟到retry下有hard cap、deadline等待和公平释放；
+- 只有实验证明storage HandleCommit可并行执行同一external txn时，才测试并启用有界
+  registry；
 - Dataset/Receipt存在但Lifecycle tag缺失，以及反向缺失，整个事务都失败；
 - CN/TN crash在每个Create/Drop/transfer/catalog write之间；
 - commit response lost；
@@ -2265,6 +2367,12 @@ block-streaming Reader完成认证。
     `genWriteReqs`最后原样追加。
 21. generation slot在第一次TAE txn mutation前决出唯一builder；Catalog node由整个
     txn持有，builder只清理尚未移交的runtime资源。
-22. 累计retry预算由`HandleCommit`调用栈唯一持有并传入每代；并发第二次调用由
-    TxnService串行/去重，证明不成立才增加有界共享registry；禁止进程全局无界
-    replay memo。
+22. 累计retry预算由`HandleCommit`调用栈唯一持有并传入每代；重叠Commit复用TxnService
+    串行，迟到Commit先经deadline/source preflight和Lifecycle admission；只有实证并行
+    storage执行才增加有界共享registry；禁止进程全局无界replay memo。
+23. production control必须绑定最终workspace中可验证的Catalog pair；空Entry编码只作为
+    私有单测，不能成为提交语义。
+24. 路由冻结ServiceID/ShardID/ReplicaID/protocol version，Address发送前刷新；不新增
+    没有权威来源的TopologyGeneration，不能唯一定位shard即fail closed。
+25. Lifecycle final transaction使用独立OPEN/SEALED/COMMITTING/POISONED/TERMINAL状态机；
+    普通transaction和普通Merge不进入该分支，避免改变现有热路径语义。
