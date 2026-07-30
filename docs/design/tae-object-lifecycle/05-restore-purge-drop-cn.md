@@ -87,9 +87,11 @@ for each manifest file ordinal
        UPDATE restored_rows
 ```
 
-首版单个Restore串行处理chunk。Manifest按`file_ordinal/row_group_ordinal`定义稳定、
-连续的`chunk_ordinal`，Receipt主键是`(restore_id, chunk_ordinal)`；`chunk_digest`、
-`row_count`和`canonical_content_hash`是普通列。
+首版单个Restore串行处理chunk。一个Chunk严格等于Manifest中的一个Parquet Row Group；
+按`(file_ordinal, row_group_ordinal)`升序展平后从0开始连续生成全局
+`chunk_ordinal`。Restore直接消费Manifest中的边界，不得按`chunk-bytes`、INSERT Batch
+大小或worker版本重新切分、合并。Receipt主键是`(restore_id, chunk_ordinal)`；
+`chunk_digest`、`row_count`和`canonical_content_hash`是普通列。
 
 重试前查询Receipt只是优化，真正并发边界由主键和普通事务保证：
 
@@ -107,8 +109,10 @@ Restore不使用tagged entry，完全复用普通INSERT事务。
 - Manifest descriptor digest完整，目标表结构投影与descriptor一致；
 - restored row count等于Manifest；
 - 按`chunk_ordinal`读取Receipt，并使用02冻结的有序聚合公式重建
-  `Dataset.content_hash`，结果等于Manifest；
-- 无缺失/重复chunk；
+  `Manifest.dataset_content_hash`；
+- Receipt数量等于`Manifest.total_chunk_count`，ordinal严格连续覆盖
+  `0..total_chunk_count-1`，且无缺失或重复；
+- 重建Hash等于Manifest中的`dataset_content_hash`，`hash_formula_version`受支持；
 - lease仍有效。
 
 不持久化SHA-256内部状态，不重新扫描隐藏表，也不为最终Hash重新读取全部Payload。
@@ -124,10 +128,14 @@ CAS Dataset:
   restore_deadline > transaction time
   access_generation/version unchanged
 -> 原子改名/发布隐藏表
+-> Restore Attempt.verified_content_hash = recomputed dataset_content_hash
 -> Restore Attempt = DONE
 -> clear Dataset restore lease
 -> commit
 ```
+
+`verified_content_hash`此前必须为NULL，只在该最终普通事务中一次性写入；Chunk事务不得把
+普通SHA-256 digest当作可续算内部状态增量更新。
 
 Purge更新同一Dataset行，因此并发时只能一方成功：Purge先成功则Restore发布事务整体回滚；
 Restore先成功则新表发布并释放lease，Purge随后可以继续。响应未知沿用普通DDL和目标table

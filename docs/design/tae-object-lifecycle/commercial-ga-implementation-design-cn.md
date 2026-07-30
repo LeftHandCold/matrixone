@@ -179,7 +179,8 @@ Dataset/TTL Receipt时发生。Root完整转换、Owner和删除前置条件只�
 ### 3.5 Restore Attempt与Chunk Receipt
 
 Restore Attempt保存Dataset、隐藏表、lease、deadline、`next_chunk_ordinal`、
-`restored_rows`和状态，不保存可继续计算的SHA内部状态。Chunk Receipt使用：
+`restored_rows`、nullable `verified_content_hash`和状态，不保存可继续计算的SHA内部
+状态。Chunk Receipt使用：
 
 ```text
 PRIMARY KEY (restore_id, chunk_ordinal)
@@ -191,7 +192,7 @@ canonical_content_hash
 
 首版单个Restore串行推进。数据INSERT、Receipt和Attempt进度在同一普通事务提交；同ordinal
 相同digest幂等，不同digest是corruption。最终Hash按Receipt ordinal使用02的固定聚合公式
-重建。
+重建，`verified_content_hash`只在最终发布事务中一次性写入。
 
 ## 4. Stage合同
 
@@ -367,8 +368,11 @@ descriptor中的Column ID明确命名为`source_column_id`，只用于lineage和
 Restore目标列由普通DDL分配新ID，结构校验忽略源ID，不增加第二个持久
 `restore_schema_digest`。
 
-canonical encoder使用明确的row/column/type/null/length framing。Archive按Parquet Row
-Group产生稳定chunk ordinal和canonical chunk hash；`Dataset.content_hash`是按ordinal聚合
+canonical encoder使用明确的row/column/type/null/length framing。一个Chunk严格等于一个
+Manifest Parquet Row Group；按`(file_ordinal, row_group_ordinal)`升序展平，从0开始连续
+生成全局`chunk_ordinal`。Restore不得按运行时bytes、Batch或worker版本重新切分。
+Manifest必须保存`total_chunk_count`、`dataset_content_hash`和`hash_formula_version`。
+`Dataset.content_hash`等于Manifest Hash，是按ordinal聚合
 `chunk_ordinal/row_count/canonical_content_hash`的版本化SHA-256。source writer与full
 readback decoder必须得到相同chunk和Dataset hash。Restore根据Chunk Receipt重建聚合结果，
 不持久化SHA内部状态、不重新扫描隐藏表或全部Payload。readback失败不得进入final transaction。
@@ -548,8 +552,12 @@ acquire lease with fixed deadline
 -> ordinary transaction:
      CAS matching unexpired Dataset lease
      atomic rename/publish
+     Attempt.verified_content_hash = recomputed dataset_content_hash
      Attempt DONE + clear lease
 ```
+
+Chunk事务不更新Hash；最终发布事务验证Receipt严格覆盖
+`0..Manifest.total_chunk_count-1`，并一次性写入`verified_content_hash`。
 
 每次GET/chunk前验证lease。Purge只有在Dataset没有有效lease时才能CAS到
 `DELETE_PENDING`并递增access generation；显式Purge遇有效lease返回

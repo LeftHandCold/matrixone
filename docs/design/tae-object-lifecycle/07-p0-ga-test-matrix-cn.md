@@ -73,8 +73,15 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - 同ordinal、不同digest并发：冲突方检测corruption，Restore fail closed；
 - 数据INSERT、Receipt、`next_chunk_ordinal`和`restored_rows`同事务提交/回滚；
 - chunk commit成功但response lost，以及成功后更新内存进度前CN crash；
+- 一个Manifest Row Group恰好对应一个Chunk，按file/row-group ordinal展平后全局编号；
+- 不同Restore worker、`chunk-bytes`和INSERT Batch配置得到相同Chunk边界与ordinal；
+- Manifest保存且校验`total_chunk_count`、`dataset_content_hash`和
+  `hash_formula_version`；
 - 按ordinal读取Receipt可重建Manifest的Dataset聚合Hash；
-- 缺失、重复、ordinal不连续、row count或chunk hash不一致均禁止发布；
+- Receipt必须严格覆盖`0..total_chunk_count-1`；缺失、重复、ordinal不连续、row count
+  或chunk hash不一致均禁止发布；
+- Chunk事务不得更新增量SHA digest；最终发布事务一次性写
+  `Attempt.verified_content_hash`；
 - Manifest/Receipt达到`max_chunks_per_dataset`边界，聚合使用有界分页内存；
 - 不持久化SHA内部状态，不依赖重新扫描隐藏表或全部Payload。
 

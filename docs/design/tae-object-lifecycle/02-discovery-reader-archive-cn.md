@@ -321,7 +321,12 @@ signed zero和binary。Encoder版本写入Manifest，unknown版本Restore fail c
 - Mixed：单source Block ordinal、Row offset；
 - File/Row Group：单调ordinal。
 
-Archive与Restore的可重启内容摘要以Parquet Row Group为chunk边界。每个chunk保存：
+一个Chunk严格等于Manifest中的一个Parquet Row Group。Manifest先按`file_ordinal`排序文件，
+再按文件内`row_group_ordinal`排序Row Group，展平后从0开始连续分配全局
+`chunk_ordinal`。这个边界由Archive Writer冻结；Restore必须直接使用Manifest中的边界和
+ordinal，禁止按运行时`chunk-bytes`、INSERT Batch大小或worker版本重新切分、合并Chunk。
+
+每个chunk保存：
 
 ```text
 chunk_ordinal
@@ -343,17 +348,21 @@ chunk_digest =
          || chunk_ordinal || file_ordinal || row_group_ordinal
          || row_count || canonical_content_hash)
 
-Dataset.content_hash =
+Manifest.dataset_content_hash =
   SHA256("mo-lifecycle-dataset-content/v1"
          || ordered framing(
               chunk_ordinal,
               row_count,
               canonical_content_hash))
+
+Dataset.content_hash = Manifest.dataset_content_hash
 ```
 
 所有整数使用canonical big-endian定长编码，字节串带长度framing。Archive Writer和Provider
 full readback使用同一公式；Restore可在CN crash后按`chunk_ordinal`读取Receipt重建最终
-`Dataset.content_hash`，不持久化SHA内部状态，也不重新扫描隐藏表或全部Payload。
+`Manifest.dataset_content_hash`，不持久化SHA内部状态，也不重新扫描隐藏表或全部Payload。
+`hash_formula_version=1`对应以上domain separator和聚合字段；unknown版本Restore必须
+fail closed。
 
 ## 11. Parquet与Manifest
 
@@ -376,9 +385,11 @@ row_groups[] {
 min/max（可选）
 ```
 
-Manifest记录Dataset/Root/Attempt、schema descriptor、文件集、content hash、总行数、
-source snapshot/evaluation time/cutoff/source set digest、Lifecycle列min/max、Stage identity
-和加密信息。
+Manifest记录Dataset/Root/Attempt、schema descriptor、文件集、
+`total_chunk_count`、`dataset_content_hash`、`hash_formula_version`、总行数、
+source snapshot/evaluation time/cutoff/source set digest、Lifecycle列min/max、Stage
+identity和加密信息。`total_chunk_count`必须等于所有文件Row Group数量之和，合法
+`chunk_ordinal`范围严格为`0..total_chunk_count-1`。
 
 Writer按`target_payload_file_bytes`流式切分，不按“每天一个文件”或“月底全量合并”。
 默认值在Provider/Restore认证后冻结，并同时受`max_payload_files_per_dataset`和单次Root

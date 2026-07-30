@@ -196,7 +196,9 @@ root_id / attempt_id
 versioned logical schema descriptor
 schema_descriptor_digest
 canonical_encoder_version
-content_hash
+hash_formula_version
+total_chunk_count
+dataset_content_hash
 file ordinal/key/size/SHA-256/row_count
 total row_count
 必要的min/max
@@ -222,10 +224,12 @@ Restore新表由普通DDL分配新ID并按结构字段校验，不新增第二�
 Phase 1 Restore只恢复列结构和数据，不恢复PK、二级索引、FK、CDC、Publication、
 默认表达式、权限或策略。
 
-Archive以Parquet Row Group为稳定chunk。每个chunk保存ordinal、row count和canonical
-content hash；Dataset内容Hash按ordinal聚合这些Receipt字段。Archive Writer、full
-readback和Restore使用同一公式，CN crash后可从Chunk Receipt重建，不持久化SHA内部状态，
-也不重新扫描隐藏表或全部Payload。
+一个Chunk严格等于Manifest中的一个Parquet Row Group。文件和Row Group分别按ordinal排序，
+展平后从0开始连续分配全局`chunk_ordinal`；Restore不得按运行时bytes、Batch或worker版本
+重新切分。每个Chunk保存ordinal、row count和canonical content hash；Manifest保存
+`total_chunk_count`、`dataset_content_hash`和`hash_formula_version`。Dataset内容Hash按
+ordinal聚合这些Receipt字段。Archive Writer、full readback和Restore使用同一公式，CN
+crash后可从Chunk Receipt重建，不持久化SHA内部状态，也不重新扫描隐藏表或全部Payload。
 
 ## 7. Stage与外部对象
 
@@ -380,9 +384,11 @@ Dataset获取有期限lease
 -> 按Receipt ordinal重建content hash
 -> 校验schema/row count/content hash
 -> 普通事务CAS匹配且未过期的Dataset lease
+-> 一次性写Attempt.verified_content_hash
 -> 原子发布新表、Attempt DONE并清除lease
 ```
 
+Chunk事务不更新Hash；最终发布前必须证明Receipt严格连续覆盖Manifest声明的全部Chunk。
 Restore不使用tagged entry。Purge只更新Dataset状态：
 
 ```text

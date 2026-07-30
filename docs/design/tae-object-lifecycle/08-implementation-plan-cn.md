@@ -35,6 +35,8 @@ DoD：百万Object分页不构造全表slice；普通查询/DML/Merge在未绑�
 - canonical encoder；
 - Parquet/ZSTD writer；
 - 带`source_column_id`语义的schema descriptor/Manifest；
+- 固定Row Group→全局Chunk ordinal合同；
+- Manifest `total_chunk_count/dataset_content_hash/hash_formula_version`；
 - Row Group chunk hash和Dataset有序聚合公式；
 - 内存或测试临时FileService中的round-trip。
 
@@ -108,6 +110,7 @@ P0-1/P0-2通过后才能冻结。
 - 串行chunk普通INSERT + Receipt + Attempt进度同事务；
 - Receipt主键`(restore_id, chunk_ordinal)`及不同digest fail-closed；
 - Receipt有序聚合hash/row验证；
+- Chunk事务不更新Hash，最终发布事务一次性写`verified_content_hash`；
 - DDL发布、Attempt DONE和Dataset lease清除同一普通事务；
 - active lease下Purge返回/延迟，lease结束后触发Root；
 - DROP异步清理。

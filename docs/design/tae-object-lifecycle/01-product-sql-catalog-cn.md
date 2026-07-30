@@ -197,6 +197,7 @@ created_at/updated_at       TIMESTAMP
 唯一键：`(root_id, attempt_id)`。Dataset本身是Archive发布权威，不增加Archive Receipt。
 `Dataset.schema_descriptor_digest`只验证Manifest中历史逻辑descriptor的canonical bytes；
 Restore按descriptor的结构投影创建新表，不新增第二个持久restore schema摘要。
+`Dataset.content_hash`等于Manifest中的`dataset_content_hash`。
 
 ## 7. TTL Receipt
 
@@ -280,6 +281,7 @@ target_database/name       UINT64/TEXT
 state                      ENUM(RUNNING, VERIFYING, PUBLISHING, DONE, ABORTED)
 next_chunk_ordinal         UINT64
 restored_rows              UINT64
+verified_content_hash      BINARY(32) NULL
 last_error/updated_at       TEXT/TIMESTAMP
 ```
 
@@ -288,7 +290,7 @@ Chunk Receipt：
 ```text
 restore_id                 BINARY(16)
 chunk_ordinal              UINT64
-file_ordinal/row_group     UINT32/UINT32
+file_ordinal/row_group_ordinal UINT32/UINT32
 chunk_digest               BINARY(32)
 row_count                  UINT64
 canonical_content_hash     BINARY(32)
@@ -298,7 +300,8 @@ PRIMARY KEY (restore_id, chunk_ordinal)
 
 单个Restore首版串行推进chunk。对应数据INSERT、Chunk Receipt、`next_chunk_ordinal`和
 `restored_rows`在同一普通事务提交；`chunk_digest`不是主键的一部分。相同ordinal的不同
-digest是corruption，相同digest按Receipt幂等成功。
+digest是corruption，相同digest按Receipt幂等成功。`verified_content_hash`不在Chunk事务中
+更新，只在全部Receipt通过最终校验并发布新表的普通事务中一次性写入。
 
 ## 10. Catalog索引与访问路径
 
