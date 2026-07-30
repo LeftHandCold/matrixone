@@ -39,6 +39,7 @@ GA发布时 `retirement-enabled` 只有通过cluster capability和stage gate后�
 
 ```text
 max-bound-tables-per-account      = 1000 # 当前account Guard总量，含active与reconciling
+max-active-bindings-cluster        = 1000 # Lifecycle-only activation slot，不进入普通热路径
 policy-scan-interval              = 1h
 index-catchup-interval            = 5m
 coordinator-page-size             = 1000
@@ -47,17 +48,12 @@ database-concurrency              = 2
 account-concurrency               = 4
 cluster-concurrency               = 8
 cleanup-min-workers               = 2
-small-mixed-cluster-concurrency   = 2
+ttl-small-mixed-cluster-concurrency = 2
 rewrite-cluster-concurrency       = 1
 rewrite-certified-hard-concurrency = 4
 lifecycle-commit-concurrency      = 4
 lifecycle-commit-admission-mode   = try
 lifecycle-finalization-concurrency = 4
-max-final-generations             = 3
-final-retry-window                = 10m
-archive-small-mixed-txn-timeout   = 5m
-archive-small-mixed-provider-budget = 3m
-archive-small-mixed-max-bytes     = 256MiB
 max-certified-block-read-bytes    = 256MiB
 restore-cluster-concurrency       = 2
 provider-io-timeout               = 2m
@@ -65,6 +61,11 @@ final-lock-timeout                = 30s
 final-txn-timeout                 = 60s
 automatic-reconcile-age           = 24h
 manual-reconcile-probe-interval   = 1h
+lifecycle-terminal-journal-max-rows  = 1000000
+lifecycle-terminal-journal-max-bytes = 512MiB
+lifecycle-terminal-journal-page-bytes = 4MiB
+lifecycle-terminal-transport-grace   = 24h
+lifecycle-terminal-control-timeout   = 5s
 root-quiescence-window            = 24h
 ```
 
@@ -78,14 +79,16 @@ root-quiescence-window            = 24h
 - cleanup/reconcile不能同时关闭并开启retirement；
 - `lifecycle-commit-concurrency <= cluster-concurrency`，admission mode必须为`try`且
   waiter/queue capacity为0；
-- `lifecycle-finalization-concurrency <= lifecycle-commit-concurrency`，`max-final-generations=3`
-  且`final-retry-window=10m`；超过任一值必须重新认证；
-- Archive Small Mixed的事务、Provider总预算和payload字节不得超过5m、3m、256MiB；
-  Planner预估或运行时预算超限都转Mixed Rewrite，不允许延长SI transaction；
+- `lifecycle-finalization-concurrency <= lifecycle-commit-concurrency`；final transaction
+  明确aborted后一律cleanup并创建fresh attempt，不允许配置跨external-txn staging reuse；
+- Archive Small Mixed在首个GA中必须关闭；任何 Archive Mixed都转Mixed Rewrite；
 - retention/grace非负；
+- Terminal Journal rows/bytes必须为正的认证hard limit；达到任一上限只停止新的
+  Lifecycle final commit，不能停止terminal ACK、Cleanup或Reconcile；
 - `max-bound-tables-per-account`按当前account incarnation的权威Guard行数计数，包含
   非DISABLED Binding以及仍有child/unknown的DISABLING/reconciling表；达到上限拒绝新Bind；
-  集群1000绑定表是认证容量边界，不是跨account事务不变量；
+  `max-active-bindings-cluster=1000`由Lifecycle-only activation controller执行，
+  controller不可用、slot不确定或额度耗尽时拒绝新Bind；
 - 配置超过已认证profile时拒绝启动retirement。
 
 256 MiB是首个GA的候选认证上限，表示4.1节保守估算后的单个Block
@@ -123,7 +126,7 @@ RECONCILE
 
 - 不创建新的Whole/Mixed final transaction；
 - Reader/Uploading可安全cancel并由Root cleanup；
-- 已进入FINALIZING/FINAL_RETRYABLE/COMMIT_UNKNOWN不cancel、不清理，继续Reconcile；
+- 已进入FINALIZING/COMMIT_UNKNOWN不cancel、不清理，继续Reconcile；
 - Cleanup/Reconcile继续；
 - Restore/Purge按独立开关。
 
@@ -194,7 +197,7 @@ transfer entries/booking files/bytes
 reservation/protection status and expiry
 payload count/bytes
 retry/conflict age
-final generation/txn ID/status/retry deadline
+original final txn ID/Terminal Journal state/COMMIT_UNKNOWN age
 deadline/next action
 last error
 ```
@@ -228,7 +231,7 @@ staging table ID
 current payload/row group
 restored rows/expected
 root status
-chunk txn status
+chunk txn ID/Terminal Journal state
 lease expiry
 last error
 ```
@@ -320,11 +323,15 @@ lifecycle_protocol_capability{stage,result}
 lifecycle_unknown_entry_rejected_total{reason}
 lifecycle_commit_admission{state}
 lifecycle_finalization_admission{state}
-lifecycle_final_retry_total{result}
+lifecycle_fresh_attempt_total{reason}
 lifecycle_reconcile_required_total{reason}
 lifecycle_generation_slot_total{result}
 lifecycle_replay_generations
 lifecycle_replay_budget_exhausted_total{dimension}
+lifecycle_terminal_journal_records{state,ack}
+lifecycle_terminal_journal_bytes
+lifecycle_terminal_journal_oldest_unacked_seconds
+lifecycle_terminal_journal_total{op,result}
 ```
 
 其中：
@@ -338,7 +345,7 @@ lifecycle_replay_budget_exhausted_total{dimension}
   非法状态并触发P0告警。permit获取/释放不平、在拒绝后创建TAE txn和
   `LIFECYCLE_RECONCILE_REQUIRED`必须单独告警；
 - finalization admission同样只记录`acquired/rejected/released`；Root在permit拒绝后离开
-  VERIFIED、TN busy后未持久化原始错误分类、或`FINAL_RETRYABLE`越过3代/10分钟都是P0告警；
+  VERIFIED、TN busy后复用旧Root/staging或明确aborted后未进入cleanup都是P0告警；
 - unknown Entry拒绝和capability传播用于Safety Release验收；旧/缺失capability一律为
   unsupported，不能通过缺指标或默认值开启retirement；unknown numeric value只写有界
   结构化日志，不作为metric label；
@@ -347,6 +354,9 @@ lifecycle_replay_budget_exhausted_total{dimension}
   transaction ID永久保留的高基数时序；
 - 任一budget exhausted都必须带`attempt_id`进入结构化事件，但指标label禁止使用
   attempt/txn/table ID等无界值。
+- Journal结果至少区分`hit_committed/hit_aborted/miss/mismatch/unavailable/
+  append_aborted/append_committed/ack/gc/capacity_reject`；external txn ID只进入有界
+  结构化日志，不作为metric label。未ACK记录不能按年龄自动删除。
 
 ### 5.5 Root/Cleanup
 
@@ -449,7 +459,7 @@ binding/job/attempt/root/dataset/restore ID
 generation/epoch/state version
 from/to state
 source_set_digest/manifest root short
-txn ID/status/commit TS
+txn ID/Terminal Journal state/commit TS
 duration/rows/bytes
 error code
 ```
@@ -487,8 +497,11 @@ Provider object ordinal可以span attribute，full key不进入普通trace。
 ### P0 page
 
 - Archive root mismatch > 0；
-- committed txn缺Receipt/Dataset；
-- aborted txn有Receipt；
+- COMMITTED Journal在一致性水位后缺Receipt/Dataset；
+- ABORTED Journal却存在Receipt；
+- 同一external txn ID的Terminal Journal identity mismatch；
+- 明确ABORTED在Journal durable ACK前返回，或matching终态后再次调用storage.Commit；
+- Journal达到hard limit后仍接受新Lifecycle final commit；
 - Dataset PUBLISHED无Root；
 - Root PUBLISHED无Dataset且owner未DROP；
 - DELETING出现新lease；
@@ -603,17 +616,29 @@ Restore
 
 1. 不手工Delete Root/Payload；
 2. 确认final txn ID/digest；
-3. 查询Txn GetStatus；
-4. committed：等待服务水位>=commit TS，读Receipt/Dataset；
-5. aborted：确认无Receipt/Dataset；
-6. unknown：保持Root FINALIZING，检查TN/LockService resolver；
+3. 按external txn ID查询Lifecycle Terminal Journal，并核对attempt/root/digest/sequence；
+4. matching committed：等待服务水位>=commit TS，读Receipt/Dataset；
+5. matching aborted：确认无Receipt/Dataset；
+6. absent/unavailable/mismatch：保持Root FINALIZING；mismatch立即停Lifecycle并保留证据；
 7. 24小时后进入manual，不猜测；
 8. 同表retirement保持暂停。
 
-若`last_final_error_code=LIFECYCLE_RESOURCE_BUSY`、txn明确ABORTED、无Receipt/Dataset、
-Root child全为VERIFIED且仍在3代/10分钟窗口内，按`FINAL_RETRYABLE`重新校验source、
-reservation/protection/Binding/Guard并新建final txn；否则按普通aborted清理。response lost
-绝不走此分支。
+无论错误是否为`LIFECYCLE_RESOURCE_BUSY`，只有ABORTED Journal durable ACK且无
+Receipt/Dataset后才按
+普通aborted清理同一attempt的未发布staging。要再次尝试必须创建新attempt ID、重新读取
+source并重新构造输出；response lost绝不走此分支。
+
+### 12.1.1 降级前Terminal Journal排空
+
+目标版本不支持Journal checkpoint/WAL格式时：
+
+1. 关闭retirement和Restore写入，只保留Reconcile/Cleanup/Journal ACK；
+2. 等待FINALIZING/COMMIT_UNKNOWN全部收敛；
+3. 等待全部Journal record已Owner ACK且reject_until到期；
+4. 运行Journal GC并生成empty snapshot；
+5. 等待引用empty snapshot的checkpoint durable和旧Journal WAL安全截断；
+6. 验证所有允许作为目标的TN仍有unknown Entry fail-closed parser；
+7. 任一步不满足都禁止降级，不得通过删除Journal文件强行继续。
 
 ### 12.2 Root `DELETE_FAILED`
 
@@ -706,6 +731,9 @@ Stage：
 - 无P0 invariant failure；
 - 资源低于70% hard limit；
 - Cleanup/Reconcile能追平。
+- 在1000 Binding、cluster child=8、Rewrite=1、TTL Small Mixed=2和Provider限速/429下，
+  未绑定表前台 DML/查询/Merge/checkpoint/GC/logtail 的 active coexistence 指标仍通过
+  Gate F 阈值；超线时必须自动暂停新 Lifecycle claim，而不是牺牲前台负载。
 
 Stage 4前必须完成1TiB常见/10TiB认证。
 

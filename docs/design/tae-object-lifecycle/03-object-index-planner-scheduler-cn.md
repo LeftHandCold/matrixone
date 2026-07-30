@@ -522,10 +522,16 @@ Scheduler 查询：
 
 ```text
 Binding state = ACTIVE
+AND activation_slot.state = ACTIVE
+AND activation_slot.account_incarnation = Binding.account_incarnation
+AND activation_slot.logical_table_id = Binding.logical_table_id
+AND activation_slot.binding_id = Binding.binding_id
 AND next_scan_at/job next_action_at <= now
 ```
 
-不枚举未绑定表，不调用集群全表 Catalog scan。
+activation slot由system-owned Lifecycle controller在 Bind 时分配，首个 GA 总量硬上限为
+1000；没有slot的表不会进入Discovery、Candidate或Job队列。Controller不可用时拒绝新Bind，
+不降级为“先绑定、以后再扫描”。不枚举未绑定表，不调用集群全表 Catalog scan。
 
 ### 10.2 初始并发
 
@@ -547,6 +553,8 @@ active Restore/Purge/Cleanup
 ```
 
 Cleanup、Reconcile 和 Restore 保留独立最低并发，不能被 Archive backlog 饿死。
+
+首个 GA 的 `small Mixed` 仅指 TTL；Archive Mixed没有 SI executor，统一走Rewrite。
 
 ### 10.3 TaskService 与 Catalog lease
 
@@ -576,6 +584,7 @@ Rewrite physical slots/dense transfer reservation
 max certified decoded Block estimate and task peak memory token
 external booking bytes/pages
 Tombstone delta rows/bytes/blocks
+Lifecycle Terminal Journal rows/bytes/oldest-unacked-age
 Provider request/egress budget
 small Mixed tombstone rolling bytes
 Merge/Tombstone/Vacuum backlog
@@ -588,11 +597,17 @@ Soft limit：
 - 延后 next action；
 - 不影响正常 DML。
 
+Foreground pressure（未绑定表 DML p99、Merge/checkpoint/GC/logtail、CN/TN memory）超过
+release profile阈值时，Scheduler立即暂停新的Lifecycle claim并逐级降并发；它不扩大普通
+事务超时、不停GC，也不让已进入`FINALIZING/COMMIT_UNKNOWN`的事务失去对账资源。
+
 Hard limit：
 
 - 不 claim 新 child；
 - pre-final child 安全 cancel；
-- 已进入 `FINALIZING/FINAL_RETRYABLE/COMMIT_UNKNOWN` 的事务只做对账或受限 final retry；
+- 已进入 `FINALIZING/COMMIT_UNKNOWN` 的事务只做原 transaction identity 的对账；
+- Terminal Journal达到hard limit时停止新的final commit，继续Journal ACK、
+  Cleanup/Reconcile；普通事务不查询或占用Journal额度；
 - Cleanup/Reconcile 保留资源。
 
 所有积累项必须有 finite release-profile 值；`0 = unlimited` 非法。

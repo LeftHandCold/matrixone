@@ -141,7 +141,7 @@ Root REGISTERED/UPLOADING 丢失 writer executor epoch
 
 - 同一executor epoch内的I/O retry；或
 - Root已完整 `VERIFIED`，所有Root Object均VERIFIED、没有未收敛multipart/PUT，
-  新worker只接手final transaction或已确认aborted的`FINAL_RETRYABLE` final generation；
+  新worker只接手尚未开始的 final transaction；
 
 才允许继续使用同一Root。`FINALIZING` 只能由Reconciler按原txn对账，不能接管上传。
 
@@ -279,13 +279,11 @@ Archive：
 acquire CN/Scheduler finalization permit
   -> unavailable: Root remains VERIFIED; bounded jitter reschedule; no tenant txn
   -> available: allocate tenant final txn
-  -> Root CAS VERIFIED/FINAL_RETRYABLE -> FINALIZING
+  -> Root CAS VERIFIED -> FINALIZING
        final_txn_id
        final_entry_digest
        executor_epoch
-       final_generation
        final_prepare_deadline
-       final_retry_deadline
   -> commit system txn
   -> tenant final txn may retire
 ```
@@ -296,13 +294,11 @@ TTL Whole：
 acquire CN/Scheduler finalization permit
   -> unavailable: Attempt remains VERIFIED; bounded jitter reschedule; no tenant txn
   -> available: allocate tenant final txn
-  -> Attempt Control CAS VERIFIED/FINAL_RETRYABLE -> FINALIZING
+  -> Attempt Control CAS VERIFIED -> FINALIZING
        final_txn_id
        final_entry_digest
        executor_epoch
-       final_generation
        final_prepare_deadline
-       final_retry_deadline
   -> commit system txn
   -> tenant final txn may retire
 ```
@@ -334,11 +330,16 @@ Merge和Provider I/O不接触该permit。Root/Attempt在等待CN permit期间保
 需要全部证据：
 
 ```text
-Txn GetStatus == COMMITTED(commit_ts)
+Terminal Journal == matching COMMITTED(commit_ts)
 AND a normal consistent tenant read at snapshot >= commit_ts
     sees Receipt(attempt_id, txn_id, entry_digest)
 AND non-empty Archive sees Dataset(dataset_id, manifest_root)
 ```
+
+唯一例外是matching account/table owner tombstone已经明确放弃Restore：此时
+`Journal=COMMITTED`仍证明tenant final transaction成功，Reconciler不重建已被DROP级联
+删除的Dataset/Receipt，而是按frozen identity把Root直接推进`DELETE_PENDING`并ACK Journal。
+owner tombstone缺失时不能用Catalog row缺失套用该例外。
 
 然后：
 
@@ -360,53 +361,24 @@ TTL Whole/EMPTY_ARCHIVE:
   Attempt FINALIZING -> COMMITTED
 ```
 
-`TAE_OWNED/POST_COMMIT_CLEANUP/TRANSFERRED` 只在一致性读取确认 Receipt 且 txn
-service确认committed之后写入。`TAE_OWNED`表示normal TAE Catalog/WAL/GC已接管
+`TAE_OWNED/POST_COMMIT_CLEANUP/TRANSFERRED`只在一致性读取确认Receipt且Terminal
+Journal确认committed之后写入。`TAE_OWNED`表示normal TAE Catalog/WAL/GC已接管
 live文件，Sweeper禁止删除。`POST_COMMIT_CLEANUP`期间只允许删除temporary
 booking，不能删除live Object。
 
 `observed_commit_ts`必须和Archive Root `FINALIZING -> PUBLISHED`在同一个system CAS
-中持久化，来源只能是权威Txn GetStatus。Dataset/Receipt/final tenant transaction不包含
-该字段，也不能用worker本地时间代替。Root在Dataset Purge前持续保留，因此它是publish
-grace和长期对账的Owner；该字段为NULL时Purge永久fail closed并告警。
+中持久化，来源只能是匹配的`COMMITTED` Journal record。Dataset/Receipt/final tenant
+transaction不包含该字段，也不能用worker本地时间代替。Root在Dataset Purge前持续保留，
+因此它是publish grace和长期对账的Owner；该字段为NULL时Purge永久fail closed并告警。
 
 ### 8.2 明确 aborted
 
 ```text
-Txn GetStatus == ABORTED
+Terminal Journal == matching ABORTED
 AND consistent tenant read sees no matching Receipt/Dataset
 ```
 
-先判断是否满足唯一允许复用staging的重试条件：
-
-```text
-Root/Attempt state == FINALIZING
-AND Txn GetStatus == ABORTED
-AND consistent tenant read sees no matching Receipt/Dataset
-AND last_final_error_code == LIFECYCLE_RESOURCE_BUSY
-AND final_generation < 3
-AND now < final_retry_deadline
-AND all Root children remain immutable VERIFIED
-```
-
-满足时：
-
-```text
-Root/Attempt FINALIZING -> FINAL_RETRYABLE
-  -> release worker + CN finalization permit
-  -> later revalidate exact source/reservation/protection/Binding/Guard
-  -> create a new tenant final txn ID
-  -> final_generation + 1
-  -> FINAL_RETRYABLE -> FINALIZING
-```
-
-该路径不重读、不重PUT、不重做Provider readback；只复用原Root下已经验证的Parquet/Manifest、
-live staging和booking。每代的`final_prepare_deadline`可重新计算，但总
-`final_retry_deadline`绝不续期。旧txn ID只在Txn GetStatus和审计记录中保留，不能用于新txn。
-response lost、Txn status unknown、Receipt/Dataset存在、source/protection失效、错误分类缺失或
-不是`LIFECYCLE_RESOURCE_BUSY`都不进入此路径。
-
-其余明确aborted：
+明确 aborted 后：
 
 ```text
 Archive Root -> DELETE_PENDING
@@ -414,15 +386,20 @@ TTL Attempt -> ABORTED
 TTL Rewrite Root -> DELETE_PENDING
 ```
 
+`LIFECYCLE_RESOURCE_BUSY`也适用同一规则，但只有ABORTED Journal durable ACK后才是
+“明确aborted”。它不是跨external transaction的staging reuse授权。任何新的执行都必须
+由Scheduler创建fresh attempt ID、重新建Root、重新Reader/PUT/readback或重新Build；
+不能继承旧SI Snapshot、delete buffer、Payload、live staging或booking。
+
 ### 8.3 In-doubt
 
 包括：
 
 - Commit RPC timeout/connection lost；
-- Txn status ACTIVE/unknown；
+- Terminal Journal absent/unavailable；
 - TN unavailable；
-- commit status committed但一致性read尚未到commit_ts；
-- status service短暂错误。
+- Journal committed但一致性read尚未到commit_ts；
+- Journal写入/读取结果不确定。
 
 动作：
 
@@ -439,7 +416,7 @@ pause same table retirement
 
 ## 9. 一致性 Receipt 读取
 
-`Txn GetStatus=COMMITTED`后Catalog read可能暂时落后。Reconciler：
+`Terminal Journal=COMMITTED`后Catalog read可能暂时落后。Reconciler：
 
 1. 用 txn client timestamp waiter等待可服务timestamp `>= commit_ts`，deadline 10秒；
 2. 创建正常tenant RC/SI read transaction，Snapshot `>= commit_ts`；
@@ -456,20 +433,33 @@ pause same table retirement
 - `MANUAL_RECONCILE_REQUIRED`；
 - 保存证据。
 
-## 10. Txn status保留
+## 10. Terminal Journal保留
 
-GA要求Txn GetStatus权威记录/可解析窗口至少覆盖：
+首个GA不实现当前Server未注册的通用Txn GetStatus。Journal必须至少拒绝同一事务到：
 
 ```text
-max automatic reconcile age = 24 hours
-operator investigation window = 7 days
+reject_until =
+  deadline_unix_nano + HLC max offset + transport grace
 ```
 
-此外，Archive Reconciler必须在窗口内把CommitTS持久化到Root；不能把长期审计和Purge
-正确性建立在事务状态永久存在的假设上。超过窗口仍未观测到终态时保持
+并且只有Root/Attempt/Restore Attempt已用`txn ID + digest`吸收终态并持久化
+Owner `state_version`，随后`AckLifecycleTerminal`把该version写入Journal的
+`terminal_ack_version`后，Journal record才可GC。Archive Reconciler必须在Journal回收前
+把CommitTS持久化到Root；不能把长期审计和Purge正确性建立在Journal永久存在的假设上。
+未ACK记录不得仅按年龄删除；超过自动对账窗口仍无法收敛时保持
 `COMMIT_UNKNOWN/MANUAL_RECONCILE_REQUIRED`，不清理Root、不Purge。
 
-如果现有Txn Service在该窗口前丢失状态，P0必须增加可查询的normal transaction result receipt或延长保留。不能用source Object missing推断成功。
+Journal的rows、bytes和oldest-unacked-age必须有hard limit。达到上限时停止新的Lifecycle
+final commit，但继续允许Journal ACK、Cleanup和Reconcile；不能覆盖旧记录，也不能用
+source Object missing推断成功。普通事务不访问Journal。
+
+Owner CAS与Journal ACK是可重入两步，不是跨平面2PC：
+
+- Owner CAS先提交，冻结matching txn ID/digest和吸收后的state/version；
+- 然后调用有deadline的`AckLifecycleTerminal`；
+- crash/response lost只留下“Owner已收敛、Journal未ACK”，下次重读Owner后重复ACK；
+- ACK失败不回滚Owner、不删除Journal、不阻塞普通事务；
+- Journal不能先ACK后再best-effort更新Owner。
 
 超过24小时仍in-doubt：
 
@@ -478,10 +468,10 @@ MANUAL_RECONCILE_REQUIRED
   -> Root/Attempt仍FINALIZING
   -> same table retirement paused
   -> worker slot released
-  -> hourly bounded status probe
+  -> hourly bounded Journal + Catalog probe
 ```
 
-运维不能直接点“按失败清理”。人工处置必须取得权威txn/Receipt证据并留下审计。
+运维不能直接点“按失败清理”。人工处置必须取得权威Journal/Receipt证据并留下审计。
 
 ## 11. Reconciler
 
@@ -499,7 +489,7 @@ pkg/lifecycle/cleanup/
 每分钟由TaskService唤醒一个逻辑Reconciler。每轮：
 
 ```text
-query state in (FINALIZING, FINAL_RETRYABLE, COMMIT_UNKNOWN, MANUAL_RECONCILE_REQUIRED)
+query state in (FINALIZING, COMMIT_UNKNOWN, MANUAL_RECONCILE_REQUIRED)
 AND next_action_at <= now
 ORDER BY next_action_at, attempt_id
 LIMIT 1000
@@ -518,8 +508,8 @@ LIMIT 1000
 
 Root进入`DELETE_PENDING`的合法原因：
 
-1. Archive/Rewrite attempt明确aborted/cancelled且未发布；
-2. final transaction明确aborted，且不满足`FINAL_RETRYABLE`的全部条件；
+1. Archive/Rewrite attempt已cancelled且未发布，或已吸收matching ABORTED Journal；
+2. final transaction存在matching ABORTED Journal且一致性读取无Receipt/Dataset；
 3. Dataset达到purge_eligible且tenant Dataset已CAS（Archive payload）；
 4. table/database/account owner dropped；
 5. Restore/verify前的staging失效；
@@ -780,12 +770,12 @@ Archive/Rewrite Attempt：
 |---|---|---|---|
 | Provider PUT | ArchiveStore；失联后Root Sweeper | ctx/observer/Root epoch | PUT complete、error或2m deadline |
 | multipart | Root Object/Sweeper | upload observer + LIST | abort/complete且provider确认 |
-| TAE live staging write | Cleanup Root；txn entry只借用 | ctx/Root epoch/FileService Stat/txn status | committed后TAE_OWNED，或aborted后exact staging已删除；unknown保持 |
-| external transfer booking | Cleanup Root | txn status/Receipt + child CAS | committed/aborted明确后DELETED；unknown保持 |
+| TAE live staging write | Cleanup Root；txn entry只借用 | ctx/Root epoch/FileService Stat/Terminal Journal | committed后TAE_OWNED，或matching aborted后exact staging已删除；unknown保持 |
+| external transfer booking | Cleanup Root | Terminal Journal/Receipt + child CAS | committed/aborted明确后DELETED；unknown保持 |
 | source reservation/protection | Lifecycle attempt | renew/expiry/TN Prepare | final result确定或 attempt abort |
 | Rewrite dense slab/memory token | Rewrite Executor/mergesort task | ctx、allocator error、txn completion | host close或entry commit/rollback；exactly-once release |
 | Tombstone delta scan/watermark wait | final TAE txn entry | caller ctx/deadline/limit/error | EOF、limit、cancel或60s final deadline |
-| final txn | txn client resolver + Reconciler | GetStatus/Receipt | committed或aborted；unknown转manual不猜测 |
+| final txn | Terminal Journal + Reconciler | Journal/Receipt/Dataset | committed或aborted；unknown转manual不猜测 |
 | worker lease | Job Control | heartbeat/expiry | terminal或new epoch接管 |
 | Restore lease | Restore Attempt/Lease Reconciler | renew/release/expiry | released、expired、fenced |
 | Payload Delete | Sweeper | Delete+HEAD/LIST | 两次确认不存在 |

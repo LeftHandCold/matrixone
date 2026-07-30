@@ -16,8 +16,7 @@ TTL:
 Archive:
   direct-readable Parquet/ZSTD
   + Whole Object retire
-  + small Mixed DELETE
-  + medium/large Mixed Rewrite
+  + any Mixed Object single-source Rewrite
   + Restore to a new table
   + Purge/owner-drop async cleanup
 ```
@@ -79,6 +78,9 @@ pkg/vm/engine/tae/db/merge/
 pkg/vm/engine/tae/rpc/
   handle_lifecycle.go
 
+pkg/vm/engine/tae/lifecycle/
+  terminal_journal.go # replicated/WAL-replayed terminal state, bounded GC
+
 pkg/vm/engine/tae/tables/txnentries/
   lifecycle.go       # 组合/复用现有 merge create/drop/transfer entry
 ```
@@ -136,6 +138,10 @@ pkg/clusterservice/cluster.go
 
 缺字段、heartbeat过期、Replica变化和传播层缺值一律为unsupported。CN只冻结
 `ServiceID + ShardID + ReplicaID + protocol_version`，Address发送前权威重解析。
+同一个protocol version必须同时表示tagged Entry、TxnCommitRequest field 5 terminal
+identity和Terminal Journal三态能力；不能出现“能解析Entry但会忽略terminal identity”的
+半兼容状态。TN启动时在Journal checkpoint+WAL replay完成前advertise version 0；加载失败
+继续为0并告警，不能先报ready再异步补Journal。
 
 ### S3. Safety Release exit
 
@@ -163,6 +169,7 @@ Gate A 没有 Provider PUT 和活动数据退休。
 - system Attempt/Cleanup Root/Root Object；
 - owner tombstone；
 - Restore Attempt/chunk Receipt。
+- TN Lifecycle Transaction Terminal Journal（内部复制metadata，不是SQL Catalog表）。
 
 要求：
 
@@ -178,8 +185,8 @@ Gate A 没有 Provider PUT 和活动数据退休。
 - Root Object主键固定为`(root_id, object_kind, kind-local ordinal)`，不同kind不共享
   全局ordinal分配器。
 - Dataset/Receipt/Restore chunk只写transaction ID，不在原事务内填写CommitTS；
-- Archive Root包含nullable `observed_commit_ts`，只由committed Reconciler从权威
-  Txn GetStatus写入；该值未知时禁止Purge。
+- Archive Root包含nullable `observed_commit_ts`，只由committed Reconciler从匹配的
+  Terminal Journal写入；该值未知时禁止Purge。
 
 验收：
 
@@ -223,7 +230,12 @@ DISABLING/reconciling owner；达到1000后新Bind fail closed。Bind使用accou
 capacity lock串行容量准入，锁顺序固定为`account capacity -> logical table identity`，并在锁内
 分页计算本account最多1000行的Guard权威计数、持有到Bind事务终态。该锁只进入Bind控制面，
 不进入普通DDL、DML、查询或Merge；获取失败、超时或计数不确定时拒绝新Bind。集群1000
-绑定表是认证容量而不是跨account事务不变量；全局运行中工作量由Scheduler/TN admission限制。
+绑定表还必须由system-owned activation controller发放有界slot；额度耗尽、controller不可用
+或slot状态不确定时返回`LIFECYCLE_CLUSTER_CAPACITY`。slot只在Bind/Unbind与owner tombstone
+cleanup中分配/归还，不进入普通路径；全局运行中工作量仍由Scheduler/TN admission限制。
+Scheduler必须以`slot_id + account_incarnation + logical_table_id + binding_id`完整identity join
+ACTIVE slot；RESERVED lease到期时，Reconciler只能续激活同一ENABLING Binding，或先显式ERROR
+再归还slot，不能让过期slot_id使旧Binding复活。
 Unbind只有在active child和unknown final transaction收敛后才能删除Guard，且旧Guard
 删除前禁止同一logical table重新Bind。DROP TABLE在owner tombstone/fence与Catalog删除
 同事务成立后可删除tenant Guard，Root继续负责异步Provider cleanup。
@@ -450,6 +462,8 @@ LifecycleCommitMode:
   WHOLE_ARCHIVE
   MIXED_REWRITE_TTL
   MIXED_REWRITE_ARCHIVE
+  RESTORE_CHUNK
+  RESTORE_PUBLISH
 ```
 
 Entry 冻结：
@@ -465,6 +479,10 @@ Entry 冻结：
 - source/expired/live counts 和 conservation roots；
 - deterministic entry digest。
 
+Restore两种mode只携带restore/staging/dataset-set/operation digest，source/merge/
+reservation/booking必须为空；TN只追加Terminal Journal command，不进入Object handler。
+这样所有设置TxnCommitRequest field 5的生产事务都有matching tag，旧TN不能静默忽略header。
+
 Finalizer不调用独立`TxnOperator.Write`，也不能把`bat=nil` tag混入普通`txn.writes`。
 它通过唯一adapter写入Dataset/Receipt普通Catalog DML，并设置一个单值、深拷贝、
 immutable `LifecycleCommitControl`。普通workspace完成dump/compact/sort后，
@@ -474,12 +492,17 @@ deadline `D`，把它同时冻结到Root并设为commit context deadline，生�
 `TxnCommitRequest.DeadlineUnixNano`必须等于`D`。外部逻辑attempt还冻结entry
 bytes/digest、Root、Booking、最大内部generation和累计预算；每个TAE generation从
 Booking重建私有Catalog node、TransferTable和txn entry，严禁复用上一代指针。
+同一request的optional field 5携带版本化`LifecycleTerminalIdentity`，供TxnService在
+解析TAE payload和`maybeAddTxn`前查询Terminal Journal；它必须与tagged Entry的
+attempt/root/digest/sequence/deadline/route逐字段一致。普通transaction该字段恒为nil。
 
 在分配tenant final txn前，Finalizer先`TryAcquire` CN/Scheduler finalization permit。
 拿不到permit时Root/Attempt保持`VERIFIED`并有界jitter重调度，不创建tenant txn、不删
-staging。拿到permit后才CAS `VERIFIED/FINAL_RETRYABLE -> FINALIZING`，冻结本代txn ID、
-`final_generation`、最多60秒的`final_prepare_deadline`和首次finalize确定的10分钟
-`final_retry_deadline`。TN permit仍是最后硬边界。
+staging。拿到permit后才CAS `VERIFIED -> FINALIZING`，冻结本次txn ID和最多60秒的
+`final_prepare_deadline`。TN permit仍是最后硬边界；明确aborted后清理同一attempt的
+staging，后续只能创建fresh attempt，禁止跨 external transaction reuse。
+这里“明确aborted”严格指Terminal Journal matching ABORTED已durable ACK且一致性读取
+无Receipt/Dataset；普通storage error、timeout或Journal不可用均只算UNKNOWN。
 
 生产finalizer没有合法control-only路径：Archive adapter必须先把Dataset+Receipt、
 TTL adapter必须先把Receipt加入当前workspace，成功后返回包内不可构造、绑定txn ID、
@@ -551,7 +574,8 @@ pkg/vm/engine/tae/rpc/handle_lifecycle.go
   parse/validate/register
 
 pkg/common/moerr/error.go
-  Lifecycle专用 LIFECYCLE_RESOURCE_BUSY；不改变普通TxnService的ABORTED语义
+  Lifecycle专用 LIFECYCLE_RESOURCE_BUSY / TERMINAL_IDENTITY_MISMATCH
+  普通TxnService的ABORTED语义不变；Lifecycle使用三态结果
 ```
 
 context/control/token不进入普通dump/compact/sort/PK dedup/statement offset/Batch GC；
@@ -571,9 +595,14 @@ restart后旧事务缺页必须RW/WW conflict。
 
 ```text
 validate absolute request deadline
+TxnService parse optional LifecycleTerminalIdentity
+query Terminal Journal before maybeAddTxn/storage.Commit
+  matching terminal -> return original result without storage.Commit
+  mismatch/unavailable -> protocol error/UNKNOWN without storage.Commit
 pre-scan max-one Lifecycle tag
 TryAcquire bounded Lifecycle commit-admission permit
-  busy -> LIFECYCLE_RESOURCE_BUSY before GetOrCreateTxnWithMeta
+  busy -> durable ABORTED Journal through reserved control lane
+       -> ABORTED_DURABLE/LIFECYCLE_RESOURCE_BUSY before GetOrCreateTxnWithMeta
 validate protocol/capability/digest
 validate authoritative frozen ServiceID/ShardID/ReplicaID route
 validate table/schema/Guard generation
@@ -617,11 +646,11 @@ Lifecycle Gate C只要求local builder/slot闭环，不强绑普通Merge改造�
 generation count、累计booking bytes、delta rows/bytes和CPU时间；每次generation及I/O
 前先消费预算，超限terminal abort。budget随HandleCommit调用栈销毁，不建立进程全局
 Map。同一internal txn内的重复注册通过generation slot成为follower。V1复用TxnService
-对overlapping Commit的串行：terminal后迟到duplicate不依赖永久registry，而是在Booking
-I/O前依次检查deadline、Lifecycle bounded admission、route、reservation/protection和
-exact source。已提交source不exact时返回`LIFECYCLE_RECONCILE_REQUIRED`，由CN正常读
-Root/Receipt收敛。只有Gate C实证发现同一external txn可并行进入storage HandleCommit时，
-才增加有hard cap/TTL/terminal/deadline回收的registry。
+对overlapping Commit的串行；终态后迟到duplicate由持久化Lifecycle Terminal Journal在
+`maybeAddTxn`、Booking I/O和TAE mutation前截获。Journal主键只用external txn ID，其他
+identity属性必须精确匹配；它有hard rows/bytes上限、WAL replay和Owner ACK后GC，不允许
+退化成进程全局Map。`COMMITTED` record与final mutation同一事务，明确失败的`ABORTED`
+record必须durable ACK后才返回；任何不确定结果一律UNKNOWN。
 
 Gate C exit：
 
@@ -637,9 +666,11 @@ Gate C exit：
 - generation slot在第一次TAE mutation前唯一，失败后同代不能重建；
 - retry不延长绝对deadline/累计预算，budget有明确HandleCommit Owner，G2不复用G1
   可变指针；
-- overlapping duplicate Commit由现有TxnService串行；迟到duplicate在Booking I/O前按
-  deadline/source preflight收敛，并受Lifecycle admission硬限流；
-- admission busy在创建内部TAE txn前立即返回，无TN waiter/queue；
+- overlapping duplicate Commit由现有TxnService串行；终态后迟到duplicate由Journal在
+  `maybeAddTxn`前返回原终态，identity mismatch不进入storage；
+- admission busy在创建内部TAE txn前写durable ABORTED Journal再返回，无TN waiter/queue；
+- TN restart/切主后Journal replay仍拒绝同一txn；Journal容量满或不可用时新Lifecycle
+  final commit在mutation前UNKNOWN/fail closed，普通txn不访问Journal；
 - unknown EntryType在Batch解析前unsupported，不panic；capability端到端传播缺一层即
   unsupported；
 - `LogTxnEntry`前后逐点故障注入无runtime资源泄漏或Root物理误删；
@@ -675,23 +706,20 @@ final 只写 DropIntent；但由于没有new live Object/transfer phase，Prepar
 的有界`ValidateNoPostSnapshotDelete(S, prepareTS)`。发现post-S删除或验证超限就
 abort/re-export。FileService source delete交给existing GC。
 
-### D2. 小 Mixed DELETE
+### D2. TTL 小 Mixed DELETE
 
 只服务经认证的小尾部：
 
 ```text
 one bounded writable SI transaction
   -> exact Reader at txn Snapshot
-  -> optional Archive PUT/readback (Archive hard: txn <= 5m, Provider total <= 3m,
-       selected bytes <= 256MiB)
   -> Relation.Delete(RowID + actual delete key)
-  -> Dataset/Receipt in same txn
+  -> Receipt in same txn
 ```
 
-必须共享普通 DELETE 的单 PK、复合 PK、fake PK 编码。Archive模式由已认证Provider吞吐
-预估或运行时预算触发超限时，在第一次Delete前完整rollback、清理staging并重plan为Rewrite；
-不得延长SI transaction。TTL Small Mixed保持原预算。Archive Small Mixed在Whole、TTL
-Small Mixed和Rewrite分别认证后单独打开。
+必须共享普通 DELETE 的单 PK、复合 PK、fake PK 编码。首个 GA 的 Archive Mixed一律
+重plan为Rewrite；不允许在可写 SI transaction 内做 Provider I/O，也不开放 Archive
+Small Mixed开关。
 
 ### D3. 中/大 Mixed Rewrite
 
@@ -859,6 +887,42 @@ pkg/vm/engine/disttae/tools.go
   optional LifecycleFinalizeContext + opaque CatalogPairToken
   single immutable LifecycleCommitControl
   append control after ordinary workspace processing
+
+pkg/txn/client/types.go
+pkg/txn/client/operator.go
+  add optional LifecycleCommitIdentityPreparer without changing TxnOperator interface
+  reserve CommitSequence once before Root FINALIZING; Commit must reuse it
+  one-shot deep-copy identity, write CommitRequest field 5, clear on Commit/Rollback/reset
+  reject Snapshot operator/cross-txn/second prepare/sequence rewrite
+
+proto/txn.proto
+  add optional TxnCommitRequest.lifecycle_terminal_identity = field 5
+  ordinary transaction leaves it nil
+
+pkg/txn/service/service_cn_handler.go
+  precheck Lifecycle terminal identity as first Lifecycle branch, before lock allocator,
+  maybeAddTxn and storage.Commit
+  use COMMITTED / ABORTED_DURABLE / UNKNOWN tri-state only for Lifecycle
+  only typed ErrLifecycleAbortedDurable maps to TxnStatus_Aborted
+  any other Lifecycle error maps to ErrTxnUnknown; do not map UNKNOWN to ordinary ABORTED
+
+pkg/vm/engine/tae/lifecycle/terminal_journal.go
+  persist replicated terminal records keyed only by external txn ID
+  add LifecycleTerminalCmd for normal final txn and short journal-control txn
+  commit COMMITTED record atomically with Lifecycle final mutation
+  write ABORTED through a reserved control lane and wait durable ACK
+  enforce hard rows/bytes/oldest-unacked limits and owner ACK before GC
+
+pkg/vm/engine/tae/db/checkpoint/executor.go
+pkg/vm/engine/tae/db/checkpoint/reader.go
+pkg/vm/engine/tae/db/checkpoint/replay.go
+pkg/vm/engine/tae/db/checkpoint/runner.go
+  write max-4MiB copy-on-write Journal pages only for dirty ranges
+  write bounded manifest reusing unchanged pages
+  add fixed-size manifest location/size/digest/watermark reference to normal checkpoint metadata
+  prohibit Journal WAL truncation before covering checkpoint is durable
+  restore checkpoint then replay WAL delta before advertising capability ready
+  reuse checkpoint-file reference GC for old Journal snapshots
 ```
 
 这些改动必须保持普通Merge constructor的默认行为和wire字节兼容。不能直接让普通
@@ -869,7 +933,7 @@ Merge使用Lifecycle Root、strict missing-mapping规则或delta limit。
 明确 committed：
 
 ```text
-Txn GetStatus == COMMITTED
+Terminal Journal == matching COMMITTED(commit_ts)
 AND consistent read at snapshot >= commit_ts sees matching Receipt
 AND Archive sees matching Dataset/Manifest root
 ```
@@ -884,18 +948,17 @@ AND Archive sees matching Dataset/Manifest root
 - normal TAE/WAL/GC 接管 live/source Object。
 - runtime transfer page仍由现有transfer table TTL管理，不是WAL replay对象。
 
-明确aborted只有不满足`FINAL_RETRYABLE`全部条件时才允许Root -> `DELETE_PENDING`。明确
-`LIFECYCLE_RESOURCE_BUSY + ABORTED + no Receipt/Dataset`且Root child全为VERIFIED、仍在
-3代/10分钟窗口内时，Root/Attempt -> `FINAL_RETRYABLE`；新一代先重新验证source、
-reservation/protection、Binding/Guard，再用新tenant txn ID回到FINALIZING，复用immutable
-staging且不重新PUT/readback。仍unknown时保留
+只有Terminal Journal matching `ABORTED`且一致性读取无Receipt/Dataset，Root才进入
+`DELETE_PENDING`。`LIFECYCLE_RESOURCE_BUSY`在内部TAE txn创建前被拒绝，但仍必须先经
+保留Journal control lane持久化ABORTED并取得durable ACK；失败则返回UNKNOWN。新一次
+执行必须创建fresh attempt并重新Reader/Build，不复用immutable staging。仍unknown时保留
 reservation/protection、Root 和 staging，释放 worker slot并进入 Reconciler。
 Dataset/Receipt/Restore chunk不在原事务中填写CommitTS；Root的`observed_commit_ts`
-为NULL时禁止Purge，不能用worker wall clock或永久依赖Txn GetStatus替代持久化。
+为NULL时禁止Purge，不能用worker wall clock替代持久化。
 
 Gate D exit：
 
-- 十项 P0 中 Reader、SI、wire、CN commit-control、generation slot、
+- 十一项P0中Reader、SI、wire、CN commit-control、generation slot、Terminal Journal、
   reservation/protection、Root、Rewrite、budget全部
   通过；
 - Whole/small Mixed/Rewrite 每条路径都有 crash matrix；
@@ -919,16 +982,17 @@ select immutable Dataset set
   -> create hidden staging table
   -> read/verify each Manifest/Payload
   -> bounded insert transaction per chunk
-  -> immutable chunk Receipt
+  -> immutable chunk Receipt + tagged RESTORE_CHUNK terminal control
   -> full row/root verification
-  -> atomic publish as a new table
+  -> atomic publish as a new table + tagged RESTORE_PUBLISH terminal control
 ```
 
 要求：
 
 - 不覆盖已有目标表；
 - payload/Manifest/schema/root 任一不符不发布；
-- response lost 依赖 Receipt 恢复；
+- response lost依赖Terminal Journal + Receipt/target Catalog恢复；
+- header/tag/opaque Restore token必须配对；old/unsupported TN不能只提交ordinary writes；
 - AUTO_INCREMENT 水位正确推进；
 - cancel/worker loss 后 staging 可清；
 - Purge 与 Restore lease CAS 同一 access generation。
@@ -985,8 +1049,8 @@ Candidate table/account/cluster limit
 Reader batch/memory limit
 max certified Block read bytes and pre-DoMergeAndWrite task memory token
 small Mixed rows/ratio/delete-key/WAL limit
-Archive Small Mixed: txn 5m / Provider PUT+readback 3m / selected bytes 256MiB
-finalization permit <= TN admission; final generation <= 3; retry window <= 10m
+Archive Mixed always uses Rewrite; Archive Small Mixed disabled
+finalization permit <= TN admission; explicit abort always cleans the attempt
 Rewrite single-source/live/dense-transfer/external-booking/delta/staging limit
 Rewrite 24h/7d attempted/committed/aborted bytes and amplification threshold
 Provider I/O/deadline/concurrency limit
@@ -1009,6 +1073,7 @@ reservation/protection lease and renew interval
 - Tombstone/Merge/GC backlog；
 - Provider requests/bytes/cost；
 - invariant checker 和 kill switch。
+- dormant-path与active-coexistence两套普通MO回归指标；foreground pressure自动暂停新claim。
 
 ### F3. 认证矩阵
 
@@ -1020,7 +1085,9 @@ reservation/protection lease and renew interval
 - 10 TiB 单表持续 Insert/Merge 七天；
 - 高时间局部性、1%边界 Mixed、高度乱序三种 layout；
 - “几乎全部存活”的最大 Rewrite；
-- 每account 1000 Binding准入、公平调度和无全局热点；集群1000绑定表认证容量；
+- 每account 1000 Guard与cluster activation slot=1000的准入、公平调度和无普通路径热点；
+- 1000 Binding、cluster child=8、Rewrite=1、TTL Small Mixed=2、Provider限速/429下的
+  未绑定表 active coexistence：普通DML/查询/Merge/checkpoint/GC/logtail指标必须通过；
 - 真实支持的 S3/OSS/COS/S3-compatible Provider；
 - rolling upgrade/downgrade fence；
 - 30 天 soak；
@@ -1037,12 +1104,13 @@ Retirement Release:
   Whole: 50 -> 200 -> 500 -> 1000 bound tables
   -> TTL Small Mixed independent gate
   -> Rewrite independent gate
-  -> Archive Small Mixed independent gate
 ```
 
 任一数据不变量失败立即关闭新 retirement，继续 Cleanup/Reconcile，不扩大下一阶段。
-降级前关闭retirement并等待`FINALIZING/FINAL_RETRYABLE/COMMIT_UNKNOWN`收敛；禁止降到缺少Safety
-Release unknown-entry parser的版本。
+降级前关闭retirement并等待`FINALIZING/COMMIT_UNKNOWN`收敛；禁止降到缺少Safety
+Release unknown-entry parser的版本。若目标版本不理解Terminal Journal checkpoint/WAL
+格式，还必须等待全部record已Owner ACK、`reject_until`到期并GC，写出empty Journal
+snapshot的durable checkpoint且旧Journal WAL已安全截断；任一条件不满足都禁止降级。
 
 ## 11. 开发依赖图
 
@@ -1058,17 +1126,18 @@ B1 Reader ────── B2 Archive
 
 C1 Reservation ─┐
 C2 Protection  ─┼── C3 Wire ── C4 TN Prepare
-B3 Root        ─┘
+B3 Root        ─┘                 │
+Terminal Journal ────────────────┘
 
 A4 + B1 + C4 ───── D1 Whole
-A4 + B1 + B2 ───── D2 Small Mixed
+A4 + B1 ────────── D2 TTL Small Mixed
 B2 + C4 + merge primitives ── D3/D4 Rewrite
 
 D1/D2/D3 + E1 Restore + E2/E3 Cleanup ── F GA certification
 ```
 
 可以并行开发 Catalog、Reader/Archive、reservation/protection，但第一个会退休数据的
-测试必须等 C1～C4 和 Root 协议全部完成。
+测试必须等C1～C4、Root和Terminal Journal协议全部完成。
 
 ## 12. Code Review Owner
 
@@ -1079,6 +1148,7 @@ D1/D2/D3 + E1 Restore + E2/E3 Cleanup ── F GA certification
 | Archive/Manifest/Provider | FileService + Restore |
 | reservation/SyncProtection | TAE Merge + GC |
 | CN commit-control/tagged entry/TN Prepare/WAL/replay | DistTAE + TAE Transaction + TxnService |
+| Lifecycle Terminal Journal/TxnService三态/GC | TAE Transaction + TxnService + LogService |
 | Rewrite/transfer | TAE Merge + MVCC |
 | Attempt/Root/Sweeper | TaskService + FileService |
 | scale/kill switch/runbook | SRE + Release |

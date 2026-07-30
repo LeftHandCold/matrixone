@@ -409,8 +409,8 @@ SyncProtection的BloomFilter又能在读取前覆盖未来可能出现的live/bo
 - TN Lifecycle entry Prepare 调用
   `ValidateSyncProtection(job_id, prepare_ts, expected_set_digest)`；
 - TN restart 后 protection 丢失，final transaction abort；
-- response unknown 后 protection 不因 worker lease丢失立即 unregister，直到原
-  transaction 明确 committed/aborted；
+- response unknown 后protection不因worker lease丢失立即unregister，直到Terminal
+  Journal给出匹配的COMMITTED/ABORTED且Owner已吸收终态；
 - committed 后 source files 已有正常 DropIntent/transfer protection，可以
   unregister；
 - aborted 后先清理 staging owner，再 unregister。
@@ -969,14 +969,13 @@ Lifecycle构造entry时必须固定
 本事务的内存/Catalog状态。Root child按以下权威事实转移：
 
 ```text
-txn committed + matching Receipt visible:
+Terminal Journal COMMITTED + matching Receipt visible:
   TAE_LIVE_SEGMENT_RANGE/TAE_LIVE_STAGING_OBJECT -> TAE_OWNED
 
-final txn service authoritatively reports ABORTED:
-  FINAL_RETRYABLE-eligible busy -> remain VERIFIED
-  other abort -> VERIFIED -> DELETE_PENDING
+Terminal Journal matching ABORTED + no Receipt/Dataset:
+  VERIFIED -> DELETE_PENDING
 
-txn unknown:
+Journal absent/unavailable or Catalog visibility pending:
   remain VERIFIED; no physical delete
 ```
 
@@ -1003,10 +1002,11 @@ child仍由Sweeper清理；不得把整个Root置为`DELETE_PENDING`而误删Arc
 - 无Archive的TTL Rewrite Root先进入`POST_COMMIT_CLEANUP`，booking清理完成后进入
   `TRANSFERRED`，只保留短期审计身份。
 
-提交 aborted时：
+Terminal Journal确认ABORTED时：
 
 - Archive对象按 07 删除；
-- TAE live staging由Root在权威aborted后删除，普通Merge entry不删除；
+- TAE live staging由Root在matching ABORTED Journal且无Receipt/Dataset后删除，普通
+  Merge entry不删除；
 - transfer booking删除；
 - source对象不由 Root删除。
 
@@ -1118,6 +1118,20 @@ type LifecycleCommitControl struct {
     ProtocolVersion     uint32
 }
 
+// TxnCommitRequest.field 5；普通事务恒为nil。
+type LifecycleTerminalIdentity struct {
+    ProtocolVersion  uint32
+    OperationKind    uint32 // RETIRE / RESTORE_CHUNK / RESTORE_PUBLISH
+    AttemptID        []byte
+    RootID           []byte
+    EntryDigest      [32]byte
+    CommitSequence   uint64
+    DeadlineUnixNano int64
+    TargetServiceID  string
+    TargetShardID    uint64
+    TargetReplicaID  uint64
+}
+
 // unexported；只能由Catalog adapter在成功追加逻辑写后创建。
 type lifecycleCatalogPairToken struct {
     txnID               []byte
@@ -1154,6 +1168,13 @@ type Transaction struct {
 }
 ```
 
+`LifecycleTerminalIdentity`是TxnService在解析TAE payload之前识别Lifecycle事务的最小
+头部，新增为`TxnCommitRequest`的optional field 5。普通事务不设置该字段；Retire场景
+必须与tagged `LifecycleCommitEntry`逐字段一致，Restore chunk/publish必须与对应
+Receipt/Attempt一致。该头部只用于终态Journal准入和路由，不替代Entry、Booking或
+Catalog内容校验。缺失、重复、版本未知或header/payload不一致均在任何Booking I/O和
+TAE mutation前fail closed。
+
 Catalog adapter和唯一Seal接口：
 
 ```go
@@ -1165,10 +1186,25 @@ func (a *TTLCatalogAdapter) InsertReceipt(
     txn *Transaction, ...,
 ) (*lifecycleCatalogPairToken, error)
 
+func (a *RestoreCatalogAdapter) InsertChunkRowsAndReceipt(
+    txn *Transaction, ...,
+) (*lifecycleRestoreCommitToken, error)
+
+func (a *RestoreCatalogAdapter) PublishStagingTable(
+    txn *Transaction, ...,
+) (*lifecycleRestoreCommitToken, error)
+
 func (txn *Transaction) SealLifecycleCommit(
-    token *lifecycleCatalogPairToken,
+    token lifecycleCommitToken, // sealed unexported interface
     control LifecycleCommitControl,
 ) error
+
+// 可选窄接口；不修改所有TxnOperator实现和普通调用者。
+type LifecycleCommitIdentityPreparer interface {
+    PrepareLifecycleTerminalIdentity(
+        template *txn.LifecycleTerminalIdentity,
+    ) (canonical []byte, error)
+}
 ```
 
 合同：
@@ -1180,6 +1216,10 @@ func (txn *Transaction) SealLifecycleCommit(
   不调用本API，production不存在合法control-only transaction；
 - Archive adapter任一行写入失败都不签发token，并把整个final transaction标记为必须
   full rollback；不能保留已加入workspace的Dataset后重试Receipt或改走TTL token；
+- Restore chunk adapter必须在同一txn加入staging rows和chunk Receipt后才签发
+  `lifecycleRestoreCommitToken`；publish adapter必须完成staging identity/name Catalog
+  mutation后才签发。token冻结operation kind、restore/staging identity、operation
+  digest、dataset set digest和workspace generation；任一步失败都full rollback；
 - finalizer先完成Dataset/Receipt普通Catalog写，再根据payload中的binding generation、
   Dataset/Manifest root和Receipt digest计算
   `CatalogPairDigest`。canonical输入固定为
@@ -1190,6 +1230,11 @@ func (txn *Transaction) SealLifecycleCommit(
   Manifest root为32字节零值。字段值必须来自adapter刚加入workspace的Catalog mutation和
   同一payload，不能由调用方再传一份未验证副本。该值只证明CN finalizer配对，不进入
   wire四种聚合digest；
+- Restore的`CatalogPairDigest`固定为
+  `SHA256("MO-LIFECYCLE-RESTORE-PAIR-V1\x00" || operation_kind:u32be ||
+  restore_id:16bytes || staging_table_id:u64be || restore_operation_digest:32bytes ||
+  restore_dataset_set_digest:32bytes || entry_digest:32bytes)`；chunk和publish使用不同
+  `operation_kind`，不能互换token；
 - refresh/route/capability校验先在锁外完成；在`txn.Lock`下只比较其结果、验证
   token的txn ID、attempt、workspace generation、未消费状态、
   `CatalogPairDigest == token.pairDigest`以及token与payload identity，并深拷贝`Payload`；
@@ -1211,6 +1256,15 @@ func (txn *Transaction) SealLifecycleCommit(
 - Seal是本地一次性线性化点；同token或不同token重复调用均返回fatal transaction error。
   网络层duplicate Commit由immutable payload和TN协议幂等处理，不能通过重复Seal实现；
 - 一次transaction最多一个control，禁止slice和后写覆盖；
+- tenant final txn创建后、Root进入FINALIZING前，finalizer通过
+  `LifecycleCommitIdentityPreparer`预留本次`CommitSequence`。当前operator只在
+  `Commit()`内部调用`NextCommitSequence()`，因此Lifecycle必须把这一线性化点前移：
+  preparer调用相同provider恰好一次，填入template、canonical marshal并深拷贝保存；
+  后续`Commit()`复用该值，禁止再次`NextCommitSequence()`；
+- Root、control和`TxnCommitRequest`都冻结preparer返回的同一canonical identity。
+  operator校验txn ID、只允许prepare一次，并在Commit/Rollback/reset时清除。缺少该
+  optional接口、跨txn、二次prepare、Snapshot operator、CommitSequence被改写或identity
+  与control不一致，都把Lifecycle transaction置为POISONED并禁止发送；
 - context/control/token不进入statement offset、workspace size、PK dedup、dump、compact、sort、
   `toPBEntry`、普通Batch cleanup或CN staging GC；
 - 整体rollback/finalize把state置为`TERMINAL`并清除context，只释放该CN本地
@@ -1239,7 +1293,10 @@ merge/dump/compact ordinary txn.writes
          lifecycle_commit_payload: immutable Payload,
          bat: nil,
        }
+       require txnOperator carries the same prepared canonical LifecycleTerminalIdentity
   -> require EntryList non-empty
+  -> TxnOperator.Commit reuses the reserved CommitSequence
+  -> copy identity into TxnCommitRequest optional field 5
   -> encode one PrecommitWriteCmd
 ```
 
@@ -1280,10 +1337,13 @@ nil(OPEN) --SealLifecycleCommit/allocate--> SEALED --Commit only--> COMMITTING -
   未导出的commit helper，允许COMMITTING而不允许任何并发外部mutation；
 - 一旦POISONED，禁止重开、重seal或同一TxnOperator重试；只允许完整`Rollback`。请求
   已发出后的unknown仍按Root/Receipt reconcile处理，不能用Rollback删除Root资产。
-- `genWriteReqs`/route refresh在请求发出前失败时，`COMMITTING -> POISONED`，调用方执行
-  full Rollback；请求已发出后若response lost，进入`TERMINAL`的unknown finalize，仅释放
-  CN context/control/token内存，Root/Booking/Payload继续由Reconciler决定，绝不能回滚
-  物理资产。
+- Root仍为VERIFIED时的route/encode失败只需full Rollback，Root保持VERIFIED并重新规划。
+  Root已进入FINALIZING后，`genWriteReqs`或发送前失败使本地transaction
+  `COMMITTING -> POISONED`并full Rollback，但仍必须用冻结identity写ABORTED Journal：
+  durable ACK后按明确abort收敛；写入不确定则Root保持FINALIZING/UNKNOWN，不能凭
+  “请求可能尚未发出”直接清理。请求已发出后若response lost，进入`TERMINAL`的unknown
+  finalize，仅释放CN context/control/token内存，Root/Booking/Payload继续由Reconciler
+  决定，绝不能回滚物理资产。
 
 实现修改范围固定为：
 
@@ -1291,6 +1351,8 @@ nil(OPEN) --SealLifecycleCommit/allocate--> SEALED --Commit only--> COMMITTING -
 pkg/vm/engine/disttae/types.go  # Transaction字段和immutable control
 pkg/vm/engine/disttae/txn.go    # Set/commit/rollback/finalize生命周期
 pkg/vm/engine/disttae/tools.go  # genWriteReqs最后追加control
+pkg/txn/client/types.go         # optional LifecycleCommitIdentityPreparer
+pkg/txn/client/operator.go      # pre-reserve CommitSequence、field 5、reset cleanup
 ```
 
 ### 9.2 Protobuf
@@ -1344,6 +1406,8 @@ message LifecycleCommitEntry {
         MIXED_REWRITE_TTL = 3;
         MIXED_REWRITE_ARCHIVE = 4;
         EMPTY_ARCHIVE = 5;
+        RESTORE_CHUNK = 6;
+        RESTORE_PUBLISH = 7;
     }
 
     uint32 protocol_version = 1;
@@ -1390,6 +1454,35 @@ message LifecycleCommitEntry {
     bytes entry_digest = 35;
     repeated LifecycleTransferBooking transfer_bookings = 36;
     bytes source_protection_set_digest = 37;
+    bytes restore_id = 38;
+    bytes restore_operation_digest = 39;
+    uint64 restore_staging_table_id = 40;
+    bytes restore_dataset_set_digest = 41;
+}
+
+message LifecycleTerminalIdentity {
+    enum OperationKind {
+        OPERATION_UNKNOWN = 0;
+        RETIRE_FINAL = 1;
+        RESTORE_CHUNK = 2;
+        RESTORE_PUBLISH = 3;
+    }
+
+    uint32 protocol_version = 1;
+    OperationKind operation_kind = 2;
+    bytes attempt_id = 3;
+    bytes root_or_restore_id = 4;
+    bytes entry_or_chunk_digest = 5;
+    uint64 commit_sequence = 6;
+    int64 deadline_unix_nano = 7;
+    string target_service_id = 8;
+    uint64 target_shard_id = 9;
+    uint64 target_replica_id = 10;
+}
+
+message TxnCommitRequest {
+    // existing fields 1..4 remain unchanged
+    LifecycleTerminalIdentity lifecycle_terminal_identity = 5;
 }
 ```
 
@@ -1414,17 +1507,32 @@ message LifecycleCommitEntry {
 - `Level` 必须按普通Merge的晋级规则从唯一source Object计算并冻结；不能默认传0，
   造成高level Object降级后重新进入高频Merge。
 
+`RESTORE_CHUNK/RESTORE_PUBLISH`复用同一个tagged EntryType，但不进入Object handler：
+
+- `source_objects/source_layouts/merge/reservation/protection/transfer_bookings`必须全部为空；
+- `restore_id/restore_operation_digest/restore_staging_table_id/
+  restore_dataset_set_digest`必须非空且与TerminalIdentity、Restore Attempt和CN opaque
+  token一致；
+- chunk模式的ordinary writes必须包含staging rows + matching chunk Receipt；publish模式
+  必须包含staging table identity/name发布Catalog mutation；
+- Restore adapter成功加入ordinary writes后才签发txn-bound opaque token，Seal后走同一
+  commit-control和TxnOperator identity preparer；
+- TN只验证tag/header identity并在原事务追加COMMITTED Journal command，不解释Restore
+  行内容，也不创建Object transfer page；
+- production不存在合法的header-only或control-only Restore transaction。
+
 ### 9.3 Wire 限额
 
 ```text
 protocol_version          = 1
 source objects            == 1 for Rewrite；<= 64 for Whole
 source layout proofs      == source objects，一一对应且同序
+source objects/proofs     == 0 for Restore modes
 created objects           < 255
 inline transfer bytes     == 0
 external booking          required for Rewrite
 serialized entry          <= 1 MiB
-booking files/bytes       <= bounded release profile
+booking files/bytes       <= bounded release profile；Restore modes == 0
 ```
 
 所有 repeated source按 Object ID升序。Digest严格使用8.3.1节的唯一公式；
@@ -1441,16 +1549,17 @@ Finalizer只在 Build `VERIFIED` 后开始：
 try acquire CN/Scheduler finalization permit
   -> busy: keep Root/Attempt VERIFIED; bounded jitter reschedule; do not allocate tenant txn
   -> acquired: allocate normal tenant txn
-  -> choose per-generation absolute final_prepare_deadline D and bind commit context deadline = D
+  -> choose absolute final_prepare_deadline D and bind commit context deadline = D
   -> refresh authoritative TN route/capability outside txn.Lock
   -> freeze ServiceID + ShardID + ReplicaID + protocol_version
-  -> for FINAL_RETRYABLE: revalidate exact source/reservation/protection/Binding/Guard
-  -> system txn CAS Root VERIFIED/FINAL_RETRYABLE -> FINALIZING
+  -> canonical marshal LifecycleCommitEntry and compute entry_digest
+  -> LifecycleCommitIdentityPreparer reserves CommitSequence once
+       returns canonical terminal identity including D/route/entry_digest
+  -> system txn CAS Root VERIFIED -> FINALIZING
        freeze final_txn_id
        freeze canonical LifecycleCommitEntry bytes/digest
-       increment final_generation
+       freeze canonical LifecycleTerminalIdentity/CommitSequence
        freeze final_prepare_deadline = D
-       freeze final_retry_deadline (first generation only; never renew)
        freeze max internal retry generations/cumulative budget profile
        freeze receipt/dataset/manifest identity
   -> tenant txn CAS Guard/Binding/active attempt
@@ -1473,19 +1582,25 @@ token、control或digest不一致均返回`ErrLifecycleCatalogPairMissing`，不
 `TxnCommitRequest.DeadlineUnixNano`必须精确等于Root已冻结的`D`，不允许使用fallback
 deadline或在发送时重新延长。
 
+Root/Attempt已CAS为FINALIZING后，任何Catalog adapter、Seal、dump、encode或发送前失败
+都必须先完整rollback tenant txn，再以冻结identity写ABORTED Journal并等待durable ACK；
+ACK失败按UNKNOWN保留Root。不能因为CN知道“尚未调用sender”就绕过终态协议。
+
 CN finalization permit的唯一目的，是在`VERIFIED -> FINALIZING`之前把后台final commit
 并发削到不高于TN admission；它不等待、不进入普通事务，也不包住Reader/Provider I/O。
 permit不可用时Root继续持有已验证staging，不能开启tenant txn或删除staging。TN仍以
 `TryAcquire`作为最终硬边界。
 
-TN最后返回`LIFECYCLE_RESOURCE_BUSY`时，现有TxnService会将本次外部txn置为ABORTED。
-CN从`TxnError.Error/Code`保留的原始moerr分类写入Root/Attempt `last_final_error_code`，再由
-Reconciler确认ABORTED且Receipt/Dataset不存在。只有此时、`final_generation < 3`、未超过
-首次finalize冻结的10分钟`final_retry_deadline`、并且所有Root child仍为immutable VERIFIED，
-才允许`FINALIZING -> FINAL_RETRYABLE`。下一代使用**新**tenant txn ID，但复用同一verified
-Payload/Manifest/live staging/booking；它必须重新校验source、reservation、protection、
-Binding和Guard。response lost、unknown、其他abort、分类缺失、source不exact或预算耗尽一律
-不换txn，分别走Reconcile或`DELETE_PENDING`。
+TN最后返回`LIFECYCLE_RESOURCE_BUSY`时，不能直接沿用现有TxnService“任意
+storage.Commit错误都标记ABORTED”的分支。Lifecycle路径必须先通过保留的Journal control
+lane持久化匹配的`ABORTED`终态并取得durable ACK，才返回`ABORTED_DURABLE`；Journal写入
+失败或结果不确定时返回`UNKNOWN`，Root保持`FINALIZING`。Reconciler只有读到匹配的
+`ABORTED` Journal且一致性读取确认Receipt/Dataset均不存在，才把Archive/Rewrite Root推进
+到`DELETE_PENDING`、把TTL Attempt推进到`ABORTED`。
+
+V1禁止用相同或新的external txn ID复用已明确aborted attempt的Payload/Manifest、live
+staging、booking或SI delete buffer；下一次只能由Scheduler创建fresh attempt并从
+Reader/Build开始。response lost、unknown只按原txn identity对账，不能创建替代事务。
 
 禁止：
 
@@ -1493,6 +1608,7 @@ Binding和Guard。response lost、unknown、其他abort、分类缺失、source�
 - 先退休再异步补 Dataset；
 - 把Lifecycle作为commit前的独立`TxnOperator.Write`发送；
 - response lost/unknown后用新 txn ID重发；
+- Journal未durable ACK就向调用方宣称明确ABORTED；
 - final transaction执行 Provider I/O；
 - reservation过期后只看 Object仍存在就提交。
 
@@ -1511,20 +1627,39 @@ pkg/vm/engine/tae/tables/txnentries/lifecycle_objects.go
 ### 11.1 解析和 digest
 
 1. iterator只在`EntryType=LifecycleCommit`时接受`lifecycle_commit_payload`；
-2. protocol/version/capability匹配；
-3. canonical重新计算 `entry_digest`;
-4. mode字段组合合法；
-5. source/created/booking行数和大小有界；
-6. nested `MergeCommitEntry` 与顶层 identity一致。
+2. request `LifecycleTerminalIdentity`存在，并与tag的protocol/operation/attempt/root/
+   deadline/route逐字段匹配；Retire的`entry_or_chunk_digest == entry_digest`，Restore的
+   `entry_or_chunk_digest == restore_operation_digest`；
+3. protocol/version/capability匹配；
+4. canonical重新计算 `entry_digest`;
+5. mode字段组合合法；
+6. source/created/booking行数和大小有界；
+7. Retire mode的nested `MergeCommitEntry` 与顶层identity一致。
 
 `MIXED_REWRITE_*`额外要求`expired_rows > 0`且`live_rows > 0`；
 `createdObjs==0`或`expired_rows==0`直接拒绝，不能在TN临时猜测应退化为何种模式。
 
 未知字段版本、越界、digest mismatch均返回明确错误，不降级普通 Merge。
 
+Mode dispatch固定为：
+
+```text
+RESTORE_CHUNK / RESTORE_PUBLISH
+  -> TerminalIdentity.operation_kind must be RESTORE_CHUNK / RESTORE_PUBLISH
+  -> require all Retire fields empty
+  -> validate restore fields + terminal identity
+  -> register LifecycleTerminalCmd(COMMITTED) in current txn
+  -> do not enter reservation/source/transfer handler
+
+Retire modes
+  -> TerminalIdentity.operation_kind must be RETIRE_FINAL
+  -> require all Restore fields empty
+  -> continue 11.2～13
+```
+
 ### 11.2 Identity/Guard
 
-TN校验：
+本节及11.3～13只适用于Retire mode。TN校验：
 
 ```text
 account incarnation
@@ -2017,8 +2152,7 @@ tagged Lifecycle entry属于正常commit payload：
 - same txn/same digest重复到达：返回同一逻辑注册结果，但绝不能返回某个旧内部
   generation的entry、Catalog node或TransferTable指针；
 - same txn/different digest：fatal transaction error；
-- different txn/same attempt：只有旧 txn满足`FINAL_RETRYABLE`全部条件、Root CAS进入新
-  generation后才允许；
+- different txn/same attempt：一律拒绝；明确 aborted 后由 Scheduler 创建新 attempt ID；
 - source Object missing不作为duplicate success；
 - 同一内部generation并发decode时只有一个builder可以完成`LogTxnEntry`；失败者释放
   全部私有runtime资源，不删除Root文件。
@@ -2086,11 +2220,19 @@ HandleCommit
 
 同一次`HandleCommit`内部的retry generation只使用这一份预算；同一internal txn内的
 重复注册由generation slot变成follower，不执行第二份Booking I/O、delta scan或
-Catalog mutation。V1不增加Lifecycle全局duplicate registry：当前TxnService已串行重叠
-Commit，但不会永久保存终态。迟到duplicate的安全与成本边界固定为：
+Catalog mutation。V1不增加通用Txn duplicate registry，但必须实现Lifecycle专用、
+持久化且有界的Transaction Terminal Journal。`TxnService`在`maybeAddTxn`和
+`storage.Commit`之前读取optional `LifecycleTerminalIdentity`并查询Journal，顺序固定为：
 
 ```text
 TxnService absolute request deadline gate
+  -> parse LifecycleTerminalIdentity
+  -> query terminal journal by external_txn_id
+       matching COMMITTED -> return committed result; do not call storage.Commit
+       matching ABORTED   -> return original terminal error; do not call storage.Commit
+       identity mismatch  -> protocol error; do not call storage.Commit
+       absent             -> continue
+       unavailable        -> UNKNOWN; do not call storage.Commit
   -> storage HandleCommit pre-scan max-one Lifecycle tag
   -> TryAcquire Lifecycle commit permit
        busy: return typed LIFECYCLE_RESOURCE_BUSY before creating internal TAE txn
@@ -2099,23 +2241,25 @@ TxnService absolute request deadline gate
   -> only then Booking read/decode and TAE mutation
 ```
 
-已提交attempt的source不再exact时，TN必须在Booking I/O前返回
-`LIFECYCLE_RECONCILE_REQUIRED`；CN以正常一致性读Root/Receipt收敛，不能把它当作
-corruption或重新导出。已明确aborted而source仍exact的请求只有在同一绝对deadline、
-attempt/reservation仍有效且调用方结果unknown时才可重新尝试。超过deadline由TxnService
-拒绝。admission不设waiter、不在TN commit路径排队；TryAcquire失败立即返回
-`LIFECYCLE_RESOURCE_BUSY`。该错误必须是独立moerr code；虽然TxnService使用
-`ErrTAECommit`作为内部TxnErrCode，它必须保留在`TxnError.Error/Code`中，以供CN持久化
-`last_final_error_code`后由Reconciler判定是否允许有界final retry。CN在创建final
-transaction前也执行同口径finalization permit，TN permit是最后硬边界。permit
+已提交attempt的source不再exact时，Journal中的`COMMITTED`记录应先截获迟到请求；若
+Journal暂时不可读则返回`UNKNOWN`，不能退回仅凭source状态猜测。已明确`ABORTED_DURABLE`
+后，同一external txn即使deadline未到、source仍exact也永远不能再次读取Booking或构造
+mutation；后续只能fresh attempt。admission不设waiter、不在TN commit路径排队；
+TryAcquire失败立即生成类型化`LIFECYCLE_RESOURCE_BUSY`，并通过保留的Journal control
+lane写入`ABORTED`；写Journal失败只能返回`UNKNOWN`。该错误必须保留在Journal和
+`TxnError.Error/Code`中，以供CN记录终止原因。CN在创建final transaction前也执行同口径
+finalization permit，TN permit是最后硬边界。permit
 由一次`HandleCommit`独占并覆盖其全部G1/G2 retry generation；在parse、preflight、Booking、
 TAE mutation、terminal abort或正常返回的任一出口都必须exactly-once释放。它不随单个
 generation释放或重取，避免retry绕过并发上限。
 
-Gate C只需证明没有两个storage `HandleCommit`会并行执行同一external txn；若该证明
-失败，才增加key为`external txn ID + CommitSequence + attempt ID + entry_digest`、具有
-hard cap、TTL、terminal和deadline回收的专用registry。禁止以普通路径增加进程全局
-无界Map。
+Journal主键必须严格为`external_txn_id`；attempt ID、root ID、operation kind、
+entry digest、commit sequence、deadline和route identity都是不可变比对属性，不能拼进
+主键以免被修改字段绕过终态。Journal由目标TN shard复制、WAL replay并在重启/切主后恢复，
+不能使用进程内Map作为正确性来源。重叠Commit仍可由现有txn context串行；终态后迟到
+Commit必须由Journal拒绝。终态只能由`ABSENT -> COMMITTED`或`ABSENT -> ABORTED`的CAS
+建立，二者不可互转；已有matching记录返回原结果，不同identity或相反终态触发P0
+invariant和kill switch。
 
 每次retry必须：
 
@@ -2135,14 +2279,16 @@ HandleCommit-local replay context只保存不可变bytes/digest、Root identity�
 ### 14.4 Response lost
 
 ```text
-txn service committed
+Terminal Journal == matching COMMITTED
 AND consistent tenant read sees matching Receipt/Dataset
   -> COMMITTED
 
-txn service aborted
+Terminal Journal == matching ABORTED
+AND consistent tenant read sees no Receipt/Dataset
   -> ABORTED
 
-status unknown
+Journal absent/unavailable
+OR Journal and Catalog visibility are not yet consistent
   -> COMMIT_UNKNOWN
 ```
 
@@ -2152,15 +2298,24 @@ status unknown
 - 不删除live staging或Archive；
 - 不启动新final txn；
 - 尝试保持source protection；续租失败也不能推断aborted；
-- 由正常 txn status helper和一致性Receipt读取收敛。
+- 由Terminal Journal和一致性Receipt/Dataset读取收敛。
+
+首个GA不恢复已deprecated且当前Server未注册的通用Txn GetStatus。Lifecycle
+Reconciler以Journal作为事务终态权威来源；若`COMMITTED + Receipt缺失`或
+`ABORTED + Receipt存在`只是可见水位尚未追平，则先等待/重试，只有在一致性可见水位
+满足后仍不一致才进入`MANUAL_RECONCILE_REQUIRED`。
+
+当前CN/MORPC在Commit已发送但响应丢失时返回`ErrTxnUnknown`，本设计不假设它会自动重发
+同一Commit。Terminal Journal防御的是网络迟到、调用方重试、故障恢复或未来实现变化使
+相同请求实际再次到达TN的情况；不能因为当前客户端通常不重发就省略终态拒绝。
 
 ## 15. WAL、Replay 与 GC
 
 ### 15.1 WAL
 
 Archive Parquet/Manifest字节**不进入TAE WAL**；它们由Archive Provider、Cleanup
-Root和Manifest checksum管理。WAL只记录final transaction对活动TAE Catalog的
-原子变化：
+Root和Manifest checksum管理。WAL记录final transaction对活动TAE Catalog的原子变化，
+并在同一commit记录匹配的`COMMITTED` Terminal Journal：
 
 最终 Object变化继续由现有 merge transaction command表示：
 
@@ -2170,7 +2325,10 @@ created live Object IDs
 ```
 
 Replay不需要重放 Provider I/O、reservation或Scanner。Lifecycle Dataset/Receipt由
-普通 Catalog DML WAL恢复。
+普通Catalog DML WAL恢复；`COMMITTED` Journal与这些mutation同一原子提交、同一
+replay结果，不能出现“数据已退休但终态仍缺失”。在内部TAE txn创建前发生的明确失败
+使用独立、复制的Journal control record写`ABORTED`，durable ACK后才返回
+`ABORTED_DURABLE`；该record同样必须支持replay。
 
 这样crash边界保持与普通Merge一致：
 
@@ -2181,14 +2339,22 @@ commit前crash:
 
 commit后、response前crash:
   WAL/replay restores old source DropIntent + new live Object Active
-  Receipt reconciliation confirms publish
+  WAL/replay restores matching COMMITTED terminal record
+  Receipt + Journal reconciliation confirms publish
 
 checkpoint/GC后:
   existing TAE GC physically deletes old source
 ```
 
-Lifecycle不新建第二套WAL/Replay引擎；tagged Lifecycle entry只在Prepare时验证额外的
-Archive/分类/Owner条件，成功后复用create/drop/transfer transaction command。
+Lifecycle不新建第二套Object WAL/Replay引擎；tagged Lifecycle entry只在Prepare时验证
+额外的Archive/分类/Owner条件，成功后复用create/drop/transfer transaction command。
+Terminal Journal是窄的Lifecycle终态记录，不承载Object、TransferTable或Payload。
+它不能只是WAL重放的进程Map：Journal使用最多4 MiB的copy-on-write immutable page，
+TAE checkpoint只重写dirty page并生成有界manifest，普通checkpoint只引用固定大小的
+manifest location/digest/watermark；
+覆盖watermark的checkpoint durable后才能截断旧Journal WAL。restart先加载并校验snapshot
+再replay delta，完成前Lifecycle capability不ready、普通事务继续正常服务。旧snapshot
+复用现有checkpoint文件GC的引用/水位协议，不能由Lifecycle Sweeper直接删除。
 
 ### 15.2 Transfer page
 
@@ -2215,6 +2381,19 @@ commit后：
 - existing checkpoint/logtail/GC判断何时物理删除；
 - Lifecycle不追踪GC delete completion作为Dataset发布条件；
 - Archive Payload由Lifecycle Sweeper，不由TAE GC管理。
+
+Terminal Journal由独立的有界metadata GC和短journal-control transaction管理，不进入
+Object GC：
+
+```text
+now >= reject_until
+AND matching Root/Attempt/Restore Attempt terminal ACK persisted
+  -> journal record GC eligible
+```
+
+未ACK记录不得按年龄删除。rows/bytes达到hard limit时禁止新的Lifecycle final commit，
+继续允许terminal ACK、Cleanup和Reconcile；普通DML、查询、Merge、checkpoint和TAE
+Object GC不读取Journal。
 
 ## 16. 普通 Merge 回归边界
 
@@ -2294,9 +2473,11 @@ block-streaming Reader完成认证。
 | SEALED事务收到外部workspace mutation | 置POISONED；只允许完整rollback |
 | generation slot BUILDING follower | 有界等待/返回同一结果；不得重复mutation |
 | generation builder失败 | slot FAILED；整代TAE txn rollback；同代禁止重建 |
-| overlapping duplicate Commit | TxnService串行；迟到请求按deadline/source preflight收敛 |
-| final txn明确aborted + `LIFECYCLE_RESOURCE_BUSY`且所有retry条件满足 | `FINAL_RETRYABLE`；复用verified staging |
-| 其他final txn明确aborted | cleanup staging |
+| overlapping duplicate Commit | TxnService串行；终态前由同一commit执行，终态后由Journal截获 |
+| Journal匹配COMMITTED/ABORTED | 不读Booking、不进入storage.Commit，返回原终态 |
+| 同txn ID但identity属性不匹配 | protocol error；不读Booking、不mutation |
+| Journal不可用或终态写入不确定 | `UNKNOWN`；Root保持FINALIZING |
+| final txn `ABORTED_DURABLE`（含`LIFECYCLE_RESOURCE_BUSY`） | cleanup staging；后续只创建fresh attempt |
 | final txn unknown | 保留全部owner；Reconcile |
 | GC删除已commit旧source | 正常，不由Lifecycle干预 |
 
@@ -2328,7 +2509,8 @@ block-streaming Reader完成认证。
 - Lifecycle不得调用mapping重排、修补或重新生成helper；
 - ordinary owner rollback删除created Object；
 - Lifecycle owner rollback不删Root live/booking，权威aborted后由Sweeper删除；
-- `ErrTAENeedRetry`后复用同一staging，最终Catalog引用文件仍存在；
+- 同一 external transaction 内的 `ErrTAENeedRetry` G1/G2 从 immutable Booking 重建并复用
+  Root-owned staging；不得把它推广为新的 external transaction retry；
 - transfer phase-1/phase-2每个错误都向上返回并abort；
 - phase-1、runtime page install、`LogTxnEntry`之前/之中/成功之后逐点注入失败；
 - Drop/Create API成功后Catalog node只由整个txn rollback，不由builder手动撤销；
@@ -2396,12 +2578,23 @@ block-streaming Reader完成认证。
 - G1/G2各自使用不同TxnMemo slot，不继承slot状态或runtime指针；
 - HandleCommit-local replay budget在G1/G2累计booking/delta/CPU，limit-1/limit/limit+1；
 - overlapping duplicate Commit由TxnService mutex串行，只有一个storage HandleCommit执行；
-- terminal后迟到duplicate：deadline后被拒绝；已提交source不exact时不读Booking、不mutation、
-  返回`LIFECYCLE_RECONCILE_REQUIRED`；
+- `ABORTED_DURABLE`后删除txnCtx，deadline前以同一external txn重发，必须由Journal在
+  `maybeAddTxn`前返回原终态，不调用storage.Commit、不读取Booking；即使source仍exact
+  也不能重新执行；
+- `COMMITTED`后删除txnCtx并迟到重发，同样由Journal返回原终态；
+- 同一txn ID携带不同attempt/root/digest/sequence/deadline/route identity直接协议错误；
+- `ABORTED` Journal durable ACK前后、txnCtx删除前后、TN restart/leader change逐点故障
+  注入；restart后仍拒绝重复执行；
+- Journal写入失败/结果不确定、容量满或读取不可用时，在任何Lifecycle mutation前
+  fail closed为`UNKNOWN`，Root资产不清理；
+- Journal拒绝窗口结束并回收record后，旧请求必须先被绝对deadline gate拒绝；
+- Journal GC要求对应Root/Attempt/Restore Attempt终态ACK；未ACK record不按年龄删除，
+  hard rows/bytes达到上限时停止新final commit但保留reconcile/cleanup；
 - Lifecycle commit admission饱和时在创建内部TAE txn前立即
-  `LIFECYCLE_RESOURCE_BUSY`；无waiter，permit跨G1/G2一次获取并exactly-once释放；
-- 只有实验证明storage HandleCommit可并行执行同一external txn时，才测试并启用有界
-  registry；
+  `LIFECYCLE_RESOURCE_BUSY`；无waiter，先通过保留control lane写ABORTED Journal并
+  durable ACK，再返回`ABORTED_DURABLE`；permit跨G1/G2一次获取并exactly-once释放；
+- ordinary transaction的Commit request不携带TerminalIdentity，不查询、不分配、不写入
+  Journal；
 - Dataset/Receipt存在但Lifecycle tag缺失，以及反向缺失，整个事务都失败；
 - CN/TN crash在每个Create/Drop/transfer/catalog write之间；
 - commit response lost；
@@ -2473,8 +2666,8 @@ block-streaming Reader完成认证。
 21. generation slot在第一次TAE txn mutation前决出唯一builder；Catalog node由整个
     txn持有，builder只清理尚未移交的runtime资源。
 22. 累计retry预算由`HandleCommit`调用栈唯一持有并传入每代；重叠Commit复用TxnService
-    串行，迟到Commit先经deadline/source preflight和Lifecycle admission；只有实证并行
-    storage执行才增加有界共享registry；禁止进程全局无界replay memo。
+    串行，终态后迟到Commit由持久化、有界的Lifecycle Transaction Terminal Journal在
+    `maybeAddTxn`前拒绝；禁止以进程全局Map承担正确性。
 23. production control必须消费Catalog adapter签发的txn-bound opaque pair token；
     workspace dump后不重扫逻辑行，空Entry编码只作为私有单测，不能成为提交语义。
 24. 路由冻结ServiceID/ShardID/ReplicaID/protocol version，Address发送前刷新；不新增
@@ -2488,7 +2681,11 @@ block-streaming Reader完成认证。
 28. Dataset/Receipt/Restore chunk只写transaction ID；真实CommitTS由Reconciler观测并
     持久化到Archive Root，未知时禁止Purge。
 29. Feature Guard只属于已绑定或仍在收敛的表；首次Bind/依赖竞态复用现有
-    `mo_tables`行锁，未绑定普通DDL不创建Guard；容量上限只在tenant account内精确保证。
-30. CN finalization permit必须先于`VERIFIED -> FINALIZING`获取；TN busy只在明确
-    `LIFECYCLE_RESOURCE_BUSY + ABORTED + no Receipt/Dataset`时进入有界`FINAL_RETRYABLE`，
-    复用immutable staging，其余abort清理、unknown只对账。
+    `mo_tables`行锁，未绑定普通DDL不创建Guard；账户级Guard上限与Lifecycle-only
+    cluster activation slot共同限制Binding增长，二者都不进入普通热路径。
+30. CN finalization permit必须先于`VERIFIED -> FINALIZING`获取；TN busy只有在
+    `ABORTED` Journal durable ACK且无Receipt/Dataset后才清理同一attempt staging，下一次
+    只允许fresh attempt；unknown只对账。
+31. Lifecycle commit request携带optional `LifecycleTerminalIdentity`；Journal主键只用
+    external txn ID，其他身份字段必须精确匹配。`COMMITTED`与final mutation同事务写入，
+    `ABORTED`经保留control lane持久化后才可返回明确终态。

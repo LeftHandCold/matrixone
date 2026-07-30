@@ -12,7 +12,8 @@ Lifecycle Reader 必须同时满足：
 - 只读取调用方给出的持久化 source Object set；
 - 在一个固定事务 Snapshot 上输出逻辑可见行；
 - 不把表级 in-memory rows 混入；
-- 支持 Archive 业务列和 Mixed DELETE control 列；
+- 按 child 路径支持 Archive/Rewrite 业务列或 TTL 小 Mixed DELETE control 列；禁止同一
+  Archive child 在输出 Payload 后进入 `Relation.Delete`；
 - 为 Mixed Rewrite 定义一次 block read 中 D/E/L 分类和同步 Archive sink 合同；
 - 能证明完整读到了所有请求 Object/Block；
 - 串行、流式、有背压、有内存上限；
@@ -383,10 +384,11 @@ AND source ScanReport/content root冻结
 访问源TAE。最终tagged `LifecycleCommitEntry`仍可能因Object/Tombstone变化而abort。这样避免把
 远端GET校验时间算进source Snapshot pin。
 
-小 Mixed Archive 不能采用该优化，因为 Reader 和 `Relation.Delete` 必须保留同一个
-writable SI 事务。Mixed Rewrite 不持有长时间 writable transaction；它使用固定
-`source_snapshot_ts`、exact source reservation 和 GC SyncProtection 完成 build，
-再进入短 final transaction。protection 失效时必须丢弃 staging 并 replan。
+TTL 小 Mixed 不能采用该优化，因为 Reader 和 `Relation.Delete` 必须保留同一个 writable
+SI 事务；它没有 Archive Payload。任意 Archive Mixed 使用 Mixed Rewrite；Rewrite 不持有
+长时间 writable transaction，而是使用固定 `source_snapshot_ts`、exact source reservation
+和 GC SyncProtection 完成 build，再进入短 final transaction。protection 失效时必须丢弃
+staging 并 replan。
 
 ## 9. Canonical row order
 

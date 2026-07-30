@@ -1,23 +1,21 @@
-# 小 Mixed Object 普通 DELETE 详细设计
+# TTL 小 Mixed Object 普通 DELETE 详细设计
 
-> 本文唯一负责小 Mixed 的可写 SI 事务、delete key、Relation.Delete、Archive/TTL
-> 原子性、预算和并发冲突。中/大 Mixed 的 Rewrite 协议由
+> 本文唯一负责 TTL 小 Mixed 的可写 SI 事务、delete key、Relation.Delete、Receipt
+> 原子性、预算和并发冲突。任何 Archive Mixed，以及中/大 TTL Mixed 的 Rewrite 协议由
 > [05-strict-object-retire-protocol-cn.md](05-strict-object-retire-protocol-cn.md)
 > 定义。
 
 ## 1. 结论
 
-只有一个 Mixed Object 的少量到期行满足全部硬预算时，才使用普通 DELETE 快速
+只有一个 TTL Mixed Object 的少量到期行满足全部硬预算时，才使用普通 DELETE 快速
 路径：
 
 ```text
 one normal writable SI transaction
   -> exact Reader at txn Snapshot
   -> filter expired visible rows
-  -> optional Archive PUT + full readback
-  -> Root FINALIZING
   -> existing Relation.Delete(RowID + actual delete key)
-  -> Guard/Binding + optional Dataset + Receipt
+  -> Guard/Binding + Receipt
   -> normal commit
 ```
 
@@ -35,11 +33,11 @@ MO 默认悲观事务常用 RC。RC 会在语句边界推进 Snapshot：
 
 ```text
 SELECT expired rows at S1
-Provider PUT/readback
+build bounded delete buffer
 DELETE at S2
 ```
 
-如果 S2 不同于 S1，Archive 行集和 DELETE 行集可能不一致。
+如果 S2 不同于 S1，TTL 选择行集和 DELETE 行集可能不一致。
 
 Mixed 使用显式：
 
@@ -109,7 +107,8 @@ func (t *LifecycleTxn) Rollback(ctx context.Context) error
 7. 注册 max workspace/duration admission；
 8. 不借用用户 Session 的 txn handler。
 
-`LifecycleTxn` 是唯一 txn Owner。commit返回 unknown后 Owner转移到现有 txn unknown resolver + Attempt/Root Reconciler。
+`LifecycleTxn` 是唯一 txn Owner。commit返回 unknown后 Owner转移到现有 txn unknown resolver +
+TTL Attempt Reconciler。
 
 ## 4. 固定 Snapshot
 
@@ -225,23 +224,12 @@ control:
   actual delete key input/encoded vector
 ```
 
-Mixed Archive：
-
-```text
-business:
-  all user-visible source schema columns
-control:
-  __mo_rowid
-  actual delete key
-```
-
 Reader callback对每个到期行：
 
-1. Archive模式同步写业务列到 Parquet；
-2. 复制 RowID和encoded delete key到 bounded delete buffer/spill；
-3. 更新实际 rows/bytes/blocks budget；
-4. 任一 hard limit到达立即停止；
-5. 此时尚未调用 `Relation.Delete`，所以可以安全 rollback并清理staging。
+1. 复制 RowID和encoded delete key到 bounded delete buffer/spill；
+2. 更新实际 rows/bytes/blocks budget；
+3. 任一 hard limit到达立即停止；
+4. 此时尚未调用 `Relation.Delete`，所以可以安全 rollback。
 
 ## 8. Delete buffer
 
@@ -275,58 +263,22 @@ delete batch bytes <= 16 MiB
 
 每个 Batch attrs/vec类型与普通 DELETE完全一致。
 
-## 9. Archive Mixed 顺序
+## 9. Archive Mixed
 
-固定：
+首个 GA **不开放 Archive Small Mixed**。任意 Archive Mixed 一律进入单源
+`MIXED_REWRITE_ARCHIVE`；它在无 writable SI transaction 的 Build 阶段完成 Reader、
+Parquet、readback、live staging 和 booking，再通过短 tagged final transaction 原子发布
+Dataset/Receipt、退休 source。
 
-```text
-TryAcquire Lifecycle CN finalization permit
-  -> unavailable: do not create SI txn/Root; bounded-jitter replan
-  -> acquired: hold exactly once until SI txn becomes terminal or is classified unknown
-begin writable SI txn
-  -> exact Reader
-  -> lazy create Root before first PUT
-  -> stream Parquet
-  -> close all Payload
-  -> full readback
-  -> Manifest VERIFIED
-  -> Archive Small Mixed budget still satisfies: txn <= 5m, Provider total <= 3m,
-       selected bytes <= 256MiB
-  -> system txn Root VERIFIED -> FINALIZING(final txn ID = SI txn ID)
-  -> start txn workspace statement
-  -> Relation.Delete batches
-  -> tenant CAS Guard/Binding/active attempt
-  -> insert Dataset
-  -> insert Receipt
-  -> end statement
-  -> commit same SI txn
-```
+这样 V1 没有“Provider I/O 持有 SI snapshot”的长事务，也没有 Archive Payload 与新的
+SI Snapshot/delete buffer跨external transaction复用的路径。若Terminal Journal为
+matching ABORTED且一致性读取无Receipt/Dataset，Root进入`DELETE_PENDING`，下一次只能用
+新的attempt ID从头Reader/PUT/readback；
+若结果 unknown，只对账原 transaction identity。
 
-在第一次 `Relation.Delete` 后：
-
-- 不再执行 Provider PUT/GET/readback；
-- 不再改变 Manifest；
-- 只允许本地 delete/Catalog/commit；
-- 失败必须 rollback/unknown reconcile。
-
-Root进入 FINALIZING 之前不能开始 Delete。
-
-Archive Small Mixed 的 SI Snapshot、Reader、Provider I/O、`Relation.Delete`和最终提交必须
-属于同一个可写 SI transaction，故它不能像 Whole/Rewrite 一样在上传完成后才取得 permit。
-它在创建该 SI transaction 前取得同一个 Lifecycle CN finalization permit，并在 explicit
-commit/rollback，或已把结果未知持久化并转交 Reconciler 的当刻 exactly-once 释放。这个 permit 只限制
-Lifecycle Archive Small Mixed（默认集群最多 2 个），不会进入普通事务/Merge/Provider 路径；
-5 分钟 SI hard limit 和 3 分钟 Provider budget 保证其持有时间有界。TN permit 仍是最后硬
-保险：若它返回 `LIFECYCLE_RESOURCE_BUSY`，SI transaction 明确 abort；仅满足
-`ABORTED + no Receipt/Dataset + all Root children VERIFIED + retry budget`的 Root 可进入
-`FINAL_RETRYABLE`，之后只能用新 SI transaction 重做同一受限流程，不能把旧 SI Snapshot
-或旧 workspace 带入下一代。
-
-Archive Small Mixed是Mixed Rewrite的受限优化，不是必经路径。Planner按已认证Provider
-p95吞吐和readback成本预估；预估超过3分钟、256MiB或5分钟SI窗口时直接选择Rewrite。
-运行中任一预算超限也必须在第一条Delete前rollback当前SI txn、把已创建Root推进
-`DELETE_PENDING`并转Rewrite，不能为了复用已上传payload延长SI transaction。该能力在
-Whole、TTL Small Mixed和Rewrite分别通过独立Stage后才打开。
+以后若要启用 Archive Small Mixed，必须另行 ADR 同时证明：独立 admission pool、可恢复的
+delete plan、Snapshot 与 Archive row digest 的同一性、以及不复用旧 Payload 的 retry 语义。
+该未来优化不属于首个 GA 的承诺或配置。
 
 ## 10. TTL Mixed 顺序
 
@@ -357,7 +309,6 @@ begin writable SI txn
 ```go
 type TenantTxnCatalog interface {
     CASBindingAndGuard(ctx context.Context, txn *LifecycleTxn, ...) error
-    InsertDataset(ctx context.Context, txn *LifecycleTxn, ...) error
     InsertReceipt(ctx context.Context, txn *LifecycleTxn, ...) error
 }
 ```
@@ -371,9 +322,10 @@ type TenantTxnCatalog interface {
 
 - 新开第二 tenant txn；
 - system `BackgroundExec`隐式autocommit；
-- Provider成功后用另一个事务插Dataset。
+- 用另一个事务补写 Receipt。
 
-P0优先采用已有 Engine Relation写入，因为原子边界更直接；SQL executor只用于不参与退休原子性的system Root事务。
+P0优先采用已有 Engine Relation写入，因为原子边界更直接。Archive Rewrite 的 Dataset/Root
+协议不属于本快速路径。
 
 ## 12. 硬预算
 
@@ -389,18 +341,13 @@ P0优先采用已有 Engine Relation写入，因为原子边界更直接；SQL e
 | RowID + delete key raw bytes | 32 MiB | 64 MiB |
 | estimated txn workspace | 128 MiB | 256 MiB |
 | estimated WAL/Logtail | 64 MiB | 128 MiB |
-| Archive selected business bytes | 128 MiB | 256 MiB |
 | TTL Small Mixed transaction wall time | 15 min | 30 min |
-| Archive Small Mixed transaction wall time | 3 min | 5 min |
-| Archive Small Mixed Provider PUT+readback total | 2 min | 3 min |
-| Provider single I/O | 1 min | 2 min |
 
 Hard limit任一超过：
 
 ```text
 before Delete:
   rollback txn
-  Root DELETE_PENDING if present
   enqueue bounded Lifecycle Rewrite candidate
 
 after Delete:
@@ -478,9 +425,9 @@ P0必须覆盖 Merge在 Reader前、中、Delete后、Prepare前提交。
 如果用户在 SI Snapshot后删除同一选中行，Lifecycle commit必须：
 
 - 因普通 w-w/delete conflict abort；
-- 或由共享DELETE语义证明重复删除不会发布包含该行的Archive。
 
-首个GA安全要求选择前者。若当前 `Relation.Delete` 对该并发场景会静默成功，P0不通过，必须增加选中RowID的普通锁/commit validation；不能仅靠文档假设。
+首个GA安全要求必须冲突 abort。若当前 `Relation.Delete` 对该并发场景会静默成功，P0不通过，
+必须增加选中RowID的普通锁/commit validation；不能仅靠文档假设。
 
 ### 13.3 用户 UPDATE
 
@@ -491,7 +438,7 @@ UPDATE通常表现为旧RowID Tombstone + 新行：
 - Lifecycle事务abort；
 - 下一child重新判断新生命周期值。
 
-不能让旧Archive版本和新活动行同时被当作一次成功退休。
+不能把旧到期行和新活动行同时当作本次成功 TTL 退休。
 
 ### 13.4 INSERT
 
@@ -506,8 +453,7 @@ UPDATE通常表现为旧RowID Tombstone + 新行：
 Guard/Binding CAS：
 
 - TRUNCATE/schema change/drop使Mixed txn abort；
-- owner dropped后不得插Dataset；
-- staging由Root清理；
+- owner dropped后不得插Receipt；
 - COMMIT_UNKNOWN仍先对账。
 
 ## 14. 锁
@@ -523,15 +469,13 @@ Guard/Binding CAS：
 
 ```text
 source exact read（无写锁）
-  -> Provider I/O（无table/row写锁）
-  -> Root FINALIZING system txn completes
   -> Relation.Delete row locks
   -> Guard/Binding
-  -> Dataset/Receipt
+  -> Receipt
   -> commit
 ```
 
-不能在Provider I/O期间持有Row锁。
+该路径没有 Provider I/O，也不获取额外的 Lifecycle table lock。
 
 ## 15. 失败和Owner
 
@@ -539,14 +483,12 @@ source exact read（无写锁）
 |---|---|
 | exact Object变化 | rollback/replan |
 | Reader/预算失败 | rollback；无Delete |
-| Archive PUT/readback失败 | rollback；Root cleanup |
-| Root FINALIZING失败 | rollback；不Delete |
-| Relation.Delete失败 | rollback；Root等待明确abort后cleanup |
+| Relation.Delete失败 | rollback；Attempt记录失败并重新规划 |
 | Catalog CAS失败 | rollback |
-| commit明确aborted | 满足`FINAL_RETRYABLE`全部条件则保留 VERIFIED staging，否则Root DELETE_PENDING/Attempt ABORTED |
-| commit unknown | Root/Attempt保持FINALIZING；spill/local Reader资源可释放 |
-| worker crash before Delete | txn timeout/rollback；Root收敛 |
-| worker crash after Delete before commit response | existing txn resolver + Receipt对账 |
+| Terminal Journal matching ABORTED且无Receipt | TTL Attempt `ABORTED`并ACK终态；后续只创建fresh attempt |
+| commit unknown | Attempt保持FINALIZING；spill/local Reader资源可释放 |
+| worker crash before Delete | txn timeout/rollback；Attempt收敛 |
+| worker crash after Delete before commit response | Terminal Journal + Receipt对账 |
 
 ## 16. 为什么不拆成无限小 DELETE
 
@@ -572,8 +514,8 @@ Txn/Snapshot：
 - 显式SI且Snapshot不变；
 - Snapshot Operator Delete被拒绝；
 - RC对照测试证明为何不安全；
-- Reader/Archive/Delete同一TxnOperator；
-- Catalog insert与Delete原子。
+- Reader/Delete同一TxnOperator；
+- Receipt与Delete原子。
 
 Delete key：
 
@@ -600,16 +542,16 @@ Budget：
 - Merge transfer success/conflict/missing page；
 - TRUNCATE/DDL/DROP；
 - two Lifecycle workers被Binding active attempt fence；
-- Provider慢导致txn deadline。
+- Delete/Lockservice慢导致txn deadline。
 
 Commit：
 
 - 1PC/2PC；
 - response lost；
-- Root FINALIZING后rollback；
-- Dataset/Receipt有且DELETE无的状态不可达；
-- DELETE提交但Dataset无的状态不可达；
-- no-op不产生空Dataset。
+- TTL Attempt FINALIZING后rollback；
+- Receipt有且DELETE无的状态不可达；
+- DELETE提交但Receipt无的状态不可达；
+- no-op不产生Receipt。
 
 回归：
 

@@ -97,10 +97,11 @@ AND 30天无数据不变量失败
 ### 4.1 要证明
 
 ```text
-Reader Snapshot == Archive Snapshot == DELETE Snapshot
+TTL small Mixed: Reader Snapshot == DELETE Snapshot
 ```
 
-并证明正常DML并发不会把用户已删除/更新行发布到Archive后成功commit。
+并证明正常DML并发不会让已经删除/更新的选中行成功 TTL 退休。Archive Mixed的同类证明由
+Rewrite P0 覆盖：exact source Snapshot、post-S DELETE 检查和短 tagged final transaction。
 
 ### 4.2 Case
 
@@ -113,17 +114,17 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | MIX-005 | composite PK | 共享encoder，一致 |
 | MIX-006 | fake PK | 可删除且不进Payload |
 | MIX-007 | varlen key | actual bytes计入budget |
-| MIX-008 | user DELETE after read | Lifecycle abort，不发布Dataset |
+| MIX-008 | user DELETE after read | Lifecycle abort，不发布Receipt |
 | MIX-009 | user UPDATE after read | Lifecycle abort/retry |
 | MIX-010 | concurrent Merge transfer | success正确删除或明确conflict |
 | MIX-011 | transfer page missing | fail closed |
 | MIX-012 | Guard/schema/TRUNCATE | 整txn abort |
-| MIX-013 | Provider verified后Delete失败 | Dataset不发布，Root cleanup |
-| MIX-014 | commit response lost | 不重复Delete/insertDataset |
+| MIX-013 | `Relation.Delete`失败 | Receipt不发布、无提交Tombstone |
+| MIX-014 | commit response lost | 不重复Delete/insertReceipt |
 | MIX-015 | TTL no-op | 无Receipt/无DELETE |
-| MIX-016 | Archive no selected rows | 无空Dataset/Root |
-| MIX-017 | Archive Small Mixed CN permit不可用 | 不创建可写SI txn/Root；仅有界jitter重排 |
-| MIX-018 | Archive Small Mixed Provider或SI预算超限 | 第一条Delete前整体rollback并转Rewrite；不延长5分钟窗口 |
+| MIX-016 | Archive no selected rows | Rewrite路径无空Dataset/Root |
+| MIX-017 | 任意 Archive Mixed | Planner一律选择单源Rewrite；不得创建可写SI transaction |
+| MIX-018 | 尝试启用 Archive Small Mixed配置/路径 | Safety gate拒绝；必须有独立ADR和新认证才能开放 |
 
 ### 4.3 关键失败判定
 
@@ -181,7 +182,7 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WIR-039 | generation owner在SoftDelete/Create前竞争 | 恰好一个BUILDING owner |
 | WIR-040 | builder部分mutation失败 | slot FAILED且整代rollback；同代禁止重建 |
 | WIR-041 | overlapping duplicate Commit | TxnService串行；恰好一个storage HandleCommit执行 |
-| WIR-042 | terminal后迟到duplicate | deadline拒绝，或source preflight后进入RECONCILE_REQUIRED；不读Booking |
+| WIR-042 | `RESOURCE_BUSY -> ABORTED_DURABLE -> txnCtx删除`后deadline前重复Commit | Journal在lock allocator和`maybeAddTxn`前返回原终态；不调用storage.Commit、不读Booking |
 | WIR-043 | SEALED事务外部mutation | POISONED；只能full rollback，Commit不得发送请求 |
 | WIR-044 | COMMITTING内部workspace路径 | 专用internal helper可完成merge/dump/transfer，不接受外部mutation |
 | WIR-045 | Lifecycle commit admission饱和/cancel/G1->G2 retry | busy在内部TAE txn创建前立即返回；一次HandleCommit恰好一次获取/释放；无waiter |
@@ -190,7 +191,30 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WIR-048 | token签发后statement rollback/workspace generation变化 | Seal拒绝，不能复用旧token |
 | WIR-049 | unknown EntryType + nil Batch到Safety TN | Batch解析前返回unsupported；不panic、不提交其他Entry |
 | WIR-050 | capability heartbeat/HAKeeper/ClusterDetails任一层缺失、过期或Replica变化 | authoritative refresh得到unsupported，CN不发送 |
-| WIR-051 | TN Lifecycle permit busy | 内部TAE txn创建前返回`LIFECYCLE_RESOURCE_BUSY`；`TxnError.Error/Code`保留原始分类 |
+| WIR-051 | TN Lifecycle permit busy | 内部TAE txn创建前经保留control lane写ABORTED Journal并durable ACK，再返回`ABORTED_DURABLE/LIFECYCLE_RESOURCE_BUSY` |
+| WIR-052 | ABORTED后source仍exact、deadline未到 | 重复请求仍由Journal拒绝，不进入source/Booking preflight |
+| WIR-053 | ABORTED Journal持久化后TN restart/leader change | replay恢复终态，重复请求不执行storage.Commit |
+| WIR-054 | 同一Txn ID携带不同attempt/root/digest/sequence/deadline/route | `LIFECYCLE_TERMINAL_IDENTITY_MISMATCH`，无I/O/mutation |
+| WIR-055 | ABORTED Journal append/ACK前后crash | durable则返回原终态；不确定则UNKNOWN且Root保持FINALIZING |
+| WIR-056 | Terminal Journal rows/bytes满 | 新Lifecycle final commit在mutation前fail closed；ACK/Cleanup/Reconcile继续 |
+| WIR-057 | reject window到期但Owner未ACK | record不GC；达到hard cap停止新final commit |
+| WIR-058 | reject window到期且Owner已ACK后record GC | 旧请求先由绝对deadline拒绝，不能重建txnCtx |
+| WIR-059 | ordinary transaction Commit | identity=nil，不查询/分配/写Journal，错误语义不变 |
+| WIR-060 | COMMITTED后txnCtx删除并迟到重复Commit | Journal返回原commit结果，不再调用storage.Commit |
+| WIR-061 | 同一txn的COMMITTED/ABORTED并发CAS或相反终态已存在 | 只有一个ABSENT->terminal成功；相反终态触发kill switch，绝不覆盖 |
+| WIR-062 | Owner CAS成功、Journal ACK前crash/response lost | Owner不回滚；record不GC；重启后按owner state/version幂等ACK |
+| WIR-063 | Journal ACK先于Owner CAS或identity/version错配 | 拒绝ACK并保留record |
+| WIR-064 | ABORTED append或Owner ACK quorum阻塞 | 5秒内部deadline内终止；前者UNKNOWN、后者保留未ACK record；不占普通commit permit |
+| WIR-065 | Lifecycle storage.Commit返回非`ErrLifecycleAbortedDurable`错误 | TxnService返回ErrTxnUnknown，不把TxnMeta/Root伪装成ABORTED |
+| WIR-066 | txnOperator缺optional setter、Snapshot op、跨txn或二次设置terminal identity | Seal/Commit POISONED并整体rollback，不发送request |
+| WIR-067 | workspace control与TxnCommitRequest field 5不一致 | CN发送前或TN pre-scan拒绝，无普通Catalog单独提交 |
+| WIR-068 | Commit/Rollback/operator pool reset | terminal identity exactly-once清除，不泄漏到下一普通txn generation |
+| WIR-069 | Lifecycle preparer预留CommitSequence后Commit | `NextCommitSequence()`恰好一次；Root/control/header/Journal sequence与identity digest一致 |
+| WIR-070 | preparer后route/sequence/identity被改写 | 发送前POISONED并整体rollback，不覆盖Root冻结身份 |
+| WIR-071 | Terminal identity golden vectors | CN/TxnService/TN/离线工具对domain separator、长度、endian和digest逐字节一致 |
+| WIR-072 | Root仍VERIFIED时prepare/route/encode失败 | tenant txn rollback，Root保持VERIFIED，不写伪终态 |
+| WIR-073 | Root FINALIZING后、request发送前dump/encode/local发送失败 | full rollback后写durable ABORTED Journal才cleanup；写入不确定则UNKNOWN |
+| WIR-074 | Journal owner Shard迁移到新Service/Replica | 按原Shard解析当前地址并读回原identity终态；不在新Shard复制另一份record |
 
 ### 5.2 Condition
 
@@ -217,7 +241,7 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WAL-021 | 2PC participant失败 | 全abort |
 | WAL-022 | prepare后TN crash | replay无partial retire/publish |
 | WAL-023 | WAL append前/后crash | source Drop/live create/Catalog状态一致；不声称Replay运行时transfer page |
-| WAL-024 | commit后response lost | status+Receipt收敛 |
+| WAL-024 | commit后response lost | COMMITTED Journal + Receipt/Dataset收敛 |
 | WAL-025 | checkpoint/restart | Object可见性和GC正常 |
 | WAL-026 | ordinary Merge SoftDelete | 原 opcode/语义不变 |
 | WAL-027 | 大Archive Payload | Parquet/Manifest bytes不进入TAE WAL |
@@ -226,6 +250,15 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WAL-030 | duplicate Prepare/NeedRetry | 由immutable Booking V1重建当前final txn page |
 | WAL-031 | final commit明确失败 | source始终可见，Dataset和new live Object都不可发布 |
 | WAL-032 | final commit成功的一致性读 | source与new live Object不允许双重可见或同时不可见 |
+| WAL-033 | final commit replay | COMMITTED Journal与Receipt/Dataset/source drop/live create同一原子结果 |
+| WAL-034 | pre-TAE明确失败 | ABORTED Journal独立复制并durable ACK，restart后仍拒绝迟到Commit |
+| WAL-035 | Journal snapshot前/写后/引用checkpoint durable前后crash | checkpoint引用+WAL delta恢复全部live terminal records |
+| WAL-036 | Journal watermark未被durable checkpoint覆盖 | 对应WAL不得截断 |
+| WAL-037 | Journal未dirty/仅一个range dirty的连续普通checkpoint | 前者复用manifest；后者只重写对应<=4MiB page并复用其余page |
+| WAL-038 | 旧Journal snapshot并发replay/新checkpoint/文件GC | 有reader时不删；新引用durable且水位安全后exactly-once回收 |
+| WAL-039 | Journal snapshot缺失/digest损坏 | Lifecycle capability not-ready/UNKNOWN；普通txn和普通checkpoint继续服务 |
+| WAL-040 | 降级目标不理解Journal格式且仍有record/WAL/snapshot | 降级门禁拒绝；排空、empty checkpoint和安全截断后才允许 |
+| WAL-041 | Journal snapshot写完但checkpoint metadata提交失败 | failed-checkpoint cleanup唯一回收新snapshot；旧引用/WAL仍可恢复 |
 
 ## 6. P0-4 Source Reservation、GC Protection 与并发 Tombstone
 
@@ -323,7 +356,7 @@ Scheduler skip只是性能优化；普通`OpCommitMerge`和tagged Lifecycle entr
 | ROOT-022 | Archive Rewrite committed | 只删booking child，不改变PUBLISHED或删除Payload |
 | ROOT-023 | NeedRetry触发PrepareRollback | live staging物理文件仍存在 |
 | ROOT-024 | retry最终commit | Catalog指向的每个created Object可全读 |
-| ROOT-025 | final明确aborted且不满足final retry条件 | 只有Root Sweeper删除live/booking |
+| ROOT-025 | final明确aborted | 只有Root Sweeper删除live/booking；下次是新attempt |
 | ROOT-026 | final unknown | Merge entry与Root均不删除物理staging |
 | ROOT-027 | Archive Rewrite双namespace | Payload走archive identity，live/booking走TAE identity |
 | ROOT-028 | Root Object kind/namespace错配 | side effect前拒绝并触发invariant告警 |
@@ -334,26 +367,27 @@ Scheduler skip只是性能优化；普通`OpCommitMerge`和tagged Lifecycle entr
 | ROOT-033 | expired=0且已写live staging | no-op；Root清理，不转TAE_OWNED |
 | ROOT-034 | Root Object不同kind都用ordinal 0 | composite主键无冲突、分页稳定 |
 | ROOT-035 | CN finalization permit不可用 | Root保持VERIFIED，不创建tenant txn、不删除或重PUT staging |
-| ROOT-036 | TN busy + txn ABORTED + 无Receipt/Dataset | 仅一次CAS进入`FINAL_RETRYABLE`，Root child保持VERIFIED |
-| ROOT-037 | FINAL_RETRYABLE新一代 | 新txn ID、generation+1、重新验证source/protection；不重PUT/readback |
-| ROOT-038 | busy response lost/unknown或错误分类缺失 | 保持FINALIZING并Reconcile，绝不创建新txn |
-| ROOT-039 | 第3代busy、10分钟到期、source/protection失效 | 不再retry，才进入DELETE_PENDING |
+| ROOT-036 | TN busy + Journal ABORTED durable + 无Receipt/Dataset | Root进入DELETE_PENDING；不得复用staging |
+| ROOT-037 | busy后再次调度 | 新attempt ID/new Root/new Reader/Build；不得复用旧PUT/readback/live/booking |
+| ROOT-038 | busy response lost/unknown | 保持FINALIZING并对账原txn，绝不创建替代txn |
+| ROOT-039 | stale worker尝试用旧attempt继续finalize | CAS/fence拒绝；只能由fresh attempt重新执行 |
 
 ### 7.2 final txn
 
 | ID | 结果 | 通过条件 |
 |---|---|---|
-| REC-001 | committed + Receipt/Dataset | Root PUBLISHED |
-| REC-002 | aborted + no Receipt | DELETE_PENDING |
-| REC-003 | response lost/ACTIVE | FINALIZING |
-| REC-004 | committed但apply水位未到 | WAIT，不报corrupt |
-| REC-005 | committed水位到但Receipt缺 | kill switch/manual |
-| REC-006 | aborted但Receipt有 | kill switch/manual |
+| REC-001 | Journal committed + Receipt/Dataset | Root PUBLISHED并ACK terminal |
+| REC-002 | Journal aborted + no Receipt | DELETE_PENDING并ACK terminal |
+| REC-003 | response lost/Journal absent或unavailable | FINALIZING |
+| REC-004 | Journal committed但apply水位未到 | WAIT，不报corrupt |
+| REC-005 | Journal committed且水位到但Receipt缺 | kill switch/manual |
+| REC-006 | Journal aborted但Receipt有 | kill switch/manual |
 | REC-007 | 24h unknown | manual且不清理 |
 | REC-008 | owner DROP duringunknown | 仍对账原txn |
 | REC-009 | duplicate Reconciler | CAS单一收敛 |
-| REC-010 | restart | txn ID/digest完整恢复 |
-| REC-011 | aborted + resource busy + 全部retry前置成立 | `FINAL_RETRYABLE`；其余aborted仍DELETE_PENDING/ABORTED |
+| REC-010 | restart | txn ID/digest/Journal终态完整恢复 |
+| REC-011 | durable aborted + resource busy | 与其他aborted一致进入DELETE_PENDING/ABORTED；不得staging reuse |
+| REC-012 | Journal committed后owner DROP级联删除Receipt/Dataset | matching owner tombstone允许Root直接DELETE_PENDING并ACK；不重建tenant行 |
 
 ### 7.3 Delete安全
 
@@ -640,10 +674,32 @@ Rewrite amplification额外验证：
 | RST-022 | owner DROP publishing | owner CAS |
 | RST-023 | lease expire | 停读/不发布 |
 | RST-024 | final commit unknown | staging不误删 |
+| RST-025 | Restore chunk/publish header存在但tag/token缺失，或反向缺失 | 整体拒绝，不提交staging rows/Receipt/Rename |
+| RST-026 | old TN忽略TxnCommitRequest unknown field | matching tagged control在Batch解析前unsupported；不能静默提交Restore ordinary writes |
+| RST-027 | RESTORE mode携带source/merge/booking或Retire mode携带restore字段 | side effect前拒绝 |
+
+### 10.3 Lifecycle Terminal Journal P0证明
+
+除WIR-042、WIR-051～060和WAL-033～034外，必须通过状态机属性测试：
+
+```text
+for every external Lifecycle txn ID:
+  terminal state is absent, COMMITTED, or ABORTED
+  COMMITTED and ABORTED are mutually exclusive and immutable
+  matching terminal state implies storage.Commit is never entered again
+  identity mismatch implies no Booking/staging/Catalog I/O
+  explicit ABORTED is observable only after durable ACK
+  UNKNOWN never authorizes Root cleanup or fresh attempt
+```
+
+覆盖retirement final、Restore chunk和Restore publish三类`operation_kind`。同一测试集在
+1PC、2PC、ErrTAENeedRetry、response lost、TN restart、replica切换和Journal容量满时
+运行。普通事务对照组必须证明CommitRequest field 5为nil、Journal零访问、零额外分配且
+原错误码不变。
 
 ## 11. Feature Guard/Profile/Catalog Gate
 
-虽不在十项编号内，以下基础能力仍是P0：
+虽不在Object/事务协议编号内，以下基础能力仍是P0：
 
 ### 11.1 Guard与table DDL lock竞态
 
@@ -674,9 +730,11 @@ TRUNCATE/ALTER/DROP
   超过1000；ERROR/PAUSED和卡在unknown的Unbind都继续占名额，不能继续Bind第1001张表；
 - 并发Bind经account-scoped capacity lock串行，不能超卖该account名额；capacity锁超时、
   Owner失联或本account权威计数不确定时新Bind fail closed，锁释放后可以重新准入；
-- 两个account各自800个Guard可以同时存在；它不是跨租户事务错误。集群1000绑定表只作为
-  release certification容量边界，Discovery/child/rewrite/final commit仍由全局Scheduler/TN
-  admission硬限制；
+- cluster activation slot=1000时，第1001个Bind必须被拒绝；controller不可用、slot状态
+  不确定、并发Bind和account ID复用都不能超卖slot；该控制器不进入普通DDL/DML/查询/Merge；
+- `RESERVED` lease在tenant Binding写入前/后、slot ACTIVE前分别crash和到期：Scheduler只接受
+  Binding/slot完整identity join；Reconciler只能续激活同一identity，或显式ERROR后归还，旧Binding
+  绝不能借已复用slot重新进入Discovery；
 - old Guard删除前同一logical table不能重新Bind；收敛删除后容量名额可复用；
 - DROP TABLE成功写owner tombstone/fence后可级联删除tenant Guard，Root cleanup不依赖
   Guard存在。
@@ -706,7 +764,7 @@ TRUNCATE/ALTER/DROP
 - Root Object kind只能引用对应Archive或TAE namespace/encryption identity；
 - Root Object主键为`(root_id, object_kind, ordinal)`，ordinal按kind局部递增；
 - Dataset/Receipt/Restore chunk原事务不包含CommitTS；
-- committed Reconcile在Txn GetStatus保留窗口内把真实CommitTS持久化到Root；
+- committed Reconcile在Terminal Journal回收前把真实CommitTS持久化到Root并ACK终态；
 - `observed_commit_ts`为NULL时Purge fail closed；Root PUBLISHED时该值必须非NULL；
 - UNSET后无ACTIVE Binding的Dataset仍按purge_eligible_at清理；
 - invariant checker故障自动kill switch。
@@ -763,9 +821,9 @@ case：
 3. 发布Retirement Release CN/TN；
 4. authoritative query exact shard protocol versions；
 5. advance retirement protocol；
-6. Whole enable，随后TTL Small Mixed、Rewrite、Archive Small Mixed分别独立enable；
+6. Whole enable，随后TTL Small Mixed、Rewrite分别独立enable；Archive Small Mixed保持关闭；
 7. rolling restart；
-8. kill switch并等待`FINALIZING/FINAL_RETRYABLE/COMMIT_UNKNOWN`收敛；
+8. kill switch并等待`FINALIZING/COMMIT_UNKNOWN`收敛；
 9. downgrade到Safety Release；
 10. 不允许降到pre-safety或破坏Catalog/replay的版本。
 
@@ -866,6 +924,8 @@ continuous invariant checker
 - checkpoint/GC；
 - CN memory。
 
+### 18.1 Dormant path
+
 要求Lifecycle feature关闭或无Binding时：
 
 ```text
@@ -886,6 +946,23 @@ heartbeat/store metadata serialized size increase <= 8 bytes per TN record
 每项以同一硬件、相同数据集和相同配置做至少5次paired run；使用基线与feature-off/no-
 Binding的95%置信区间上界判定，不以单次“噪声”主观签字。任何超线必须保持retirement关闭，
 给出归因和新的认证证据后才能调整阈值。
+
+### 18.2 Active coexistence
+
+上述 dormant-path 通过不等于 Lifecycle 正在运行时不会影响普通 MO。Stage 4/GA必须另做
+paired run：1000 Binding、cluster child=8、Rewrite=1、TTL Small Mixed=2、Provider限速/429、
+持续1TiB due batch，与未绑定表的 SELECT/INSERT/UPDATE/DELETE、Merge、checkpoint、GC和
+logtail 同时运行。
+
+```text
+ordinary DML throughput regression <= 2%; p99 latency regression <= 3%
+Merge throughput/checkpoint duration/GC duration/logtail apply p99 regression <= 3%
+steady-state CN/TN memory regression <= 1%
+```
+
+任何指标越线，Lifecycle必须先暂停新claim、降低并发或缩小child；不得通过扩大普通事务
+超时、关闭GC或牺牲前台负载达标。该场景与Provider故障、TN busy、rolling restart各至少
+完成一次，仍按同一95%置信区间规则签署。
 
 ## 19. 证据产物
 
@@ -915,6 +992,7 @@ known limitations
 - Archive-before-retire违反；
 - Dataset/Receipt/retirement非原子；
 - committed/aborted结果无法权威判定且资源被清；
+- `ABORTED_DURABLE`后同一external txn再次进入storage.Commit，或Journal未ACK就清理Root；
 - Restore重复/缺行/root mismatch；
 - DROP丢失Root owner；
 - stale runner覆盖/删除仍引用对象；

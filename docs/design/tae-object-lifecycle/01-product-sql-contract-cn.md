@@ -236,8 +236,9 @@ Archive payload deletable =
   AND ordinary reference/lease/owner predicates pass
 ```
 
-`observed_commit_ts`不是final tenant transaction中的插入字段。它由Reconciler从权威
-Txn GetStatus取得，并在事务状态仍可查询时持久化到system-owned Root。该值未知时
+`observed_commit_ts`不是final tenant transaction中的插入字段。它由Reconciler从匹配的
+Lifecycle Terminal Journal `COMMITTED`记录取得，并在Journal回收前持久化到
+system-owned Root。该值未知时
 fail closed，任何Purge都不得开始。
 
 `RETAIN FOR` 是 minimum retention。它不承诺到期立即删除，也不提供 maximum retention、Legal Hold 或 WORM。
@@ -313,11 +314,13 @@ Bind先提交时，后续DDL看到Binding/Guard。涉及多张表的FK等操作�
 identity排序加锁。Unbind只有在active child和unknown final transaction收敛后才能删除
 Guard。未绑定普通表不写Guard、不更新Guard，也不进入Lifecycle状态机。
 
-`max-bound-tables-per-account`是首个 GA 的唯一强制 Binding 数量不变量，默认 1000。
+`max-bound-tables-per-account`是首个 GA 的账户级 Binding 数量不变量，默认 1000。
 它只统计当前 account incarnation 的 authoritative Guard；不在 tenant DDL 事务里尝试
-读取或维护跨账户全局计数。全集群同时运行的 Discovery/child/rewrite/finalization 由
-Scheduler 和 TN admission 独立硬限流；“约 1000 张全集群绑定表”仅是发布认证容量，
-不是可被多个账户绕过的 Catalog 配额承诺。
+读取或维护跨账户全局计数。首个 GA 另有 system-owned、Lifecycle-only 的
+`max-active-bindings-cluster=1000` activation slot：`SET LIFECYCLE` 必须先取得它，
+额度耗尽或控制器不可用则拒绝本次 Bind；`UNSET` 完成收敛或 DROP owner tombstone 接管后
+才归还。这个控制面不进入普通 DDL、DML、查询或 Merge。全集群同时运行的
+Discovery/child/rewrite/finalization 仍由 Scheduler 和 TN admission 独立硬限流。
 
 ### 4.3 DDL 交互
 
@@ -337,7 +340,7 @@ Scheduler 和 TN admission 独立硬限流；“约 1000 张全集群绑定表�
 
 1. DDL transaction 把 Guard/Binding 原子推进到 `DISABLING` 并提交；
 2. SQL 返回 accepted/status ID，不同步等待外部 I/O 或 unknown transaction；
-3. 后台停止新 child，等待 `FINALIZING/FINAL_RETRYABLE/COMMIT_UNKNOWN` 收敛；
+3. 后台停止新 child，等待 `FINALIZING/COMMIT_UNKNOWN` 收敛；
 4. 请求 Reader/Uploading child cancel；
 5. 清理未发布 staging；
 6. Binding 进入 `DISABLED`；
@@ -367,7 +370,6 @@ UPLOADING
 VERIFIED
 REWRITING
 FINALIZING
-FINAL_RETRYABLE
 COMMIT_UNKNOWN
 COMMITTED
 RETRYABLE
@@ -432,6 +434,7 @@ Manifest、Root 和系统表不得向普通用户显示 credential、签名 URL 
 | `LIFECYCLE_UNSUPPORTED_DEPENDENCY` | Binding/依赖创建失败 |
 | `LIFECYCLE_DISCOVERY_NOT_READY` | 暂停调度 |
 | `LIFECYCLE_QUOTA_EXCEEDED` | 延迟执行，不退休源数据 |
+| `LIFECYCLE_TERMINAL_JOURNAL_CAPACITY` | 暂停新的final commit，继续Reconcile/Cleanup |
 
 ### 7.3 数据或外部依赖错误
 
@@ -442,6 +445,7 @@ Manifest、Root 和系统表不得向普通用户显示 credential、签名 URL 
 | `LIFECYCLE_ARCHIVE_UNAVAILABLE` | Profile namespace/credential/provider 不可用 |
 | `LIFECYCLE_DELETE_FAILED` | Root 保留，后台重试/人工修复 |
 | `LIFECYCLE_RESTORE_VERIFY_FAILED` | 目标表不发布，清理 staging |
+| `LIFECYCLE_TERMINAL_IDENTITY_MISMATCH` | 协议不变量失败；停止retirement并保留证据 |
 
 ### 7.4 结果未知
 
@@ -453,6 +457,8 @@ attempt_id=<id>; reconciliation continues; source/archive ownership is retained.
 ```
 
 后台进入 `COMMIT_UNKNOWN`，不能立即重跑退休动作。
+只有matching `ABORTED` Terminal Journal已durable ACK且一致性读取无Receipt/Dataset时，
+后台才可把attempt判为明确失败并清理；普通storage错误不自动满足该条件。
 
 ## 8. 对外 SLO
 

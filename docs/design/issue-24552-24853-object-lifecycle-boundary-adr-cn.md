@@ -39,12 +39,11 @@ Reader、mergesort、Object Writer、两阶段 RowID transfer、Object MVCC、WA
      reservation/GC protection、exact Object、Footer digest 和 Tombstone delta；
    - Dataset/Receipt 与 Object 退休在同一正常租户事务提交；
    - 只提交 Object DropIntent，物理源文件仍由现有 TAE GC 回收。
-5. 少量 Mixed Object 使用一个普通可写 SI 事务：
-   - Reader、Archive 校验、`Relation.Delete(RowID + delete key)` 和 Dataset/Receipt
-     使用同一 Snapshot/事务；
+5. TTL 少量 Mixed Object 使用一个普通可写 SI 事务：
+   - Reader、`Relation.Delete(RowID + delete key)` 和 Receipt 使用同一 Snapshot/事务；
    - 复用现有 MVCC、Tombstone、RowID transfer、1PC/2PC 和事务恢复；
    - 受 rows、bytes、affected blocks、Tombstone 和 wall-time 硬预算限制。
-6. 中/大 Mixed Object 由 Lifecycle Rewrite Executor 一次完成：
+6. 任意 Archive Mixed 与中/大 TTL Mixed Object 由 Lifecycle Rewrite Executor 一次完成：
    - 固定 Snapshot 下读取 source Object；
    - 到期可见行同步进入 Parquet/ZSTD，或在 TTL 模式丢弃；
    - 存活行复用 `DoMergeAndWrite` 写成 normal TAE Object；
@@ -71,6 +70,12 @@ Reader、mergesort、Object Writer、两阶段 RowID transfer、Object MVCC、WA
     Snapshot，小 Mixed 使用有界可写 SI；Rewrite 使用当前
     `gc.SyncProtectionManager`保护 exact data/tombstone 文件。保护是内存态、可续租，
     TN restart/失效后 final 必须 abort/replan。
+12. Lifecycle-owned final transaction使用TN shard复制、WAL replay且有硬上限的
+    Terminal Journal，并同时携带matching tagged control，避免旧TN忽略header-only扩展。
+    主键严格为external txn ID；COMMITTED与final mutation同事务记录，
+    明确失败只有在ABORTED record durable ACK后才返回。它在`maybeAddTxn`、Booking I/O和
+    TAE mutation前拒绝终态重放，替代当前不存在的通用Txn GetStatus；普通事务不访问
+    Journal。
 
 ## 为什么不选择其他方案
 
@@ -117,7 +122,7 @@ Read-only Planner/分页 Discovery/Dry-run
   -> Feature Guard/Profile/Attempt Root/resource protocol
   -> tagged Lifecycle commit + reservation/protection P0
   -> Whole Object TTL/Archive
-  -> small Mixed writable-SI Row DELETE
+  -> TTL small Mixed writable-SI Row DELETE
   -> Mixed Rewrite + transfer/WAL/replay
   -> direct-readable Restore/Purge
   -> 1/10 TiB、1000 表和故障放量认证 (Commercial GA)
@@ -128,9 +133,12 @@ Read-only Planner/分页 Discovery/Dry-run
 前两步可以在不退休活动数据的情况下验证功能和成本。只要开始退休 Object，
 tagged Lifecycle entry/WAL/replay、exact Object CAS、reservation/protection、system
 retained Cleanup Root、Feature Guard 和资源上限就属于正确性前提。Archive 还必须
-增加 pre-side-effect Root、immutable Profile、全量 readback 和 Restore。
+增加pre-side-effect Root、immutable Profile、全量readback和Restore。Lifecycle
+Terminal Journal及TxnService的`COMMITTED/ABORTED_DURABLE/UNKNOWN`三态同样是退休
+前置，不能用source不再exact或事务deadline替代。
 
-小 Mixed 必须证明 Reader/Archive/DELETE 位于同一个可写 SI 事务；Rewrite 必须证明
+TTL 小 Mixed 必须证明 Reader/DELETE 位于同一个可写 SI 事务；首个 GA 的 Archive Mixed
+一律走 Rewrite，不在 writable SI transaction 内做 Provider I/O。Rewrite 必须证明
 `source_visible = expired + live`、transfer 映射和 create/drop 原子性。不得以
 “后续优化”为由跳过。
 
@@ -143,7 +151,7 @@ Restore。Legal Hold/WORM、DROP 后保留、跨租户 Transfer 和 Archive Back
 范围；Backup/PITR/Snapshot Restore/Clone/Branch/DR 对 Lifecycle 表必须双向 fail
 closed。
 
-只有十项 P0、真实 1/10 TiB 数据路径、`50 -> 200 -> 500 -> 1000` 分阶段放量和
+只有全部P0、真实1/10 TiB数据路径、`50 -> 200 -> 500 -> 1000`分阶段放量和
 全部 GA Gate 通过后才是 Commercial GA。当前决策是 Conditional Go，不表示实现
 已经 GA。
 

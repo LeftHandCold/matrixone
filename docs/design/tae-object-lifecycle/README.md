@@ -79,14 +79,15 @@
 - 生命周期列为 `NOT NULL DATE/DATETIME/TIMESTAMP`；
 - TTL Whole Object；
 - Archive Whole Object；
-- 在硬预算内的小 Mixed Object 普通 RowID DELETE；
-- 中/大 Mixed Object 使用独立 Lifecycle Rewrite；
+- 在硬预算内的 TTL 小 Mixed Object 普通 RowID DELETE；
+- 任意 Archive Mixed、以及中/大 TTL Mixed Object 使用独立 Lifecycle Rewrite；
 - 无显式主键的普通表，使用 MO 已持久化 fake PK 作为 delete key；
 - Parquet/ZSTD direct-readable Archive；
 - 全量 readback 校验；
 - Restore 到独立新表；
 - DROP TABLE/DATABASE/ACCOUNT 后异步放弃并清理 Archive；
-- 每账户最多 1000 张绑定/收敛表；集群认证容量为约 500～1000 张并发已绑定表，1 TiB 常见单表，10 TiB 认证目标。
+- 每账户最多 1000 张绑定/收敛表，全集群 activation slot 最多 1000 张；50→200→500→1000 是
+  分阶段认证和放量门槛。常见单表 1 TiB，认证目标单表 10 TiB。
 
 ### 4.2 不支持
 
@@ -125,14 +126,13 @@ ALTER TABLE ... SET LIFECYCLE
        |     -> Root -> Parquet PUT -> readback -> VERIFIED
        |     -> Dataset + Receipt + tagged LifecycleCommit
        |
-       +-- small Mixed TTL/Archive
-       |     -> Archive 先取得有界 finalization permit，再开一个 writable SI transaction
+       +-- small Mixed TTL
+       |     -> 有界 writable SI transaction
        |     -> exact Reader
-       |     -> optional Root/Parquet/readback
        |     -> Relation.Delete(RowID + delete key)
-       |     -> optional Dataset + Receipt
+       |     -> Receipt
        |
-       +-- medium/large Mixed TTL/Archive
+       +-- all Archive Mixed / medium-large Mixed TTL
              -> one source Object per child
              -> LifecycleRewriteHost 复用 Merge block reader/writer
              -> one-pass split:
@@ -145,7 +145,7 @@ ALTER TABLE ... SET LIFECYCLE
 
 final transaction response lost
   -> Attempt/Root FINALIZING
-  -> normal Txn GetStatus + consistent Receipt reconciliation
+  -> Lifecycle Terminal Journal + consistent Receipt reconciliation
   -> COMMITTED or ABORTED
 
 Object retired
@@ -337,20 +337,42 @@ Root-owned staging。失败的generation整体rollback，不能原地重建；G2
 私有entry。
 
 累计retry budget由一次`HandleCommit`调用栈持有并传给G1/G2，普通路径不创建该对象。
-重叠Commit由TxnService串行；terminal后迟到duplicate在Booking I/O前经deadline、admission
-和exact-source preflight收敛，已退休source返回`LIFECYCLE_RECONCILE_REQUIRED`。V1禁止
-增加进程全局无界replay memo；只有实证storage并行执行同一external txn时才加入有界registry。
-Archive finalizer先取得 Lifecycle CN finalization permit；拿不到则 Root 保持
+重叠Commit仍由TxnService串行；跨`HandleCommit`的终态去重由下面的持久化Journal负责，
+不能再依赖txnCtx、source仍exact或进程内memo。
+Archive/Rewrite finalizer先取得 Lifecycle CN finalization permit；拿不到则 Root 保持
 `VERIFIED`，以有界 jitter 重排，既不创建 tenant final transaction，也不清理已验证
 staging。TN admission只TryAcquire，busy在创建内部TAE txn前立即返回类型化
-`LIFECYCLE_RESOURCE_BUSY`，不排队。只有该错误、tenant transaction 已权威
-`ABORTED`、Receipt/Dataset 均不存在、所有 Root child 仍为 `VERIFIED`，且仍在
-10 分钟/3 代的 final retry budget 内，Root 才进入 `FINAL_RETRYABLE`；下一代使用新
-tenant txn ID，重新校验 source/reservation/protection/Binding/Guard 后复用同一份
-staging。response lost、`COMMIT_UNKNOWN`、错误分类缺失或任一 source 不再 exact 均不得
-复用，仍由 Reconciler 收敛。
+`LIFECYCLE_RESOURCE_BUSY`，不排队。该错误只有在TN已经durable写入ABORTED Journal后
+才能作为明确aborted返回；Reconciler读到该Journal且Receipt/Dataset均不存在后，Root进入
+`DELETE_PENDING`、Attempt 进入 `ABORTED`；Scheduler 只能创建带新 attempt ID 和新
+Root 的完整 fresh attempt。V1禁止跨 external transaction 复用 verified staging，避免
+把旧 SI Snapshot、RowID delete buffer 或上一代错误分类带入新事务。response lost 与
+`COMMIT_UNKNOWN`继续只对账原 transaction identity。
 普通Merge的同类注册前缺口由[#26445](https://github.com/matrixorigin/matrixone/issues/26445)
 跟踪。
+
+### I-18 Lifecycle Transaction Terminal Journal
+
+所有Lifecycle-owned transaction在`TxnCommitRequest` optional field 5中携带版本化的
+terminal identity；
+并在`PrecommitWriteCmd.EntryList`携带同identity的tagged Lifecycle control；Retire使用
+Object mutation模式，Restore chunk/publish使用terminal-only模式。这样旧TN不能静默忽略
+proto unknown field后提交Restore普通写。普通transaction两者恒为空。TN在`maybeAddTxn`、
+Booking I/O和TAE mutation前按
+`external_txn_id`查询shard-replicated、WAL-replayed Journal：
+
+```text
+same identity + COMMITTED/ABORTED -> 返回原终态，不重新执行
+same external_txn_id + identity mismatch -> protocol error
+absent -> 才允许进入本次Lifecycle commit
+```
+
+COMMITTED记录与Lifecycle tenant transaction的TAE WAL原子提交；明确失败只有在ABORTED
+记录durable ACK后才可返回。Journal写失败或提交结果不确定必须返回`ErrTxnUnknown`，Root
+保持`FINALIZING`。TxnService不得沿用“任意storage.Commit error都标ABORTED”的普通分支。
+Journal GC要求拒绝窗口已结束且Root/Attempt/Restore Attempt已CAS确认吸收终态；未确认记录受rows/bytes
+hard cap约束，容量满时在任何Lifecycle mutation前fail closed。该Journal替代设计中不存在的
+通用Txn GetStatus，并同时服务retirement final、Restore chunk和Restore publish。
 
 ## 7. 权威数据与派生数据
 
@@ -362,14 +384,17 @@ staging。response lost、`COMMIT_UNKNOWN`、错误分类缺失或任一 source 
 | Dataset Catalog + immutable Receipt | Archive 可见性权威 | 不允许猜测发布状态 |
 | Manifest/Payload | Archive 内容权威 | 校验失败则 Dataset 不可恢复 |
 | Attempt/Cleanup Root | 外部副作用所有权权威 | 不允许在 Root 前 PUT/live staging/booking write |
+| Lifecycle Terminal Journal | Lifecycle-owned txn 的 COMMITTED/ABORTED 权威；按external txn ID拒绝终态重放 | 缺失时只能COMMIT_UNKNOWN，禁止fresh attempt |
 | TaskService task/epoch | 投递 hint | 从 Catalog lease 重新接管 |
 | 普通 Merge/GC metadata | TAE 旧版本回收权威 | Lifecycle 不复制其职责 |
 
 Feature Guard只属于active或仍在收敛的Lifecycle表；它按当前 account incarnation 受
 `max-bound-tables-per-account=1000`硬上限约束。未绑定表的普通DDL不创建Guard，卡住的
-Unbind也不能通过持续绑定新表造成该账户 Guard 无界增长。跨账户总数不作为 tenant
-事务中的伪全局不变量；Scheduler/TN admission 分别限制全集群运行中的 job/rewrite/final
-commit，500～1000 仅是 GA 认证容量和放量门槛。
+Unbind也不能通过持续绑定新表造成该账户 Guard 无界增长。首个 GA 还启用
+system-owned、Lifecycle-only 的 `max-active-bindings-cluster=1000` 容量控制：它只在
+`SET/UNSET LIFECYCLE` 控制面分配或归还有界 activation slot，控制器不可用或额度耗尽
+就拒绝新 Bind；普通 DDL、DML、查询和 Merge 不读取该控制器。Scheduler/TN admission
+分别限制全集群运行中的 job/rewrite/final commit。
 
 ## 8. 核心身份
 
@@ -418,6 +443,7 @@ dataset_identity =
 | Attempt Control | system-owned 的执行和 final transaction 对账记录 |
 | Cleanup Root | 第一次真实Archive PUT、TAE live staging或transfer booking副作用前创建的system-owned所有权记录；只预分配ID不算创建 |
 | Receipt | 与退休同事务提交的不可变成功证据 |
+| Lifecycle Terminal Journal | TN shard复制、WAL重放的有界终态记录；COMMITTED与业务事务原子，ABORTED先durable再返回 |
 | Commit unknown | final transaction 已发送，但客户端不能确定 committed/aborted |
 | Tombstone delta | Archive source Snapshot 之后新提交、且指向 source Object 的删除记录 |
 | Owner tombstone | DROP owner 的轻量 Catalog 事实，不是 TAE 行 Tombstone |

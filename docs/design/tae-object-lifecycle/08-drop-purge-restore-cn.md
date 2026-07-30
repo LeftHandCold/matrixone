@@ -53,7 +53,8 @@ DROP提交后：
 
 - 新Lifecycle claim因Guard/Binding/Relation不存在而失败；
 - Reader/Uploading worker在下一epoch检查停止；
-- FINALIZING/COMMIT_UNKNOWN先按原txn对账；FINAL_RETRYABLE按有界规则重新校验后重试或清理；
+- FINALIZING/COMMIT_UNKNOWN先按原txn查询Terminal Journal；matching aborted且无
+  Receipt/Dataset后由Sweeper异步清理；
 - Restore final publish因owner CAS失败；
 - Sweeper按Root异步清理。
 
@@ -115,7 +116,7 @@ quiescence window 内没有新行。所有 Lifecycle cluster table 都显式保�
 - Binding/Guard/Dataset行不存在或owner state dropped；
 - Lifecycle final CAS affected rows = 0；
 - tenant final txn abort；
-- Root明确aborted且不满足`FINAL_RETRYABLE`全部条件后才DELETE_PENDING。
+- Root只有在matching ABORTED Journal且无Receipt/Dataset后才DELETE_PENDING。
 
 ### 5.2 Lifecycle先提交
 
@@ -128,9 +129,9 @@ quiescence window 内没有新行。所有 Lifecycle cluster table 都显式保�
 
 即使owner随后DROP：
 
-- 仍查询原txn；
+- 仍按原txn ID查询Lifecycle Terminal Journal；
 - committed：不需要恢复Dataset用户可见性，Root直接按owner dropped进入DELETE_PENDING；
-- aborted：清理staging；
+- matching aborted且无Receipt/Dataset：清理staging；
 - unknown：Root保持FINALIZING，不因为DROP猜测结果。
 
 这样不会删除一个仍可能是commit participant正在引用的Payload。
@@ -483,16 +484,25 @@ workspace        <= 512 MiB
    - system Restore Attempt写前记录current chunk/txn/digest；
    - tenant txn写staging rows；
    - 同txn插Restore chunk Receipt；
+   - Restore adapter签发opaque token并追加matching
+     `LifecycleCommitEntry(RESTORE_CHUNK)`；
+   - TxnCommitRequest field 5携带同一TerminalIdentity；
    - commit。
 
 commit unknown：
 
 - 不重插；
 - system Attempt保持current txn；
-- 使用Txn GetStatus + consistent chunk Receipt对账；
+- 使用Lifecycle Terminal Journal + consistent chunk Receipt对账；
 - committed后advance；
-- aborted后重试新txn；
+- matching aborted后ACK旧终态，再用新txn重试同一chunk；
 - unknown保持fail closed。
+
+Restore chunk/publish transaction和retirement final一样，在`TxnCommitRequest`携带optional
+`LifecycleTerminalIdentity`，并在ordinary writes后追加matching tagged Lifecycle control。
+Journal查询必须早于`maybeAddTxn`和staging写入；同一txn ID重复请求直接返回原终态，
+identity mismatch直接协议错误。header/tag任一缺失都整体abort，避免旧TN忽略unknown
+proto field后静默提交Restore写。普通Restore读取和普通用户事务不访问Journal。
 
 相同chunk key已有不同digest：
 
@@ -543,7 +553,9 @@ Staging不按物理row order重算Dataset root；root在exact Parquet decode时�
 8. target name仍不存在；
 9. 使用现有RenameTable Alter把deterministic staging name改为target name；
 10. 清除internal restore comment/property；
-11. commit。
+11. Restore adapter签发opaque publish token，追加
+    `LifecycleCommitEntry(RESTORE_PUBLISH)`和matching TerminalIdentity；
+12. commit。
 
 结果：
 
@@ -555,9 +567,9 @@ Staging不按物理row order重算Dataset root；root在exact Parquet decode时�
 response lost：
 
 - Restore Attempt保持PUBLISHING + final txn ID；
-- Txn GetStatus对账；
+- Lifecycle Terminal Journal对账；
 - committed后按target table ID/name确认；
-- aborted后staging仍在，可重试publish；
+- matching aborted后ACK旧终态，staging仍在，可用新txn重试publish；
 - unknown不DROP staging。
 
 ## 16. Owner/Purge与Restore竞态
