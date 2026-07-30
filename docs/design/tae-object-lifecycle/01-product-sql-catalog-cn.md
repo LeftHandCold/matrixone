@@ -1,0 +1,340 @@
+# 01 产品、SQL与最小Catalog详细设计
+
+## 1. Phase 1产品范围
+
+Phase 1是Issue #24552和#24853的首个Commercial GA子集：
+
+- 表级TTL；
+- 表级Archive；
+- direct-readable Parquet/ZSTD；
+- Restore到独立新表；
+- Purge；
+- 500～1000张显式绑定表和1/10 TiB认证。
+
+不包含ONLINE_COLD、Deep Archive、account/database继承、Time Travel/Fail-safe替代品。
+因此Phase 1完成不能直接关闭Issue #24853的全部产品愿景。
+
+## 2. SQL合同
+
+语法最终按Parser规范调整，但语义冻结为：
+
+```sql
+CREATE TABLE db.ttl_t (
+  id BIGINT,
+  created_at TIMESTAMP NOT NULL
+) LIFECYCLE (
+  COLUMN created_at,
+  EXPIRE AFTER INTERVAL '7' DAY,
+  ACTION DELETE
+);
+
+ALTER TABLE db.t SET LIFECYCLE (
+  COLUMN created_at,
+  EXPIRE AFTER INTERVAL '90' DAY,
+  ACTION ARCHIVE,
+  STAGE archive_stage,
+  PURGE ELIGIBLE AFTER INTERVAL '730' DAY
+);
+
+ALTER TABLE db.t SET LIFECYCLE (
+  COLUMN created_at,
+  EXPIRE AFTER INTERVAL '7' DAY,
+  ACTION DELETE
+);
+
+ALTER TABLE db.t PAUSE LIFECYCLE;
+ALTER TABLE db.t RESUME LIFECYCLE;
+ALTER TABLE db.t UNSET LIFECYCLE;
+
+SHOW LIFECYCLE FOR TABLE db.t;
+SHOW LIFECYCLE JOBS;
+SHOW LIFECYCLE DATASETS FOR TABLE db.t;
+
+RESTORE ARCHIVE DATASET '<dataset-id>' TO TABLE db.restored_t;
+PURGE ARCHIVE DATASET '<dataset-id>';
+```
+
+时间语义：
+
+- Phase 1只接受正数`INTERVAL ... DAY`，不接受MONTH/YEAR等变长日历单位；
+- 每个child冻结`evaluation_time`，同一attempt重试不能重新取“现在”；
+- `effective_cutoff = evaluation_time - expire_interval - late_arrival_grace`；
+- TIMESTAMP按UTC比较；DATE/DATETIME使用Binding冻结的`evaluation_timezone`；
+- `expire_at`表示开始具备处理资格，不承诺到点瞬间不可见；
+- Archive完成前源数据继续可见；
+- Archive成功后普通SELECT不再看到已退休行；
+- `PURGE ELIGIBLE AFTER`按Lifecycle列的行龄计算，必须大于`EXPIRE AFTER`；
+- 一个Dataset的`purge_eligible_at = max(lifecycle_value) + purge_interval`，保证其中最年轻
+  的归档行也达到保留期限；
+- `purge_eligible_at`表示最早允许Purge，不表示到点同步删除，显式PURGE也不能提前绕过；
+- policy变化不追溯修改已发布Dataset。
+
+## 3. 准入
+
+Lifecycle列必须：
+
+- `NOT NULL DATE/DATETIME/TIMESTAMP`；
+- 是稳定Column ID，不依赖列名；
+- 不允许表达式、虚拟列或不可确定函数；
+- 当前schema可由Archive canonical encoder支持。
+
+Phase 1拒绝：
+
+- CDC、FK、Publication/Subscription；
+- Fulltext、Vector、插件和隐藏索引表；
+- Snapshot/PITR/Backup/Clone/Branch与Lifecycle同时启用；
+- inline-only Stage secret；
+- append-only语义无法保证的外部表。
+
+这些检查只发生在Binding DDL和相关能力DDL，不进入普通DML。
+
+权限合同：
+
+- SET/UNSET/PAUSE/RESUME需要目标表`ALTER`权限；
+- Archive Binding还需要Stage `USAGE`和Lifecycle管理权限；
+- SHOW只返回调用者有表可见权限的Binding/Dataset；
+- RESTORE需要Dataset可见权限、Stage读取权限和目标database `CREATE TABLE`权限；
+- PURGE需要Dataset owner或账户管理员权限；
+- system-owned Root不允许tenant SQL直接查询或修改，只通过受审计的SHOW视图暴露摘要。
+
+## 4. 新增Catalog原则
+
+通过正常bootstrap/upgrade新增Lifecycle表，不修改现有`mo_tables`、`mo_columns`、
+`mo_stages`列结构。没有逐Object Catalog行。
+
+Tenant表由普通事务读写，但只允许Lifecycle内部adapter写，tenant用户不能直接DML；
+Cleanup Root必须由system account持有，使账户删除后仍可清理。
+Root表不是按`owner_account_id`自动级联删除的tenant Cluster Table；该字段只是业务Owner，
+`DROP ACCOUNT`后Root仍由system Reconciler读取和清理。
+
+## 5. Binding
+
+逻辑表名：`mo_catalog.mo_lifecycle_bindings`。
+
+```text
+binding_id                 UUID/BINARY(16) PK
+account_id                 UINT32
+database_id                UINT64
+logical_table_id           UINT64
+physical_table_id          UINT64
+binding_generation         UINT64
+schema_digest              BINARY(32)
+lifecycle_column_id        UINT64
+action                     ENUM(DELETE, ARCHIVE)
+expire_after_days          UINT32
+late_arrival_grace_days    UINT32
+evaluation_timezone        VARCHAR
+stage_id                   UINT64 NULL
+stage_identity_digest      BINARY(32) NULL
+purge_after_days           UINT32 NULL
+scan_snapshot_ts           BINARY
+scan_last_object_name      BINARY
+scan_wrapped               BOOL
+last_full_scan_at          TIMESTAMP
+state                      ENUM(ACTIVE, PAUSED, BLOCKED, DISABLING)
+version                    UINT64
+created_at/updated_at       TIMESTAMP
+```
+
+唯一键：`(account_id, physical_table_id)`。
+
+以下变化递增`binding_generation`：
+
+- Policy、Lifecycle列、Stage identity；
+- physical table替换；
+- 影响逻辑归档值的schema变化。
+
+Binding不保存active attempt、Object Index、Candidate或高频运行统计。
+
+Binding控制面转换：
+
+```text
+SET/CREATE -> ACTIVE
+ACTIVE <-> PAUSED
+ACTIVE/PAUSED -> BLOCKED（需显式修复后RESUME）
+ACTIVE/PAUSED/BLOCKED -> DISABLING -> row deleted
+```
+
+PAUSE/UNSET立即阻止新child。UNSET在DDL Gate下递增generation或删除Binding，使旧finalizer
+失败；已经PUBLISHED的Dataset不随UNSET改变，仍可Restore/Purge。普通worker lease只负责
+收敛当前child，不写active-attempt字段。
+
+## 6. Dataset
+
+逻辑表名：`mo_catalog.mo_lifecycle_datasets`。
+
+```text
+dataset_id                 BINARY(16) PK
+account_id                 UINT32
+binding_id/generation      BINARY(16)/UINT64
+logical_table_id           UINT64
+source_physical_table_id   UINT64
+source_snapshot_ts         BINARY
+evaluation_time/cutoff     TIMESTAMP/TIMESTAMP
+source_set_digest          BINARY(32)
+schema_digest              BINARY(32)
+lifecycle_min/max          BINARY/BINARY
+root_id/attempt_id         BINARY(16)
+manifest_key               TEXT
+manifest_sha256            BINARY(32)
+content_hash               BINARY(32)
+row_count/logical_bytes    UINT64
+stage_identity_blob        BLOB
+purge_eligible_at          TIMESTAMP
+state                      ENUM(PUBLISHED, DELETE_PENDING, DELETING, PURGED, ERROR)
+access_generation          UINT64
+restore_lease_id           BINARY(16) NULL
+restore_deadline           TIMESTAMP NULL
+publish_txn_id             BINARY
+created_at/updated_at       TIMESTAMP
+```
+
+唯一键：`(root_id, attempt_id)`。Dataset本身是Archive发布权威，不增加Archive Receipt。
+
+## 7. TTL Receipt
+
+逻辑表名：`mo_catalog.mo_lifecycle_ttl_receipts`。
+
+```text
+receipt_id                 BINARY(16) PK
+account_id/binding_id      UINT32/BINARY(16)
+binding_generation         UINT64
+physical_table_id          UINT64
+source_snapshot_ts         BINARY
+evaluation_time/cutoff     TIMESTAMP/TIMESTAMP
+source_set_digest          BINARY(32)
+expired_rows/retired_bytes UINT64
+root_id/attempt_id         BINARY(16) NULL
+publish_txn_id             BINARY
+created_at                 TIMESTAMP
+```
+
+它与TTL退休同事务写入，用于SHOW、审计和commit-unknown只读对账。
+
+## 8. Cleanup Root
+
+逻辑表名：system account的`mo_catalog.mo_lifecycle_cleanup_roots`。它不是tenant可写
+Cluster Table。
+
+```text
+root_id                   BINARY(16) PK
+attempt_id                BINARY(16)
+mode                       ENUM(ARCHIVE_WHOLE, ARCHIVE_REWRITE, TTL_REWRITE)
+owner_account_id           UINT32
+logical/physical_table_id  UINT64
+executor_epoch             UINT64
+worker_lease_deadline      TIMESTAMP
+archive_namespace_blob     BLOB NULL
+credential_handle          TEXT NULL
+archive_prefix             TEXT NULL
+manifest_key/digest        TEXT/BINARY(32) NULL
+tae_namespace_blob         BLOB NULL
+segment_id                 BINARY NULL
+booking_prefix             TEXT NULL
+ordinal_upper_bound        UINT32 NULL
+source_set_digest          BINARY(32)
+final_txn_id               BINARY NULL
+state                      ENUM(REGISTERED, UPLOADING, VERIFIED, FINALIZING,
+                                PUBLISHED, COMMIT_UNKNOWN, DELETE_PENDING,
+                                DELETING, CLEANED)
+state_version              UINT64
+cleanup_after              TIMESTAMP
+temporary_cleanup_done     BOOL
+quiescence_since           TIMESTAMP NULL
+last_list_at/last_error     TIMESTAMP/TEXT
+created_at/updated_at       TIMESTAMP
+```
+
+一次attempt一行，不建立逐文件明细。
+
+只有会产生Provider Payload、TAE live staging或external booking的attempt创建Root。
+Whole TTL和TTL小Mixed不为事务终态额外创建Root，避免把Root变成Terminal Journal。
+
+唯一键：`(root_id)`；另建`UNIQUE(attempt_id)`。所有CAS包含`root_id + attempt_id +
+state + state_version`，防止把其他attempt推进。
+
+## 9. Restore元数据
+
+逻辑表名：
+
+```text
+mo_catalog.mo_lifecycle_restore_attempts
+mo_catalog.mo_lifecycle_restore_chunks
+```
+
+两者属于发起Restore的tenant；源owner已DROP时不保证继续Restore。Restore Attempt：
+
+```text
+restore_id                 BINARY(16) PK
+dataset_id                 BINARY(16)
+lease_id/deadline          BINARY(16)/TIMESTAMP
+staging_database/table_id  UINT64
+target_database/name       UINT64/TEXT
+state                      ENUM(RUNNING, VERIFYING, PUBLISHING, DONE, ABORTED)
+next_chunk_ordinal         UINT64
+restored_rows/content_hash UINT64/BINARY(32)
+last_error/updated_at       TEXT/TIMESTAMP
+```
+
+Chunk Receipt唯一键：`(restore_id, chunk_ordinal, chunk_digest)`，与对应普通INSERT同事务。
+
+## 10. Catalog索引与访问路径
+
+这些是控制面索引，不是逐Object Lifecycle Index：
+
+| 表 | 必需索引 | 用途 |
+|---|---|---|
+| Binding | `(account_id, physical_table_id)` unique；`(state, updated_at)` | DDL准入和Scheduler分页 |
+| Dataset | `(root_id, attempt_id)` unique；`(account_id, logical_table_id, state)`；`(state, purge_eligible_at)` | SHOW、对账和Purge |
+| TTL Receipt | `(binding_id, source_set_digest)`；`(created_at)` | unknown对账和审计GC |
+| Root | `(state, cleanup_after, root_id)`；`(owner_account_id, logical_table_id)` | system Reconcile/Sweeper |
+| Restore Attempt | `(dataset_id, state)`；`(state, deadline)` | lease恢复和超时清理 |
+
+所有后台扫描都使用索引游标和rows/bytes page cap，不允许周期性无条件全表物化。
+
+## 11. 终态元数据回收
+
+所有增长必须有终点，默认值由发布配置冻结：
+
+| 记录 | 可删除条件 | 默认审计窗口 |
+|---|---|---|
+| TTL Receipt | Binding不存在或已超过审计窗口，且无unknown Root引用 | 30天 |
+| PURGED Dataset | Root已CLEANED且无Restore Attempt | 90天 |
+| CLEANED Root | quiescence结束、无Dataset/Restore引用 | 30天 |
+| DONE/ABORTED Restore Attempt | 无lease、隐藏表已处理 | 30天 |
+| Restore Chunk Receipt | Restore终态且审计窗口结束 | 30天 |
+
+保留窗口可配置但有全局rows/bytes hard cap。到达cap时暂停Lifecycle，不影响普通MO。
+
+## 12. DDL fence
+
+DDL fence放在最后Gate。最终必须证明真实互斥，不能只“重新读取”：
+
+- 复用现有`mo_tables`逻辑行锁；或
+- Binding write CAS与不兼容DDL更新同一Binding行。
+
+测试前不冻结二选一。若普通MO并发路径本身有Bug，公共修复后Lifecycle复用；不建立
+Feature Guard或active-attempt状态。
+
+Phase 1产品行为采用fail-closed：
+
+- DROP TABLE/DATABASE/ACCOUNT允许，按05放弃Restore并异步清理；
+- UNSET/PAUSE/RESUME和Policy更新允许，但必须推进Binding generation；
+- 绑定期间TRUNCATE、ALTER COPY、Lifecycle列变更、其他schema变更和新增不支持依赖拒绝；
+- 用户需要这些DDL时先UNSET，待在途Root收敛后执行，再按新physical/schema重新SET；
+- 未绑定表的DDL只经过一个按`(account_id, physical_table_id)`的Binding存在性查询，不创建
+  Guard或其他Catalog行。
+
+## 13. 用户可见错误
+
+错误按“可重试、阻断、数据/外部错误”分类，Scheduler不能对所有错误无限重试：
+
+| 类别 | 示例 | 行为 |
+|---|---|---|
+| Retryable | source被Merge替换、Provider 429、资源permit失败 | 保留源数据，退避后重新Discovery |
+| Blocked | mixed超认证上限、schema/type不支持、依赖能力冲突 | Binding进入BLOCKED，等待用户/配置处理 |
+| Attempt failed | readback/hash失败、SyncProtection丢失 | Root异步清理，fresh attempt |
+| Unknown | final commit结果未知 | Root COMMIT_UNKNOWN，暂停相同source |
+| Terminal data error | Manifest/schema/file hash不一致 | 禁止Restore/Purge误判，告警人工处理 |
+
+错误必须带`binding_id/root_id/attempt_id`供诊断，但Metrics label不得使用这些高基数字段。

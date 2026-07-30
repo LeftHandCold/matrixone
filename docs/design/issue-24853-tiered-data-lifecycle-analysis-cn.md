@@ -1,8 +1,9 @@
 # MatrixOne Issue #24853：分层数据生命周期行业调研与历史结论
 
-> **非规范文档。** 实现只引用[概要设计](issue-24552-24853-tae-object-lifecycle-overview-design-cn.md)、
-> [ADR](issue-24552-24853-object-lifecycle-boundary-adr-cn.md)和
-> [Commercial GA实现设计](tae-object-lifecycle/commercial-ga-implementation-design-cn.md)。
+> **非规范文档。** 实现只引用
+> [Commercial GA详细设计索引](tae-object-lifecycle/README.md)列出的总规范和01–08子设计。
+> [概要设计](issue-24552-24853-tae-object-lifecycle-overview-design-cn.md)用于产品说明，
+> [ADR](issue-24552-24853-object-lifecycle-boundary-adr-cn.md)只记录决策理由。
 >
 > 本文保留行业概念、成本原理和方案演进，不再保存已经废弃的实现协议。
 

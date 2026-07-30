@@ -1,6 +1,11 @@
 # MatrixOne TAE Object Lifecycle Commercial GA 实现设计
 
-> 本文是首个 Commercial GA 的唯一实现规范。全局范围和不变量见 [README.md](README.md)。
+> 本文是首个 Commercial GA 的总实现规范。全局范围和不变量见 [README.md](README.md)，
+> 精确Catalog、接口、状态机、测试和代码任务以README列出的01–08单一职责子设计为准。
+>
+> 当前协议结论：**Conditional Go**。Whole/Mixed Object算法冻结；Cleanup Root所有权、
+> immutable PUT、Manifest schema descriptor和旧TN fail-closed四个P0完成前，不能冻结
+> Cleanup/Restore/wire协议。
 
 ## 1. 交付边界
 
@@ -58,7 +63,7 @@ physical_table_id
 binding_generation
 schema_digest
 lifecycle_column_id
-action                 TTL | ARCHIVE
+action                 DELETE | ARCHIVE
 expire_interval
 late_arrival_grace
 stage_id nullable
@@ -80,8 +85,10 @@ dataset_id
 binding_id / binding_generation
 logical_table_id / source_physical_table_id
 source_snapshot_ts
+evaluation_time / effective_cutoff
 source_set_digest
 schema_digest
+lifecycle_min / lifecycle_max
 root_id / attempt_id
 manifest_key / manifest_sha256
 content_hash / row_count / logical_bytes
@@ -105,6 +112,7 @@ Dataset本身是Archive发布权威，不增加Archive Receipt。
 receipt_id
 binding_id / binding_generation
 source_snapshot_ts
+evaluation_time / effective_cutoff
 source_set_digest
 expired_rows
 retired_bytes
@@ -118,8 +126,10 @@ system account持有，一次attempt一行：
 
 ```text
 root_id / attempt_id
+mode                    ARCHIVE_WHOLE | ARCHIVE_REWRITE | TTL_REWRITE
 owner_account_id / logical_table_id / physical_table_id
 executor_epoch
+worker_lease_deadline
 archive_namespace_identity / credential_handle
 archive_prefix / manifest_key / manifest_digest
 tae_namespace_identity / segment_id / booking_prefix / ordinal_upper_bound
@@ -128,19 +138,35 @@ final_txn_id nullable
 state
 state_version
 cleanup_after
+temporary_cleanup_done
 last_list_at / quiescence_since
 last_error
 ```
+
+只有Archive或Rewrite产生Provider、live staging、booking副作用时创建Root。Whole TTL和
+TTL小Mixed不为事务终态额外创建Root，避免把Root变成Terminal Journal。
 
 状态：
 
 ```text
 REGISTERED -> UPLOADING -> VERIFIED -> FINALIZING
+
+REGISTERED/UPLOADING/VERIFIED
+  -> attempt失败、超时、租约失效或owner消失
+  -> DELETE_PENDING
+
 FINALIZING -> PUBLISHED | DELETE_PENDING | COMMIT_UNKNOWN
+COMMIT_UNKNOWN -> PUBLISHED | DELETE_PENDING
+PUBLISHED -> Archive Dataset Purge、owner消失或TTL Rewrite临时资源收敛 -> DELETE_PENDING
 DELETE_PENDING -> DELETING -> CLEANED
 ```
 
-不建立Root Object明细表。Manifest或确定性prefix是删除枚举来源。
+`COMMIT_UNKNOWN -> DELETE_PENDING`只允许在普通MO权威确认事务abort且不存在matching
+Dataset/TTL Receipt时发生。Root完整转换、Owner和删除前置条件只在
+[04-cleanup-root-reconcile-cn.md](04-cleanup-root-reconcile-cn.md)定义。
+
+不建立Root Object明细表。Manifest或确定性prefix是删除枚举来源。发布后Dataset控制
+逻辑可见性和Restore/Purge；Root继续承担Payload物理删除，Dataset Purge不直接访问Provider。
 
 ### 3.5 Restore Attempt与Chunk Receipt
 
@@ -153,21 +179,23 @@ Binding、Dataset和Root冻结：
 
 ```text
 stage_id, provider, canonical endpoint, region,
-bucket/container, immutable prefix, encryption/KMS identity,
+bucket/container, immutable prefix, storage class, encryption/KMS identity,
 credential handle
 ```
 
 Storage location有引用时不得原地修改。credential可轮换，但稳定handle必须在账户删除、
 服务重启、Restore和Sweeper中仍可解析。首个GA不接受只存在于tenant行中的inline secret。
 
-归档key固定为：
+每次物理写使用不可覆盖key：
 
 ```text
-<stage-prefix>/lifecycle/<root-id>/<attempt-id>/payload-<ordinal>.parquet
-<stage-prefix>/lifecycle/<root-id>/<attempt-id>/manifest.json
+<stage-prefix>/lifecycle/<root-id>/<attempt-id>/payload-<ordinal>-<write-id>.parquet
+<stage-prefix>/lifecycle/<root-id>/<attempt-id>/manifest-<digest>.json
 ```
 
-attempt和prefix永不复用。
+attempt和prefix永不复用；Manifest只引用已full readback验证的write-id。worker租约或
+SyncProtection失效时不接管原attempt，而是清理旧Root并创建新Root。Stage必须由运维
+认证Provider侧 incomplete multipart回收规则；正常错误路径仍主动Abort multipart。
 
 ## 5. Discovery与调度
 
@@ -217,6 +245,8 @@ cursor只是进度hint：
 - 一个cycle固定Metadata snapshot；
 - snapshot已stale或Merge改变Object集合时，重新开始当前cycle；
 - 到末尾后必须wrap，避免新Object或排序在cursor之前的Object永久漏扫；
+- `full_scan_interval`到期必须强制从头开启新cycle；
+- `last_full_scan_at`超过SLO必须告警并停止继续放量；
 - Candidate和cursor丢失可重建；
 - final transaction始终以实时Metadata和exact source CAS为准。
 
@@ -232,6 +262,10 @@ min <= cutoff < max        -> Mixed hint
 min > cutoff               -> Not due
 metadata缺失/不可信         -> Reader classification
 ```
+
+`PartitionState`只负责有界列出当前Object。若Lifecycle列是sort key，可直接用
+`ObjectStats.SortKeyZoneMap()`；否则按ObjectLocation有界range-read metadata ZoneMap area，
+只加载该Column ID对应的物理seqnum，不读取数据行。metadata requests/bytes也受page硬上限。
 
 final transaction从不信任cursor或Candidate。
 
@@ -294,7 +328,10 @@ transfer slab实际allocator capacity + safety margin
 ### 7.4 格式与验证
 
 Parquet/ZSTD文件保存size、SHA-256、ordinal、row count和必要min/max。Manifest保存文件集、
-schema digest、canonical encoder version、content hash和总行数。
+完整版本化逻辑schema descriptor、schema digest、canonical encoder version、content hash
+和总行数。descriptor至少能重建稳定列顺序、列名/Column ID、MO类型、width/scale、
+nullability、charset/collation和AUTO_INCREMENT属性；Phase 1不恢复PK、索引、FK、CDC、
+Publication、默认表达式、权限或策略。
 
 canonical encoder使用明确的row/column/type/null/length framing。source streaming hash与
 full readback decoder hash必须一致。readback失败不得进入final transaction。
@@ -306,7 +343,8 @@ full readback decoder hash必须一致。readback失败不得进入final transac
 
 - Archive按root prefix清理；
 - live staging使用root-scoped唯一segment/range；
-- external booking复用现有Merge codec，但key位于root-scoped prefix；
+- external booking复用现有Merge codec，但通过Lifecycle-only path allocator在写前取得
+  root-scoped不可变key；
 - 不定义Lifecycle Booking V1；
 - 写成功但进程未登记单个key时，prefix LIST仍可发现；
 - 最大I/O窗口后再次LIST，迟到PUT重置quiescence；
@@ -352,7 +390,8 @@ thin retire entry
 ## 11. Thin retire entry
 
 普通Catalog DML不能表达TAE Object create/drop/transfer，因此在现有可重放commit payload中
-增加一个内部tagged entry。它独立于普通空Batch，不暴露为SQL Write API。
+增加一个内部tagged entry。V1使用`api.Entry.EntryType=7`和payload field=11；
+`Entry.bat=nil`。它独立于普通空Batch，不暴露为SQL Write API。
 
 V1字段：
 
@@ -366,16 +405,30 @@ source_set_digest
 created ObjectStats list（Rewrite）
 existing external booking locations/digest（Rewrite）
 root_id / attempt_id / manifest_digest
-SyncProtection job ID
 delta limits / absolute prepare deadline
 ```
 
-Archive事务必须包含Dataset普通写，TTL事务必须包含TTL Receipt普通写。Finalizer私有持有
-TxnOperator，追加entry后立即Commit；不增加公共Transaction状态机、Pair Token、Terminal
-Journal或Restore entry。
+SyncProtection job ID复用现有`PrecommitWriteCmd.SyncProtectionJobId`，不在thin entry重复。
 
-TN在任何mutation前验证字段、限额、protection和exact source。source identity不一致、
-Drop Intent/EOB、binding/table字段不合法均abort。EOB不代表本attempt已提交。
+Archive事务必须包含Dataset普通写，TTL事务必须包含TTL Receipt普通写。Finalizer私有持有
+TxnOperator；workspace仅增加一个普通事务恒为nil、不会参与dump/compact/sort的
+`lifecycleRetireEntry`可选指针。`genWriteReqs`在普通entries后追加它，Finalizer随后立即
+Commit。不增加公共Transaction状态机、Pair Token、Terminal Journal或Restore entry。
+
+TN在任何mutation前验证entry结构、物理table/schema、限额、protection和exact source；
+TN不查询tenant Lifecycle Catalog。source identity不一致、Drop Intent/EOB或物理table/schema
+不匹配均abort。EOB不代表本attempt已提交。
+
+retirement上线采用两步发布：
+
+1. 先把unknown Entry/version在Batch解析前fail closed的安全解析部署到全部TN，只开放
+   Export-only；
+2. 再发布会产生V1 entry的CN；全部CN/TN完成升级后才打开
+   `lifecycle-retirement-enabled`。
+
+具备安全解析但不支持V1的TN必须返回typed unsupported且没有TAE mutation；更老TN不在
+retirement兼容集合内，发布控制面禁止路由。不为此建设HAKeeper capability协议。降级前
+关闭retirement并等待`FINALIZING/COMMIT_UNKNOWN`收敛。
 
 ## 12. Post-S Tombstone
 
@@ -414,8 +467,9 @@ matching Dataset/TTL Receipt存在 -> PUBLISHED
 结果或Catalog可见性不确定         -> COMMIT_UNKNOWN
 ```
 
-EOB或Drop Intent不能单独触发Root清理。`COMMIT_UNKNOWN`阻止相同source新retirement；
-达到数量/bytes上限暂停Lifecycle并告警。长期未知由运维处理。
+EOB或Drop Intent不能单独触发Root清理。任一`COMMIT_UNKNOWN` Root暂停该Binding全部新
+retirement，不为精确overlap建设Object列表；达到数量/bytes上限暂停Lifecycle并告警。
+长期未知由运维处理。
 
 ## 15. DDL fence：最后实现Gate
 
@@ -458,6 +512,10 @@ acquire lease with fixed deadline
 DROP沿用普通MO语义，不等待Provider，也不保证DROP后Restore。后台从现有Binding/Dataset/
 Root状态发现孤儿并清理，不建立owner tombstone。
 
+TTL Receipt、PURGED Dataset、CLEANED Root和终态Restore记录按审计窗口分页回收；每类记录
+都有rows/bytes hard cap，达到cap只暂停Lifecycle。精确保留条件见
+[01-product-sql-catalog-cn.md](01-product-sql-catalog-cn.md)。
+
 ## 18. 错误与资源
 
 主要状态：
@@ -499,8 +557,8 @@ CLEANUP_FAILED
 
 ```text
 A Catalog/Binding/Discovery
-B Exact Reader/Parquet/full readback/Export-only
-C Cleanup Root/Stage identity/Sweeper
+B Exact Reader/canonical encoder/Parquet format prototype
+C Cleanup Root/Stage identity/full readback/Export-only/Sweeper
 D thin entry + Whole exact retire
 E single-source Rewrite + post-S Tombstone
 F TTL small Mixed

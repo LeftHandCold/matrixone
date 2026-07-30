@@ -1,11 +1,10 @@
 # ADR：以 TAE Object 作为生命周期执行边界
 
-> 状态：Accepted（2026-07-30 按 Commercial GA 简化基线修订）
+> 状态：Accepted decision record（非实现规范，2026-07-30修订）
 >
 > 适用范围：MatrixOne Issue #24552 / #24853
 >
-> 规范设计：[概要设计](issue-24552-24853-tae-object-lifecycle-overview-design-cn.md)、
-> [Commercial GA实现设计](tae-object-lifecycle/commercial-ga-implementation-design-cn.md)
+> 实现规范入口：[Commercial GA详细设计索引](tae-object-lifecycle/README.md)
 
 ## 背景
 

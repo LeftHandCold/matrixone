@@ -6,6 +6,10 @@
 > 实现级设计：[docs/design/tae-object-lifecycle/README.md](tae-object-lifecycle/README.md)
 >
 > 决策：**Conditional Go**。
+>
+> 产品阶段：**Phase 1 Commercial GA子集**。它满足#24552核心TTL，并交付#24853的表级
+> Archive/Restore/Purge，不包含ONLINE_COLD、Deep Archive和account/database继承，不能
+> 宣称完整关闭#24853。
 
 ## 1. 要解决的客户问题
 
@@ -126,6 +130,10 @@ Scheduler只遍历显式Binding。它分页读取当前TAE Metadata，利用Obje
 
 Metadata分类只是hint。Reader和final transaction必须重新验证。
 
+`ObjectStats`只直接包含sort key ZoneMap。Lifecycle列不是sort key时，Planner通过
+ObjectLocation有界range-read该列的Object metadata/Block ZoneMap并聚合min/max；这仍是
+metadata I/O，不是全行扫描，但必须受requests/bytes/deadline限制。
+
 不建设逐Object Lifecycle Catalog Index，因为MO的`PartitionState`已经维护当前Object的
 name/TS B-tree；再复制一份会同时引入Merge更新、replay、热点和一致性成本。Lifecycle
 需要新增的是基于现有B-tree的有界分页Discovery API，而不是调用会物化全表结果的
@@ -182,6 +190,7 @@ Archive使用Parquet/ZSTD。Manifest保存：
 ```text
 dataset_id
 root_id / attempt_id
+versioned logical schema descriptor
 schema_digest
 canonical_encoder_version
 content_hash
@@ -204,6 +213,10 @@ TIMESTAMP、JSON、CHAR、NaN等类型。source streaming hash必须与Provider 
 
 不使用Merkle Tree或逐Cell持久化hash。
 
+逻辑schema descriptor保存稳定列顺序、列名/Column ID、MO类型、width/scale、nullability、
+charset/collation和必要的AUTO_INCREMENT属性。Phase 1 Restore只恢复列结构和数据，不恢复
+PK、二级索引、FK、CDC、Publication、默认表达式、权限或策略。
+
 ## 7. Stage与外部对象
 
 复用现有Stage概念，不建立完整Archive Profile系统。Binding、Dataset和Cleanup Root冻结：
@@ -215,6 +228,7 @@ canonical endpoint
 region
 bucket/container
 immutable prefix
+storage class
 encryption/KMS identity
 credential handle
 ```
@@ -239,11 +253,18 @@ cleanup_after
 
 一条Root覆盖一个attempt，不建立逐对象明细。所有key包含`root_id/attempt_id`且不复用：
 
+- Payload使用`payload-<ordinal>-<write-id>.parquet`；
+- Manifest使用`manifest-<digest>.json`；
+- Manifest只引用full readback已验证的不可变key；
 - Manifest存在时按Manifest清理；
 - Manifest尚未生成时按prefix LIST；
 - TAE staging按预分配namespace/segment范围清理；
 - 最大I/O窗口后再次LIST；
 - 发现迟到PUT就重新计算quiescence。
+
+Root在final结果前拥有Payload、booking和live staging；commit成功后live Object交给现有
+TAE，Dataset控制Archive逻辑可见性，Root继续负责Payload物理删除。pre-final失败、
+COMMIT_UNKNOWN收敛、Dataset Purge和owner消失的完整转换以详细设计04为准。
 
 ## 9. Final transaction
 
@@ -269,6 +290,10 @@ thin entry只表达普通Catalog DML无法表达的TAE Object mutation：
 它不携带第二套Merge mapping证明，不用于Restore，也不创建通用事务状态机。
 
 TN使用现有create/drop/transfer transaction entry、WAL和Replay。Provider文件不进入TAE WAL。
+
+滚动升级先部署unknown Entry/version在Batch解析前fail closed的安全解析；全体CN/TN升级完成
+前只允许Export-only，retirement默认关闭。这里使用发布开关和集群升级准入，不增加
+HAKeeper Lifecycle capability协议。
 
 ## 10. 并发DELETE
 

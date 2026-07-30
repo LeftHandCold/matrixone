@@ -20,14 +20,25 @@
 
 ## 2. 权威文档
 
-本目录只保留两份权威文档，避免同一协议分散在十余份文件中产生版本漂移：
+本目录采用“一份索引 + 一份总规范 + 一份需求追踪矩阵 + 八份单一职责子设计”，
+恢复开发所需细节，但不恢复旧重型协议：
 
 | 文档 | 唯一职责 |
 |---|---|
 | 本 README | 产品范围、全局不变量、删除项和 Gate 顺序 |
-| [commercial-ga-implementation-design-cn.md](commercial-ga-implementation-design-cn.md) | Catalog、接口、Object协议、清理、Restore、测试和代码任务 |
+| [commercial-ga-implementation-design-cn.md](commercial-ga-implementation-design-cn.md) | Commercial GA总实现合同和跨文档数据流 |
+| [00-requirements-traceability-cn.md](00-requirements-traceability-cn.md) | #24552/#24853原始需求、Phase 1覆盖和后续范围 |
+| [01-product-sql-catalog-cn.md](01-product-sql-catalog-cn.md) | Phase 1产品、SQL、Catalog字段、审计回收和DDL合同 |
+| [02-discovery-reader-archive-cn.md](02-discovery-reader-archive-cn.md) | Metadata分页、Reader、schema descriptor、Parquet和full readback |
+| [03-object-retire-rewrite-protocol-cn.md](03-object-retire-rewrite-protocol-cn.md) | Whole/Mixed、thin entry、booking、post-S DELETE和升级 |
+| [04-cleanup-root-reconcile-cn.md](04-cleanup-root-reconcile-cn.md) | Root状态机、Owner、commit unknown、迟到PUT和物理清理 |
+| [05-restore-purge-drop-cn.md](05-restore-purge-drop-cn.md) | Restore新表、Purge lease、DROP和限制矩阵 |
+| [06-observability-capacity-cn.md](06-observability-capacity-cn.md) | 配置、指标、告警、隔离和放量 |
+| [07-p0-ga-test-matrix-cn.md](07-p0-ga-test-matrix-cn.md) | 四个当前P0、全路径故障测试和GA门禁 |
+| [08-implementation-plan-cn.md](08-implementation-plan-cn.md) | Gate、包边界、PR边界和Definition of Done |
 
-上位概要设计负责解释产品效果和架构取舍。Review 输入不是实现规范。
+子设计不得复制另一子设计的第二份状态机。上位概要负责产品效果；ADR只记录决策理由；
+行业调研和Review输入都不是实现规范。
 
 ## 3. Commercial GA 固定范围
 
@@ -104,8 +115,9 @@ Lifecycle 不先过滤出 L 再拼 Batch，也不自己计算 destination mappin
 
 ### I-1 Archive before retire
 
-只有 Payload PUT、full readback、文件 SHA-256、schema digest、逻辑内容 hash 和总行数
-全部验证成功，才允许进入退休源数据的 final transaction。
+只有 Payload PUT、full readback、文件 SHA-256、versioned schema descriptor/digest、
+逻辑内容 hash、总行数和Manifest自身readback全部验证成功，才允许进入退休源数据的
+final transaction。
 
 ### I-2 One atomic final transaction
 
@@ -156,9 +168,12 @@ handle和确定性 prefix；不建立逐对象明细表。
 
 ### I-8 Unknown is not aborted
 
-`ErrTxnUnknown` 时 Root 保持 `COMMIT_UNKNOWN`，不删除 staging，不对相同 source 发起
-新的退休。Reconciler只读 matching Dataset/TTL Receipt和当前source状态；仍不能确认时
-停止该表并告警，不猜测结果。
+有Root的attempt遇到`ErrTxnUnknown`时，Root保持`COMMIT_UNKNOWN`，不删除staging，并暂停
+该Binding的新retirement。Reconciler只读matching Dataset/TTL Receipt和当前source状态；
+仍不能确认时保持暂停并告警，不猜测结果。首个GA不为“只阻塞重叠source”建立Object列表。
+
+Whole TTL和TTL小Mixed没有Provider、live staging或booking副作用，不为commit unknown专门
+创建Root；它们沿用普通MO事务结果，并用TTL Receipt + exact source状态做幂等重扫。
 
 ### I-9 Restore/Purge is leased
 
@@ -203,7 +218,7 @@ DDL fence 是 Commercial GA 的防御性合同，不是 Reader、Export-only、W
 | Binding | tenant Catalog | Policy、Lifecycle列、Stage和O(1)扫描游标 |
 | Dataset | tenant Catalog | 已发布Archive的唯一可见性入口 |
 | TTL Receipt | tenant Catalog | TTL退休结果和unknown对账 |
-| Cleanup Root | system Catalog | attempt、外部副作用和异步清理 |
+| Cleanup Root | system Catalog | 有外部/staging副作用的attempt和异步清理 |
 | Restore Attempt/Chunk Receipt | Lifecycle Catalog | Restore租约和分块幂等 |
 | 当前TAE Metadata | 现有TAE | source Object权威 |
 | Manifest/Payload | Archive Stage | 归档内容权威 |
@@ -234,8 +249,8 @@ thin retire control、现有 external booking、普通事务、Dataset/TTL Recei
 
 ```text
 Gate A  最小Catalog + Binding + Metadata Discovery
-Gate B  Exact Reader + Parquet/ZSTD + full readback + Export-only
-Gate C  Cleanup Root + Stage身份/凭据 + Sweeper
+Gate B  Exact Reader + canonical encoder + Parquet/ZSTD格式原型（不开放生产PUT）
+Gate C  Cleanup Root + Stage身份/凭据 + full readback + 生产Export-only
 Gate D  Whole exact retire + thin commit-control
 Gate E  单源Mixed Rewrite + post-S DELETE
 Gate F  TTL小Mixed DELETE
