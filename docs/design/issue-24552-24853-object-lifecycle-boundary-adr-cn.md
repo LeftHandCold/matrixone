@@ -143,7 +143,7 @@ Restore。Legal Hold/WORM、DROP 后保留、跨租户 Transfer 和 Archive Back
 范围；Backup/PITR/Snapshot Restore/Clone/Branch/DR 对 Lifecycle 表必须双向 fail
 closed。
 
-只有八项 P0、真实 1/10 TiB 数据路径、`50 -> 200 -> 500 -> 1000` 分阶段放量和
+只有十项 P0、真实 1/10 TiB 数据路径、`50 -> 200 -> 500 -> 1000` 分阶段放量和
 全部 GA Gate 通过后才是 Commercial GA。当前决策是 Conditional Go，不表示实现
 已经 GA。
 
@@ -161,7 +161,8 @@ closed。
 
 - 生命周期列高度乱序时会产生 Rewrite 放大；超过认证预算会明确阻断，不承诺
   Archive Lag SLO；
-- 需要独立 Lifecycle opcode、reservation/protection、system Cleanup Root、
+- 需要独立 Lifecycle Executor、CN commit-control/tagged entry、
+  reservation/protection、system Cleanup Root、
   immutable Profile 和 Feature Guard；
 - 小 Mixed DELETE 仍会产生 Tombstone、WAL、Logtail 和后续 Merge 放大；
 - Whole Snapshot、小 Mixed SI、Rewrite protection/staging 都必须有硬上限；

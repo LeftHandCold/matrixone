@@ -162,13 +162,22 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WIR-023 | Whole token升级Rewrite或TTL/Archive互换 | Prepare拒绝 |
 | WIR-024 | G2复用G1 entry/Catalog node/TransferTable指针 | 测试必须检测并失败 |
 | WIR-025 | retry/restart | 绝对deadline、generation和累计预算不续期 |
-| WIR-026 | concurrent duplicate decode | 仅一个注册者；失败者释放私有资源 |
+| WIR-026 | concurrent duplicate decode | mutation前仅一个BUILDING owner；follower不执行I/O/mutation |
 | WIR-027 | Dataset/Receipt与Lifecycle tag任一缺失 | 整个事务拒绝提交 |
 | WIR-028 | phase1/page install/LogTxnEntry逐点失败 | 无slab/page/TransferDels残留 |
 | WIR-029 | 跨booking page重复destination/缺口 | 全局bitmap拒绝 |
 | WIR-030 | digest golden vector | CN/TN/离线codec四种digest逐字节一致 |
 | WIR-031 | slab 4/16 MiB边界与非默认schema Extra | 按allocator容量计费或读取前拒绝 |
 | WIR-032 | Root deadline D与commit request不一致/触发fallback | 发送前拒绝，不获得新deadline |
+| WIR-033 | `bat=nil` tag混入普通txn.writes | 测试先证明会被过滤；正式API禁止该路径 |
+| WIR-034 | control穿过dump/compact/merge/sort | payload bytes/digest逐字节不变 |
+| WIR-035 | ordinary writes为空、control非空 | 仍生成唯一Precommit请求 |
+| WIR-036 | control same/different digest重复设置 | same幂等；different发送前拒绝 |
+| WIR-037 | control与ordinary target/topology generation不一致 | 发送前拒绝 |
+| WIR-038 | G1/G2 replay budget | 同一HandleCommit Owner累计，不按generation重置 |
+| WIR-039 | generation owner在SoftDelete/Create前竞争 | 恰好一个BUILDING owner |
+| WIR-040 | builder部分mutation失败 | slot FAILED且整代rollback；同代禁止重建 |
+| WIR-041 | 并发第二次HandleCommit | TxnService串行/去重；否则有界registry共享唯一预算 |
 
 ### 5.2 Condition
 
@@ -388,8 +397,8 @@ new_live_rows   = live_visible
 | RWT-020 | Archive expired post-S delete | abort且不修改已写Archive |
 | RWT-021 | TTL expired post-S delete | 与Archive统一abort/rebuild |
 | RWT-022 | post-S delete命中nil map/NoTransfer/越界 | typed error使整个final transaction abort |
-| RWT-023 | CreatedObjs被重排 | order digest不匹配，Prepare拒绝 |
-| RWT-024 | producer后注入mapping修改/重排 | 冻结的producer transfer digest不匹配，Prepare拒绝 |
+| RWT-023 | CreatedObjs被重排 | `created_layout_digest`不匹配，Prepare拒绝 |
+| RWT-024 | producer后注入mapping修改/重排 | `transfer_mapping_digest`不匹配，Prepare拒绝 |
 | RWT-025 | CN booking success/error/cancel | producer slab都exactly-once Release |
 | RWT-026 | duplicate Prepare并发解码 | 仅一个注册；失败者私有TransferTable释放，无共享修改或double Release |
 
@@ -423,13 +432,14 @@ new_live_rows   = live_visible
 - entry只有按ordinal排列的exact booking key/version/size/SHA/layout digest；
 - Booking V1只覆盖actual physical rows，不覆盖BlockMaxRows尾部；
 - 零mapping Block仍有record，未出现的source slot统一为`NoTransfer`；
-- mapping按source offset严格升序，`CreatedObjs`顺序digest冻结；
+- mapping按source offset严格升序，`created_layout_digest`冻结producer顺序和布局；
 - destination使用`uint8 ObjIdx + uint16 BlkIdx + uint32 RowIdx`且无padding；最大
   2,097,152-row全live Object连同envelope必须低于32 MiB认证上限；
 - magic/version/flags/endian/字段顺序/length/digest范围按05固定；
 - Root ID、kind-local ordinal和TAE namespace digest必须与Root child一致；
 - duplicate Prepare和NeedRetry可重复读取同一immutable booking；
-- booking被篡改、短读、错version、缺Block或order/transfer digest错均fail closed；
+- booking被篡改、短读、错version、缺Block或
+  `created_layout_digest/transfer_mapping_digest`错误均fail closed；
 - producer TransferTable编码再解码后每个mapping和`CreatedObjs`顺序完全一致；
 - committed/aborted前booking不会被任何handler删除。
 
@@ -473,25 +483,43 @@ new_live_rows   = live_visible
 
 ### 8.10 Review P0-7：可重放 tagged entry
 
-- Dataset/Receipt和Lifecycle tag来自同一个workspace/commit payload；
+- Dataset/Receipt普通Catalog写和Lifecycle control来自同一个finalizer/commit payload；
 - G1 NeedRetry后G2完整重放tag，不能只提交Catalog DML；
 - 每代从immutable Booking重建私有entry/Catalog node/TransferTable/runtime page；
-- replay memo不保存或返回旧generation可变指针；
+- HandleCommit-local replay context不保存或返回旧generation可变指针；
 - `TxnCommitRequest.DeadlineUnixNano`、最大generation和累计I/O/CPU/delta预算不续期；
 - same external txn/different digest、tag和Catalog写任一缺失均整体abort。
 
 ### 8.11 Review P0-8：注册前 runtime Owner
 
 - builder -> txn entry只在`txn.LogTxnEntry`成功后转移Owner；
-- 注册API满足nil=唯一entry已接管、error=entry不可见；返回边界故障不能形成ambiguous
-  Owner；
+- 故障注入冻结`LogTxnEntry error=append前、nil=append后`，不增加receipt/CAS；
 - phase1、page install、LogTxnEntry前/中/后逐点注入失败；
 - 注册前释放slab/page/TransferDels/decoder buffer，注册后由entry exactly-once释放；
-- concurrent duplicate decode失败者只清私有runtime状态；
+- SoftDelete/Create成功后的Catalog node只由整个txn rollback，builder不局部清理；
 - 所有错误、rollback和NeedRetry都不能删除Root-owned live/booking文件；
-- 普通Merge #26445共享修复或Lifecycle独立builder至少有一条方案通过同一回归矩阵。
+- Lifecycle local builder独立通过矩阵；普通Merge #26445单独修复，不作为Gate C前置。
 
-### 8.12 普通 Merge 无回归
+### 8.12 Review P0-9：CN commit-control
+
+- `Transaction.lifecycleCommit`是单值、深拷贝、immutable；
+- 不进入普通workspace size、statement offset、dump/compact/sort、PK dedup、Batch GC；
+- `genWriteReqs`在普通Entry之后直接追加，不调用`toPBEntry`；
+- ordinary writes为空、Dataset/Receipt路径和TTL路径都能生成正确target请求；
+- same digest/bytes幂等，different digest/第二条control拒绝；
+- control设置后transaction封闭；statement rollback或后续write使整个txn abort；
+- rollback/finalize只释放CN bytes，不删除Root/provider对象。
+
+### 8.13 Review P0-10：generation-local slot
+
+- slot位于internal txn ephemeral TxnMemo，不进入WAL/Memo序列化；
+- wire无副作用校验后、Booking decode和SoftDelete/Create前claim；
+- BUILDING follower有界等待/返回，REGISTERED/FAILED返回同一逻辑结果；
+- owner在每个Catalog mutation和runtime安装点失败都使整代rollback；
+- FAILED不能回到NEW；G2使用新TxnMemo、新slot和新runtime对象；
+- 只有slot owner消费HandleCommit replay budget并执行I/O。
+
+### 8.14 普通 Merge 无回归
 
 - 未绑定表完全不进入 Lifecycle discovery/reservation；
 - 无 reservation 时普通 Merge 的选择、write、transfer、WAL 和 GC 字节级/语义级

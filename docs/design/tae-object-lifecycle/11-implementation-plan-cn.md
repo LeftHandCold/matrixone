@@ -378,22 +378,24 @@ Entry 冻结：
 - attempt/executor/reservation/protection identity和expected filename-set digest；
 - source Snapshot、exact source Object/digest和TN生成的同序
   `repeated SourceLayoutProof`；
-- created live Object/digest及writer Sync顺序digest；
+- created live Object及`created_layout_digest`；
 - immutable external transfer booking exact identity/layout digest；
 - Archive Dataset/Manifest/root；
 - source/expired/live counts 和 conservation roots；
 - deterministic entry digest。
 
-Finalizer不调用独立`TxnOperator.Write`；它把tagged entry与Dataset/Receipt加入同一
-tenant workspace，由`workspace.Commit()`生成同一个可重放
-`PrecommitWriteCmd.EntryList`。TN必须在普通Entry转换前拦截该tag。Finalizer预选绝对
+Finalizer不调用独立`TxnOperator.Write`，也不能把`bat=nil` tag混入普通`txn.writes`。
+它通过唯一adapter写入Dataset/Receipt普通Catalog DML，并设置一个单值、深拷贝、
+immutable `LifecycleCommitControl`。普通workspace完成dump/compact/sort后，
+`genWriteReqs`把control原样追加到`PrecommitWriteCmd.EntryList`。TN必须在普通Entry
+转换前拦截该tag。Finalizer预选绝对
 deadline `D`，把它同时冻结到Root并设为commit context deadline，生成的
 `TxnCommitRequest.DeadlineUnixNano`必须等于`D`。外部逻辑attempt还冻结entry
 bytes/digest、Root、Booking、最大内部generation和累计预算；每个TAE generation从
 Booking重建私有Catalog node、TransferTable和txn entry，严禁复用上一代指针。
 
 Whole的`source_objects`与`source_layouts`必须一一对应、同按Object ID排序，
-source digest覆盖两者；Rewrite两者基数都严格为1。每条proof再次包含Object ID和
+`source_set_digest`覆盖两者；Rewrite两者基数都严格为1。每条proof再次包含Object ID和
 ObjectStats digest，禁止proof跨Object错绑。
 
 reservation冻结初始mode，只允许Rewrite退化为同类Whole/Empty；禁止Whole升级Rewrite
@@ -401,19 +403,46 @@ reservation冻结初始mode，只允许Rewrite退化为同类Whole/Empty；禁�
 
 Lifecycle external booking使用独立Booking V1 envelope，冻结magic/version、Root
 child/TAE namespace binding、每Block actual rows、原始sparse destination、
-`CreatedObjs`顺序、created layout、长度和digest。零mapping Block仍有record，未出现
+`CreatedObjs` layout、长度和digest。零mapping Block仍有record，未出现
 的source slot重建为`NoTransfer`。Booking不编码D/E业务分类，也不得直接使用会省略
 全空Block和Root/layout binding的普通`TransferHashPage.Marshal()`。
 
-路由：
+唯一CN/TN链路：
 
-- `pkg/txn/storage/tae/write.go`识别新 opcode；
-- `pkg/vm/engine/tae/rpc/handle_lifecycle.go`解析；
-- 未知 opcode/version/mode/field fail closed；
-- 进入正常 1PC/2PC、WAL、retry 和 replay；
-- Dataset/Receipt 必须通过唯一 finalizer API 与 entry 一起加入同一 txn。
+```text
+Lifecycle finalizer adapter
+  -> ordinary Dataset/Receipt Catalog writes
+  -> Transaction.lifecycleCommit single immutable control
+  -> ordinary workspace dump/compact/sort
+  -> genWriteReqs appends tag without toPBEntry
+  -> PrecommitWriteCmd.EntryList
+  -> ParseEntryList/iterator intercept before apiEntryToWriteEntry
+  -> HandleCommitLifecycle
+```
 
-不得把可选字段塞入 `OpCommitMerge`，否则老 TN 可能忽略字段后错误提交。
+实现文件：
+
+```text
+pkg/vm/engine/disttae/types.go
+  LifecycleCommitControl + Transaction single field
+
+pkg/vm/engine/disttae/txn.go
+  finalizer Set、commit、rollback/finalize lifecycle
+
+pkg/vm/engine/disttae/tools.go
+  genWriteReqs final append + empty ordinary writes + target validation
+
+pkg/catalog/tuplesParse.go（或等价iterator入口）
+  preserve/intercept LifecycleCommit tag
+
+pkg/vm/engine/tae/rpc/handle_lifecycle.go
+  parse/validate/register
+```
+
+control不进入普通dump/compact/sort/PK dedup/statement offset/Batch GC；一次txn最多一
+条，same bytes/digest重复设置幂等，different内容拒绝。payload在workspace dump、
+rollback、commit retry后必须逐字节不变。不得增加独立opcode，也不得把可选字段塞入
+`OpCommitMerge`。
 
 WAL/Replay只恢复source DropIntent、新live Object和final transaction的
 Tombstone/Catalog状态，不恢复已提交事务的历史运行时transfer page。External
@@ -430,6 +459,7 @@ validate SyncProtection expected filename-set digest
 validate exact current source Objects
 validate one-to-one SourceLayoutProof list
 validate created live Objects/checksum
+claim generation-local slot before any TAE txn mutation
 stream-validate Booking V1, CreatedObjs layout and mapping bounds/count/digest
 bounded/cancelable collect and validate Tombstone delta
 builder owns decoded runtime resources
@@ -439,16 +469,36 @@ append WAL through normal transaction path
 ```
 
 任一条件失败，整个 transaction abort。
-`LogTxnEntry`之前失败由builder清理slab/page/TransferDels，不删除Root文件；注册后仅
-txn entry清理runtime状态。注册调用必须all-or-nothing；若通用`LogTxnEntry`无法证明
-error返回时entry不可见，则增加带registration receipt/CAS的窄包装。Gate C必须包含
-[#26445](https://github.com/matrixorigin/matrixone/issues/26445)
-共享修复，或Lifecycle独立builder的等价故障注入证明。
+generation slot存放在internal txn的ephemeral TxnMemo：
+
+```text
+NEW -> BUILDING -> REGISTERED
+                -> FAILED -> whole generation rollback
+```
+
+只有BUILDING owner可以执行Booking decode、SoftDelete/Create、phase-1和LogTxnEntry。
+SoftDelete/Create成功后Catalog node立即归整个txn，builder不得手动撤销；runtime资源
+在Log前归builder、成功后归txn entry。follower有界等待/读取同一结果，不执行mutation。
+当前`LogTxnEntry`用故障注入冻结“error在append前、nil在append后”，不新增receipt/CAS。
+普通Merge的[#26445](https://github.com/matrixorigin/matrixone/issues/26445)独立修复，
+Lifecycle Gate C只要求local builder/slot闭环，不强绑普通Merge改造。
+
+`HandleCommit`预扫描max-one Lifecycle tag并创建唯一
+`LifecycleReplayBudget`，同一指针传给G1/G2的`handleRequests`。它持有绝对deadline、
+generation count、累计booking bytes、delta rows/bytes和CPU时间；每次generation及I/O
+前先消费预算，超限terminal abort。budget随HandleCommit调用栈销毁，不建立进程全局
+Map。同一internal txn内的重复注册通过generation slot成为follower；Gate C还必须证明
+TxnService按external txn ID串行化/去重并发的第二次HandleCommit。证明不成立时，改用
+05定义的有界、可回收共享registry，不能让两个调用各自获得一份新预算。
 
 Gate C exit：
 
 - 1PC、2PC、duplicate Prepare、`ErrTAENeedRetry`多generation、response lost全矩阵通过；
-- retry不延长绝对deadline/累计预算，G2不复用G1可变指针；
+- CN control穿过dump/compact/sort且普通writes为空时仍原样进入EntryList；
+- generation slot在第一次TAE mutation前唯一，失败后同代不能重建；
+- retry不延长绝对deadline/累计预算，budget有明确HandleCommit Owner，G2不复用G1
+  可变指针；
+- 并发第二次HandleCommit由现有TxnService串行化/去重，或由有界registry共享预算；
 - `LogTxnEntry`前后逐点故障注入无runtime资源泄漏或Root物理误删；
 - old/new CN/TN 混部只允许 Dry-run/Export-only；
 - TN restart 丢 reservation/protection 后不会退休；
@@ -514,7 +564,7 @@ one bounded writable SI transaction
 10. `TransferTable`只能使用本次`DoMergeAndWrite`的返回值；禁止Lifecycle重建、
     修改、排序或合并destination mapping；
 11. actual writer只消费range内ordinal，Sync后按原始顺序追加exact child并冻结
-    ObjectStats/checksum/order digest；
+    ObjectStats/checksum/`created_layout_digest`；
 12. 只有`live > 0`才按Booking V1生成immutable external booking；每页在FileService
     write前动态分配Root child；inline transfer禁止；
 13. Archive full readback 后进入短 final transaction。
@@ -594,11 +644,15 @@ Prepare即删语义。实现独立Booking V1 writer/streaming validator，并保
   exactly-once Release；TN每个内部TAE generation首次注册时解码独立TransferTable，
   移交txn entry后由其exactly-once Release，移交前验证失败/cancel则由decoder释放；
   同generation duplicate命中memo，并发失败者只释放自己的私有decode；
+- 在任何SoftDelete/Create前claim TxnMemo generation slot；只有BUILDING owner可以
+  继续，失败后整代rollback且同代禁止重建；
+- SoftDelete/Create成功后Catalog node归整个TAE txn，builder不得局部撤销；
 - `txn.LogTxnEntry`成功是TN runtime Owner线性化点；此前builder失败或并发注册失败者
   释放slab/page/TransferDels，成功后只由txn entry释放；
 - destination校验使用整个entry共享的一张全局bitmap，跨page重复/缺口都拒绝；
-- digest只保留`source_set_digest/created_layout_digest/transfer_mapping_digest/
-  entry_digest`四种名称和共享canonical codec；
+- 协议聚合digest只保留`source_set_digest/created_layout_digest/
+  transfer_mapping_digest/entry_digest`四种名称和共享canonical codec；文件SHA、
+  Object/layout proof和Protection digest保持各自显式名称，不能作为聚合digest别名；
 - final结果明确后由Root child Sweeper删除booking。
 
 复用的Merge txn entry增加构造期物理Owner：
@@ -634,10 +688,28 @@ pkg/vm/engine/tae/model/pages.go
   keep ordinary transfer codec compatible
   add versioned Lifecycle Booking V1 envelope/streaming validator
 
+pkg/vm/engine/tae/iface/txnif/memo.go
+  add ephemeral generation-local Lifecycle slot map
+  do not serialize slots into WAL memo
+
+pkg/vm/engine/tae/rpc/handle.go
+  pre-scan max-one tag
+  own LifecycleReplayBudget across internal retry generations
+
+pkg/vm/engine/tae/rpc/handle_lifecycle.go
+  claim slot before TAE mutation
+  build/register Lifecycle-local txn entry
+
 pkg/vm/engine/disttae/lifecycle_rewrite.go
   single-source host
   DoTransfer always true
   Root-aware immutable booking writer
+
+pkg/vm/engine/disttae/types.go
+pkg/vm/engine/disttae/txn.go
+pkg/vm/engine/disttae/tools.go
+  single immutable LifecycleCommitControl
+  append control after ordinary workspace processing
 ```
 
 这些改动必须保持普通Merge constructor的默认行为和wire字节兼容。不能直接让普通
@@ -667,7 +739,8 @@ reservation/protection、Root 和 staging，释放 worker slot并进入 Reconcil
 
 Gate D exit：
 
-- 八项 P0 中 Reader、SI、wire、reservation/protection、Root、Rewrite、budget 全部
+- 十项 P0 中 Reader、SI、wire、CN commit-control、generation slot、
+  reservation/protection、Root、Rewrite、budget全部
   通过；
 - Whole/small Mixed/Rewrite 每条路径都有 crash matrix；
 - Whole Prepare/commit后旧RowID事务（含TN restart）必须冲突；Rewrite旧事务只能
@@ -830,7 +903,7 @@ D1/D2/D3 + E1 Restore + E2/E3 Cleanup ── F GA certification
 | Exact Reader/delete projection | DistTAE + Transaction |
 | Archive/Manifest/Provider | FileService + Restore |
 | reservation/SyncProtection | TAE Merge + GC |
-| opcode/TN Prepare/WAL/replay | TAE Transaction + TxnService |
+| CN commit-control/tagged entry/TN Prepare/WAL/replay | DistTAE + TAE Transaction + TxnService |
 | Rewrite/transfer | TAE Merge + MVCC |
 | Attempt/Root/Sweeper | TaskService + FileService |
 | scale/kill switch/runbook | SRE + Release |

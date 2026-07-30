@@ -1021,10 +1021,20 @@ unknown                      -> 保持 VERIFIED
 ```
 
 普通Merge不创建这些Root Object，仍由普通Merge entry清理自己的created files。
-TN runtime资源则不归Root：`LifecycleEntryBuilder`持有decoder slab/page/
-TransferDels，`txn.LogTxnEntry`成功是唯一Owner转移点。注册前失败由builder释放；
-注册后由txn entry释放。两侧都不得删除Root-owned物理文件。普通Merge的同类注册前
-残留由[#26445](https://github.com/matrixorigin/matrixone/issues/26445)跟踪。
+Lifecycle的Owner严格分层：
+
+| 资源 | Owner |
+|---|---|
+| Root live/booking物理文件 | final结果明确前始终为Cleanup Root |
+| SoftDelete/Create成功产生的Catalog node | API成功后立即为整个internal TAE txn |
+| slab/page/TransferDels/decoder buffer | LogTxnEntry前为唯一builder，成功后为txn entry |
+
+在任何SoftDelete/Create前，internal txn的ephemeral TxnMemo必须claim
+`(attempt_id, entry_digest)` generation slot。只有`BUILDING` owner可以mutation；
+失败使slot进入`FAILED`并rollback整个generation，禁止builder手动撤销Catalog node或
+在同一generation重建。普通Merge的注册前runtime残留由
+[#26445](https://github.com/matrixorigin/matrixone/issues/26445)独立跟踪；Lifecycle
+优先实现local builder/slot，不以普通Merge修复作为前置。
 
 ### 4.5 Account owner tombstone
 
@@ -1197,7 +1207,7 @@ Root VERIFIED -> FINALIZING committed in system transaction
   -> CAS Guard/Binding/active attempt
   -> insert Dataset
   -> insert Receipt
-  -> append tagged LifecycleCommit(WHOLE_ARCHIVE) to same tenant workspace
+  -> set immutable single LifecycleCommitControl through finalizer adapter
   -> commit payload contains Catalog writes + Lifecycle tag
   -> commit
 ```
@@ -1225,9 +1235,8 @@ Root VERIFIED -> FINALIZING committed in system transaction
   -> CAS Guard/Binding/active attempt
   -> insert Dataset/Receipt               # Archive
      or insert Receipt only               # TTL
-  -> append tagged LifecycleCommit(
+  -> set immutable single LifecycleCommitControl(
        exact source Objects + staged live Objects + transfer booking)
-     to the same tenant workspace
   -> commit payload contains Catalog writes + Lifecycle tag
   -> commit
 ```
@@ -1235,8 +1244,9 @@ Root VERIFIED -> FINALIZING committed in system transaction
 这里wire为兼容Whole仍使用`source Objects`集合；`MIXED_REWRITE_*`模式的协议基数
 必须等于1，且只允许immutable external booking。
 
-TTL Whole/Rewrite 不写 Dataset，但同样在一个事务和同一个可重放commit payload中
-提交Receipt和tagged Lifecycle entry。TTL Rewrite committed 后把live/range child标为`TAE_OWNED`，
+TTL Whole/Rewrite不写Dataset，但同样在一个事务中写普通Receipt Catalog DML，并通过
+独立CN commit-control把tag追加到同一个可重放commit payload。TTL Rewrite committed
+后把live/range child标为`TAE_OWNED`，
 Root进入`POST_COMMIT_CLEANUP`；temporary booking全部删除后才标`TRANSFERRED`。
 所有模式都不依赖长时间 SQL 表锁。
 

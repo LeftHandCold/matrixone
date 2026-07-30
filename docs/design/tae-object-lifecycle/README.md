@@ -40,7 +40,7 @@
 | [02-catalog-state-machine-cn.md](02-catalog-state-machine-cn.md) | Catalog DDL、身份、版本、状态机、事务边界和资源 Owner |
 | [03-object-index-planner-scheduler-cn.md](03-object-index-planner-scheduler-cn.md) | Object Discovery、分页游标、候选分类、Dry-run、Job 切分、调度和硬配额 |
 | [04-reader-archive-format-cn.md](04-reader-archive-format-cn.md) | exact 逻辑 Reader、Rewrite borrowed Batch 合同、Parquet/ZSTD、Manifest、root 和 readback |
-| [05-strict-object-retire-protocol-cn.md](05-strict-object-retire-protocol-cn.md) | Whole/Mixed Rewrite、reservation/source protection、Lifecycle opcode、TN Prepare、transfer、WAL/replay 和升级 |
+| [05-strict-object-retire-protocol-cn.md](05-strict-object-retire-protocol-cn.md) | Whole/Mixed Rewrite、CN commit-control、reservation/source protection、tagged entry、TN Prepare、transfer、WAL/replay和升级 |
 | [06-mixed-delete-transaction-cn.md](06-mixed-delete-transaction-cn.md) | 小 Mixed 的可写 SI 事务、普通 DELETE、预算和并发冲突 |
 | [07-attempt-cleanup-reconcile-cn.md](07-attempt-cleanup-reconcile-cn.md) | Attempt/Root、immutable key、commit unknown、迟到 PUT 和 Sweeper |
 | [08-drop-purge-restore-cn.md](08-drop-purge-restore-cn.md) | DROP cascade、Purge、Restore lease、隐藏 staging table 和限制矩阵 |
@@ -281,7 +281,7 @@ external booking；不允许 inline transfer 或多 source Rewrite。
 ### I-13 Whole proof 与 Booking V1
 
 Whole child允许最多64个source，但每个source必须有同序、包含Object ID和ObjectStats
-digest的`SourceLayoutProof`；source digest覆盖source与proof全集。Rewrite仍严格单源。
+digest的`SourceLayoutProof`；`source_set_digest`覆盖source与proof全集。Rewrite仍严格单源。
 
 Lifecycle Booking V1原样运输`DoMergeAndWrite`生成的TransferTable：编码每Block
 实际物理行数和稀疏live destination，零mapping Block也不能省略；未出现的source
@@ -310,13 +310,20 @@ WAL/Replay恢复source DropIntent、新live Object和final transaction Catalog/T
 
 ### I-17 Retry generation 与 runtime Owner
 
-Lifecycle tag必须位于可重放的`PrecommitWriteCmd.EntryList`中。外部逻辑attempt冻结
-entry bytes/digest、Root、Booking、绝对deadline和累计预算；每个内部TAE generation
-从immutable Booking构造私有Catalog node、TransferTable和txn entry，不复用上一代
-指针。
+Lifecycle tag必须位于可重放的`PrecommitWriteCmd.EntryList`中，但不能混入普通
+`txn.writes`：CN使用独立、单值、immutable `LifecycleCommitControl`，在普通
+workspace完成dump/compact/sort后由`genWriteReqs`原样追加。外部逻辑attempt冻结
+entry bytes/digest、Root、Booking、绝对deadline和累计预算。
 
-`txn.LogTxnEntry`成功是TN runtime资源Owner线性化点：此前由builder清理slab/page/
-TransferDels，之后由txn entry清理；任何runtime清理都不得删除Root-owned staging。
+每个内部TAE generation在任何SoftDelete/Create前，先从ephemeral TxnMemo取得唯一
+`BUILDING` slot。Catalog node在对应API成功后归整个txn；slab/page/TransferDels在
+`txn.LogTxnEntry`前归builder、成功后归txn entry；任何runtime cleanup都不得删除
+Root-owned staging。失败的generation整体rollback，不能原地重建；G2使用全新slot和
+私有entry。
+
+累计retry budget由一次`HandleCommit`调用栈持有并传给G1/G2，普通路径不创建该对象。
+并发第二次HandleCommit必须由TxnService串行化/去重；若验证不成立，则使用有界、可回收
+共享registry。V1禁止增加进程全局无界replay memo。
 普通Merge的同类注册前缺口由[#26445](https://github.com/matrixorigin/matrixone/issues/26445)
 跟踪。
 

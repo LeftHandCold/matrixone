@@ -290,7 +290,21 @@ mixed_tombstone_estimated_bytes
 mixed_txn_seconds{result}
 final_txn{status,mode}
 commit_unknown_age_seconds
+lifecycle_commit_control_total{result}
+lifecycle_generation_slot_total{result}
+lifecycle_replay_generations
+lifecycle_replay_budget_exhausted_total{dimension}
 ```
+
+其中：
+
+- `lifecycle_commit_control_total{result}`至少区分`set/idempotent/rejected`；生产环境出现
+  `missing_after_finalize`必须触发P0 invariant告警并停止retirement；
+- slot结果至少区分`builder/follower/registered/failed`，不能把follower重复计为执行；
+- replay generation和累计Booking/delta/CPU预算按一次`HandleCommit`聚合，不创建按
+  transaction ID永久保留的高基数时序；
+- 任一budget exhausted都必须带`attempt_id`进入结构化事件，但指标label禁止使用
+  attempt/txn/table ID等无界值。
 
 ### 5.5 Root/Cleanup
 
@@ -392,7 +406,7 @@ logical/physical table ID
 binding/job/attempt/root/dataset/restore ID
 generation/epoch/state version
 from/to state
-source digest/manifest root short
+source_set_digest/manifest root short
 txn ID/status/commit TS
 duration/rows/bytes
 error code

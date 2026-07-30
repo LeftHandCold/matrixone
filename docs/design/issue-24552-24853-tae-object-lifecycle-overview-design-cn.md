@@ -4,7 +4,7 @@
 >
 > 状态：首个受限 Commercial GA 的唯一概要设计；不表示当前代码已经具备该能力
 >
-> 评审结论：**Conditional Go**。第22节八项P0、1/10 TiB认证、故障矩阵和
+> 评审结论：**Conditional Go**。第22节十项P0、1/10 TiB认证、故障矩阵和
 > 分阶段放量门禁全部通过后，才允许发布Commercial GA
 >
 > 实现级详细设计：[TAE Object Lifecycle 详细设计索引](tae-object-lifecycle/README.md)
@@ -969,8 +969,11 @@ abort final transaction
 
 Whole和Rewrite共用`PrecommitWriteCmd.EntryList`中的版本化
 `LifecycleCommitEntry` tag，不复用普通`OpCommitMerge`，也不在commit前发送独立
-`TxnOperator.Write`。Dataset/Receipt和该tag由同一workspace生成同一个可重放commit
-payload。
+`TxnOperator.Write`。Dataset/Receipt仍走普通Catalog workspace写入；tag由
+`Transaction.lifecycleCommit`这条独立、最多一条、不可变的commit-control通道持有，
+不进入普通`txn.writes`，不参与workspace dump/compact/sort/GC。`genWriteReqs`先编码
+普通Entry，再把tag直接追加到同一个可重放`PrecommitWriteCmd.EntryList`。因此即使
+tag没有Batch、事务没有其他普通data write，也不能被CN workspace过滤。
 
 协议冻结：
 
@@ -982,15 +985,20 @@ logical/physical/schema/Binding/Guard generation
 source snapshot/cutoff/exact ObjectStats digest
 source/expired/live row conservation
 Dataset/Manifest/Receipt roots
-nested existing MergeCommitEntry + transfer digest
+nested existing MergeCommitEntry + source_set_digest
+created_layout_digest + transfer_mapping_digest
 entry digest
 ```
 
 TN iterator在普通Entry转换前识别tag，handler复用现有`mergeObjectsEntry`的
 create/drop/两阶段transfer/WAL/replay。每个内部TAE retry generation从immutable
 Booking重建私有entry；旧generation的Catalog node、TransferTable和entry指针不得
-复用。老TN由capability gate阻止接收新tag；capability未全集群启用时只允许
-Dry-run/Export-only。
+复用。每代在任何`SoftDeleteObject/CreateNonAppendableObject`之前，必须先取得
+generation-local `(attempt_id, entry_digest)`唯一BUILDING slot；失败后整代事务
+rollback，禁止在已部分修改的同一代中重新Build。`HandleCommit`栈上唯一的
+`LifecycleReplayBudget`向全部retry generation传递同一绝对deadline、最大代数和
+累计I/O/CPU/delta预算，不建立无界全局memo。老TN由capability gate阻止接收新tag；
+capability未全集群启用时只允许Dry-run/Export-only。
 
 ## 14. 少量 Mixed Object 路径
 
@@ -1674,7 +1682,7 @@ source reservation/protection
 - 不承诺 Archive Lag SLO；
 - 必须告警并展示冲突 Object、Tombstone rows/bytes 和建议。
 
-## 22. Commercial GA 八项 P0
+## 22. Commercial GA 十项 P0
 
 ### P0-1：Reader Batch 所有权
 
@@ -1785,7 +1793,36 @@ source reservation/protection
 - failure/cancel/restart 无半张表和 staging 泄漏；
 - Purge/owner DROP 与 Restore lease CAS 正确。
 
-八项P0之外，Feature Guard、Profile identity、Discovery scale、DROP cleanup、
+### P0-9：CN commit-control 不得丢失
+
+证明：
+
+- Lifecycle tag不作为`bat == nil`的普通`txn.writes Entry`进入workspace；
+- `Transaction.lifecycleCommit`最多一条、payload deep-copy后不可变；
+- 普通workspace dump/compact/sort/GC和只读判定不会过滤或改写该control；control设置后
+  禁止局部statement rollback或继续write，失败只能整体abort并清除control；
+- `genWriteReqs`在普通Entry后恰好追加一次tag；没有普通data write时仍会发送；
+- 同digest同payload重复设置幂等，不同payload、目标TN或拓扑身份冲突时fail closed；
+- Dataset/Receipt普通Catalog写与tag属于同一外部事务，任一缺失整体不能提交。
+
+### P0-10：内部 TAE generation 的并发与资源 Owner
+
+证明：
+
+- generation-local slot在任何TAE Catalog mutation和runtime page安装前线性化；
+- 只有BUILDING owner可以执行`SoftDeleteObject`、`CreateNonAppendableObject`和
+  phase-1；重复请求只做有界等待或复用终态；
+- Drop/Create Catalog node在API成功后立即属于整个内部TAE事务，不由builder局部撤销；
+- TransferTable/slab/page/TransferDels在`LogTxnEntry`前属于builder，成功后原子转交
+  txn entry；Root-owned物理文件始终只由Cleanup Root删除；
+- 构建失败把slot置FAILED并回滚整个generation，禁止在同一已污染事务内重建；
+- G2使用新的内部事务、slot、Catalog node、TransferTable和entry；
+- `HandleCommit`级ReplayBudget对所有generation共享绝对deadline、最大代数和累计
+  预算，retry不能刷新预算或形成无界memo；
+- 并发第二次`HandleCommit`必须由TxnService按external txn ID串行化/去重；若现有合同
+  不能证明，则使用有界且有终态/deadline/count回收的共享registry，不能各自执行。
+
+十项P0之外，Feature Guard、Profile identity、Discovery scale、DROP cleanup、
 升级capability和support matrix也是GA必备条件；它们不能因为不在编号中被降级
 为可选项。
 
@@ -2058,7 +2095,7 @@ SHOW LIFECYCLE BLOCKERS
 | Gate A | Binding、Guard、Metadata Planner、Dry-run | 无 PUT、无退休 |
 | Gate B | Discovery、Exact Reader、Export-only、Parquet/Manifest | 只写 staging/export，不退休 |
 | Gate C | Attempt/Cleanup、reservation/protection、tagged Lifecycle entry和Rewrite原型 | 测试环境退休 |
-| Gate D | Whole、小Mixed DELETE、Mixed Rewrite、八项P0、故障矩阵 | 受控试点 |
+| Gate D | Whole、小Mixed DELETE、Mixed Rewrite、十项P0、故障矩阵 | 受控试点 |
 | Gate E | 1/10 TiB、升级、运维、成本、客户试点 | Commercial GA |
 
 放量：
@@ -2092,7 +2129,9 @@ SHOW LIFECYCLE BLOCKERS
 5. **普通Merge算法不变**：只增加正在执行exact source的reservation admission。
 6. **Whole快速、小Mixed DELETE**：低成本路径继续复用现有能力。
 7. **大Mixed使用Rewrite**：expired进Archive/丢弃，live进新TAE Object，不写海量Tombstone。
-8. **独立Executor/opcode**：Provider I/O不进入普通Merge，老TN对新协议fail closed。
+8. **独立Executor/tagged commit-control**：Provider I/O不进入普通Merge；CN使用
+   workspace之外的单条commit-control把tag放入正常可重放commit payload，老TN对新协议
+   fail closed。
 9. **source/staging protection**：复用GC SyncProtection保护source和Rewrite
    pre-commit staging，不增加长期table Snapshot。
 10. **两阶段Tombstone transfer**：live row transfer，archived row并发删除使final abort。
@@ -2118,10 +2157,11 @@ SHOW LIFECYCLE BLOCKERS
 | Mixed Object Rewrite | Conditional Go，首个GA正式能力，必须关闭row conservation/transfer P0 |
 | 查询时隐藏 TTL | No-Go |
 | ONLINE_COLD/Deep Archive | 不在首个 GA |
-| 首个受限 Commercial GA | 八项P0、Gate E和分阶段认证完成后Conditional Go |
+| 首个受限 Commercial GA | 十项P0、Gate E和分阶段认证完成后Conditional Go |
 
 这套方案复用了MO已有Reader、DELETE、mergesort、Object Writer、两阶段
 Tombstone transfer、事务恢复和GC。新增代码集中在Lifecycle控制面、Archive
-Catalog、独立Rewrite Executor/opcode、Cleanup、Restore和资源调度；普通Merge
+Catalog、独立Rewrite Executor、CN commit-control/tagged entry、Cleanup、Restore和
+资源调度；普通Merge
 只增加exact reservation admission，符合“约1000张绑定表、TB级、稳定可靠、
 尽量不增加MO内核回归风险”的目标。

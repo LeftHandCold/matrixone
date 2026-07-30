@@ -166,7 +166,8 @@ DeleteKeyProjection 与 Relation TableDef 以及普通 DELETE 的实际预处理
 MaxBatchRows/Bytes within release profile
 ```
 
-如果调用方没有排序，返回 `LIFECYCLE_INVALID_SOURCE_ORDER`，不在 Reader 内静默重排并改变 source digest。
+如果调用方没有排序，返回 `LIFECYCLE_INVALID_SOURCE_ORDER`，不在 Reader 内静默重排并改变
+`source_set_digest`。
 
 ### 4.1 读取前的 Block 峰值准入
 

@@ -54,7 +54,7 @@ dataset ID（Archive，预分配）
 deadline
 ```
 
-attempt ID一旦关联 source digest，不得原地换 source set。
+attempt ID一旦关联`source_set_digest`，不得原地换source set。
 
 ## 3. Root-before-first-side-effect
 
@@ -235,7 +235,7 @@ all required Root Objects VERIFIED
 AND Archive mode has VERIFIED Manifest Root Object
 AND payload count/bytes bounded
 AND Archive mode freezes manifest identity/root
-AND Rewrite mode freezes live-object and transfer digests
+AND Rewrite mode freezes created_layout_digest and transfer_mapping_digest
 ```
 
 其中“required”由实际分类结果决定，不由Planner初始mode猜测：
