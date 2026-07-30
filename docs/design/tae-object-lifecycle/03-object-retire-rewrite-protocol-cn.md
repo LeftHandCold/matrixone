@@ -240,6 +240,9 @@ inspect EntryType/protocol version
 ```
 
 任一检查失败整个事务abort。Object not found、Drop Intent/EOB不能当成本attempt成功。
+第2步只拒绝畸形、伪造或超过发布硬上限的entry，发生在Booking I/O和TAE mutation之前；
+它不是TN资源繁忙型admission。V1不增加Lifecycle专用permit或`RESOURCE_BUSY`重试语义，
+合法entry继续使用普通Merge/事务资源路径。
 
 资源Owner按现有事务边界分开：
 

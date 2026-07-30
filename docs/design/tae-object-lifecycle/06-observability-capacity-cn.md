@@ -20,6 +20,7 @@ provider-read/write-concurrency
 provider-bytes-per-second
 target-payload-file-bytes
 max-payload-files-per-dataset
+max-chunks-per-dataset
 max-certified-block-read-bytes
 max-source-objects-per-whole
 max-protection-files/bloom-bytes
@@ -65,6 +66,9 @@ lifecycle_restore_bytes
 lifecycle_provider_errors{operation,reason}
 lifecycle_resource_rejections{resource}
 ```
+
+`lifecycle_resource_rejections`只统计Scheduler/CN/Reader/Provider/entry-hard-limit拒绝，不表示
+存在TN Lifecycle专用permit或`RESOURCE_BUSY` final retry。
 
 ## 3. SHOW
 
@@ -117,6 +121,7 @@ P1 ticket：
 - full scan age超SLO；
 - cleanup backlog增长；
 - Provider 429/credential错误；
+- Archive Stage认证失效或运维发现Versioning配置漂移；
 - Rewrite/TTL blocked持续；
 - terminal metadata接近cap。
 
@@ -135,7 +140,7 @@ Kill switch不强制清理FINALIZING/COMMIT_UNKNOWN，也不取消已进入普�
 
 ## 7. 普通MO隔离
 
-feature off/无Binding：
+feature off：
 
 - 无Lifecycle对象分配；
 - 无Catalog查询；
@@ -143,6 +148,12 @@ feature off/无Binding：
 - 无Provider I/O；
 - 普通Merge默认参数和代码路径不变；
 - unknown Entry安全解析只增加可测的常数分支。
+
+feature开启但目标表无Binding：
+
+- 普通查询、DML和Merge仍为零Lifecycle Catalog访问；
+- 可能冲突的DDL至多执行一次按`(account_id, physical_table_id)`的索引化Binding lookup；
+- 不创建Binding、Guard、Candidate、Root或其他Lifecycle元数据。
 
 Active coexistence必须测DML、查询、Merge、checkpoint、GC、logtail吞吐和P99。阈值在Gate I
 前冻结，建议初始stop threshold：
@@ -199,6 +210,10 @@ Archive成本 =
 
 检查credential handle、Stage位置、Provider规则和prefix；恢复凭据后重试。不能修改Root
 namespace指向其他bucket。
+
+若部署认证被撤销或运维发现专用Bucket被开启Versioning，暂停该Stage的新Archive。首个GA
+不自动枚举/删除历史version；由Provider运维工具完成清理并恢复认证，在此之前相关Root
+保持`DELETING`并告警，不能仅按current key不可见宣称`CLEANED`。
 
 ### Full scan饥饿
 

@@ -2,7 +2,8 @@
 
 ## 1. 决策
 
-Object算法可以进入原型。以下P0全部通过前不能冻结协议或宣布GA。
+Object算法可以进入原型。第2～5节是已保留的基础安全门禁；第6节是本轮协议冻结前新增的
+五项Lifecycle P0。全部通过前不能宣布协议完成或Commercial GA。
 
 ## 2. P0-1 Cleanup Root闭环
 
@@ -63,7 +64,59 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - 升级全员ready后开启；
 - 降级前等待FINALIZING/COMMIT_UNKNOWN。
 
-## 6. Object与Reader
+## 6. 本轮五项Lifecycle P0
+
+### 6.1 Restore Chunk唯一性与可重启Hash
+
+- Catalog主键必须是`(restore_id, chunk_ordinal)`，`chunk_digest`是普通列；
+- 同ordinal、相同digest并发：最多一个事务写入数据和Receipt，另一方重读后幂等成功；
+- 同ordinal、不同digest并发：冲突方检测corruption，Restore fail closed；
+- 数据INSERT、Receipt、`next_chunk_ordinal`和`restored_rows`同事务提交/回滚；
+- chunk commit成功但response lost，以及成功后更新内存进度前CN crash；
+- 按ordinal读取Receipt可重建Manifest的Dataset聚合Hash；
+- 缺失、重复、ordinal不连续、row count或chunk hash不一致均禁止发布；
+- Manifest/Receipt达到`max_chunks_per_dataset`边界，聚合使用有界分页内存；
+- 不持久化SHA内部状态，不依赖重新扫描隐藏表或全部Payload。
+
+### 6.2 Restore/Purge Lease
+
+- Restore acquire与Purge竞争同一Dataset CAS；
+- 有有效lease时显式Purge返回`RESTORE_IN_PROGRESS`；
+- 有有效lease时后台Purge不等待，延迟重试；
+- lease终止或deadline后，Purge才能进入`DELETE_PENDING`；
+- 一旦进入`DELETE_PENDING`，旧worker的GET/chunk必须失败，且不存在“旧lease继续读”；
+- Restore最终DDL事务和Purge同时到达，验证双方CAS同一Dataset行且只能一方提交；
+- Restore发布成功必须同时清除lease并把Attempt置为DONE；
+- DROP不等待lease或Provider，后台按相同CAS收敛。
+
+### 6.3 Tombstone unknown fail-closed
+
+- Snapshot Reader和SyncProtection消费同一次Tombstone选择的exact identities；
+- 有效ZoneMap明确不相交时才允许排除；
+- ZoneMap缺失、未初始化、legacy、截断、解码失败和异常RowID范围均保守纳入；
+- unknown路径不得调用`RowidPrefixEq`决定排除；
+- 完整metadata无法解析则attempt失败；
+- 保守集合超过files/bytes上限返回`RESOURCE_BLOCKED`，不能继续退休源Object。
+
+### 6.4 分区表准入
+
+- SET LIFECYCLE拒绝逻辑分区表；
+- SET LIFECYCLE拒绝物理Partition child；
+- 已绑定表转换为分区表必须在DDL Gate fail closed；
+- 拒绝发生在任何Candidate、Root或Provider副作用之前；
+- 非分区普通表路径不增加Partition metadata访问。
+
+### 6.5 非Versioned Archive Stage
+
+- 无部署认证/allowlist记录的Stage拒绝Archive Binding；
+- 认证目标必须是专用、Versioning关闭的Bucket/Container；
+- Versioned Bucket不能被错误宣称支持精确物理Purge；
+- incomplete multipart回收规则仍是独立准入条件；
+- 撤销认证后暂停新Archive，相关cleanup不误标`CLEANED`；
+- Provider运维清理历史版本并重新认证后才能收敛异常Root；
+- 通用FileService不新增version ID API。
+
+## 7. Object与Reader
 
 - Whole单/多源，任一source冲突全abort；
 - Mixed完整物理Block；
@@ -78,8 +131,9 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - oversize Block读取前拒绝；
 - Batch release exactly once；
 - ArchiveWriter callback不持有borrowed vector，Close/错误/取消下buffer exactly-once释放。
+- Manifest保存`source_column_id`；Restore目标列使用新ID，结构校验忽略源ID。
 
-## 7. 并发Tombstone
+## 8. 并发Tombstone
 
 - S前DELETE不进Archive/live；
 - S后L DELETE正确transfer；
@@ -91,7 +145,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - Prepare后旧RowID DELETE冲突；
 - BigDelete guard与多个小事务累计路径。
 
-## 8. Merge、WAL、Replay、GC
+## 9. Merge、WAL、Replay、GC
 
 - 普通Merge抢先，Lifecycle CAS失败；
 - Lifecycle先提交，普通Merge安全失败；
@@ -104,9 +158,10 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - WAL replay后source/new Object可见性；
 - GC只删DropIntent源文件；
 - SyncProtection注册后重Stat、续租失败、TN restart。
-- Data source set与保护用Tombstone set分离；注册后重新Stat证明两类exact文件都被保护；
+- Data source set与Tombstone set职责分离，但Reader输入和Protection identities必须来自同一
+  Tombstone选择结果；注册后重新Stat证明两类exact文件都被保护；
 
-## 9. Discovery
+## 10. Discovery
 
 - 一页0/1/max Object；
 - maxMetaBytes先命中；
@@ -122,7 +177,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - 持续Merge下没有永久饥饿；
 - 1000 Binding公平性。
 
-## 10. Cleanup
+## 11. Cleanup
 
 - Root-before每种副作用；
 - PUT成功登记前crash；
@@ -131,14 +186,16 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - delayed PUT和LIST一致性；
 - Dataset Purge与Root触发丢消息；
 - credential轮换；
+- Stage认证撤销/Versioning合同被破坏时不误报物理清理完成；
 - cleanup backlog cap；
 - CLEANED审计GC。
 
-## 11. Restore/Purge/DROP
+## 12. Restore/Purge/DROP
 
-- Restore chunk response lost/duplicate；
-- hash/schema/row count；
+- Restore chunk相同/不同digest、response lost和duplicate；
+- Receipt有序聚合hash、schema/row count；
 - lease与Purge逐点竞态；
+- active lease下Purge fail-fast/后台延迟；
 - deadline abort；
 - hidden table publish response lost；
 - multiple Restore；
@@ -146,7 +203,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - Stage unavailable；
 - unsupported schema version。
 
-## 12. DDL最后Gate
+## 13. DDL最后Gate
 
 先测普通MO基线，再测Lifecycle：
 
@@ -158,7 +215,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 
 验收必须证明真实锁或WW conflict，不能以“最后读取值正确”代替互斥。
 
-## 13. 规模
+## 14. 规模
 
 1 TiB常见场景：
 
@@ -176,14 +233,14 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - full scan周期；
 - 普通MO active coexistence。
 
-## 14. Soak与放量
+## 15. Soak与放量
 
 - 30天soak；
 - 50→200→500→1000表；
 - feature off/无Binding对照；
 - 所有P0证据包含commit SHA、配置、数据生成器、故障点和原始指标。
 
-## 15. Stop Ship
+## 16. Stop Ship
 
 任一情况阻止GA：
 
@@ -191,6 +248,10 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - published Payload可被覆盖/误删；
 - source和new Object双不可见；
 - Restore静默缺行/错类型；
+- Restore同ordinal不同digest被重复导入；
+- Tombstone metadata unknown被当作不相交而跳过；
+- 逻辑分区表被部分处理；
+- Versioned Bucket被宣称完成物理Purge但历史版本仍计费；
 - unknown被当abort清理；
 - 普通MO明显回归；
 - 无界Root/Receipt/Restore记录；

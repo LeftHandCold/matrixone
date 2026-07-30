@@ -56,7 +56,7 @@ PUBLISHED
   -> DELETE_PENDING
 
 DELETE_PENDING
-  -> restore lease drained / cleanup_after reached
+  -> Dataset已无有效restore lease / cleanup_after reached
   -> DELETING
   -> CLEANED
 ```
@@ -166,9 +166,14 @@ Dataset CAS `PUBLISHED -> DELETE_PENDING`后，控制面把对应Root推进
 - 删除Archive Manifest列出的不可变key；
 - Manifest不存在则LIST root prefix；
 - 删除booking prefix和未发布TAE staging范围；
-- Provider支持version ID时删除具体version；
 - 重复Delete/NotFound视为幂等；
 - 所有namespace分别确认。
+
+Phase 1只支持部署认证的非Versioned专用Archive target，因此Root按key删除当前且唯一的
+物理对象版本。通用FileService不扩展version ID API。若运维破坏认证合同开启Versioning，
+该Stage必须由运维撤销认证并暂停新Archive；Root保持`DELETING`并记录`last_error`，不能
+仅因HEAD/LIST看不到Delete Marker后的current version就标记`CLEANED`。遗留历史版本由
+Provider运维工具清理并重新认证后再收敛Root。
 
 不能删除TAE已经接管的live Object。`state=PUBLISHED`或matching Dataset/TTL Receipt已经
 证明提交时，TAE segment只用于identity核对，不进入Root Delete集合。

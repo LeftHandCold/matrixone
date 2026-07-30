@@ -3,9 +3,9 @@
 > 本文是首个 Commercial GA 的总实现规范。全局范围和不变量见 [README.md](README.md)，
 > 精确Catalog、接口、状态机、测试和代码任务以README列出的01–08单一职责子设计为准。
 >
-> 当前协议结论：**Conditional Go**。Whole/Mixed Object算法冻结；Cleanup Root所有权、
-> immutable PUT、Manifest schema descriptor和旧TN fail-closed四个P0完成前，不能冻结
-> Cleanup/Restore/wire协议。
+> 当前协议结论：**Conditional Go**。Whole/Mixed Object算法冻结，Gate A/B可开发；本轮
+> Restore Chunk、Restore/Purge lease、Tombstone unknown、分区表准入和Versioned Bucket
+> 五项P0，以及既有Cleanup/格式/升级安全门禁完成前，不能宣布协议和Commercial GA完成。
 
 ## 1. 交付边界
 
@@ -44,7 +44,11 @@ PURGE ARCHIVE DATASET '<dataset-id>';
 Archive不参与原表在线查询；Restore始终创建新表。
 
 绑定表必须拒绝当前不支持的CDC、FK、Publication、隐藏索引、Snapshot/PITR/Backup/
-Clone/Branch和插件组合。未绑定表不读取Lifecycle Catalog。
+Clone/Branch和插件组合。Phase 1还拒绝逻辑分区表、物理Partition child，以及未经部署认证
+或启用对象Versioning的Archive Stage。
+
+普通查询、DML和Merge在未绑定路径不读取Lifecycle Catalog。feature开启时，可能冲突的DDL
+允许执行一次索引化Binding存在性查询；feature关闭时该查询也不执行。
 
 ## 3. 最小Catalog
 
@@ -75,6 +79,8 @@ version
 
 Policy、Lifecycle列、Stage身份、physical table或有效schema发生语义变化时，
 `binding_generation`递增。Binding不保存active attempt、逐Object索引、Candidate或滚动统计环。
+Binding的`schema_digest`是源表final fence，覆盖源Column ID及读取/分类语义，不用于比较
+Restore新表的目标Column ID。
 
 ### 3.2 Dataset
 
@@ -87,7 +93,7 @@ logical_table_id / source_physical_table_id
 source_snapshot_ts
 evaluation_time / effective_cutoff
 source_set_digest
-schema_digest
+schema_descriptor_digest
 lifecycle_min / lifecycle_max
 root_id / attempt_id
 manifest_key / manifest_sha256
@@ -103,6 +109,8 @@ version
 ```
 
 Dataset本身是Archive发布权威，不增加Archive Receipt。
+`schema_descriptor_digest`验证Manifest历史descriptor的canonical bytes；Restore按结构字段
+创建目标表，不持久化第二个restore schema摘要。
 
 ### 3.3 TTL Receipt
 
@@ -170,8 +178,20 @@ Dataset/TTL Receipt时发生。Root完整转换、Owner和删除前置条件只�
 
 ### 3.5 Restore Attempt与Chunk Receipt
 
-Restore Attempt保存Dataset、隐藏表、lease、deadline、进度和状态。Chunk Receipt使用
-`(restore_id, chunk_ordinal, chunk_digest)`唯一键，跟对应普通INSERT同事务提交。
+Restore Attempt保存Dataset、隐藏表、lease、deadline、`next_chunk_ordinal`、
+`restored_rows`和状态，不保存可继续计算的SHA内部状态。Chunk Receipt使用：
+
+```text
+PRIMARY KEY (restore_id, chunk_ordinal)
+chunk_digest
+file_ordinal / row_group_ordinal
+row_count
+canonical_content_hash
+```
+
+首版单个Restore串行推进。数据INSERT、Receipt和Attempt进度在同一普通事务提交；同ordinal
+相同digest幂等，不同digest是corruption。最终Hash按Receipt ordinal使用02的固定聚合公式
+重建。
 
 ## 4. Stage合同
 
@@ -196,6 +216,11 @@ Storage location有引用时不得原地修改。credential可轮换，但稳定
 attempt和prefix永不复用；Manifest只引用已full readback验证的write-id。worker租约或
 SyncProtection失效时不接管原attempt，而是清理旧Root并创建新Root。Stage必须由运维
 认证Provider侧 incomplete multipart回收规则；正常错误路径仍主动Abort multipart。
+
+Archive Stage还必须来自部署管理的Lifecycle认证记录/allowlist，并使用专用、Versioning
+关闭的Bucket/Container。通用FileService不增加Versioning查询或version ID删除接口。
+运维在仍有Lifecycle引用时开启Versioning属于不受支持的配置漂移；首个GA不建设自动漂移
+状态机，发现后撤销Stage认证、暂停新Archive，并通过Provider运维工具清理历史版本。
 
 ## 5. Discovery与调度
 
@@ -282,7 +307,12 @@ cluster Rewrite 1, provider read/write分别限流
 
 ## 6. Source Snapshot与GC保护
 
-Child冻结`source_snapshot_ts=S`，选择exact Data/Tombstone文件后：
+Child冻结`source_snapshot_ts=S`。Lifecycle只执行一次Tombstone选择，返回S时Snapshot
+Reader输入和对应exact identities；SyncProtection保护同一集合。只有有效RowID ZoneMap能
+证明不相交时才排除Tombstone Object，unknown/legacy/截断/解码异常一律保守纳入，无法
+解析则attempt失败，超限则`RESOURCE_BLOCKED`。
+
+选择exact Data/Tombstone文件后：
 
 1. 注册现有GC `SyncProtection`；
 2. 注册成功后重新Stat并验证全部文件identity；
@@ -328,13 +358,20 @@ transfer slab实际allocator capacity + safety margin
 ### 7.4 格式与验证
 
 Parquet/ZSTD文件保存size、SHA-256、ordinal、row count和必要min/max。Manifest保存文件集、
-完整版本化逻辑schema descriptor、schema digest、canonical encoder version、content hash
-和总行数。descriptor至少能重建稳定列顺序、列名/Column ID、MO类型、width/scale、
+完整版本化逻辑schema descriptor、descriptor digest、canonical encoder version、content
+hash和总行数。descriptor至少能重建稳定列顺序、列名、源Column ID、MO类型、width/scale、
 nullability、charset/collation和AUTO_INCREMENT属性；Phase 1不恢复PK、索引、FK、CDC、
 Publication、默认表达式、权限或策略。
 
-canonical encoder使用明确的row/column/type/null/length framing。source streaming hash与
-full readback decoder hash必须一致。readback失败不得进入final transaction。
+descriptor中的Column ID明确命名为`source_column_id`，只用于lineage和源schema fence；
+Restore目标列由普通DDL分配新ID，结构校验忽略源ID，不增加第二个持久
+`restore_schema_digest`。
+
+canonical encoder使用明确的row/column/type/null/length framing。Archive按Parquet Row
+Group产生稳定chunk ordinal和canonical chunk hash；`Dataset.content_hash`是按ordinal聚合
+`chunk_ordinal/row_count/canonical_content_hash`的版本化SHA-256。source writer与full
+readback decoder必须得到相同chunk和Dataset hash。Restore根据Chunk Receipt重建聚合结果，
+不持久化SHA内部状态、不重新扫描隐藏表或全部Payload。readback失败不得进入final transaction。
 
 ## 8. Cleanup Root write-ahead
 
@@ -419,6 +456,10 @@ TN在任何mutation前验证entry结构、物理table/schema、限额、protecti
 TN不查询tenant Lifecycle Catalog。source identity不一致、Drop Intent/EOB或物理table/schema
 不匹配均abort。EOB不代表本attempt已提交。
 
+TN限额校验只拒绝畸形、伪造或超过发布硬上限的entry，必须发生在Booking I/O和TAE mutation
+前；它不是资源繁忙型admission，不增加Lifecycle permit或`RESOURCE_BUSY`重试语义。合法
+entry继续复用普通Merge/TXN资源路径。
+
 retirement上线采用两步发布：
 
 1. 先把unknown Entry/version在Batch解析前fail closed的安全解析部署到全部TN，只开放
@@ -501,13 +542,20 @@ Dataset一次最多一个Restore lease：
 acquire lease with fixed deadline
 -> create hidden staging table
 -> read/verify Manifest and files
--> chunked normal INSERT + chunk Receipt
+-> serial chunked normal INSERT + Receipt/Attempt progress in the same transaction
+-> rebuild ordered content hash from Chunk Receipts
 -> verify schema/rows/content hash
--> ordinary DDL atomic rename/publish
+-> ordinary transaction:
+     CAS matching unexpired Dataset lease
+     atomic rename/publish
+     Attempt DONE + clear lease
 ```
 
-每次GET/chunk前验证lease。Purge将Dataset CAS到`DELETE_PENDING`并禁止新lease；已有lease
-只在固定deadline内续租，超时Restore abort并清理隐藏表。Sweeper异步删除，Purge事务不等待。
+每次GET/chunk前验证lease。Purge只有在Dataset没有有效lease时才能CAS到
+`DELETE_PENDING`并递增access generation；显式Purge遇有效lease返回
+`RESTORE_IN_PROGRESS`，后台Purge延迟重试。进入`DELETE_PENDING`后不存在允许继续读取的
+旧Restore。Restore发布和Purge写同一Dataset行，任何竞态只能一方提交。Sweeper异步删除，
+Purge事务不等待lease或Provider。
 
 DROP沿用普通MO语义，不等待Provider，也不保证DROP后Restore。后台从现有Binding/Dataset/
 Root状态发现孤儿并清理，不建立owner tombstone。
@@ -531,8 +579,11 @@ RESTORE_LEASE_EXPIRED
 CLEANUP_FAILED
 ```
 
-所有Provider I/O有deadline/retry budget；所有队列有rows/bytes上限；TN admission fail-fast，
-不等待资源。Lifecycle资源池不能占用普通事务和Merge保底配额。
+所有Provider I/O有deadline/retry budget；所有队列有rows/bytes上限。Lifecycle通过
+Scheduler/CN并发、单源Rewrite、entry解码前硬上限和active-coexistence门禁
+约束资源。首个GA不增加TN Lifecycle专用permit，也不承诺比普通Merge更强的TN资源保证。
+认证负载触发公共Merge资源缺陷时，记录/修复公共MO Issue或降低认证上限，不能用Lifecycle
+私有状态机掩盖。
 
 ## 19. P0测试
 
@@ -542,9 +593,9 @@ CLEANUP_FAILED
 2. Archive-before-retire与Dataset/Object mutation原子性；
 3. Stage位置不可变、credential轮换和服务重启；
 4. Root-before-side-effect、写后登记前crash、迟到PUT；
-5. 各SQL类型canonical hash和full readback；
+5. 各SQL类型canonical hash、Chunk有序聚合和full readback；
 6. 最大Object、oversize Block拒绝和并发资源上限；
-7. Restore中断、chunk重放、Purge lease drain；
+7. Restore中断、同ordinal相同/不同digest、chunk重放和Purge active-lease拒绝；
 8. S前/S后DELETE、NoTransfer、Whole Archive并发DELETE；
 9. SyncProtection续租失败和TN重启；
 10. 相同/重叠/不相交source的并发final transaction；
@@ -582,7 +633,8 @@ pkg/taskservice                       Scheduler
 
 - 单元、故障和并发测试通过；
 - 明确资源Owner、deadline和hard cap；
-- feature off与未绑定表无新Catalog访问；
+- feature off无Lifecycle Catalog访问；未绑定表的普通查询/DML/Merge零访问，相关DDL至多
+  一次索引化Binding lookup；
 - `git diff --check`和Markdown检查通过；
 - 设计与实现没有恢复本README已删除的协议；
 - Gate H之前退休能力仅在受控无不兼容DDL环境验证，不能宣布GA。

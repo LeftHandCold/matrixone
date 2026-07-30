@@ -40,7 +40,7 @@ Phase 1恢复：
 Dataset一次最多一个Restore lease：
 
 ```text
-PUBLISHED + no active lease
+PUBLISHED + no unexpired restore lease
 -> CAS access_generation/version
 -> set restore_lease_id, restore_deadline
 ```
@@ -54,6 +54,9 @@ PUBLISHED + no active lease
 
 worker可续租心跳，但不能超过创建时冻结的absolute deadline。
 
+Restore lease获取与Purge CAS同一条Dataset行；两者只能一个成功。Purge不会先改变state或
+`access_generation`再允许旧Restore继续读取。
+
 ## 4. Hidden staging table
 
 名称：
@@ -65,20 +68,35 @@ __mo_lifecycle_restore_<restore-id>
 创建在目标database，普通用户不可直接访问。使用Manifest schema descriptor创建；目标名
 已存在时在开始前失败。
 
+descriptor中的`source_column_id`只用于lineage；普通DDL为目标列分配新Column ID。
+Restore校验ordinal/name/type/nullability/charset/collation/AUTO_INCREMENT等Phase 1结构，
+不要求目标Column ID等于源Column ID。
+
 ## 5. 分块写入
 
 ```text
 for each manifest file ordinal
   -> read and verify SHA-256
   -> decode row groups
-  -> canonical hash
+  -> verify canonical chunk hash/digest
   -> convert to MO vectors
-  -> normal INSERT into staging
-  -> insert chunk Receipt in same transaction
+  -> one normal transaction:
+       INSERT data into staging
+       INSERT chunk Receipt
+       CAS next_chunk_ordinal
+       UPDATE restored_rows
 ```
 
-chunk key是`(restore_id, file_ordinal, row_group_ordinal, chunk_digest)`的稳定映射。
-重试前查询Receipt；存在且digest一致跳过，不一致报corruption。
+首版单个Restore串行处理chunk。Manifest按`file_ordinal/row_group_ordinal`定义稳定、
+连续的`chunk_ordinal`，Receipt主键是`(restore_id, chunk_ordinal)`；`chunk_digest`、
+`row_count`和`canonical_content_hash`是普通列。
+
+重试前查询Receipt只是优化，真正并发边界由主键和普通事务保证：
+
+- 同ordinal且digest一致：事务冲突或响应丢失后重读Receipt，按幂等成功处理；
+- 同ordinal但digest不同：标记corruption，整个Restore fail closed；
+- 数据INSERT、Receipt、`next_chunk_ordinal`和`restored_rows`必须一起提交或一起回滚；
+- CN在提交成功后、更新内存进度前crash，新worker以Receipt和Attempt行为准。
 
 Restore不使用tagged entry，完全复用普通INSERT事务。
 
@@ -86,14 +104,34 @@ Restore不使用tagged entry，完全复用普通INSERT事务。
 
 全部chunk完成后：
 
-- schema digest相等；
+- Manifest descriptor digest完整，目标表结构投影与descriptor一致；
 - restored row count等于Manifest；
-- restored canonical content hash等于Manifest；
+- 按`chunk_ordinal`读取Receipt，并使用02冻结的有序聚合公式重建
+  `Dataset.content_hash`，结果等于Manifest；
 - 无缺失/重复chunk；
 - lease仍有效。
 
-最后用普通DDL事务把隐藏表原子改名/发布为目标新表。响应未知沿用普通DDL对账，不建设
-Lifecycle终态协议。
+不持久化SHA-256内部状态，不重新扫描隐藏表，也不为最终Hash重新读取全部Payload。
+Receipt按主键分页顺序流式聚合，不一次性物化全部记录；Manifest和Receipt chunk数都必须
+小于等于`max_chunks_per_dataset`。
+
+最后使用一个普通事务：
+
+```text
+CAS Dataset:
+  state == PUBLISHED
+  restore_lease_id == this lease
+  restore_deadline > transaction time
+  access_generation/version unchanged
+-> 原子改名/发布隐藏表
+-> Restore Attempt = DONE
+-> clear Dataset restore lease
+-> commit
+```
+
+Purge更新同一Dataset行，因此并发时只能一方成功：Purge先成功则Restore发布事务整体回滚；
+Restore先成功则新表发布并释放lease，Purge随后可以继续。响应未知沿用普通DDL和目标table
+identity对账，不建设Lifecycle终态协议。
 
 ## 7. Restore失败
 
@@ -103,6 +141,8 @@ Lifecycle终态协议。
 - credential失败：保持Attempt并告警，deadline后abort；
 - 发布失败且目标名不存在：可在deadline内重试；
 - 发布结果未知：禁止Purge，先按普通Catalog检查目标table identity。
+- 明确abort且仍持有自己的lease：CAS清除lease；CAS失败说明Purge/其他终态已推进，只清理
+  自己的隐藏表，不覆盖新状态。
 
 ## 8. Purge
 
@@ -110,16 +150,30 @@ Lifecycle终态协议。
 `purge_eligible_at`必须拒绝；DROP owner表示产品契约已放弃Restore，可覆盖该时间：
 
 ```text
-Dataset PUBLISHED
+Dataset PUBLISHED AND no unexpired Restore lease
 -> CAS DELETE_PENDING and increment access_generation
 -> reject new Restore lease
--> existing lease may finish only before frozen deadline
 -> Root PUBLISHED -> DELETE_PENDING
 -> Sweeper deletes
 -> Dataset DELETING -> PURGED
 ```
 
-Purge SQL事务不等待Provider。若Restore超时，先abort Restore并清理隐藏表。
+对应Catalog CAS必须带Dataset version，并等价于：
+
+```sql
+UPDATE mo_lifecycle_datasets
+SET state = 'DELETE_PENDING',
+    access_generation = access_generation + 1,
+    version = version + 1
+WHERE dataset_id = ?
+  AND state = 'PUBLISHED'
+  AND version = ?
+  AND (restore_lease_id IS NULL OR restore_deadline <= current_timestamp);
+```
+
+显式Purge遇到有效lease返回`RESTORE_IN_PROGRESS`；后台Purge延迟到lease终止或deadline后
+重试。Purge SQL事务不等待lease或Provider。过期Restore停止新GET/chunk并清理隐藏表；
+只有随后成功取得上述CAS的Purge才能推进Root。
 
 ## 9. DROP
 
@@ -157,8 +211,10 @@ Dataset控制逻辑可见性，Root控制物理删除：
 
 - 多次Restore同一Dataset到不同表；
 - schema含DECIMAL/TIMESTAMP/JSON/NULL/CHAR/AUTO_INCREMENT/PK；
-- chunk commit response lost和重复；
+- chunk同ordinal相同/不同digest并发、commit response lost和CN crash恢复；
+- Receipt有序聚合Hash与Manifest一致，缺失/重复ordinal必须失败；
 - Purge与GET/chunk/publish逐点竞态；
+- 显式Purge遇有效lease返回`RESTORE_IN_PROGRESS`，后台Purge不等待并延迟重试；
 - lease deadline、CN crash、Stage credential轮换；
 - DROP table/database/account；
 - Manifest版本不支持、文件篡改和目标表名冲突。

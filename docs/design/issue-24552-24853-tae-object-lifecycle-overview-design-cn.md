@@ -55,7 +55,7 @@ Lifecycle不提供`ONLINE_COLD`。归档数据默认不参与普通SQL查询，�
 
 不支持：
 
-- SQL Partition作为正确性边界；
+- 逻辑分区表和物理Partition child（Phase 1在Bind时拒绝）；
 - 查询时TTL过滤、ONLINE_COLD、Deep Archive；
 - Archive Mixed大批量普通DELETE；
 - CDC/FK/Publication/隐藏索引/插件；
@@ -72,7 +72,10 @@ Lifecycle不提供`ONLINE_COLD`。归档数据默认不参与普通SQL查询，�
 - Lifecycle需要处理未分区表和已有TB级表；
 - Object identity、ObjectStats、MVCC和GC才是实际数据文件生命周期。
 
-Partition可作为未来Planner hint，但不进入安全协议。
+Phase 1并不因为“不依赖SQL Partition”就自动支持分区表：当前Binding只冻结一个
+`physical_table_id`，因此逻辑分区表和物理Partition child在Bind时直接拒绝。未来支持时，
+一个逻辑Binding必须显式展开为多个物理child；Partition可作为Planner hint，但不进入
+当前安全协议。
 
 ## 4. 总体架构
 
@@ -191,7 +194,7 @@ Archive使用Parquet/ZSTD。Manifest保存：
 dataset_id
 root_id / attempt_id
 versioned logical schema descriptor
-schema_digest
+schema_descriptor_digest
 canonical_encoder_version
 content_hash
 file ordinal/key/size/SHA-256/row_count
@@ -208,14 +211,21 @@ encryption/KMS identity
 - 文件和Row Group使用单调ordinal。
 
 逻辑值编码包含row、column ordinal、type、null和length framing，覆盖DECIMAL、
-TIMESTAMP、JSON、CHAR、NaN等类型。source streaming hash必须与Provider full readback
-后的decoder hash相等。
+TIMESTAMP、JSON、CHAR、NaN等类型。Archive Writer产生的chunk hash及Dataset有序聚合
+hash必须与Provider full readback后的decoder结果相等。
 
 不使用Merkle Tree或逐Cell持久化hash。
 
-逻辑schema descriptor保存稳定列顺序、列名/Column ID、MO类型、width/scale、nullability、
-charset/collation和必要的AUTO_INCREMENT属性。Phase 1 Restore只恢复列结构和数据，不恢复
-PK、二级索引、FK、CDC、Publication、默认表达式、权限或策略。
+逻辑schema descriptor保存稳定列顺序、列名/`source_column_id`、MO类型、width/scale、
+nullability、charset/collation和必要的AUTO_INCREMENT属性。源Column ID只用于lineage；
+Restore新表由普通DDL分配新ID并按结构字段校验，不新增第二个restore schema digest。
+Phase 1 Restore只恢复列结构和数据，不恢复PK、二级索引、FK、CDC、Publication、
+默认表达式、权限或策略。
+
+Archive以Parquet Row Group为稳定chunk。每个chunk保存ordinal、row count和canonical
+content hash；Dataset内容Hash按ordinal聚合这些Receipt字段。Archive Writer、full
+readback和Restore使用同一公式，CN crash后可从Chunk Receipt重建，不持久化SHA内部状态，
+也不重新扫描隐藏表或全部Payload。
 
 ## 7. Stage与外部对象
 
@@ -236,6 +246,11 @@ credential handle
 首个GA只接受IAM Role、workload identity、部署管理credential alias或system secret handle。
 Root不保存明文secret。Storage location在仍有Binding/Dataset/Root/Restore引用时不能原地
 修改；credential可以轮换但handle必须长期可解析。
+
+Phase 1 Archive Stage还必须是部署认证/allowlist中的专用、Versioning关闭的
+Bucket/Container。通用FileService不扩展Bucket Versioning查询或version ID删除。运维开启
+Versioning属于破坏受支持部署合同的外部配置；首个GA不建设自动漂移状态机，发现后暂停该
+Stage并由Provider运维工具清理历史版本。
 
 ## 8. Cleanup Root
 
@@ -360,21 +375,26 @@ Restore只恢复到独立新表：
 Dataset获取有期限lease
 -> 解析Manifest并验证文件
 -> 创建隐藏staging table
--> 分块普通INSERT
--> chunk Receipt保证幂等
+-> 串行分块普通INSERT
+-> 数据/Chunk Receipt/Attempt进度同一普通事务
+-> 按Receipt ordinal重建content hash
 -> 校验schema/row count/content hash
--> 普通DDL原子发布新表
+-> 普通事务CAS匹配且未过期的Dataset lease
+-> 原子发布新表、Attempt DONE并清除lease
 ```
 
 Restore不使用tagged entry。Purge只更新Dataset状态：
 
 ```text
-PUBLISHED -> DELETE_PENDING
+PUBLISHED + no active Restore lease -> DELETE_PENDING
   -> 禁止新Restore
-  -> 等已有lease terminal或deadline
   -> Sweeper删除Payload
   -> PURGED
 ```
+
+显式Purge遇到有效lease返回`RESTORE_IN_PROGRESS`；后台Purge延迟重试。Purge事务不等待
+lease或Provider。Restore发布和Purge写同一Dataset行，只能一方提交；进入
+`DELETE_PENDING`后不存在继续读取的旧Restore。
 
 DROP TABLE/DATABASE/ACCOUNT沿用普通MO业务语义，不等待Provider。Lifecycle后台根据缺失owner
 和Root/Dataset状态异步清理，不建设owner tombstone或DROP专用状态机。
@@ -403,7 +423,9 @@ DROP TABLE/DATABASE/ACCOUNT沿用普通MO业务语义，不等待Provider。Life
 - staging、Root unknown、cleanup backlog；
 - Restore chunk和隐藏表。
 
-admission失败只暂停Lifecycle，不在TN commit路径排队，不抢占普通事务与Merge的保底资源。
+Scheduler/CN admission失败只暂停Lifecycle。首个GA不增加TN Lifecycle专用permit，也不
+承诺比普通Merge更强的TN资源保证；若认证负载触发公共Merge资源问题，关联公共Issue或
+降低认证上限后重测，不建设Lifecycle私有补偿状态机。
 
 ## 15. Commercial GA门禁
 

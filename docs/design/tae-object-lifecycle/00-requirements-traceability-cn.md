@@ -30,6 +30,7 @@
 | 到期Purge | 异步Purge | 支持 |
 | Account/Database继承 | 不实现 | 后续Phase |
 | Table Policy | 支持 | Phase 1 |
+| 逻辑分区表 | 不实现 | Phase 1在Bind时拒绝；后续按物理child展开 |
 | Time Travel/Fail-safe | 不替代现有Snapshot/PITR | 独立产品平面 |
 | Archive继续在线UPDATE | 不支持 | 应继续留在活动TAE |
 | DROP后合规保留 | 不支持 | 无Legal Hold/WORM |
@@ -42,11 +43,12 @@
 |---|---|---|
 | 500～1000绑定表 | 只扫描Binding、分页和公平调度 | 02/06/07 |
 | 1 TiB常见、10 TiB认证 | streaming、硬上限和scale test | 02/07 |
-| 普通MO稳定 | 未绑定路径不访问Lifecycle；普通Merge算法不变 | 03/06 |
-| Archive可恢复 | schema descriptor、hash、full readback | 02/05 |
+| 普通MO稳定 | 普通查询/DML/Merge不访问Lifecycle；普通Merge算法不变 | 03/06 |
+| Archive可恢复 | schema descriptor、可重启Chunk Hash、full readback | 02/05 |
 | Merge并发安全 | exact CAS、单源Rewrite、现有transfer | 03/07 |
 | 外部对象不泄漏/误删 | immutable key、Root/Sweeper | 04/07 |
 | 重启与升级安全 | SyncProtection fail closed、旧TN拒绝 | 02/03/07 |
+| Purge物理回收 | 仅认证的非Versioned专用Stage | 02/04/07 |
 
 ## 5. 需求变更规则
 

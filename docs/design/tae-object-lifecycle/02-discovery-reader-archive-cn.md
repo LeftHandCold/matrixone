@@ -145,11 +145,29 @@ Child冻结`source_snapshot_ts=S`。`source_set`只包含将被退休的Data Obj
 
 ```text
 visible data source objects
--> 用RowID/Object前缀与tombstone sort-key ZoneMap筛选可能相关的Tombstone Objects
+-> SelectLifecycleSnapshotTombstones一次性选择S时可能相关的Tombstone Objects
+-> 同一选择结果同时交给Snapshot Reader和SyncProtection
 -> 固定ObjectStats/name/digest
 -> source_set_digest只覆盖Data
 -> protection_set_digest覆盖Data + Tombstone
 ```
+
+禁止Protection Selector和Snapshot Reader分别维护两套Tombstone筛选规则。建议接口：
+
+```go
+func SelectLifecycleSnapshotTombstones(
+    ctx context.Context,
+    snapshot types.TS,
+    sources []objectio.ObjectStats,
+    limits TombstoneSelectionLimits,
+) ([]ExactTombstoneObject, error)
+```
+
+只有已初始化、类型正确、未损坏的RowID ZoneMap能够证明与全部source Object范围不相交时，
+才允许排除Tombstone Object。ZoneMap缺失、legacy未初始化、截断、解码失败或RowID范围
+异常时，不调用`RowidPrefixEq`，而是保守纳入Reader/protection输入；加载完整metadata仍
+无法解析则当前attempt失败。保守纳入后超过files/bytes上限返回`RESOURCE_BLOCKED`，不能
+继续归档。
 
 新Tombstone在S之后出现，不属于S时Reader输入，由final Prepare的post-S visitor处理。
 
@@ -237,7 +255,7 @@ schema_format_version
 reader_min_version
 columns[] {
   ordinal
-  column_id
+  source_column_id
   name
   mo_type
   type_parameters
@@ -248,12 +266,17 @@ columns[] {
   collation
   auto_increment
 }
-schema_digest
+schema_descriptor_digest
 ```
 
 descriptor和Archive Payload只包含用户逻辑列，不包含RowID、fake PK、commit TS或隐藏索引
 内部列。Mixed Rewrite仍按现有Merge schema处理live TAE行；Archive writer使用独立的
 用户列projection，两者不能混用列ordinal。
+
+`source_column_id`只用于来源追踪和归档时的源schema fence。Restore通过普通DDL创建新表，
+目标列由MO分配新的Column ID；目标结构按ordinal/name/type/nullability等Phase 1恢复字段
+校验，不要求目标Column ID等于`source_column_id`，也不新增第二个持久
+`restore_schema_digest`。
 
 Phase 1 Restore只恢复列结构和数据，不恢复PK、UNIQUE/CHECK/FK、二级索引、CDC、
 Publication、插件、权限和源表默认表达式。`auto_increment`属性可以恢复：加载期间禁用
@@ -298,6 +321,40 @@ signed zero和binary。Encoder版本写入Manifest，unknown版本Restore fail c
 - Mixed：单source Block ordinal、Row offset；
 - File/Row Group：单调ordinal。
 
+Archive与Restore的可重启内容摘要以Parquet Row Group为chunk边界。每个chunk保存：
+
+```text
+chunk_ordinal
+file_ordinal
+row_group_ordinal
+row_count
+canonical_content_hash
+chunk_digest
+```
+
+公式冻结为：
+
+```text
+canonical_content_hash =
+  SHA256("mo-lifecycle-chunk-content/v1" || ordered canonical row bytes)
+
+chunk_digest =
+  SHA256("mo-lifecycle-chunk/v1"
+         || chunk_ordinal || file_ordinal || row_group_ordinal
+         || row_count || canonical_content_hash)
+
+Dataset.content_hash =
+  SHA256("mo-lifecycle-dataset-content/v1"
+         || ordered framing(
+              chunk_ordinal,
+              row_count,
+              canonical_content_hash))
+```
+
+所有整数使用canonical big-endian定长编码，字节串带长度framing。Archive Writer和Provider
+full readback使用同一公式；Restore可在CN crash后按`chunk_ordinal`读取Receipt重建最终
+`Dataset.content_hash`，不持久化SHA内部状态，也不重新扫描隐藏表或全部Payload。
+
 ## 11. Parquet与Manifest
 
 Parquet使用ZSTD。每个文件记录：
@@ -309,6 +366,13 @@ size
 SHA-256
 row_count
 logical_bytes
+row_groups[] {
+  chunk_ordinal
+  row_group_ordinal
+  row_count
+  canonical_content_hash
+  chunk_digest
+}
 min/max（可选）
 ```
 
@@ -318,7 +382,9 @@ source snapshot/evaluation time/cutoff/source set digest、Lifecycle列min/max�
 
 Writer按`target_payload_file_bytes`流式切分，不按“每天一个文件”或“月底全量合并”。
 默认值在Provider/Restore认证后冻结，并同时受`max_payload_files_per_dataset`和单次Root
-bytes上限约束。Phase 1不做Archive compaction；需要合并文件时作为独立优化设计。
+bytes上限约束。每个Row Group对应一个Restore chunk，并受`max_chunks_per_dataset`硬上限；
+Writer在产生超限Manifest前必须缩小source batch或返回`RESOURCE_BLOCKED`。Phase 1不做
+Archive compaction；需要合并文件时作为独立优化设计。
 
 Writer接口：
 
@@ -374,6 +440,11 @@ ResolveLifecycleStage(
 Bind时解析并校验一次，Dataset/Root保存冻结结果。Restore和Sweeper使用冻结target + 最新
 credential handle解析结果，不重新读取Stage URL决定namespace。
 
+`ResolveLifecycleStage`还必须查询部署管理的Lifecycle Stage认证记录/allowlist。Phase 1
+只接受专用、对象Versioning关闭的Bucket/Container；当前通用`ObjectStorage`不提供Bucket
+Versioning查询或version ID删除，因此无法证明上述条件时必须拒绝Archive Binding。认证记录
+属于部署配置，不新增Lifecycle Catalog状态机。
+
 Stage DDL只在控制面检查Lifecycle引用：
 
 - 有Binding/Dataset/Root/Restore引用时拒绝修改endpoint/region/bucket/prefix/storage
@@ -385,6 +456,12 @@ Stage DDL只在控制面检查Lifecycle引用：
 
 Provider adapter必须通过PUT/GET/HEAD/LIST/Delete、multipart Abort、限流/超时和加密认证。
 Phase 1不接受需要异步thaw才能GET的Deep Archive target。
+
+专用Bucket在仍有Binding/Dataset/Root时不得由运维开启Versioning。Lifecycle首个GA不建设
+运行时Bucket漂移检测系统：该变更属于破坏受支持部署合同的外部配置。运维发现漂移后必须
+撤销Stage认证并暂停新Archive；已有Dataset的历史版本由Provider运维工具清理，Root在重新
+认证或人工确认物理清理前不能因该异常路径被宣称完成。之后可单独扩展Provider adapter的
+version ID能力，但不修改Phase 1通用FileService接口。
 
 每次物理写使用：
 
@@ -404,7 +481,7 @@ Phase 1 Stage必须配置Provider侧`AbortIncompleteMultipartUpload`规则，并
 所有文件PUT完成后从Provider重新GET：
 
 - 重新计算文件SHA-256；
-- 使用Parquet decoder和同一canonical encoder计算content hash；
+- 使用Parquet decoder和同一canonical encoder计算每个chunk hash及Dataset聚合hash；
 - 校验schema descriptor/digest；
 - 校验文件集合、ordinal和总行数。
 

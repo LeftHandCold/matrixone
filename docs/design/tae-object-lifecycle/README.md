@@ -34,7 +34,7 @@
 | [04-cleanup-root-reconcile-cn.md](04-cleanup-root-reconcile-cn.md) | Root状态机、Owner、commit unknown、迟到PUT和物理清理 |
 | [05-restore-purge-drop-cn.md](05-restore-purge-drop-cn.md) | Restore新表、Purge lease、DROP和限制矩阵 |
 | [06-observability-capacity-cn.md](06-observability-capacity-cn.md) | 配置、指标、告警、隔离和放量 |
-| [07-p0-ga-test-matrix-cn.md](07-p0-ga-test-matrix-cn.md) | 四个当前P0、全路径故障测试和GA门禁 |
+| [07-p0-ga-test-matrix-cn.md](07-p0-ga-test-matrix-cn.md) | 基础安全门禁、本轮五项P0、全路径故障测试和GA门禁 |
 | [08-implementation-plan-cn.md](08-implementation-plan-cn.md) | Gate、包边界、PR边界和Definition of Done |
 
 子设计不得复制另一子设计的第二份状态机。上位概要负责产品效果；ADR只记录决策理由；
@@ -61,7 +61,7 @@
 
 - `ONLINE_COLD`、查询时隐藏 TTL 行；
 - Restore-required Deep Archive；
-- SQL Partition 作为正确性边界；
+- 逻辑分区表和物理Partition child（Phase 1在Bind时直接拒绝）；
 - Archive Mixed 普通 Row DELETE；
 - 修改普通 Merge 候选、排序、writer、WAL 或 GC；
 - CDC、FK、Publication、Fulltext、Vector、插件和隐藏索引表；
@@ -177,8 +177,9 @@ Whole TTL和TTL小Mixed没有Provider、live staging或booking副作用，不为
 
 ### I-9 Restore/Purge is leased
 
-Purge 进入 `DELETE_PENDING` 后禁止新 Restore；已有 Restore 只能在固定 deadline 内续租。
-Sweeper 等 lease 终止或 deadline，再异步删除 Payload。Purge 事务不等待 Provider。
+Purge 只能在Dataset没有有效Restore lease时CAS进入`DELETE_PENDING`；显式Purge遇到有效
+lease返回`RESTORE_IN_PROGRESS`，后台Purge延迟重试。进入`DELETE_PENDING`后不存在仍被
+允许读取的旧Restore，Sweeper再异步删除Payload。Purge事务不等待Provider。
 
 ### I-10 Ordinary MO stays ordinary
 
@@ -186,15 +187,19 @@ Sweeper 等 lease 终止或 deadline，再异步删除 Payload。Purge 事务不
 
 - 无 Lifecycle Catalog 行；
 - 不进入 Scheduler；
-- 普通查询/DML不增加状态机；
+- 普通查询、DML和Merge不访问Lifecycle Catalog或增加状态机；
 - 普通 Merge/WAL/Replay/GC算法不变；
 - 不访问 Stage、Dataset、Root或Lifecycle admission。
+
+feature开启时，可能与Lifecycle冲突的DDL允许执行一次索引化Binding存在性查询；feature
+完全关闭时连该DDL查询也没有。这个控制面查询不能扩散到普通查询、DML或Merge热路径。
 
 ### I-11 All growth is bounded
 
 Reader内存、Provider I/O、staging bytes、external booking、Tombstone delta、Root unknown、
 cleanup backlog、Restore staging、Job和Rewrite并发都有硬上限。达到上限只暂停
-Lifecycle，不占用普通 MO 的保底资源。
+Lifecycle。首个GA通过Scheduler/CN并发、单请求硬上限和active-coexistence门禁约束资源，
+不增加TN Lifecycle专用permit或比普通Merge更强的资源协议。
 
 ### I-12 DDL fence is retained but implemented last
 
@@ -240,7 +245,10 @@ Candidate、统计窗口和 Object 列表都不是持久化权威数据。
 - 持久 Candidate、rolling stats ring；
 - account incarnation registry、owner tombstone和DROP专用状态机；
 - Archive Receipt和Root Object逐对象明细表；
-- Merkle Tree和完整 Archive Profile版本系统。
+- Merkle Tree和完整 Archive Profile版本系统；
+- TN Lifecycle专用permit、`RESOURCE_BUSY` final retry和私有资源状态机；
+- 通用FileService version ID扩展和Bucket Versioning自动漂移状态机；
+- Restore持久SHA内部状态、隐藏表全量重扫和第二个restore schema digest。
 
 thin retire control、现有 external booking、普通事务、Dataset/TTL Receipt和Cleanup Root
 已经足够表达首个 GA。
@@ -249,8 +257,8 @@ thin retire control、现有 external booking、普通事务、Dataset/TTL Recei
 
 ```text
 Gate A  最小Catalog + Binding + Metadata Discovery
-Gate B  Exact Reader + canonical encoder + Parquet/ZSTD格式原型（不开放生产PUT）
-Gate C  Cleanup Root + Stage身份/凭据 + full readback + 生产Export-only
+Gate B  Exact Reader + canonical encoder + 可重启Chunk Hash + Parquet/ZSTD格式原型
+Gate C  Cleanup Root + 认证Stage身份/凭据 + full readback + 生产Export-only
 Gate D  Whole exact retire + thin commit-control
 Gate E  单源Mixed Rewrite + post-S DELETE
 Gate F  TTL小Mixed DELETE

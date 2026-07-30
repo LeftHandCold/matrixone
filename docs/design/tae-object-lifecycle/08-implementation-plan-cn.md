@@ -6,6 +6,7 @@
 
 - Lifecycle Catalog upgrade；
 - table-level Binding SQL；
+- logical partition table/physical child fail-closed admission；
 - Active Binding registry；
 - bounded `ScanLifecycleObjects`；
 - cursor wrap/full scan；
@@ -22,7 +23,8 @@ pkg/vm/engine/disttae/lifecycle
 pkg/taskservice
 ```
 
-DoD：百万Object分页不构造全表slice；未绑定表无Catalog读。
+DoD：百万Object分页不构造全表slice；普通查询/DML/Merge在未绑定路径无Lifecycle Catalog
+读，相关DDL至多一次索引化Binding lookup；分区表在任何副作用前被拒绝。
 
 ## 2. Gate B：Reader与Archive格式原型
 
@@ -32,7 +34,8 @@ DoD：百万Object分页不构造全表slice；未绑定表无Catalog读。
 - SyncProtection适配；
 - canonical encoder；
 - Parquet/ZSTD writer；
-- schema descriptor/Manifest；
+- 带`source_column_id`语义的schema descriptor/Manifest；
+- Row Group chunk hash和Dataset有序聚合公式；
 - 内存或测试临时FileService中的round-trip。
 
 此Gate不退休源数据，也不开放生产Provider PUT。真实外部副作用必须等待Gate C的Root。
@@ -45,6 +48,7 @@ DoD：百万Object分页不构造全表slice；未绑定表无Catalog读。
 - Root-before-side-effect；
 - deterministic prefix/write-id；
 - Stage冻结target adapter、引用DDL和credential handle验证；
+- 部署Stage认证/allowlist与非Versioned专用Bucket准入；
 - immutable key、Provider full readback和生产Export-only；
 - Provider multipart规则认证；
 - Sweeper、quiescence和metadata GC；
@@ -101,10 +105,11 @@ P0-1/P0-2通过后才能冻结。
 
 - Dataset lease；
 - Manifest schema建隐藏表；
-- chunk普通INSERT + Receipt；
-- hash/row验证；
-- DDL发布；
-- Purge触发Root；
+- 串行chunk普通INSERT + Receipt + Attempt进度同事务；
+- Receipt主键`(restore_id, chunk_ordinal)`及不同digest fail-closed；
+- Receipt有序聚合hash/row验证；
+- DDL发布、Attempt DONE和Dataset lease清除同一普通事务；
+- active lease下Purge返回/延迟，lease结束后触发Root；
 - DROP异步清理。
 
 Restore不增加tagged entry。
@@ -129,6 +134,8 @@ Gate H前只允许受控无不兼容DDL的退休验证。
 - 1/10 TiB；
 - 30天soak；
 - active coexistence；
+- Lifecycle不增加TN专用permit；认证若触发普通Merge公共资源缺陷，关联公共Issue或降低
+  认证上限后重新测试；
 - 50→1000放量；
 - Runbook和kill switch；
 - Phase 1产品文档明确未覆盖Issue #24853剩余能力。
@@ -203,6 +210,7 @@ Lifecycle补偿状态机。
 - 设计接口与代码一致；
 - 单元/并发/故障测试；
 - deadline、retry和hard cap；
+- 普通Merge公共问题只记录依赖/公共修复，不增加Lifecycle私有资源或事务状态机；
 - 指标/错误/Runbook；
 - Markdown和链接检查；
 - 普通MO回归；

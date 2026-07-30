@@ -80,10 +80,12 @@ Lifecycle列必须：
 
 Phase 1拒绝：
 
+- 逻辑分区表和物理Partition child；
 - CDC、FK、Publication/Subscription；
 - Fulltext、Vector、插件和隐藏索引表；
 - Snapshot/PITR/Backup/Clone/Branch与Lifecycle同时启用；
 - inline-only Stage secret；
+- 未经部署认证的Archive Stage，以及启用对象Versioning的Bucket/Container；
 - append-only语义无法保证的外部表。
 
 这些检查只发生在Binding DDL和相关能力DDL，不进入普通DML。
@@ -146,6 +148,9 @@ created_at/updated_at       TIMESTAMP
 
 Binding不保存active attempt、Object Index、Candidate或高频运行统计。
 
+`Binding.schema_digest`是源表final fence，覆盖源Column ID和所有影响读取/分类语义的schema
+字段；它不用于要求Restore新表复用源Column ID。
+
 Binding控制面转换：
 
 ```text
@@ -172,7 +177,7 @@ source_physical_table_id   UINT64
 source_snapshot_ts         BINARY
 evaluation_time/cutoff     TIMESTAMP/TIMESTAMP
 source_set_digest          BINARY(32)
-schema_digest              BINARY(32)
+schema_descriptor_digest   BINARY(32)
 lifecycle_min/max          BINARY/BINARY
 root_id/attempt_id         BINARY(16)
 manifest_key               TEXT
@@ -190,6 +195,8 @@ created_at/updated_at       TIMESTAMP
 ```
 
 唯一键：`(root_id, attempt_id)`。Dataset本身是Archive发布权威，不增加Archive Receipt。
+`Dataset.schema_descriptor_digest`只验证Manifest中历史逻辑descriptor的canonical bytes；
+Restore按descriptor的结构投影创建新表，不新增第二个持久restore schema摘要。
 
 ## 7. TTL Receipt
 
@@ -272,11 +279,26 @@ staging_database/table_id  UINT64
 target_database/name       UINT64/TEXT
 state                      ENUM(RUNNING, VERIFYING, PUBLISHING, DONE, ABORTED)
 next_chunk_ordinal         UINT64
-restored_rows/content_hash UINT64/BINARY(32)
+restored_rows              UINT64
 last_error/updated_at       TEXT/TIMESTAMP
 ```
 
-Chunk Receipt唯一键：`(restore_id, chunk_ordinal, chunk_digest)`，与对应普通INSERT同事务。
+Chunk Receipt：
+
+```text
+restore_id                 BINARY(16)
+chunk_ordinal              UINT64
+file_ordinal/row_group     UINT32/UINT32
+chunk_digest               BINARY(32)
+row_count                  UINT64
+canonical_content_hash     BINARY(32)
+created_at                 TIMESTAMP
+PRIMARY KEY (restore_id, chunk_ordinal)
+```
+
+单个Restore首版串行推进chunk。对应数据INSERT、Chunk Receipt、`next_chunk_ordinal`和
+`restored_rows`在同一普通事务提交；`chunk_digest`不是主键的一部分。相同ordinal的不同
+digest是corruption，相同digest按Receipt幂等成功。
 
 ## 10. Catalog索引与访问路径
 
@@ -319,6 +341,7 @@ Feature Guard或active-attempt状态。
 Phase 1产品行为采用fail-closed：
 
 - DROP TABLE/DATABASE/ACCOUNT允许，按05放弃Restore并异步清理；
+- SET LIFECYCLE拒绝逻辑分区表和物理Partition child；已绑定表拒绝转换为分区表；
 - UNSET/PAUSE/RESUME和Policy更新允许，但必须推进Binding generation；
 - 绑定期间TRUNCATE、ALTER COPY、Lifecycle列变更、其他schema变更和新增不支持依赖拒绝；
 - 用户需要这些DDL时先UNSET，待在途Root收敛后执行，再按新physical/schema重新SET；
@@ -331,7 +354,7 @@ Phase 1产品行为采用fail-closed：
 
 | 类别 | 示例 | 行为 |
 |---|---|---|
-| Retryable | source被Merge替换、Provider 429、资源permit失败 | 保留源数据，退避后重新Discovery |
+| Retryable | source被Merge替换、Provider 429、Scheduler/CN资源上限 | 保留源数据，退避后重新Discovery |
 | Blocked | mixed超认证上限、schema/type不支持、依赖能力冲突 | Binding进入BLOCKED，等待用户/配置处理 |
 | Attempt failed | readback/hash失败、SyncProtection丢失 | Root异步清理，fresh attempt |
 | Unknown | final commit结果未知 | Root COMMIT_UNKNOWN，暂停相同source |
