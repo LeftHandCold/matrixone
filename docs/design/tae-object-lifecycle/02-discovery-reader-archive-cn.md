@@ -152,6 +152,13 @@ visible data source objects
 -> protection_set_digest覆盖Data + Tombstone
 ```
 
+两组身份不得在后续wire中重新合并：
+
+- `data_sources[]`和`source_set_digest`只描述本次要退休的Data Object；
+- Tombstone Object只属于Snapshot Reader和SyncProtection job；
+- TN finalizer只能对`data_sources[]`执行`SoftDeleteObject(..., false)`；
+- Tombstone Object绝不进入Lifecycle retire entry或source Drop集合。
+
 禁止Protection Selector和Snapshot Reader分别维护两套Tombstone筛选规则。建议接口：
 
 ```go
@@ -230,6 +237,23 @@ Reader callback首版串行。Batch借用和release exactly once；callback返�
 
 Archive只编码E；TTL丢弃E；`DoMergeAndWrite`只输出L并生成TransferTable。
 
+分类完成后计算：
+
+```text
+rewrite_amplification =
+  live_logical_bytes / max(expired_logical_bytes, 1)
+```
+
+`live_logical_bytes`和`expired_logical_bytes`都使用canonical逻辑字节口径，不能混用Parquet
+压缩bytes或Object物理size。超过release profile的`max-rewrite-amplification`时，不进入
+final transaction，返回`MIXED_LAYOUT_BLOCKED`；Archive/Rewrite已经产生的Root staging
+按Cleanup协议异步回收。该限制防止Lifecycle列与Object布局严重不相关时每天重写几乎全部
+live data。
+
+每个Mixed source在Reader启动前还按exact ObjectStats size向Scheduler记账，受账户/集群
+固定窗口的rewrite source bytes预算约束；已经开始读取的source无论成功、blocked或abort
+都计入本窗口，不能通过失败重试绕过预算。具体Owner和failover语义见06。
+
 ## 8. 读取前内存准入
 
 根据Object metadata/column extents和实际schema参数估算：
@@ -269,6 +293,20 @@ columns[] {
 schema_descriptor_digest
 ```
 
+AUTO_INCREMENT运行数据不属于结构descriptor，也不进入`schema_descriptor_digest`。
+Manifest单独保存：
+
+```text
+auto_increment_stats[] {
+  source_column_id
+  ordinal
+  name
+  mo_integer_type
+  has_positive_value
+  archived_max_positive_value_uint64
+}
+```
+
 descriptor和Archive Payload只包含用户逻辑列，不包含RowID、fake PK、commit TS或隐藏索引
 内部列。Mixed Rewrite仍按现有Merge schema处理live TAE行；Archive writer使用独立的
 用户列projection，两者不能混用列ordinal。
@@ -280,7 +318,13 @@ descriptor和Archive Payload只包含用户逻辑列，不包含RowID、fake PK�
 
 Phase 1 Restore只恢复列结构和数据，不恢复PK、UNIQUE/CHECK/FK、二级索引、CDC、
 Publication、插件、权限和源表默认表达式。`auto_increment`属性可以恢复：加载期间禁用
-自动生成，完成后把新表计数器推进到大于已恢复最大值的安全位置。
+自动生成；Archive Writer按列统计已归档、严格大于0值的最大值（与现有
+`incrservice`处理显式值的口径一致），Provider full readback从最终MO逻辑值重新计算并
+校验`archived_max_positive_value_uint64`。Restore最终发布事务先使用现有
+`ValidateAutoColumnOffset`校验目标整数类型，再对新表调用
+`incrservice.SetOffset(max, txnOp)`，使下一次分配大于已恢复最大正值；若最大值已经等于该
+整数类型上限，则保持allocator耗尽/后续INSERT返回out-of-range，禁止执行`max+1`造成
+overflow。没有正值（仅NULL、0或负值）时不调用`SetOffset`，沿用新表初始offset。
 
 Parquet物理映射由一个版本化registry集中实现，Archive Writer和Restore Reader必须引用
 同一registry，禁止各自维护switch：
@@ -391,7 +435,14 @@ row_groups[] {
 min/max（可选）
 ```
 
-Manifest记录Dataset/Root/Attempt、schema descriptor、文件集、
+Manifest顶层必须先记录：
+
+```text
+manifest_format_version = 1
+```
+
+Reader必须先按该字段选择parser；缺失、0或未知版本在读取任何可变长度集合前fail closed。
+Manifest记录Dataset/Root/Attempt、schema descriptor、AUTO_INCREMENT归档最大值、文件集、
 `total_chunk_count`、`dataset_content_hash`、`hash_formula_version`、总行数、
 source snapshot/evaluation time/cutoff/source set digest、Lifecycle列min/max、Stage
 identity和加密信息。`total_chunk_count`必须等于所有文件Row Group数量之和，合法
@@ -488,6 +539,10 @@ Stage DDL只在控制面检查Lifecycle引用：
 - 有Dataset承诺Restore时拒绝DROP Stage；
 - `DROP ACCOUNT`仍按普通MO完成，system Root通过部署管理handle继续清理；
 - inline-only `stage_credentials`不允许用于Lifecycle。
+
+Binding和Dataset都持久化`stage_id`并提供索引化引用路径；历史Dataset检查不能解析
+`stage_identity_blob`后做全表扫描。Root按冻结namespace/credential handle清理，不依赖
+当前Stage行仍存在。
 
 Provider adapter必须通过PUT/GET/HEAD/LIST/Delete、multipart Abort、限流/超时和加密认证。
 Phase 1不接受需要异步thaw才能GET的Deep Archive target。

@@ -16,6 +16,10 @@ full-scan-interval
 candidate-count/bytes
 child-concurrency
 rewrite-concurrency
+max-rewrite-amplification
+rewrite-budget-window
+max-rewrite-source-bytes-per-account/window
+max-rewrite-source-bytes-per-cluster/window
 provider-read/write-concurrency
 provider-bytes-per-second
 target-payload-file-bytes
@@ -36,6 +40,8 @@ published-dataset-count/metadata-bytes
 archive-payload-bytes-per-account
 restore-concurrency/deadline
 restore-attempt/chunk-receipt-count
+max-active-restore-staging-bytes-per-account
+max-active-restore-staging-bytes-per-cluster
 terminal-metadata-retention
 ```
 
@@ -66,6 +72,8 @@ lifecycle_reader_bytes
 lifecycle_archive_put/readback_bytes
 lifecycle_archive_verify_failures
 lifecycle_rewrite_source/live/expired_bytes
+lifecycle_rewrite_amplification
+lifecycle_rewrite_window_source_bytes{scope}
 lifecycle_final_txn{result}
 lifecycle_post_snapshot_delta_rows
 lifecycle_roots{state}
@@ -73,6 +81,7 @@ lifecycle_root_bytes{state}
 lifecycle_cleanup_backlog_bytes
 lifecycle_restore{state}
 lifecycle_restore_bytes
+lifecycle_restore_staging_bytes{scope}
 lifecycle_restore_chunk_rows/logical_bytes
 lifecycle_provider_errors{operation,reason}
 lifecycle_resource_rejections{resource}
@@ -206,7 +215,70 @@ Archive成本 =
 如果Stage与活动TAE使用相同存储类别，不能宣称每GB介质单价下降；收益主要来自活动工作集
 退休。压缩率是Parquet编码结果，不是COLD/ARCHIVE名称带来的额外收益。
 
-## 9. Runbook
+## 9. Rewrite与Restore容量保险丝
+
+### 9.1 Mixed Rewrite
+
+Mixed Rewrite受三个独立条件约束：
+
+```text
+live_logical_bytes / max(expired_logical_bytes, 1)
+  <= max-rewrite-amplification
+
+sum(exact source ObjectStats size for one account in current fixed window)
+  <= max-rewrite-source-bytes-per-account/window
+
+sum(exact source ObjectStats size for cluster in current fixed window)
+  <= max-rewrite-source-bytes-per-cluster/window
+```
+
+source bytes在Reader启动前由现有Lifecycle Coordinator按exact ObjectStats size预占并立即
+计费；attempt后续成功、blocked或abort都不返还，因为普通MO已经承担了读取/Rewrite压力。
+amplification在单源分类完成后检查，超限时不进入final transaction，Root staging异步清理，
+任务进入`MIXED_LAYOUT_BLOCKED`或等待更多行到期。
+
+这三个计数器是现有单active Coordinator拥有的内存固定窗口预算，不是Catalog Slot或数据
+正确性协议。Coordinator切换时，新owner在当前窗口剩余时间内把cluster Rewrite预算视为
+已耗尽，到下一个固定窗口再重新开放；宁可短暂停止Rewrite，也不通过failover绕过hard cap。
+账户bucket只为本窗口实际出现的绑定账户创建，窗口切换时整体回收，条目数受
+`max-bound-tables`约束。Whole退休和普通Merge不访问这些计数器。
+
+### 9.2 Restore staging
+
+Restore启动准入使用`Dataset.logical_bytes`作为保守核算值：
+
+```text
+sum(Dataset.logical_bytes for active RUNNING/VERIFYING/PUBLISHING attempts in account)
+  + requested Dataset.logical_bytes
+  <= max-active-restore-staging-bytes-per-account
+
+cluster对应总和
+  <= max-active-restore-staging-bytes-per-cluster
+```
+
+RESTORE命令由现有Lifecycle Coordinator完成准入后才执行05中的初始化普通事务。Coordinator
+重启时从现有Restore Attempt和Dataset索引按page rows/bytes cap分页重建计数；每轮有deadline，
+失败后有界退避并保持暂停新Restore。这个计数不预分配持久Slot，不进入普通DML路径。Attempt
+`DONE`后表已转交用户Catalog，不再计入Lifecycle staging；`ABORTED`只有在隐藏表确认DROP后
+才释放核算值。实际TAE物理bytes仍作为观测指标，若持续高于logical bytes认证系数则Gate I
+Stop Ship并降低上限。
+
+初始化前的内存reservation由发起Coordinator唯一持有：初始化事务明确失败时立即释放；提交
+成功后由active Attempt接管核算；结果unknown时保留reservation并按05的Dataset/Attempt/
+hidden identity对账，不能先释放后接受第二个Restore。Coordinator崩溃后不恢复纯内存
+reservation，实际已提交的初始化由active Attempt重建，实际未提交的reservation自然消失。
+
+### 9.3 Cleanup backlog与Binding容量
+
+`cleanup-backlog-count/bytes`到达hard cap后，暂停所有会创建Root的新任务，包括Archive
+Whole、Archive Rewrite和TTL Rewrite；Whole TTL和已关闭的TTL small Mixed没有Root副作用，
+可按独立事务预算决定是否继续。已有Sweeper和COMMIT_UNKNOWN对账继续运行。
+
+`max-bound-tables`是发布认证的全集群配置上限，允许另设每账户配额；它不是预分配Slot或
+跨租户事务不变量。超过认证值拒绝新Binding或停止扩大放量，不能恢复Cluster Activation
+Slot协议。
+
+## 10. Runbook
 
 ### COMMIT_UNKNOWN
 
@@ -231,7 +303,7 @@ namespace指向其他bucket。
 检查last full scan、cursor stale次数、Merge churn和账户队列；必要时降低page并发但强制
 wrap，不允许通过跳过旧Object隐藏问题。
 
-## 10. 放量
+## 11. 放量
 
 ```text
 50 -> 200 -> 500 -> 1000 bindings

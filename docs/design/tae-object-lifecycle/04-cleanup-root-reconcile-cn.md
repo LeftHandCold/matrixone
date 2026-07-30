@@ -201,7 +201,8 @@ Provider权限、credential或网络错误：
 - 指数退避但有最大间隔；
 - 记录last_error和失败次数；
 - credential handle可重新解析轮换凭据；
-- backlog rows/bytes达到hard cap暂停新Archive；
+- backlog rows/bytes达到hard cap暂停所有会创建Root的新任务，包括Archive Whole/Rewrite和
+  TTL Rewrite；不把已有Root/Sweeper停掉；
 - 不阻塞普通DROP和普通MO。
 
 ## 11. 元数据GC

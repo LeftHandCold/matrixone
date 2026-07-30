@@ -31,10 +31,13 @@ DoD：百万Object分页不构造全表slice；普通查询/DML/Merge在未绑�
 交付：
 
 - Whole/Mixed exact Reader；
-- SyncProtection适配；
+- 一次Tombstone选择同时生成Reader输入和SyncProtection identities；
+- Data retire source与Tombstone protection wire严格分离；
 - canonical encoder；
 - Parquet/ZSTD writer；
 - 带`source_column_id`语义的schema descriptor/Manifest；
+- Manifest顶层`manifest_format_version=1`；
+- AUTO_INCREMENT归档最大正值统计和full readback验证；
 - 固定Row Group→全局Chunk ordinal合同；
 - Manifest `total_chunk_count/dataset_content_hash/hash_formula_version`；
 - Row Group rows/canonical logical bytes恢复上限与越界前flush；
@@ -70,6 +73,7 @@ P0-1/P0-2通过后才能冻结。
 - 复用`PrecommitWriteCmd.SyncProtectionJobId`，不复制第二个protection字段；
 - Finalizer普通事务；
 - Whole exact source CAS；
+- retire entry只携带Data Object，SoftDelete固定`is_tombstone=false`；
 - Dataset/TTL Receipt同事务；
 - rolling upgrade开关；
 - WAL/Replay/GC测试。
@@ -88,10 +92,11 @@ P0-1/P0-2通过后才能冻结。
 - Root-owned staging rollback边界；
 - bounded post-S Tombstone visitor；
 - single-source admission。
+- rewrite amplification与账户/集群固定窗口source bytes准入。
 
 普通Merge调用接口不变，新增options默认nil。
 
-## 6. Gate F：TTL small Mixed
+## 6. Gate F：TTL small Mixed（可关闭优化）
 
 交付：
 
@@ -102,19 +107,28 @@ P0-1/P0-2通过后才能冻结。
 - Tombstone/backlog/transaction limits；
 - 超限Rewrite/Blocked。
 
+Gate F不通过时关闭本路径，TTL Mixed统一Rewrite/Blocked，不阻塞核心GA。
+
 ## 7. Gate G：Restore/Purge
 
 交付：
 
 - Dataset lease；
+- Dataset `version` CAS和`stage_id`索引化引用；
+- Dataset lease + hidden CREATE + Attempt INSERT原子初始化事务；
 - Manifest schema建隐藏表；
+- Manifest format parser/version fail-closed；
 - 串行chunk普通INSERT + Receipt + Attempt进度同事务；
 - Receipt主键`(restore_id, chunk_ordinal)`及不同digest fail-closed；
+- Receipt版本化AUTO_INCREMENT chunk maxima和接管聚合；
 - Receipt有序聚合hash/row验证；
 - Chunk事务不更新Hash，最终发布事务一次性写`verified_content_hash`；
 - DDL发布前CAS Attempt状态/lease/进度和隐藏表精确身份；
-- DDL发布、Attempt DONE、`verified_content_hash`和Dataset lease清除同一普通事务；
+- 最终MO vectors canonical hash复核；
+- AUTO_INCREMENT最大正值/目标类型上限复核和同一事务`SetOffset(max)`；
+- DDL发布、Attempt DONE、`verified_content_hash`、SetOffset和Dataset lease清除同一普通事务；
 - 失败清理CAS非DONE Attempt并按隐藏名+database/table ID校验后DROP；
+- PUBLISHING owner丢失后的target/hidden身份对账和cleanup unknown规则；
 - 发布、deadline cleanup、旧worker和commit response lost并发矩阵；
 - active lease下Purge返回/延迟，lease结束后触发Root；
 - DROP异步清理。
@@ -141,6 +155,7 @@ Gate H前只允许受控无不兼容DDL的退休验证。
 - 1/10 TiB；
 - 30天soak；
 - active coexistence；
+- Rewrite amplification/window bytes和Restore active staging bytes容量门禁；
 - Lifecycle不增加TN专用permit；认证若触发普通Merge公共资源缺陷，关联公共Issue或降低
   认证上限后重新测试；
 - 50→1000放量；

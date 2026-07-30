@@ -184,9 +184,11 @@ manifest_key               TEXT
 manifest_sha256            BINARY(32)
 content_hash               BINARY(32)
 row_count/logical_bytes    UINT64
+stage_id                   UINT64
 stage_identity_blob        BLOB
 purge_eligible_at          TIMESTAMP
-state                      ENUM(PUBLISHED, DELETE_PENDING, DELETING, PURGED, ERROR)
+state                      ENUM(PUBLISHED, DELETE_PENDING, DELETING, PURGED)
+version                    UINT64
 access_generation          UINT64
 restore_lease_id           BINARY(16) NULL
 restore_deadline           TIMESTAMP NULL
@@ -198,6 +200,13 @@ created_at/updated_at       TIMESTAMP
 `Dataset.schema_descriptor_digest`只验证Manifest中历史逻辑descriptor的canonical bytes；
 Restore按descriptor的结构投影创建新表，不新增第二个持久restore schema摘要。
 `Dataset.content_hash`等于Manifest中的`dataset_content_hash`。
+`stage_id`用于Stage DROP/ALTER的索引化引用检查；`stage_identity_blob`继续冻结实际Provider
+位置和加密身份，不能用解析blob的全表扫描代替索引。Dataset不保留`ERROR`状态：Archive
+验证失败时Dataset尚未发布，Restore错误写Restore Attempt；已经PUBLISHED的Dataset保持
+可Restore或Purge。
+
+`version`从1开始，Dataset状态、Restore lease和Purge的每次条件更新都必须同时比较旧值并
+递增；`access_generation`只表达Payload访问代际，不能代替通用行版本。
 
 ## 7. TTL Receipt
 
@@ -291,6 +300,10 @@ last_error/updated_at       TEXT/TIMESTAMP
 `__mo_lifecycle_restore_<restore-id>`确定。`staging_table_id`只能参与Rename/DROP前的
 身份校验，禁止作为无名称校验的DROP目标。
 
+Dataset lease CAS、隐藏表CREATE和本Attempt INSERT必须在同一个普通MO事务中提交。隐藏表
+不能先提交后再补Attempt；任一失败整体回滚，响应未知时通过Dataset lease、Attempt和精确
+隐藏身份对账。
+
 Attempt只使用现有五个状态：
 
 ```text
@@ -310,6 +323,7 @@ chunk_digest               BINARY(32)
 row_count                  UINT64
 logical_bytes              UINT64
 canonical_content_hash     BINARY(32)
+auto_increment_maxima_blob BLOB
 created_at                 TIMESTAMP
 PRIMARY KEY (restore_id, chunk_ordinal)
 ```
@@ -318,6 +332,10 @@ PRIMARY KEY (restore_id, chunk_ordinal)
 `restored_rows`在同一普通事务提交；`chunk_digest`不是主键的一部分。相同ordinal的不同
 digest是corruption，相同digest按Receipt幂等成功。`verified_content_hash`不在Chunk事务中
 更新，只在全部Receipt通过最终校验并发布新表的普通事务中一次性写入。
+`auto_increment_maxima_blob`使用Manifest列ordinal顺序和固定版本编码本Chunk各
+AUTO_INCREMENT列的`has_positive_value/max_positive_value_uint64`；大小受schema列数和
+Chunk hard cap约束。接管者按ordinal聚合全部Receipt得到Dataset最大正值，不依赖进程内
+状态或重扫隐藏表。
 
 ## 10. Catalog索引与访问路径
 
@@ -326,8 +344,8 @@ digest是corruption，相同digest按Receipt幂等成功。`verified_content_has
 | 表 | 必需索引 | 用途 |
 |---|---|---|
 | Binding | `(account_id, physical_table_id)` unique；`(state, updated_at)` | DDL准入和Scheduler分页 |
-| Dataset | `(root_id, attempt_id)` unique；`(account_id, logical_table_id, state)`；`(state, purge_eligible_at)` | SHOW、对账和Purge |
-| TTL Receipt | `(binding_id, source_set_digest)`；`(created_at)` | unknown对账和审计GC |
+| Dataset | `(root_id, attempt_id)` unique；`(account_id, logical_table_id, state)`；`(state, purge_eligible_at)`；`(stage_id, state)` | SHOW、对账、Stage引用和Purge |
+| TTL Receipt | `(binding_id, source_set_digest)`；`(root_id, attempt_id)`；`(created_at)` | unknown/Root对账和审计GC |
 | Root | `(state, cleanup_after, root_id)`；`(owner_account_id, logical_table_id)` | system Reconcile/Sweeper |
 | Restore Attempt | `(dataset_id, state)`；`(state, deadline)` | lease恢复和超时清理 |
 

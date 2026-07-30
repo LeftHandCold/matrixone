@@ -10,7 +10,8 @@ TTL large Mixed -> single-source Rewrite
 Archive Mixed   -> single-source Rewrite
 ```
 
-不修改普通Merge候选、排序、writer、Level、WAL或GC。
+TTL small Mixed是可关闭的Gate F性能优化；未启用或认证失败时，TTL Mixed统一走Rewrite或
+`MIXED_LAYOUT_BLOCKED`。不修改普通Merge候选、排序、writer、Level、WAL或GC。
 
 ## 2. Build阶段
 
@@ -144,10 +145,10 @@ message Entry {
 `ProtoBatchToBatch`。payload字段：
 
 ```proto
-message LifecycleSourceObject {
+message LifecycleDataSourceObject {
   bytes object_stats = 1;
   bytes object_stats_sha256 = 2;
-  bool is_tombstone = 3;
+  reserved 3;
 }
 
 message LifecycleRetireEntry {
@@ -160,7 +161,7 @@ message LifecycleRetireEntry {
   bytes schema_digest = 7;
   uint64 lifecycle_column_id = 8;
   timestamp.Timestamp source_snapshot_ts = 9;
-  repeated LifecycleSourceObject sources = 10;
+  repeated LifecycleDataSourceObject data_sources = 10;
   bytes source_set_digest = 11;
   repeated bytes created_object_stats = 12;
   repeated string existing_booking_locations = 13;
@@ -184,8 +185,10 @@ Digest统一使用SHA-256和固定domain separator：
 ```text
 source_set_digest =
   SHA256("MO-LIFECYCLE-SOURCE-v1" ||
-         physical_table_id ||
-         sources按Object ID排序后的完整ObjectStats bytes + is_tombstone)
+         uint64_be(physical_table_id) ||
+         uint32_be(data_source_count) ||
+         对data_sources按Object ID排序后逐项编码(
+           uint32_be(object_stats_length) || complete ObjectStats bytes))
 
 transfer_mapping_digest =
   SHA256("MO-LIFECYCLE-TRANSFER-v1" ||
@@ -196,6 +199,13 @@ transfer_mapping_digest =
 TN使用现有booking codec解码后重算`transfer_mapping_digest`。该digest防传输损坏或错配，
 不宣称TN能重新证明TTL业务分类；mapping业务正确性来自唯一producer
 `DoMergeAndWrite`及属性测试。
+
+`data_sources[]`只包含本事务要退休的Data Object；字段号3在schema中`reserved`，V1
+编码器不能产生该字段。Snapshot Reader
+使用的Tombstone Object只存在于CN选择结果和`SyncProtectionJobId`对应的protection set，
+不进入entry、`source_set_digest`或任何Drop集合。`protection_set_digest`只参与
+SyncProtection job identity，不扩展为TN业务字段。上述整数固定big-endian，数组长度和每项
+长度必须参与digest，禁止直接无framing拼接变长bytes。
 
 ## 6. 旧TN与滚动升级P0
 
@@ -229,11 +239,12 @@ inspect EntryType/protocol version
 2. validate serialized size/count/deadline
 3. validate physical table/schema identity和entry结构；TN不查询tenant Lifecycle Catalog
 4. 使用现有`PrecommitWriteCmd.SyncProtectionJobId`接口验证deterministic job ID和lease
-5. resolve and compare exact source ObjectStats
+5. resolve and compare exact Data ObjectStats
 6. decode existing external booking（Rewrite）
 7. scan bounded post-S Tombstone delta
-8. Whole: SoftDeleteObject
-9. Rewrite: SoftDelete source + CreateNonAppendableObject
+8. Whole: 对每个data source执行`SoftDeleteObject(..., false)`
+9. Rewrite: 对唯一data source执行`SoftDeleteObject(..., false)` +
+   CreateNonAppendableObject
 10. install existing transfer runtime
 11. LogTxnEntry
 12. normal Prepare/Commit/WAL
@@ -262,18 +273,18 @@ Lifecycle replay state machine。
 
 ## 8. Exact Source Identity
 
-每个source至少比较：
+每个data source至少比较：
 
 ```text
 physical_table_id
 Object ID
 complete ObjectStats bytes or canonical digest
-is_tombstone
 source_set_digest
 ```
 
 重叠source由现有Object Drop Intent/MVCC保证最多一个事务成功。不增加Binding
-active-attempt claim。不同Root允许同时FINALIZING。
+active-attempt claim。不同Root允许同时FINALIZING。TN不得从SyncProtection job枚举
+Tombstone Object并把它们附加到退休集合。
 
 ## 9. post-S Tombstone
 

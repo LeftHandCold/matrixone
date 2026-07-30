@@ -3,9 +3,9 @@
 > 本文是首个 Commercial GA 的总实现规范。全局范围和不变量见 [README.md](README.md)，
 > 精确Catalog、接口、状态机、测试和代码任务以README列出的01–08单一职责子设计为准。
 >
-> 当前协议结论：**Conditional Go**。Whole/Mixed Object算法冻结，Gate A/B可开发；本轮
-> Restore Chunk、Restore/Purge lease、Tombstone unknown、分区表准入和Versioned Bucket
-> 五项P0，以及既有Cleanup/格式/升级安全门禁完成前，不能宣布协议和Commercial GA完成。
+> 当前协议结论：**Conditional Go**。Whole/Mixed Object算法冻结，Gate A/B可开发；
+> [07-p0-ga-test-matrix-cn.md](07-p0-ga-test-matrix-cn.md)汇总的Lifecycle P0，以及既有
+> Cleanup/格式/升级安全门禁完成前，不能宣布协议和Commercial GA完成。
 
 ## 1. 交付边界
 
@@ -98,17 +98,19 @@ lifecycle_min / lifecycle_max
 root_id / attempt_id
 manifest_key / manifest_sha256
 content_hash / row_count / logical_bytes
-stage_identity
+stage_id / stage_identity
 purge_eligible_at
-state                  PUBLISHED | DELETE_PENDING | DELETING | PURGED | ERROR
+state                  PUBLISHED | DELETE_PENDING | DELETING | PURGED
+version
 access_generation
 restore_lease_id nullable
 restore_deadline nullable
 publish_txn_id
-version
 ```
 
-Dataset本身是Archive发布权威，不增加Archive Receipt。
+Dataset本身是Archive发布权威，不增加Archive Receipt。`version`用于所有状态/lease CAS；
+`stage_id`提供Stage DROP/ALTER索引化引用检查。Dataset不保留ERROR状态：发布前错误不产生
+Dataset，Restore错误保存在Attempt，PUBLISHED Dataset继续可Restore/Purge。
 `schema_descriptor_digest`验证Manifest历史descriptor的canonical bytes；Restore按结构字段
 创建目标表，不持久化第二个restore schema摘要。
 
@@ -189,11 +191,14 @@ file_ordinal / row_group_ordinal
 row_count
 logical_bytes
 canonical_content_hash
+auto_increment_maxima_blob
 ```
 
 首版单个Restore串行推进。数据INSERT、Receipt和Attempt进度在同一普通事务提交；同ordinal
 相同digest幂等，不同digest是corruption。最终Hash按Receipt ordinal使用02的固定聚合公式
-重建，`verified_content_hash`只在最终发布事务中一次性写入。
+重建，`verified_content_hash`只在最终发布事务中一次性写入。每个Receipt同时保存本Chunk
+按Manifest列ordinal编码的AUTO_INCREMENT最大正值；接管者聚合后与Manifest全局最大正值比较，
+不依赖进程内状态或重扫隐藏表。
 
 ## 4. Stage合同
 
@@ -361,9 +366,11 @@ transfer slab实际allocator capacity + safety margin
 
 Parquet/ZSTD文件保存size、SHA-256、ordinal、row count和必要min/max。Manifest保存文件集、
 完整版本化逻辑schema descriptor、descriptor digest、canonical encoder version、content
-hash和总行数。descriptor至少能重建稳定列顺序、列名、源Column ID、MO类型、width/scale、
-nullability、charset/collation和AUTO_INCREMENT属性；Phase 1不恢复PK、索引、FK、CDC、
-Publication、默认表达式、权限或策略。
+hash和总行数。Manifest顶层包含`manifest_format_version=1`，Reader必须先按它选择parser，
+未知版本fail closed。descriptor至少能重建稳定列顺序、列名、源Column ID、MO类型、
+width/scale、nullability、charset/collation和AUTO_INCREMENT属性；Manifest还保存每个
+AUTO_INCREMENT列在归档数据中的最大正值并由full readback复核。Phase 1不恢复PK、索引、FK、
+CDC、Publication、默认表达式、权限或策略。
 
 descriptor中的Column ID明确命名为`source_column_id`，只用于lineage和源schema fence；
 Restore目标列由普通DDL分配新ID，结构校验忽略源ID，不增加第二个持久
@@ -447,7 +454,7 @@ protocol_version / mode
 binding_id / binding_generation
 logical_table_id / physical_table_id / schema_digest / lifecycle_column_id
 source_snapshot_ts
-source ObjectStats bytes/digest/is_tombstone list
+data source ObjectStats bytes/digest list
 source_set_digest
 created ObjectStats list（Rewrite）
 existing external booking locations/digest（Rewrite）
@@ -456,6 +463,8 @@ delta limits / absolute prepare deadline
 ```
 
 SyncProtection job ID复用现有`PrecommitWriteCmd.SyncProtectionJobId`，不在thin entry重复。
+entry和`source_set_digest`只包含要退休的Data Object。Snapshot Reader使用的Tombstone
+Object只属于CN/SyncProtection protection set，TN不得把它加入SoftDelete集合。
 
 Archive事务必须包含Dataset普通写，TTL事务必须包含TTL Receipt普通写。Finalizer私有持有
 TxnOperator；workspace仅增加一个普通事务恒为nil、不会参与dump/compact/sort的
@@ -544,13 +553,16 @@ transaction；上传、readback和Rewrite不持有该行。
 同事务写TTL Receipt。rows、预计Tombstone bytes、affected blocks、事务时长和backlog任一
 超限就改走Rewrite或`MIXED_LAYOUT_BLOCKED`，不得无限拆分重试。
 
+这是可关闭的性能优化，不是Whole/Rewrite核心GA前置。Gate F未通过时关闭该路径，所有TTL
+Mixed走Rewrite或Blocked。
+
 ## 17. Restore与Purge
 
-Dataset一次最多一个Restore lease：
+Dataset一次最多一个Restore lease。初始化先使用一个普通事务原子完成Dataset lease CAS、
+hidden table CREATE和Restore Attempt INSERT，禁止隐藏表先于Attempt Owner提交：
 
 ```text
-acquire lease with fixed deadline
--> create hidden staging table
+CAS lease + CREATE hidden + INSERT RUNNING Attempt in one ordinary transaction
 -> read/verify Manifest and files
 -> serial chunked normal INSERT + Receipt/Attempt progress in the same transaction
 -> rebuild ordered content hash from Chunk Receipts
@@ -559,18 +571,27 @@ acquire lease with fixed deadline
      CAS matching unexpired Dataset lease
      CAS Attempt PUBLISHING/lease/chunk progress/rows/verified hash
      verify exact hidden-name + database ID + table ID
+     ValidateAutoColumnOffset + SetOffset(archived positive max, same TxnOperator)
+       for AUTO_INCREMENT columns
      atomic rename/publish
      Attempt.verified_content_hash = recomputed dataset_content_hash
-     Attempt DONE + clear lease
+     Attempt DONE + clear lease + increment Dataset.version
 ```
 
 Chunk事务不更新Hash；最终发布事务验证Receipt严格覆盖
-`0..Manifest.total_chunk_count-1`，并一次性写入`verified_content_hash`。
+`0..Manifest.total_chunk_count-1`，并一次性写入`verified_content_hash`。每个Chunk必须在
+转换成最终MO vectors后再用canonical encoder重算Hash，不能Hash Parquet中间表示后直接
+INSERT。`SetOffset`参数是已恢复最大值本身；类型上限保持allocator耗尽语义，不做`max+1`。
 
-失败清理使用一个短普通事务CAS非DONE Attempt，并确认Catalog中当前名称仍是
+`PUBLISHING` owner丢失时按一致性Catalog身份对账：target名称映射到同一table ID则停止
+清理；hidden名称仍精确映射且target不映射时，允许清理事务与迟到发布事务通过普通WW
+conflict决胜；两个身份均不匹配或矛盾时fail closed。失败清理使用一个短普通事务CAS非DONE
+Attempt，并确认Catalog中当前名称仍是
 `__mo_lifecycle_restore_<restore-id>`且database/table ID完全匹配，再按隐藏名DROP。禁止
 仅凭`staging_table_id`删除；CAS或身份校验失败先重读Attempt，`DONE`或目标名已映射到相同
-table ID时立即停止。COMMIT_UNKNOWN未按普通MO语义收敛前禁止清理。
+table ID时立即停止。cleanup `ErrTxnUnknown`时不盲目重试DROP，重新做身份对账。
+重读到`ABORTED + hidden absent + target不映射该ID`可确认清理已提交；非终态且hidden精确
+存在才允许重新发起完整清理事务，其余矛盾组合fail closed。
 
 每次GET/chunk前验证lease。Purge只有在Dataset没有有效lease时才能CAS到
 `DELETE_PENDING`并递增access generation；显式Purge遇有效lease返回
@@ -606,6 +627,11 @@ Scheduler/CN并发、单源Rewrite、entry解码前硬上限和active-coexistenc
 认证负载触发公共Merge资源缺陷时，记录/修复公共MO Issue或降低认证上限，不能用Lifecycle
 私有状态机掩盖。
 
+Mixed Rewrite受`live_logical_bytes/expired_logical_bytes`上限和账户/集群固定窗口source
+bytes预算约束；Restore按Dataset logical bytes限制账户/集群active staging总量。预算由
+现有Lifecycle Coordinator管理，不增加Catalog Slot；Coordinator切换时Rewrite预算保守
+关闭到下一窗口，Restore计数从Attempt/Dataset重建。
+
 ## 19. P0测试
 
 必须覆盖：
@@ -614,16 +640,18 @@ Scheduler/CN并发、单源Rewrite、entry解码前硬上限和active-coexistenc
 2. Archive-before-retire与Dataset/Object mutation原子性；
 3. Stage位置不可变、credential轮换和服务重启；
 4. Root-before-side-effect、写后登记前crash、迟到PUT；
-5. 各SQL类型canonical hash、Chunk有序聚合和full readback；
-6. 最大Object、oversize Block拒绝和并发资源上限；
-7. Restore中断、同ordinal相同/不同digest、chunk重放和Purge active-lease拒绝；
+5. 各SQL类型canonical hash、Manifest版本、Chunk有序聚合和full readback；
+6. 最大Object、oversize Block、Rewrite amplification/window bytes和Restore staging拒绝；
+7. Restore原子初始化、中断、同ordinal相同/不同digest、chunk重放和Purge active-lease拒绝；
 8. S前/S后DELETE、NoTransfer、Whole Archive并发DELETE；
 9. SyncProtection续租失败和TN重启；
 10. 相同/重叠/不相交source的并发final transaction；
 11. final response lost、matching Dataset优先和EOB不误清理；
 12. 普通Merge抢先、CN/TN crash、WAL replay和GC；
 13. DDL fence最后Gate的DROP/TRUNCATE/ALTER/UNSET竞态；
-14. feature off和无Binding的普通MO回归。
+14. AUTO_INCREMENT最大正值readback、发布SetOffset、类型上限和overflow；
+15. PUBLISHING后final txn创建前crash、发布/清理竞争和cleanup unknown；
+16. feature off和无Binding的普通MO回归。
 
 ## 20. 实施顺序与代码边界
 

@@ -34,7 +34,7 @@
 | [04-cleanup-root-reconcile-cn.md](04-cleanup-root-reconcile-cn.md) | Root状态机、Owner、commit unknown、迟到PUT和物理清理 |
 | [05-restore-purge-drop-cn.md](05-restore-purge-drop-cn.md) | Restore新表、Purge lease、DROP和限制矩阵 |
 | [06-observability-capacity-cn.md](06-observability-capacity-cn.md) | 配置、指标、告警、隔离和放量 |
-| [07-p0-ga-test-matrix-cn.md](07-p0-ga-test-matrix-cn.md) | 基础安全门禁、本轮五项P0、全路径故障测试和GA门禁 |
+| [07-p0-ga-test-matrix-cn.md](07-p0-ga-test-matrix-cn.md) | 基础安全门禁、协议P0全集、全路径故障测试和GA门禁 |
 | [08-implementation-plan-cn.md](08-implementation-plan-cn.md) | Gate、包边界、PR边界和Definition of Done |
 
 子设计不得复制另一子设计的第二份状态机。上位概要负责产品效果；ADR只记录决策理由；
@@ -132,12 +132,15 @@ final transaction 不相信 Candidate。每个 source identity 至少覆盖：
 physical_table_id
 object_id
 ObjectStats bytes/digest
-is_tombstone
 source_set_digest
 ```
 
 任一不匹配、已存在 Drop Intent 或 Object 不可见，整个事务失败。EOB 不是“本 attempt
 已经成功”的证据。
+
+退休entry的`data_sources[]`只包含Data Object；S时Reader使用的Tombstone Object只属于
+Snapshot Reader和SyncProtection的`protection_set`，绝不进入source digest或
+`SoftDeleteObject`集合。
 
 ### I-4 Full physical Block contract
 
@@ -185,6 +188,11 @@ lease返回`RESTORE_IN_PROGRESS`，后台Purge延迟重试。进入`DELETE_PENDI
 单个普通INSERT事务恢复。隐藏表发布/清理都CAS同一Attempt；清理必须校验隐藏名称、
 database ID和table ID，禁止仅凭Rename后仍不变的table ID执行DROP。
 
+Dataset lease、隐藏表CREATE和Restore Attempt INSERT必须在第一个普通事务中原子提交。
+AUTO_INCREMENT归档最大正值写入Manifest并经full readback验证；最终Rename/DONE事务先
+校验目标类型上限，再复用现有`incrservice.SetOffset(max, txnOp)`推进新表水位。`PUBLISHING`后owner丢失按目标名/
+隐藏名与table ID的一致性身份决定停止清理或参与普通事务DROP竞争，不增加publish Journal。
+
 ### I-10 Ordinary MO stays ordinary
 
 未绑定表：
@@ -201,9 +209,11 @@ feature开启时，可能与Lifecycle冲突的DDL允许执行一次索引化Bind
 ### I-11 All growth is bounded
 
 Reader内存、Provider I/O、staging bytes、external booking、Tombstone delta、Root unknown、
-cleanup backlog、Restore staging、Job和Rewrite并发都有硬上限。达到上限只暂停
-Lifecycle。首个GA通过Scheduler/CN并发、单请求硬上限和active-coexistence门禁约束资源，
-不增加TN Lifecycle专用permit或比普通Merge更强的资源协议。
+cleanup backlog、Restore staging、Job和Rewrite并发都有硬上限。Mixed Rewrite还受live/
+expired写放大和账户/集群固定窗口source bytes预算限制；Restore按Dataset logical bytes
+限制账户/集群active staging总量。达到上限只暂停Lifecycle。首个GA通过Scheduler/CN并发、
+单请求硬上限和active-coexistence门禁约束资源，不增加TN Lifecycle专用permit或比普通
+Merge更强的资源协议。
 
 ### I-12 DDL fence is retained but implemented last
 
@@ -265,7 +275,7 @@ Gate B  Exact Reader + canonical encoder + 固定Row Group Chunk + 可重启Hash
 Gate C  Cleanup Root + 认证Stage身份/凭据 + full readback + 生产Export-only
 Gate D  Whole exact retire + thin commit-control
 Gate E  单源Mixed Rewrite + post-S DELETE
-Gate F  TTL小Mixed DELETE
+Gate F  TTL小Mixed DELETE（可关闭的性能优化）
 Gate G  Restore/Purge lease
 Gate H  DDL fence验证与最小实现（最后）
 Gate I  1/10 TiB、30天soak、50→1000表放量
@@ -273,3 +283,6 @@ Gate I  1/10 TiB、30天soak、50→1000表放量
 
 每个 Gate 都必须证明未绑定普通 MO 的吞吐、P99、内存、Merge、checkpoint、GC 和 logtail
 没有不可接受回归。
+
+Gate F未通过时关闭TTL small Mixed，TTL Mixed统一进入Rewrite或
+`MIXED_LAYOUT_BLOCKED`；它不阻塞Whole/Rewrite核心GA。
