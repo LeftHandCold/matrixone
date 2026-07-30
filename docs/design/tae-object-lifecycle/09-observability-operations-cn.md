@@ -38,7 +38,7 @@ GA发布时 `retirement-enabled` 只有通过cluster capability和stage gate后�
 主要release profile：
 
 ```text
-max-bound-tables                  = 1000 # Guard owner总量，含active与reconciling
+max-bound-tables-per-account      = 1000 # 当前account Guard总量，含active与reconciling
 policy-scan-interval              = 1h
 index-catchup-interval            = 5m
 coordinator-page-size             = 1000
@@ -52,6 +52,12 @@ rewrite-cluster-concurrency       = 1
 rewrite-certified-hard-concurrency = 4
 lifecycle-commit-concurrency      = 4
 lifecycle-commit-admission-mode   = try
+lifecycle-finalization-concurrency = 4
+max-final-generations             = 3
+final-retry-window                = 10m
+archive-small-mixed-txn-timeout   = 5m
+archive-small-mixed-provider-budget = 3m
+archive-small-mixed-max-bytes     = 256MiB
 max-certified-block-read-bytes    = 256MiB
 restore-cluster-concurrency       = 2
 provider-io-timeout               = 2m
@@ -63,17 +69,23 @@ root-quiescence-window            = 24h
 ```
 
 数值与各协议文档的hard limit一致。`lifecycle-commit-admission-mode`首个GA只允许
-`try`：TN无waiter，permit不可用时在创建内部TAE txn前立即返回`RESOURCE_BUSY`，CN带
-有界jitter重新调度。禁止配置等待时间或无界队列。启动时校验：
+`try`：TN无waiter，permit不可用时在创建内部TAE txn前立即返回
+`LIFECYCLE_RESOURCE_BUSY`。CN finalization permit先于`VERIFIED -> FINALIZING`取得；
+不可用时Root保持VERIFIED并有界jitter重新调度。禁止配置等待时间或无界队列。启动时校验：
 
 - hard >= soft；
 - timeout/lease/quiescence关系合法；
 - cleanup/reconcile不能同时关闭并开启retirement；
 - `lifecycle-commit-concurrency <= cluster-concurrency`，admission mode必须为`try`且
   waiter/queue capacity为0；
+- `lifecycle-finalization-concurrency <= lifecycle-commit-concurrency`，`max-final-generations=3`
+  且`final-retry-window=10m`；超过任一值必须重新认证；
+- Archive Small Mixed的事务、Provider总预算和payload字节不得超过5m、3m、256MiB；
+  Planner预估或运行时预算超限都转Mixed Rewrite，不允许延长SI transaction；
 - retention/grace非负；
-- `max-bound-tables`按权威Guard行数计数，包含非DISABLED Binding以及仍有child/unknown的
-  DISABLING/reconciling表；达到上限拒绝新Bind，不能只数ACTIVE Binding；
+- `max-bound-tables-per-account`按当前account incarnation的权威Guard行数计数，包含
+  非DISABLED Binding以及仍有child/unknown的DISABLING/reconciling表；达到上限拒绝新Bind；
+  集群1000绑定表是认证容量边界，不是跨account事务不变量；
 - 配置超过已认证profile时拒绝启动retirement。
 
 256 MiB是首个GA的候选认证上限，表示4.1节保守估算后的单个Block
@@ -111,7 +123,7 @@ RECONCILE
 
 - 不创建新的Whole/Mixed final transaction；
 - Reader/Uploading可安全cancel并由Root cleanup；
-- 已进入FINALIZING/COMMIT_UNKNOWN不cancel、不清理，继续Reconcile；
+- 已进入FINALIZING/FINAL_RETRYABLE/COMMIT_UNKNOWN不cancel、不清理，继续Reconcile；
 - Cleanup/Reconcile继续；
 - Restore/Purge按独立开关。
 
@@ -182,7 +194,7 @@ transfer entries/booking files/bytes
 reservation/protection status and expiry
 payload count/bytes
 retry/conflict age
-final txn ID/status
+final generation/txn ID/status/retry deadline
 deadline/next action
 last error
 ```
@@ -307,6 +319,8 @@ lifecycle_route_changed_total{reason}
 lifecycle_protocol_capability{stage,result}
 lifecycle_unknown_entry_rejected_total{reason}
 lifecycle_commit_admission{state}
+lifecycle_finalization_admission{state}
+lifecycle_final_retry_total{result}
 lifecycle_reconcile_required_total{reason}
 lifecycle_generation_slot_total{result}
 lifecycle_replay_generations
@@ -323,6 +337,8 @@ lifecycle_replay_budget_exhausted_total{dimension}
 - admission仅记录`acquired/rejected/released`等低基数状态；`waiting`在首个GA中是
   非法状态并触发P0告警。permit获取/释放不平、在拒绝后创建TAE txn和
   `LIFECYCLE_RECONCILE_REQUIRED`必须单独告警；
+- finalization admission同样只记录`acquired/rejected/released`；Root在permit拒绝后离开
+  VERIFIED、TN busy后未持久化原始错误分类、或`FINAL_RETRYABLE`越过3代/10分钟都是P0告警；
 - unknown Entry拒绝和capability传播用于Safety Release验收；旧/缺失capability一律为
   unsupported，不能通过缺指标或默认值开启retirement；unknown numeric value只写有界
   结构化日志，不作为metric label；
@@ -594,6 +610,11 @@ Restore
 7. 24小时后进入manual，不猜测；
 8. 同表retirement保持暂停。
 
+若`last_final_error_code=LIFECYCLE_RESOURCE_BUSY`、txn明确ABORTED、无Receipt/Dataset、
+Root child全为VERIFIED且仍在3代/10分钟窗口内，按`FINAL_RETRYABLE`重新校验source、
+reservation/protection/Binding/Guard并新建final txn；否则按普通aborted清理。response lost
+绝不走此分支。
+
 ### 12.2 Root `DELETE_FAILED`
 
 1. 确认owner/Purge事实和无lease；
@@ -669,10 +690,10 @@ Stage：
 
 ```text
 0: 5 internal tables, Dry-run/Export-only
-1: 50 bindings
-2: 200 bindings
-3: 500 bindings
-4: 1000 bindings
+1: 50 certified cluster bindings
+2: 200 certified cluster bindings
+3: 500 certified cluster bindings
+4: 1000 certified cluster bindings
 ```
 
 每Stage至少运行：

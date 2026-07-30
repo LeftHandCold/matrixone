@@ -86,7 +86,7 @@
 - 全量 readback 校验；
 - Restore 到独立新表；
 - DROP TABLE/DATABASE/ACCOUNT 后异步放弃并清理 Archive；
-- 约 500～1000 张绑定表，1 TiB 常见单表，10 TiB 认证目标。
+- 每账户最多 1000 张绑定/收敛表；集群认证容量为约 500～1000 张并发已绑定表，1 TiB 常见单表，10 TiB 认证目标。
 
 ### 4.2 不支持
 
@@ -126,7 +126,7 @@ ALTER TABLE ... SET LIFECYCLE
        |     -> Dataset + Receipt + tagged LifecycleCommit
        |
        +-- small Mixed TTL/Archive
-       |     -> one writable SI transaction
+       |     -> Archive 先取得有界 finalization permit，再开一个 writable SI transaction
        |     -> exact Reader
        |     -> optional Root/Parquet/readback
        |     -> Relation.Delete(RowID + delete key)
@@ -340,7 +340,15 @@ Root-owned staging。失败的generation整体rollback，不能原地重建；G2
 重叠Commit由TxnService串行；terminal后迟到duplicate在Booking I/O前经deadline、admission
 和exact-source preflight收敛，已退休source返回`LIFECYCLE_RECONCILE_REQUIRED`。V1禁止
 增加进程全局无界replay memo；只有实证storage并行执行同一external txn时才加入有界registry。
-TN admission只TryAcquire，busy在创建内部TAE txn前立即返回`RESOURCE_BUSY`，不排队。
+Archive finalizer先取得 Lifecycle CN finalization permit；拿不到则 Root 保持
+`VERIFIED`，以有界 jitter 重排，既不创建 tenant final transaction，也不清理已验证
+staging。TN admission只TryAcquire，busy在创建内部TAE txn前立即返回类型化
+`LIFECYCLE_RESOURCE_BUSY`，不排队。只有该错误、tenant transaction 已权威
+`ABORTED`、Receipt/Dataset 均不存在、所有 Root child 仍为 `VERIFIED`，且仍在
+10 分钟/3 代的 final retry budget 内，Root 才进入 `FINAL_RETRYABLE`；下一代使用新
+tenant txn ID，重新校验 source/reservation/protection/Binding/Guard 后复用同一份
+staging。response lost、`COMMIT_UNKNOWN`、错误分类缺失或任一 source 不再 exact 均不得
+复用，仍由 Reconciler 收敛。
 普通Merge的同类注册前缺口由[#26445](https://github.com/matrixorigin/matrixone/issues/26445)
 跟踪。
 
@@ -357,9 +365,11 @@ TN admission只TryAcquire，busy在创建内部TAE txn前立即返回`RESOURCE_B
 | TaskService task/epoch | 投递 hint | 从 Catalog lease 重新接管 |
 | 普通 Merge/GC metadata | TAE 旧版本回收权威 | Lifecycle 不复制其职责 |
 
-Feature Guard只属于active或仍在收敛的Lifecycle表；两类所有者合计受同一个
-`max-bound-tables=1000`硬上限约束。未绑定表的普通DDL不创建Guard，卡住的Unbind也不能
-通过持续绑定新表造成Guard无界增长。
+Feature Guard只属于active或仍在收敛的Lifecycle表；它按当前 account incarnation 受
+`max-bound-tables-per-account=1000`硬上限约束。未绑定表的普通DDL不创建Guard，卡住的
+Unbind也不能通过持续绑定新表造成该账户 Guard 无界增长。跨账户总数不作为 tenant
+事务中的伪全局不变量；Scheduler/TN admission 分别限制全集群运行中的 job/rewrite/final
+commit，500～1000 仅是 GA 认证容量和放量门槛。
 
 ## 8. 核心身份
 

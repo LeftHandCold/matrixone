@@ -280,6 +280,9 @@ delete batch bytes <= 16 MiB
 固定：
 
 ```text
+TryAcquire Lifecycle CN finalization permit
+  -> unavailable: do not create SI txn/Root; bounded-jitter replan
+  -> acquired: hold exactly once until SI txn becomes terminal or is classified unknown
 begin writable SI txn
   -> exact Reader
   -> lazy create Root before first PUT
@@ -287,7 +290,8 @@ begin writable SI txn
   -> close all Payload
   -> full readback
   -> Manifest VERIFIED
-  -> all hard budgets still satisfied
+  -> Archive Small Mixed budget still satisfies: txn <= 5m, Provider total <= 3m,
+       selected bytes <= 256MiB
   -> system txn Root VERIFIED -> FINALIZING(final txn ID = SI txn ID)
   -> start txn workspace statement
   -> Relation.Delete batches
@@ -306,6 +310,23 @@ begin writable SI txn
 - 失败必须 rollback/unknown reconcile。
 
 Root进入 FINALIZING 之前不能开始 Delete。
+
+Archive Small Mixed 的 SI Snapshot、Reader、Provider I/O、`Relation.Delete`和最终提交必须
+属于同一个可写 SI transaction，故它不能像 Whole/Rewrite 一样在上传完成后才取得 permit。
+它在创建该 SI transaction 前取得同一个 Lifecycle CN finalization permit，并在 explicit
+commit/rollback，或已把结果未知持久化并转交 Reconciler 的当刻 exactly-once 释放。这个 permit 只限制
+Lifecycle Archive Small Mixed（默认集群最多 2 个），不会进入普通事务/Merge/Provider 路径；
+5 分钟 SI hard limit 和 3 分钟 Provider budget 保证其持有时间有界。TN permit 仍是最后硬
+保险：若它返回 `LIFECYCLE_RESOURCE_BUSY`，SI transaction 明确 abort；仅满足
+`ABORTED + no Receipt/Dataset + all Root children VERIFIED + retry budget`的 Root 可进入
+`FINAL_RETRYABLE`，之后只能用新 SI transaction 重做同一受限流程，不能把旧 SI Snapshot
+或旧 workspace 带入下一代。
+
+Archive Small Mixed是Mixed Rewrite的受限优化，不是必经路径。Planner按已认证Provider
+p95吞吐和readback成本预估；预估超过3分钟、256MiB或5分钟SI窗口时直接选择Rewrite。
+运行中任一预算超限也必须在第一条Delete前rollback当前SI txn、把已创建Root推进
+`DELETE_PENDING`并转Rewrite，不能为了复用已上传payload延长SI transaction。该能力在
+Whole、TTL Small Mixed和Rewrite分别通过独立Stage后才打开。
 
 ## 10. TTL Mixed 顺序
 
@@ -368,8 +389,10 @@ P0优先采用已有 Engine Relation写入，因为原子边界更直接；SQL e
 | RowID + delete key raw bytes | 32 MiB | 64 MiB |
 | estimated txn workspace | 128 MiB | 256 MiB |
 | estimated WAL/Logtail | 64 MiB | 128 MiB |
-| Archive selected business bytes | 256 MiB | 512 MiB |
-| transaction wall time | 15 min | 30 min |
+| Archive selected business bytes | 128 MiB | 256 MiB |
+| TTL Small Mixed transaction wall time | 15 min | 30 min |
+| Archive Small Mixed transaction wall time | 3 min | 5 min |
+| Archive Small Mixed Provider PUT+readback total | 2 min | 3 min |
 | Provider single I/O | 1 min | 2 min |
 
 Hard limit任一超过：
@@ -520,7 +543,7 @@ source exact read（无写锁）
 | Root FINALIZING失败 | rollback；不Delete |
 | Relation.Delete失败 | rollback；Root等待明确abort后cleanup |
 | Catalog CAS失败 | rollback |
-| commit明确aborted | Root DELETE_PENDING/Attempt ABORTED |
+| commit明确aborted | 满足`FINAL_RETRYABLE`全部条件则保留 VERIFIED staging，否则Root DELETE_PENDING/Attempt ABORTED |
 | commit unknown | Root/Attempt保持FINALIZING；spill/local Reader资源可释放 |
 | worker crash before Delete | txn timeout/rollback；Root收敛 |
 | worker crash after Delete before commit response | existing txn resolver + Receipt对账 |

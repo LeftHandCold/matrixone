@@ -295,6 +295,8 @@ Lifecycle bind:
   acquire existing mo_tables row DDL lock
     -> read authoritative dependency state
     -> reject if unsupported dependency exists
+    -> under account-scoped bind capacity lock, count current account incarnation Guards
+    -> reject if count reaches max-bound-tables-per-account
     -> insert Binding + Feature Guard
     -> commit
 
@@ -310,6 +312,12 @@ unsupported dependency/DDL:
 Bind先提交时，后续DDL看到Binding/Guard。涉及多张表的FK等操作按稳定logical table
 identity排序加锁。Unbind只有在active child和unknown final transaction收敛后才能删除
 Guard。未绑定普通表不写Guard、不更新Guard，也不进入Lifecycle状态机。
+
+`max-bound-tables-per-account`是首个 GA 的唯一强制 Binding 数量不变量，默认 1000。
+它只统计当前 account incarnation 的 authoritative Guard；不在 tenant DDL 事务里尝试
+读取或维护跨账户全局计数。全集群同时运行的 Discovery/child/rewrite/finalization 由
+Scheduler 和 TN admission 独立硬限流；“约 1000 张全集群绑定表”仅是发布认证容量，
+不是可被多个账户绕过的 Catalog 配额承诺。
 
 ### 4.3 DDL 交互
 
@@ -329,7 +337,7 @@ Guard。未绑定普通表不写Guard、不更新Guard，也不进入Lifecycle�
 
 1. DDL transaction 把 Guard/Binding 原子推进到 `DISABLING` 并提交；
 2. SQL 返回 accepted/status ID，不同步等待外部 I/O 或 unknown transaction；
-3. 后台停止新 child，等待 `FINALIZING/COMMIT_UNKNOWN` 收敛；
+3. 后台停止新 child，等待 `FINALIZING/FINAL_RETRYABLE/COMMIT_UNKNOWN` 收敛；
 4. 请求 Reader/Uploading child cancel；
 5. 清理未发布 staging；
 6. Binding 进入 `DISABLED`；
@@ -359,6 +367,7 @@ UPLOADING
 VERIFIED
 REWRITING
 FINALIZING
+FINAL_RETRYABLE
 COMMIT_UNKNOWN
 COMMITTED
 RETRYABLE

@@ -53,7 +53,7 @@ DROP提交后：
 
 - 新Lifecycle claim因Guard/Binding/Relation不存在而失败；
 - Reader/Uploading worker在下一epoch检查停止；
-- FINALIZING/COMMIT_UNKNOWN先按原txn对账；
+- FINALIZING/COMMIT_UNKNOWN先按原txn对账；FINAL_RETRYABLE按有界规则重新校验后重试或清理；
 - Restore final publish因owner CAS失败；
 - Sweeper按Root异步清理。
 
@@ -115,7 +115,7 @@ quiescence window 内没有新行。所有 Lifecycle cluster table 都显式保�
 - Binding/Guard/Dataset行不存在或owner state dropped；
 - Lifecycle final CAS affected rows = 0；
 - tenant final txn abort；
-- Root明确aborted后DELETE_PENDING。
+- Root明确aborted且不满足`FINAL_RETRYABLE`全部条件后才DELETE_PENDING。
 
 ### 5.2 Lifecycle先提交
 

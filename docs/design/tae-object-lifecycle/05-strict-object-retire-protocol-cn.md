@@ -973,7 +973,8 @@ txn committed + matching Receipt visible:
   TAE_LIVE_SEGMENT_RANGE/TAE_LIVE_STAGING_OBJECT -> TAE_OWNED
 
 final txn service authoritatively reports ABORTED:
-  VERIFIED -> DELETE_PENDING
+  FINAL_RETRYABLE-eligible busy -> remain VERIFIED
+  other abort -> VERIFIED -> DELETE_PENDING
 
 txn unknown:
   remain VERIFIED; no physical delete
@@ -1437,15 +1438,20 @@ Lifecycle不保留“少于50万行走inline”的第二条路径，
 Finalizer只在 Build `VERIFIED` 后开始：
 
 ```text
-allocate normal tenant txn
-  -> choose absolute final_prepare_deadline D and bind commit context deadline = D
+try acquire CN/Scheduler finalization permit
+  -> busy: keep Root/Attempt VERIFIED; bounded jitter reschedule; do not allocate tenant txn
+  -> acquired: allocate normal tenant txn
+  -> choose per-generation absolute final_prepare_deadline D and bind commit context deadline = D
   -> refresh authoritative TN route/capability outside txn.Lock
   -> freeze ServiceID + ShardID + ReplicaID + protocol_version
-  -> system txn CAS Root VERIFIED -> FINALIZING
+  -> for FINAL_RETRYABLE: revalidate exact source/reservation/protection/Binding/Guard
+  -> system txn CAS Root VERIFIED/FINAL_RETRYABLE -> FINALIZING
        freeze final_txn_id
        freeze canonical LifecycleCommitEntry bytes/digest
+       increment final_generation
        freeze final_prepare_deadline = D
-       freeze max retry generations/cumulative budget profile
+       freeze final_retry_deadline (first generation only; never renew)
+       freeze max internal retry generations/cumulative budget profile
        freeze receipt/dataset/manifest identity
   -> tenant txn CAS Guard/Binding/active attempt
   -> tenant txn insert Dataset/Receipt（Archive）
@@ -1467,12 +1473,26 @@ token、control或digest不一致均返回`ErrLifecycleCatalogPairMissing`，不
 `TxnCommitRequest.DeadlineUnixNano`必须精确等于Root已冻结的`D`，不允许使用fallback
 deadline或在发送时重新延长。
 
+CN finalization permit的唯一目的，是在`VERIFIED -> FINALIZING`之前把后台final commit
+并发削到不高于TN admission；它不等待、不进入普通事务，也不包住Reader/Provider I/O。
+permit不可用时Root继续持有已验证staging，不能开启tenant txn或删除staging。TN仍以
+`TryAcquire`作为最终硬边界。
+
+TN最后返回`LIFECYCLE_RESOURCE_BUSY`时，现有TxnService会将本次外部txn置为ABORTED。
+CN从`TxnError.Error/Code`保留的原始moerr分类写入Root/Attempt `last_final_error_code`，再由
+Reconciler确认ABORTED且Receipt/Dataset不存在。只有此时、`final_generation < 3`、未超过
+首次finalize冻结的10分钟`final_retry_deadline`、并且所有Root child仍为immutable VERIFIED，
+才允许`FINALIZING -> FINAL_RETRYABLE`。下一代使用**新**tenant txn ID，但复用同一verified
+Payload/Manifest/live staging/booking；它必须重新校验source、reservation、protection、
+Binding和Guard。response lost、unknown、其他abort、分类缺失、source不exact或预算耗尽一律
+不换txn，分别走Reconcile或`DELETE_PENDING`。
+
 禁止：
 
 - 先提交 Dataset再退休；
 - 先退休再异步补 Dataset；
 - 把Lifecycle作为commit前的独立`TxnOperator.Write`发送；
-- response lost后用新 txn ID重发；
+- response lost/unknown后用新 txn ID重发；
 - final transaction执行 Provider I/O；
 - reservation过期后只看 Object仍存在就提交。
 
@@ -1997,7 +2017,8 @@ tagged Lifecycle entry属于正常commit payload：
 - same txn/same digest重复到达：返回同一逻辑注册结果，但绝不能返回某个旧内部
   generation的entry、Catalog node或TransferTable指针；
 - same txn/different digest：fatal transaction error；
-- different txn/same attempt：只有旧 txn明确 aborted且 Root CAS新 txn后才允许；
+- different txn/same attempt：只有旧 txn满足`FINAL_RETRYABLE`全部条件、Root CAS进入新
+  generation后才允许；
 - source Object missing不作为duplicate success；
 - 同一内部generation并发decode时只有一个builder可以完成`LogTxnEntry`；失败者释放
   全部私有runtime资源，不删除Root文件。
@@ -2072,7 +2093,7 @@ Commit，但不会永久保存终态。迟到duplicate的安全与成本边界�
 TxnService absolute request deadline gate
   -> storage HandleCommit pre-scan max-one Lifecycle tag
   -> TryAcquire Lifecycle commit permit
-       busy: return RESOURCE_BUSY before creating internal TAE txn
+       busy: return typed LIFECYCLE_RESOURCE_BUSY before creating internal TAE txn
   -> parse/tag/route/capability preflight
   -> reservation + protection + exact source preflight
   -> only then Booking read/decode and TAE mutation
@@ -2083,8 +2104,10 @@ TxnService absolute request deadline gate
 corruption或重新导出。已明确aborted而source仍exact的请求只有在同一绝对deadline、
 attempt/reservation仍有效且调用方结果unknown时才可重新尝试。超过deadline由TxnService
 拒绝。admission不设waiter、不在TN commit路径排队；TryAcquire失败立即返回
-`RESOURCE_BUSY`，CN scheduler带有界jitter重新调度。CN在创建final transaction前也执行
-同口径调度限流，TN permit是最后硬边界。permit
+`LIFECYCLE_RESOURCE_BUSY`。该错误必须是独立moerr code；虽然TxnService使用
+`ErrTAECommit`作为内部TxnErrCode，它必须保留在`TxnError.Error/Code`中，以供CN持久化
+`last_final_error_code`后由Reconciler判定是否允许有界final retry。CN在创建final
+transaction前也执行同口径finalization permit，TN permit是最后硬边界。permit
 由一次`HandleCommit`独占并覆盖其全部G1/G2 retry generation；在parse、preflight、Booking、
 TAE mutation、terminal abort或正常返回的任一出口都必须exactly-once释放。它不随单个
 generation释放或重取，避免retry绕过并发上限。
@@ -2272,7 +2295,8 @@ block-streaming Reader完成认证。
 | generation slot BUILDING follower | 有界等待/返回同一结果；不得重复mutation |
 | generation builder失败 | slot FAILED；整代TAE txn rollback；同代禁止重建 |
 | overlapping duplicate Commit | TxnService串行；迟到请求按deadline/source preflight收敛 |
-| final txn明确aborted | cleanup staging |
+| final txn明确aborted + `LIFECYCLE_RESOURCE_BUSY`且所有retry条件满足 | `FINAL_RETRYABLE`；复用verified staging |
+| 其他final txn明确aborted | cleanup staging |
 | final txn unknown | 保留全部owner；Reconcile |
 | GC删除已commit旧source | 正常，不由Lifecycle干预 |
 
@@ -2374,8 +2398,8 @@ block-streaming Reader完成认证。
 - overlapping duplicate Commit由TxnService mutex串行，只有一个storage HandleCommit执行；
 - terminal后迟到duplicate：deadline后被拒绝；已提交source不exact时不读Booking、不mutation、
   返回`LIFECYCLE_RECONCILE_REQUIRED`；
-- Lifecycle commit admission饱和时在创建内部TAE txn前立即`RESOURCE_BUSY`；无waiter，
-  permit跨G1/G2一次获取并exactly-once释放；
+- Lifecycle commit admission饱和时在创建内部TAE txn前立即
+  `LIFECYCLE_RESOURCE_BUSY`；无waiter，permit跨G1/G2一次获取并exactly-once释放；
 - 只有实验证明storage HandleCommit可并行执行同一external txn时，才测试并启用有界
   registry；
 - Dataset/Receipt存在但Lifecycle tag缺失，以及反向缺失，整个事务都失败；
@@ -2464,4 +2488,7 @@ block-streaming Reader完成认证。
 28. Dataset/Receipt/Restore chunk只写transaction ID；真实CommitTS由Reconciler观测并
     持久化到Archive Root，未知时禁止Purge。
 29. Feature Guard只属于已绑定或仍在收敛的表；首次Bind/依赖竞态复用现有
-    `mo_tables`行锁，未绑定普通DDL不创建Guard。
+    `mo_tables`行锁，未绑定普通DDL不创建Guard；容量上限只在tenant account内精确保证。
+30. CN finalization permit必须先于`VERIFIED -> FINALIZING`获取；TN busy只在明确
+    `LIFECYCLE_RESOURCE_BUSY + ABORTED + no Receipt/Dataset`时进入有界`FINAL_RETRYABLE`，
+    复用immutable staging，其余abort清理、unknown只对账。

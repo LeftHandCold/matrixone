@@ -592,7 +592,7 @@ Hard limit：
 
 - 不 claim 新 child；
 - pre-final child 安全 cancel；
-- 已进入 `FINALIZING/COMMIT_UNKNOWN` 的事务只做对账；
+- 已进入 `FINALIZING/FINAL_RETRYABLE/COMMIT_UNKNOWN` 的事务只做对账或受限 final retry；
 - Cleanup/Reconcile 保留资源。
 
 所有积累项必须有 finite release-profile 值；`0 = unlimited` 非法。

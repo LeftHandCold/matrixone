@@ -191,7 +191,7 @@ WHERE account_incarnation = ?
 affected rows 必须为 1；否则事务 abort 并重做准入检查。
 
 Guard不是全表dependency registry。只有Lifecycle Binding仍占有功能，或Unbind后仍有
-active child、`FINALIZING/COMMIT_UNKNOWN`需要收敛时才允许存在；ERROR/PAUSED状态仍属于
+active child、`FINALIZING/FINAL_RETRYABLE/COMMIT_UNKNOWN`需要收敛时才允许存在；ERROR/PAUSED状态仍属于
 未解除的Binding，也继续占有Guard。DROP TABLE完成owner tombstone/fence后由Root接管
 Cleanup，不需要保留tenant Guard。
 
@@ -201,19 +201,22 @@ Lifecycle Bind和所有不兼容DDL/依赖创建先获取相同的`mo_tables`逻
 table DDL lock关闭，不依赖给未绑定表预建Guard。多表操作按logical table identity稳定
 排序加锁；Guard只有在Binding和全部未决child收敛后才能删除。
 
-`max-bound-tables`的准入计数就是权威Guard行数，而不是只数`ACTIVE Binding`：
+`max-bound-tables-per-account`的准入计数就是当前account incarnation的权威Guard行数，
+而不是只数`ACTIVE Binding`：
 
 ```text
-COUNT(authoritative Feature Guard rows)
-<= max-bound-tables
+COUNT(authoritative Feature Guard rows WHERE account_incarnation = current)
+<= max-bound-tables-per-account
 ```
 
 因此Unbind卡在unknown child时仍占用一个名额，新Bind在同一权威计数达到上限时返回
 `LIFECYCLE_BINDING_CAPACITY`，不能通过“先Unbind一批旧表、再Bind新表”制造无界Guard。
-Bind先取得仅用于Lifecycle Bind的cluster-scoped capacity lock，再取得table DDL lock，
-在capacity lock内分页计算最多1000行的Guard权威计数并持锁到Bind事务终态；锁顺序固定为
-`capacity -> logical table identity`。该锁不进入普通DDL、DML、查询或Merge路径，获取
-失败、超时或计数不确定都拒绝新Bind。
+Bind先取得仅用于该account的capacity lock，再取得table DDL lock，在capacity lock内分页
+计算本account最多1000行的Guard权威计数并持锁到Bind事务终态；锁顺序固定为
+`account capacity -> logical table identity`。该锁不进入普通DDL、DML、查询或Merge路径，
+获取失败、超时或计数不确定都拒绝新Bind。跨account的Binding总量不是事务不变量；集群
+运行中的Discovery/child/rewrite/final commit仍由Scheduler和TN admission硬限制，首个GA
+只认证集群总计1000张绑定表的容量。
 同一logical table在旧Guard收敛删除前禁止重新Bind。DROP TABLE在同一DROP事务写入
 system-owned owner tombstone并fence旧attempt后，可以随tenant Catalog级联删除Guard；
 后续外部对象清理由Root接管，不再依赖tenant Guard。
@@ -737,6 +740,10 @@ CREATE TABLE mo_catalog.mo_lifecycle_job_control (
     entry_digest            BINARY(32) NULL,
     final_txn_id            VARBINARY(128) NULL,
     final_txn_status        TINYINT UNSIGNED NOT NULL,
+    final_generation        INT UNSIGNED NOT NULL,
+    final_prepare_deadline  TIMESTAMP(6) NULL,
+    final_retry_deadline    TIMESTAMP(6) NULL,
+    last_final_error_code   VARCHAR(64) NULL,
     lease_owner_cn          VARCHAR(64) NULL,
     lease_expire_at         TIMESTAMP(6) NULL,
     heartbeat_at            TIMESTAMP(6) NULL,
@@ -802,6 +809,11 @@ VERIFIED
 
 FINALIZING
   -> COMMITTED | ABORTED | COMMIT_UNKNOWN
+  -> FINAL_RETRYABLE        # only confirmed aborted + LIFECYCLE_RESOURCE_BUSY
+
+FINAL_RETRYABLE
+  -> FINALIZING             # new external txn, same verified staging
+  -> ABORTED                # retry budget/source validation exhausted
 
 COMMIT_UNKNOWN
   -> COMMITTED | ABORTED | MANUAL_RECONCILE_REQUIRED
@@ -857,6 +869,10 @@ CREATE TABLE mo_catalog.mo_lifecycle_cleanup_roots (
     final_txn_id            VARBINARY(128) NULL,
     final_entry_digest      BINARY(32) NULL,
     final_txn_status        TINYINT UNSIGNED NOT NULL,
+    final_generation        INT UNSIGNED NOT NULL,
+    final_prepare_deadline  TIMESTAMP(6) NULL,
+    final_retry_deadline    TIMESTAMP(6) NULL,
+    last_final_error_code   VARCHAR(64) NULL,
     observed_commit_ts      VARBINARY(16) NULL,
     lease_owner_cn          VARCHAR(64) NULL,
     lease_expire_at         TIMESTAMP(6) NULL,
@@ -923,8 +939,13 @@ VERIFIED
 FINALIZING
   -> PUBLISHED             Archive committed + matching Receipt/Dataset
   -> POST_COMMIT_CLEANUP   TTL Rewrite committed + matching Receipt
-  -> DELETE_PENDING        explicitly aborted
+  -> FINAL_RETRYABLE       confirmed aborted + LIFECYCLE_RESOURCE_BUSY only
+  -> DELETE_PENDING        explicitly aborted but not FINAL_RETRYABLE-eligible
   -> FINALIZING            in-doubt
+
+FINAL_RETRYABLE
+  -> FINALIZING            new final generation; staging remains immutable VERIFIED
+  -> DELETE_PENDING        retry budget/source validation exhausted
 
 PUBLISHED
   -> DELETE_PENDING        retention/PURGE/owner drop
@@ -952,6 +973,10 @@ CLEANED
 不可转换：
 
 - `FINALIZING -> DELETE_PENDING` 仅凭 timeout；
+- `FINALIZING -> FINAL_RETRYABLE` 在Txn status unknown、Receipt/Dataset存在、或错误不是
+  `LIFECYCLE_RESOURCE_BUSY`时；
+- `FINAL_RETRYABLE -> FINALIZING` 不增加`final_generation`、不更换tenant final txn ID或
+  不重新校验source/reservation/protection；
 - `DELETING -> PUBLISHED`；
 - `CLEANED -> UPLOADING`；
 - `TRANSFERRED -> DELETE_PENDING`；
@@ -1052,7 +1077,8 @@ Cleanup Root。复用的TAE Merge txn entry只借用这些文件，不能在
 
 ```text
 committed + matching Receipt -> live/range VERIFIED -> TAE_OWNED
-explicitly aborted           -> live/range/booking -> DELETE_PENDING
+FINAL_RETRYABLE-eligible busy abort -> live/range/booking remain VERIFIED
+other explicitly aborted     -> live/range/booking -> DELETE_PENDING
 unknown                      -> 保持 VERIFIED
 ```
 
@@ -1445,6 +1471,8 @@ ClaimAttemptInSystemTxn(...)
 Dataset PUBLISHED -> exactly one matching Root and Receipt
 Root PUBLISHED -> matching Dataset/Receipt or owner already dropped; observed_commit_ts non-null
 Root FINALIZING -> final_txn_id and entry_digest non-empty
+Root/Attempt FINAL_RETRYABLE -> latest final txn is ABORTED, Receipt/Dataset absent,
+  last_final_error_code == LIFECYCLE_RESOURCE_BUSY, all staging children VERIFIED
 Root DELETING/CLEANED -> no new ACTIVE lease at same/higher access generation
 Root POST_COMMIT_CLEANUP -> matching Receipt; live/range TAE_OWNED
 Root TRANSFERRED -> matching Receipt; live/range TAE_OWNED; booking DELETED

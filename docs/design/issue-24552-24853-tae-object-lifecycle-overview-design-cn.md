@@ -471,7 +471,7 @@ PartitionState/Metadata
 | 组件 | 职责 |
 |---|---|
 | Policy/Binding | 保存表级动作、生命周期列、阈值和 Profile version |
-| table DDL lock + Feature Guard | 现有`mo_tables`行锁关闭首次Bind竞态；Guard只fence已绑定/收敛中的表与final commit，active+reconciling总量受1000硬上限约束 |
+| table DDL lock + Feature Guard | 现有`mo_tables`行锁关闭首次Bind竞态；Guard只fence已绑定/收敛中的表与final commit，每账户 active+reconciling 总量受 1000 硬上限约束；全集群运行量由 Scheduler/TN 限流 |
 | Object Discovery | 分页读取当前TAE Metadata，只持久化每表cursor和有界Candidate |
 | Planner | 计算 cutoff、Whole/Mixed 候选、alignment ratio 和成本 |
 | Scheduler | 只调度 Binding Registry，执行公平性和硬预算 |
@@ -479,7 +479,7 @@ PartitionState/Metadata
 | Archive Writer | 写 Parquet/ZSTD、checksum、Manifest 和 sidecar |
 | Rewrite Executor | 单次读取分流Archive行和live TAE Object，复用mergesort |
 | Reservation/Protection | 协调exact Object普通Merge并保护source Data/Tombstone文件 |
-| Finalizer | 执行短事务、条件校验、Dataset publish和活动数据退休 |
+| Finalizer | 先取得有界 Lifecycle finalization permit；执行短事务、条件校验、Dataset publish和活动数据退休 |
 | Attempt/Cleanup Registry | 管理 Job、事务和外部对象的 system-owned 所有权 |
 | Sweeper | 收敛 staging、DROP cascade、Purge 和迟到 PUT |
 | Restore Service | 校验 Dataset，写隐藏 staging table，原子发布新表 |
@@ -1269,7 +1269,10 @@ REGISTERED
        -> PUBLISHED -> DELETE_PENDING -> DELETING
                                       -> CLEANED | DELETE_FAILED
        -> POST_COMMIT_CLEANUP -> TRANSFERRED -> bounded audit GC
-       -> DELETE_PENDING              # explicitly aborted
+       -> FINAL_RETRYABLE              # only typed busy + confirmed abort + no Receipt/Dataset
+            -> FINALIZING              # new tenant txn, same verified staging
+            -> DELETE_PENDING          # retry budget/source validation exhausted
+       -> DELETE_PENDING               # other explicitly aborted
 ```
 
 不能等到 Dataset publish 时才创建 Root，否则：
@@ -1361,8 +1364,10 @@ write-ahead ownership record，不是 Dataset 的可见性真相。
 提交前顺序固定为：
 
 ```text
-allocate normal tenant transaction identity
-  -> CAS Root VERIFIED -> FINALIZING
+try acquire Lifecycle CN finalization permit
+  -> unavailable: Root remains VERIFIED; bounded-jitter requeue; no tenant transaction
+  -> allocate normal tenant transaction identity
+  -> CAS Root VERIFIED/FINAL_RETRYABLE -> FINALIZING
        freeze transaction identity/final-entry digest/executor epoch
   -> wait Root CAS committed
   -> submit tenant final transaction
@@ -1372,6 +1377,16 @@ allocate normal tenant transaction identity
 最终事务必须 CAS tenant-owned Binding/active child generation/attempt/epoch，以
 fence stale executor。Root 进入 `FINALIZING` 后，Sweeper 在事务结果权威明确前
 永远不能删除 Payload。
+
+CN finalization permit 只属于 Lifecycle 控制面，普通事务、普通 Merge 和 Provider I/O 都
+不获取它；Root 取得 permit 前绝不离开 `VERIFIED`。TN 仍在创建内部 TAE txn 前做
+TryAcquire 作为硬保险，失败返回类型化 `LIFECYCLE_RESOURCE_BUSY`。该 tenant transaction
+会按现有 MO 语义明确 abort；只有确认其为 `ABORTED`、一致读确认 Receipt/Dataset 均不存在、
+Root 全部 child 仍 `VERIFIED`、错误码确为该 busy 且未超过 10 分钟/3 代预算，Reconciler
+才可将 Root/Attempt 转为 `FINAL_RETRYABLE`。下一代使用新的 tenant txn ID，重新验证
+source/reservation/protection/Binding/Guard 后复用 immutable staging，不重新 PUT/readback。
+response lost、`COMMIT_UNKNOWN`、错误分类缺失、source 不 exact 或任何其他 abort 均不能走
+此路径，仍按 unknown/cleanup 收敛。
 
 Root/Attempt 的 system-registry 事务必须先提交并释放全部锁，之后 tenant final
 transaction 才能获取正常 txn/Guard/Dataset 锁；两类事务之间不跨调用持锁。Root CAS
@@ -1467,9 +1482,11 @@ txn service 明确 committed
     -> COMMITTED
 
 txn service 明确 aborted
-    -> Archive/Rewrite: CAS Root FINALIZING -> DELETE_PENDING
-    -> TTL Whole/EMPTY_ARCHIVE: CAS Attempt Control FINALIZING -> ABORTED
-    -> ABORTED，允许清理未发布 staging
+    -> only typed busy + all final-retry preconditions:
+         CAS Root/Attempt FINALIZING -> FINAL_RETRYABLE; preserve VERIFIED staging
+    -> other Archive/Rewrite: CAS Root FINALIZING -> DELETE_PENDING
+    -> other TTL Whole/EMPTY_ARCHIVE: CAS Attempt Control FINALIZING -> ABORTED
+    -> only the latter cases allow cleanup of unpublished staging
 
 txn service 仍 in-doubt
     -> COMMIT_UNKNOWN
@@ -1493,8 +1510,8 @@ automatic reconciliation exceeds operational age
 Reconciler 每次只进行有 deadline 的事务状态查询和一致性 Catalog 读取。事务服务
 明确 committed 后，还必须在正常一致性事务中读到匹配的 Receipt，非空 Archive
 还要读到匹配 Dataset，再推进 Root/Attempt Control；如果 Archive owner 已经明确
-DROP，则可以直接把 Root 推进到 `DELETE_PENDING`。明确 aborted 后才允许清理
-未发布 staging。事务服务长期无权威结果时，系统保持 fail closed，由 hard quota
+DROP，则可以直接把 Root 推进到 `DELETE_PENDING`。只有不满足`FINAL_RETRYABLE`全部条件的
+明确 aborted 后才允许清理未发布 staging。事务服务长期无权威结果时，系统保持 fail closed，由 hard quota
 阻止新的不确定项继续增长。
 
 Receipt 至少记录：
@@ -1879,7 +1896,8 @@ Seal失败仍为nil。Seal后，外部Write/statement/snapshot/adjust类入口�
 
 - 常见单表：1 TiB；
 - 认证单表：10 TiB；
-- 显式绑定表：最多 1000；
+- 每账户显式绑定/收敛表：最多 1000；
+- 集群已绑定表：约 500～1000 是认证容量和放量门槛，不是跨租户 Catalog 事务不变量；
 - 集群普通表可达几十万，但不进入 Lifecycle 日常扫描。
 
 ### 23.2 必须有界的积累项
@@ -2144,13 +2162,14 @@ SHOW LIFECYCLE BLOCKERS
 | Gate A | Binding、Guard、Metadata Planner、Dry-run | 无 PUT、无退休 |
 | Gate B | Discovery、Exact Reader、Export-only、Parquet/Manifest | 只写 staging/export，不退休 |
 | Gate C | Attempt/Cleanup、reservation/protection、tagged Lifecycle entry和Rewrite原型 | 测试环境退休 |
-| Gate D | Whole、小Mixed DELETE、Mixed Rewrite、十项P0、故障矩阵 | 受控试点 |
+| Gate D | Whole、TTL 小Mixed DELETE、Mixed Rewrite、十项P0、故障矩阵 | 受控试点 |
 | Gate E | 1/10 TiB、升级、运维、成本、客户试点 | Commercial GA |
 
 放量：
 
 ```text
-50 -> 200 -> 500 -> 1000 bound tables
+Whole -> TTL 小 Mixed -> Mixed Rewrite -> Archive 小 Mixed
+50 -> 200 -> 500 -> 1000 certified bound tables
 ```
 
 每一级观察：

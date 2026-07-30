@@ -122,6 +122,8 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | MIX-014 | commit response lost | 不重复Delete/insertDataset |
 | MIX-015 | TTL no-op | 无Receipt/无DELETE |
 | MIX-016 | Archive no selected rows | 无空Dataset/Root |
+| MIX-017 | Archive Small Mixed CN permit不可用 | 不创建可写SI txn/Root；仅有界jitter重排 |
+| MIX-018 | Archive Small Mixed Provider或SI预算超限 | 第一条Delete前整体rollback并转Rewrite；不延长5分钟窗口 |
 
 ### 4.3 关键失败判定
 
@@ -188,6 +190,7 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WIR-048 | token签发后statement rollback/workspace generation变化 | Seal拒绝，不能复用旧token |
 | WIR-049 | unknown EntryType + nil Batch到Safety TN | Batch解析前返回unsupported；不panic、不提交其他Entry |
 | WIR-050 | capability heartbeat/HAKeeper/ClusterDetails任一层缺失、过期或Replica变化 | authoritative refresh得到unsupported，CN不发送 |
+| WIR-051 | TN Lifecycle permit busy | 内部TAE txn创建前返回`LIFECYCLE_RESOURCE_BUSY`；`TxnError.Error/Code`保留原始分类 |
 
 ### 5.2 Condition
 
@@ -320,7 +323,7 @@ Scheduler skip只是性能优化；普通`OpCommitMerge`和tagged Lifecycle entr
 | ROOT-022 | Archive Rewrite committed | 只删booking child，不改变PUBLISHED或删除Payload |
 | ROOT-023 | NeedRetry触发PrepareRollback | live staging物理文件仍存在 |
 | ROOT-024 | retry最终commit | Catalog指向的每个created Object可全读 |
-| ROOT-025 | final明确aborted | 只有Root Sweeper删除live/booking |
+| ROOT-025 | final明确aborted且不满足final retry条件 | 只有Root Sweeper删除live/booking |
 | ROOT-026 | final unknown | Merge entry与Root均不删除物理staging |
 | ROOT-027 | Archive Rewrite双namespace | Payload走archive identity，live/booking走TAE identity |
 | ROOT-028 | Root Object kind/namespace错配 | side effect前拒绝并触发invariant告警 |
@@ -330,6 +333,11 @@ Scheduler skip只是性能优化；普通`OpCommitMerge`和tagged Lifecycle entr
 | ROOT-032 | live=0退化Whole | 无TAE range/live/booking，Whole正常提交 |
 | ROOT-033 | expired=0且已写live staging | no-op；Root清理，不转TAE_OWNED |
 | ROOT-034 | Root Object不同kind都用ordinal 0 | composite主键无冲突、分页稳定 |
+| ROOT-035 | CN finalization permit不可用 | Root保持VERIFIED，不创建tenant txn、不删除或重PUT staging |
+| ROOT-036 | TN busy + txn ABORTED + 无Receipt/Dataset | 仅一次CAS进入`FINAL_RETRYABLE`，Root child保持VERIFIED |
+| ROOT-037 | FINAL_RETRYABLE新一代 | 新txn ID、generation+1、重新验证source/protection；不重PUT/readback |
+| ROOT-038 | busy response lost/unknown或错误分类缺失 | 保持FINALIZING并Reconcile，绝不创建新txn |
+| ROOT-039 | 第3代busy、10分钟到期、source/protection失效 | 不再retry，才进入DELETE_PENDING |
 
 ### 7.2 final txn
 
@@ -345,6 +353,7 @@ Scheduler skip只是性能优化；普通`OpCommitMerge`和tagged Lifecycle entr
 | REC-008 | owner DROP duringunknown | 仍对账原txn |
 | REC-009 | duplicate Reconciler | CAS单一收敛 |
 | REC-010 | restart | txn ID/digest完整恢复 |
+| REC-011 | aborted + resource busy + 全部retry前置成立 | `FINAL_RETRYABLE`；其余aborted仍DELETE_PENDING/ABORTED |
 
 ### 7.3 Delete安全
 
@@ -661,10 +670,13 @@ TRUNCATE/ALTER/DROP
 - Bind先提交后依赖看到Binding/Guard并拒绝；
 - 多表FK按稳定logical table identity顺序加锁，无新增死锁；
 - Unbind在active/unknown child收敛前不删除Guard，收敛后可回收。
-- `max-bound-tables=1000`时权威Guard总行数不能超过1000；ERROR/PAUSED和卡在unknown的
-  Unbind都继续占名额，不能继续Bind第1001张表；
-- 并发Bind经cluster-scoped capacity lock串行，不能超卖名额；capacity锁超时、Owner失联
-  或权威计数不确定时新Bind fail closed，锁释放后可以重新准入；
+- `max-bound-tables-per-account=1000`时，同一account incarnation的权威Guard总行数不能
+  超过1000；ERROR/PAUSED和卡在unknown的Unbind都继续占名额，不能继续Bind第1001张表；
+- 并发Bind经account-scoped capacity lock串行，不能超卖该account名额；capacity锁超时、
+  Owner失联或本account权威计数不确定时新Bind fail closed，锁释放后可以重新准入；
+- 两个account各自800个Guard可以同时存在；它不是跨租户事务错误。集群1000绑定表只作为
+  release certification容量边界，Discovery/child/rewrite/final commit仍由全局Scheduler/TN
+  admission硬限制；
 - old Guard删除前同一logical table不能重新Bind；收敛删除后容量名额可复用；
 - DROP TABLE成功写owner tombstone/fence后可级联删除tenant Guard，Root cleanup不依赖
   Guard存在。
@@ -751,9 +763,9 @@ case：
 3. 发布Retirement Release CN/TN；
 4. authoritative query exact shard protocol versions；
 5. advance retirement protocol；
-6. Whole enable，随后Small Mixed/Rewrite独立enable；
+6. Whole enable，随后TTL Small Mixed、Rewrite、Archive Small Mixed分别独立enable；
 7. rolling restart；
-8. kill switch并等待`FINALIZING/COMMIT_UNKNOWN`收敛；
+8. kill switch并等待`FINALIZING/FINAL_RETRYABLE/COMMIT_UNKNOWN`收敛；
 9. downgrade到Safety Release；
 10. 不允许降到pre-safety或破坏Catalog/replay的版本。
 
@@ -842,7 +854,7 @@ continuous invariant checker
 - Candidate/Summary/backlog有界；
 - Tombstone/Merge/GC恢复到low watermark；
 - goroutine/mpool/temp file无趋势泄漏；
-- p99普通查询/Merge回归在批准阈值内。
+- 量化普通MO无影响门槛全部满足。
 
 ## 18. 性能回归
 
@@ -860,10 +872,20 @@ continuous invariant checker
 普通热路径无Lifecycle Catalog lookup
 无逐Object Lifecycle Catalog写
 无新增Provider请求
-性能差异在噪声/批准阈值内
+lifecycleFinalize == nil path: 0 additional alloc/op
+ordinary commit: 0 Lifecycle permit acquire / 0 Lifecycle Catalog access
+ordinary known Entry parser: 0 additional alloc/op; CPU/op regression <= 1%
+ordinary DML throughput regression <= 2%; p99 latency regression <= 3%
+Merge throughput/checkpoint duration/GC duration/logtail apply p99 regression <= 3%
+steady-state CN/TN memory regression <= 1%
+heartbeat/store metadata serialized size increase <= 8 bytes per TN record
 ```
 
 绑定表正常DML允许Guard只进入DDL/依赖控制面，不进入每行DML。
+
+每项以同一硬件、相同数据集和相同配置做至少5次paired run；使用基线与feature-off/no-
+Binding的95%置信区间上界判定，不以单次“噪声”主观签字。任何超线必须保持retirement关闭，
+给出归因和新的认证证据后才能调整阈值。
 
 ## 19. 证据产物
 

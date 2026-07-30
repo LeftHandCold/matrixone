@@ -141,7 +141,7 @@ Root REGISTERED/UPLOADING 丢失 writer executor epoch
 
 - 同一executor epoch内的I/O retry；或
 - Root已完整 `VERIFIED`，所有Root Object均VERIFIED、没有未收敛multipart/PUT，
-  新worker只接手final transaction；
+  新worker只接手final transaction或已确认aborted的`FINAL_RETRYABLE` final generation；
 
 才允许继续使用同一Root。`FINALIZING` 只能由Reconciler按原txn对账，不能接管上传。
 
@@ -276,11 +276,16 @@ Lifecycle Rewrite必须给复用的Merge txn entry传入
 Archive：
 
 ```text
-allocate tenant final txn
-  -> Root CAS VERIFIED -> FINALIZING
+acquire CN/Scheduler finalization permit
+  -> unavailable: Root remains VERIFIED; bounded jitter reschedule; no tenant txn
+  -> available: allocate tenant final txn
+  -> Root CAS VERIFIED/FINAL_RETRYABLE -> FINALIZING
        final_txn_id
        final_entry_digest
        executor_epoch
+       final_generation
+       final_prepare_deadline
+       final_retry_deadline
   -> commit system txn
   -> tenant final txn may retire
 ```
@@ -288,11 +293,16 @@ allocate tenant final txn
 TTL Whole：
 
 ```text
-allocate tenant final txn
-  -> Attempt Control CAS ... -> FINALIZING
+acquire CN/Scheduler finalization permit
+  -> unavailable: Attempt remains VERIFIED; bounded jitter reschedule; no tenant txn
+  -> available: allocate tenant final txn
+  -> Attempt Control CAS VERIFIED/FINAL_RETRYABLE -> FINALIZING
        final_txn_id
        final_entry_digest
        executor_epoch
+       final_generation
+       final_prepare_deadline
+       final_retry_deadline
   -> commit system txn
   -> tenant final txn may retire
 ```
@@ -311,6 +321,11 @@ staging Object/transfer booking；不能只依赖可随 tenant 删除的 Attempt
 - 明确rollback尚未写入的tenant txn；
 - 不退休；
 - Root保持原Owner。
+
+CN finalization permit是对TN permit的前置削峰，不替代TN `TryAcquire`。它只在Lifecycle
+Scheduler控制面持有，在tenant commit得到明确结果或进入unknown后立即释放；普通事务、普通
+Merge和Provider I/O不接触该permit。Root/Attempt在等待CN permit期间保持`VERIFIED`，所以
+不会因为后台拥塞误删已经校验的Archive staging。
 
 ## 8. 提交结果分类
 
@@ -362,7 +377,36 @@ Txn GetStatus == ABORTED
 AND consistent tenant read sees no matching Receipt/Dataset
 ```
 
-然后：
+先判断是否满足唯一允许复用staging的重试条件：
+
+```text
+Root/Attempt state == FINALIZING
+AND Txn GetStatus == ABORTED
+AND consistent tenant read sees no matching Receipt/Dataset
+AND last_final_error_code == LIFECYCLE_RESOURCE_BUSY
+AND final_generation < 3
+AND now < final_retry_deadline
+AND all Root children remain immutable VERIFIED
+```
+
+满足时：
+
+```text
+Root/Attempt FINALIZING -> FINAL_RETRYABLE
+  -> release worker + CN finalization permit
+  -> later revalidate exact source/reservation/protection/Binding/Guard
+  -> create a new tenant final txn ID
+  -> final_generation + 1
+  -> FINAL_RETRYABLE -> FINALIZING
+```
+
+该路径不重读、不重PUT、不重做Provider readback；只复用原Root下已经验证的Parquet/Manifest、
+live staging和booking。每代的`final_prepare_deadline`可重新计算，但总
+`final_retry_deadline`绝不续期。旧txn ID只在Txn GetStatus和审计记录中保留，不能用于新txn。
+response lost、Txn status unknown、Receipt/Dataset存在、source/protection失效、错误分类缺失或
+不是`LIFECYCLE_RESOURCE_BUSY`都不进入此路径。
+
+其余明确aborted：
 
 ```text
 Archive Root -> DELETE_PENDING
@@ -455,7 +499,7 @@ pkg/lifecycle/cleanup/
 每分钟由TaskService唤醒一个逻辑Reconciler。每轮：
 
 ```text
-query state in (FINALIZING, COMMIT_UNKNOWN, MANUAL_RECONCILE_REQUIRED)
+query state in (FINALIZING, FINAL_RETRYABLE, COMMIT_UNKNOWN, MANUAL_RECONCILE_REQUIRED)
 AND next_action_at <= now
 ORDER BY next_action_at, attempt_id
 LIMIT 1000
@@ -475,7 +519,7 @@ LIMIT 1000
 Root进入`DELETE_PENDING`的合法原因：
 
 1. Archive/Rewrite attempt明确aborted/cancelled且未发布；
-2. final transaction明确aborted；
+2. final transaction明确aborted，且不满足`FINAL_RETRYABLE`的全部条件；
 3. Dataset达到purge_eligible且tenant Dataset已CAS（Archive payload）；
 4. table/database/account owner dropped；
 5. Restore/verify前的staging失效；

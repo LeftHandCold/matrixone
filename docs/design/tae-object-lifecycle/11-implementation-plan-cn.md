@@ -217,12 +217,13 @@ Bind：
 4. 有ACTIVE/reconciling Binding时读取Guard并拒绝或fence；
 5. 多表操作按logical table identity排序加锁。
 
-不能在锁外先做“没有Binding”快照检查。`max-bound-tables`按权威Guard行数计数，包含
-ERROR/PAUSED等未解除Binding和DISABLING/reconciling owner；达到1000后新Bind fail
-closed。Bind使用cluster-scoped capacity lock串行容量准入，锁顺序固定为
-`capacity -> logical table identity`，并在锁内分页计算最多1000行的Guard权威计数、持有
-到Bind事务终态。该锁只进入Bind控制面，不进入普通DDL、DML、查询或Merge；获取失败、
-超时或计数不确定时拒绝新Bind。
+不能在锁外先做“没有Binding”快照检查。`max-bound-tables-per-account`按当前account
+incarnation的权威Guard行数计数，包含ERROR/PAUSED等未解除Binding和
+DISABLING/reconciling owner；达到1000后新Bind fail closed。Bind使用account-scoped
+capacity lock串行容量准入，锁顺序固定为`account capacity -> logical table identity`，并在锁内
+分页计算本account最多1000行的Guard权威计数、持有到Bind事务终态。该锁只进入Bind控制面，
+不进入普通DDL、DML、查询或Merge；获取失败、超时或计数不确定时拒绝新Bind。集群1000
+绑定表是认证容量而不是跨account事务不变量；全局运行中工作量由Scheduler/TN admission限制。
 Unbind只有在active child和unknown final transaction收敛后才能删除Guard，且旧Guard
 删除前禁止同一logical table重新Bind。DROP TABLE在owner tombstone/fence与Catalog删除
 同事务成立后可删除tenant Guard，Root继续负责异步Provider cleanup。
@@ -474,6 +475,12 @@ deadline `D`，把它同时冻结到Root并设为commit context deadline，生�
 bytes/digest、Root、Booking、最大内部generation和累计预算；每个TAE generation从
 Booking重建私有Catalog node、TransferTable和txn entry，严禁复用上一代指针。
 
+在分配tenant final txn前，Finalizer先`TryAcquire` CN/Scheduler finalization permit。
+拿不到permit时Root/Attempt保持`VERIFIED`并有界jitter重调度，不创建tenant txn、不删
+staging。拿到permit后才CAS `VERIFIED/FINAL_RETRYABLE -> FINALIZING`，冻结本代txn ID、
+`final_generation`、最多60秒的`final_prepare_deadline`和首次finalize确定的10分钟
+`final_retry_deadline`。TN permit仍是最后硬边界。
+
 生产finalizer没有合法control-only路径：Archive adapter必须先把Dataset+Receipt、
 TTL adapter必须先把Receipt加入当前workspace，成功后返回包内不可构造、绑定txn ID、
 attempt、pair digest和workspace generation的`LifecycleCatalogPairToken`。Finalizer调用
@@ -542,6 +549,9 @@ pkg/catalog/tuplesParse.go（或等价iterator入口）
 
 pkg/vm/engine/tae/rpc/handle_lifecycle.go
   parse/validate/register
+
+pkg/common/moerr/error.go
+  Lifecycle专用 LIFECYCLE_RESOURCE_BUSY；不改变普通TxnService的ABORTED语义
 ```
 
 context/control/token不进入普通dump/compact/sort/PK dedup/statement offset/Batch GC；
@@ -563,7 +573,7 @@ restart后旧事务缺页必须RW/WW conflict。
 validate absolute request deadline
 pre-scan max-one Lifecycle tag
 TryAcquire bounded Lifecycle commit-admission permit
-  busy -> RESOURCE_BUSY before GetOrCreateTxnWithMeta
+  busy -> LIFECYCLE_RESOURCE_BUSY before GetOrCreateTxnWithMeta
 validate protocol/capability/digest
 validate authoritative frozen ServiceID/ShardID/ReplicaID route
 validate table/schema/Guard generation
@@ -657,7 +667,7 @@ Whole Archive：
 reservation/protection
   -> Exact Reader at S
   -> Parquet/ZSTD + readback VERIFIED
-  -> Root FINALIZING with txn identity/digest
+  -> CN finalization permit, then Root FINALIZING with txn identity/digest
   -> Dataset + Receipt + tagged LifecycleCommit(WHOLE_ARCHIVE)
 ```
 
@@ -672,13 +682,16 @@ abort/re-export。FileService source delete交给existing GC。
 ```text
 one bounded writable SI transaction
   -> exact Reader at txn Snapshot
-  -> optional Archive PUT/readback
+  -> optional Archive PUT/readback (Archive hard: txn <= 5m, Provider total <= 3m,
+       selected bytes <= 256MiB)
   -> Relation.Delete(RowID + actual delete key)
   -> Dataset/Receipt in same txn
 ```
 
-必须共享普通 DELETE 的单 PK、复合 PK、fake PK 编码。预测超限时在第一次 Delete 前
-完整 rollback，并重plan为 Rewrite。
+必须共享普通 DELETE 的单 PK、复合 PK、fake PK 编码。Archive模式由已认证Provider吞吐
+预估或运行时预算触发超限时，在第一次Delete前完整rollback、清理staging并重plan为Rewrite；
+不得延长SI transaction。TTL Small Mixed保持原预算。Archive Small Mixed在Whole、TTL
+Small Mixed和Rewrite分别认证后单独打开。
 
 ### D3. 中/大 Mixed Rewrite
 
@@ -827,7 +840,7 @@ pkg/vm/engine/tae/iface/txnif/memo.go
 
 pkg/vm/engine/tae/rpc/handle.go
   pre-scan max-one tag before internal TAE txn creation
-  TryAcquire Lifecycle permit; busy returns RESOURCE_BUSY without waiter
+  TryAcquire Lifecycle permit; busy returns typed LIFECYCLE_RESOURCE_BUSY without waiter
   own LifecycleReplayBudget across internal retry generations
   reject unknown EntryType before Batch conversion
 
@@ -871,7 +884,11 @@ AND Archive sees matching Dataset/Manifest root
 - normal TAE/WAL/GC 接管 live/source Object。
 - runtime transfer page仍由现有transfer table TTL管理，不是WAL replay对象。
 
-明确 aborted 才允许 Root -> `DELETE_PENDING`。仍 unknown 时保留
+明确aborted只有不满足`FINAL_RETRYABLE`全部条件时才允许Root -> `DELETE_PENDING`。明确
+`LIFECYCLE_RESOURCE_BUSY + ABORTED + no Receipt/Dataset`且Root child全为VERIFIED、仍在
+3代/10分钟窗口内时，Root/Attempt -> `FINAL_RETRYABLE`；新一代先重新验证source、
+reservation/protection、Binding/Guard，再用新tenant txn ID回到FINALIZING，复用immutable
+staging且不重新PUT/readback。仍unknown时保留
 reservation/protection、Root 和 staging，释放 worker slot并进入 Reconciler。
 Dataset/Receipt/Restore chunk不在原事务中填写CommitTS；Root的`observed_commit_ts`
 为NULL时禁止Purge，不能用worker wall clock或永久依赖Txn GetStatus替代持久化。
@@ -968,6 +985,8 @@ Candidate table/account/cluster limit
 Reader batch/memory limit
 max certified Block read bytes and pre-DoMergeAndWrite task memory token
 small Mixed rows/ratio/delete-key/WAL limit
+Archive Small Mixed: txn 5m / Provider PUT+readback 3m / selected bytes 256MiB
+finalization permit <= TN admission; final generation <= 3; retry window <= 10m
 Rewrite single-source/live/dense-transfer/external-booking/delta/staging limit
 Rewrite 24h/7d attempted/committed/aborted bytes and amplification threshold
 Provider I/O/deadline/concurrency limit
@@ -1001,7 +1020,7 @@ reservation/protection lease and renew interval
 - 10 TiB 单表持续 Insert/Merge 七天；
 - 高时间局部性、1%边界 Mixed、高度乱序三种 layout；
 - “几乎全部存活”的最大 Rewrite；
-- 1000 Binding、公平调度和无全局热点；
+- 每account 1000 Binding准入、公平调度和无全局热点；集群1000绑定表认证容量；
 - 真实支持的 S3/OSS/COS/S3-compatible Provider；
 - rolling upgrade/downgrade fence；
 - 30 天 soak；
@@ -1016,12 +1035,13 @@ Safety Release:
 
 Retirement Release:
   Whole: 50 -> 200 -> 500 -> 1000 bound tables
-  -> Small Mixed independent gate
+  -> TTL Small Mixed independent gate
   -> Rewrite independent gate
+  -> Archive Small Mixed independent gate
 ```
 
 任一数据不变量失败立即关闭新 retirement，继续 Cleanup/Reconcile，不扩大下一阶段。
-降级前关闭retirement并等待`FINALIZING/COMMIT_UNKNOWN`收敛；禁止降到缺少Safety
+降级前关闭retirement并等待`FINALIZING/FINAL_RETRYABLE/COMMIT_UNKNOWN`收敛；禁止降到缺少Safety
 Release unknown-entry parser的版本。
 
 ## 11. 开发依赖图
