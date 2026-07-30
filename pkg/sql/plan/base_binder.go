@@ -2044,6 +2044,7 @@ func (b *baseBinder) bindComparisonExpr(astExpr *tree.ComparisonExpr, depth int3
 
 	case tree.NOT_LIKE:
 		newExpr := tree.NewComparisonExpr(tree.LIKE, astExpr.Left, astExpr.Right)
+		newExpr.Escape = astExpr.Escape
 		return b.bindFuncExprImplByAstExpr("not", []tree.Expr{newExpr}, depth)
 
 	case tree.ILIKE:
@@ -2051,6 +2052,7 @@ func (b *baseBinder) bindComparisonExpr(astExpr *tree.ComparisonExpr, depth int3
 
 	case tree.NOT_ILIKE:
 		newExpr := tree.NewComparisonExpr(tree.ILIKE, astExpr.Left, astExpr.Right)
+		newExpr.Escape = astExpr.Escape
 		return b.bindFuncExprImplByAstExpr("not", []tree.Expr{newExpr}, depth)
 
 	case tree.IN:
@@ -2203,7 +2205,11 @@ func (b *baseBinder) bindComparisonExpr(astExpr *tree.ComparisonExpr, depth int3
 		}
 	}
 
-	return b.bindFuncExprImplByAstExpr(op, []tree.Expr{astExpr.Left, astExpr.Right}, depth)
+	args := []tree.Expr{astExpr.Left, astExpr.Right}
+	if (op == "like" || op == "ilike") && astExpr.Escape != nil {
+		args = append(args, astExpr.Escape)
+	}
+	return b.bindFuncExprImplByAstExpr(op, args, depth)
 }
 
 func (b *baseBinder) bindTupleInByAst(leftTuple *tree.Tuple, rightTuple *tree.Tuple, depth int32, isNot bool) (*plan.Expr, error) {
@@ -2331,6 +2337,8 @@ func (b *baseBinder) bindFullTextMatchExpr(astExpr *tree.FullTextMatchExpr, dept
 }
 
 func (b *baseBinder) bindFuncExprImplByAstExpr(name string, astArgs []tree.Expr, depth int32) (*plan.Expr, error) {
+	isIfNull := name == "ifnull"
+
 	// rewrite some ast Exprs before binding
 	switch name {
 	case "nullif":
@@ -2525,6 +2533,9 @@ func (b *baseBinder) bindFuncExprImplByAstExpr(name string, astArgs []tree.Expr,
 	if b.builder != nil {
 		e, err := bindFuncExprAndConstFold(b.GetContext(), b.builder.compCtx.GetProcess(), name, args)
 		if err == nil {
+			if isIfNull {
+				e.Typ.NotNullable = args[1].Typ.NotNullable || args[2].Typ.NotNullable
+			}
 			return e, nil
 		}
 		if !strings.Contains(err.Error(), "not supported") {
@@ -2535,6 +2546,9 @@ func (b *baseBinder) bindFuncExprImplByAstExpr(name string, astArgs []tree.Expr,
 		// first look for builtin func
 		builtinExpr, err := BindFuncExprImplByPlanExpr(b.GetContext(), name, args)
 		if err == nil {
+			if isIfNull {
+				builtinExpr.Typ.NotNullable = args[1].Typ.NotNullable || args[2].Typ.NotNullable
+			}
 			return builtinExpr, nil
 		}
 		if !strings.Contains(err.Error(), "not supported") {
@@ -2684,6 +2698,11 @@ func bindFuncExprAndConstFold(ctx context.Context, proc *process.Process, name s
 	}
 
 	switch retExpr.GetF().GetFunc().GetObjName() {
+	case "nth_value":
+		if err := validateNthValueArgs(ctx, proc, retExpr.GetF().Args); err != nil {
+			return nil, err
+		}
+
 	case "+", "-", "*", "/", "div", "%", "mod", "unary_minus", "unary_plus", "unary_tilde", "cast", "serial", "serial_full":
 		if proc != nil {
 			tmpexpr, _ := ConstantFold(batch.EmptyForConstFoldBatch, DeepCopyExpr(retExpr), proc, false, true)
@@ -2825,6 +2844,50 @@ between_fallback:
 	}
 
 	return retExpr, nil
+}
+
+// validateNthValueArgs enforces MySQL's bind-time contract for NTH_VALUE:
+// the offset must be a constant positive integer. Folding first keeps valid
+// constant expressions, such as 1 + 1, compatible with MySQL.
+func validateNthValueArgs(ctx context.Context, proc *process.Process, args []*plan.Expr) error {
+	if len(args) != 2 || proc == nil {
+		return moerr.NewWrongArguments(ctx, "nth_value")
+	}
+
+	offset, err := ConstantFold(batch.EmptyForConstFoldBatch, args[1], proc, false, true)
+	if err != nil {
+		return err
+	}
+	args[1] = offset
+
+	lit := offset.GetLit()
+	if lit == nil || lit.Isnull || !types.T(offset.Typ.Id).IsInteger() || !isPositiveIntegerLiteral(lit) {
+		return moerr.NewWrongArguments(ctx, "nth_value")
+	}
+	return nil
+}
+
+func isPositiveIntegerLiteral(lit *plan.Literal) bool {
+	switch value := lit.Value.(type) {
+	case *plan.Literal_I8Val:
+		return value.I8Val > 0
+	case *plan.Literal_I16Val:
+		return value.I16Val > 0
+	case *plan.Literal_I32Val:
+		return value.I32Val > 0
+	case *plan.Literal_I64Val:
+		return value.I64Val > 0
+	case *plan.Literal_U8Val:
+		return value.U8Val > 0
+	case *plan.Literal_U16Val:
+		return value.U16Val > 0
+	case *plan.Literal_U32Val:
+		return value.U32Val > 0
+	case *plan.Literal_U64Val:
+		return value.U64Val > 0
+	default:
+		return false
+	}
 }
 
 func bindSerialFuncOverExprList(ctx context.Context, name string, args []*Expr) (*plan.Expr, bool, error) {
@@ -3133,9 +3196,9 @@ func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) 
 				return nil, err
 			}
 		}
-	case "like":
+	case "like", "ilike":
 		// sql 'select * from t where col like ?'  the ? Expr's type will be T_any
-		if len(args) != 2 {
+		if len(args) != 2 && len(args) != 3 {
 			return nil, moerr.NewInvalidArg(ctx, name+" function have invalid input args length", len(args))
 		}
 		if args[0].Typ.Id == int32(types.T_any) {
@@ -3143,6 +3206,9 @@ func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) 
 		}
 		if args[1].Typ.Id == int32(types.T_any) {
 			args[1].Typ.Id = int32(types.T_varchar)
+		}
+		if len(args) == 3 && args[2].Typ.Id == int32(types.T_any) {
+			args[2].Typ.Id = int32(types.T_varchar)
 		}
 		if args[0].Typ.Id == int32(types.T_json) {
 			targetTp := types.T_varchar.ToType()
@@ -3356,6 +3422,7 @@ func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) 
 	funcID = fGet.GetEncodedOverloadID()
 	returnType = fGet.GetReturnType()
 	argsCastType, _ = fGet.ShouldDoImplicitTypeCast()
+	adjustControlFlowStringMetadata(name, args, argsType, &returnType)
 
 	// Optimization: avoid casting columns in comparisons to preserve index usage
 	switch name {
@@ -3525,6 +3592,9 @@ func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) 
 		case *plan.Expr_Col:
 			if argsType[0].IsVarlen() && checkNoNeedCast(argsType[1], argsType[0], args[1]) {
 				argsCastType = []types.Type{argsType[0], argsType[0]}
+				if len(argsType) == 3 {
+					argsCastType = append(argsCastType, argsType[2])
+				}
 				fGet, err = function.GetFunctionByName(ctx, name, argsCastType)
 				if err != nil {
 					return nil, err
@@ -3666,6 +3736,142 @@ func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) 
 		},
 		Typ: Typ,
 	}, nil
+}
+
+func adjustControlFlowStringMetadata(name string, args []*Expr, argTypes []types.Type, returnType *types.Type) {
+	if returnType.Oid != types.T_varchar {
+		return
+	}
+
+	valueIndexes := make([]int, 0, len(args))
+	switch name {
+	case "if", "iff":
+		if len(args) == 3 {
+			valueIndexes = append(valueIndexes, 1, 2)
+		}
+	case "case":
+		for i := 1; i < len(args); i += 2 {
+			valueIndexes = append(valueIndexes, i)
+		}
+		if len(args)%2 == 1 {
+			valueIndexes = append(valueIndexes, len(args)-1)
+		}
+	case "coalesce":
+		for i := range args {
+			valueIndexes = append(valueIndexes, i)
+		}
+	default:
+		return
+	}
+
+	hasString := false
+	hasNumeric := false
+	width := int32(0)
+	for _, idx := range valueIndexes {
+		if idx >= len(argTypes) {
+			return
+		}
+		typ := argTypes[idx]
+		if typ.Oid.IsMySQLString() {
+			hasString = true
+		} else if typ.Oid.IsInteger() || typ.Oid.IsFloat() || typ.Oid.IsDecimal() {
+			hasNumeric = true
+		} else {
+			continue
+		}
+		if candidate := controlFlowStringWidth(args[idx], typ); candidate > width {
+			width = candidate
+		}
+	}
+	if hasString && hasNumeric && width > 0 {
+		returnType.Width = width
+	}
+}
+
+func controlFlowStringWidth(expr *Expr, typ types.Type) int32 {
+	if typ.Oid.IsMySQLString() {
+		return typ.Width
+	}
+	if typ.Oid.IsDecimal() {
+		return decimalDisplayWidth(typ)
+	}
+	if lit := expr.GetLit(); lit != nil && !lit.Isnull {
+		switch value := lit.Value.(type) {
+		case *plan.Literal_I8Val:
+			return signedIntegerLiteralWidth(int64(value.I8Val))
+		case *plan.Literal_I16Val:
+			return signedIntegerLiteralWidth(int64(value.I16Val))
+		case *plan.Literal_I32Val:
+			return signedIntegerLiteralWidth(int64(value.I32Val))
+		case *plan.Literal_I64Val:
+			return signedIntegerLiteralWidth(value.I64Val)
+		case *plan.Literal_U8Val:
+			return int32(len(strconv.FormatUint(uint64(value.U8Val), 10)))
+		case *plan.Literal_U16Val:
+			return int32(len(strconv.FormatUint(uint64(value.U16Val), 10)))
+		case *plan.Literal_U32Val:
+			return int32(len(strconv.FormatUint(uint64(value.U32Val), 10)))
+		case *plan.Literal_U64Val:
+			return int32(len(strconv.FormatUint(value.U64Val, 10)))
+		}
+	}
+	if typ.Oid.IsInteger() {
+		width := integerMetadataWidth(typ.Oid)
+		if typ.Oid.IsSignedInt() {
+			width++
+		}
+		return width
+	}
+	return typ.Width
+}
+
+// decimalDisplayWidth returns the maximum byte width of a DECIMAL value after
+// it is converted to a control-flow VARCHAR result. Decimal precision counts
+// only significant digits, so it excludes the optional sign, decimal point,
+// and (for DECIMAL(M, M)) the displayed leading zero.
+func decimalDisplayWidth(typ types.Type) int32 {
+	precision := typ.Width
+	if precision <= 0 {
+		return types.MaxVarcharLen
+	}
+
+	width := int64(precision) // significant digits
+	if typ.Scale > 0 {
+		width++ // decimal point
+		if typ.Scale >= precision {
+			width++ // leading zero before the decimal point
+		}
+	}
+	width++ // optional sign
+	if width > int64(types.MaxVarcharLen) {
+		return types.MaxVarcharLen
+	}
+	return int32(width)
+}
+
+func signedIntegerLiteralWidth(value int64) int32 {
+	width := int32(len(strconv.FormatInt(value, 10)))
+	if value >= 0 {
+		width++
+	}
+	return width
+}
+
+func integerMetadataWidth(oid types.T) int32 {
+	switch oid {
+	case types.T_int8, types.T_uint8:
+		return 3
+	case types.T_int16, types.T_uint16:
+		return 5
+	case types.T_int32, types.T_uint32:
+		return 10
+	case types.T_int64:
+		return 19
+	case types.T_uint64:
+		return 20
+	default:
+		return 0
+	}
 }
 
 // MySQL compares scalar TIME expressions to strings as text, but converts a

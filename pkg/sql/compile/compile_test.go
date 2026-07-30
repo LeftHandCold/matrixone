@@ -32,8 +32,11 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/lockservice"
+	lockpb "github.com/matrixorigin/matrixone/pkg/pb/lock"
+	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
+	"github.com/matrixorigin/matrixone/pkg/sql/colexec/lockop"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/txn/rpc"
 
@@ -44,7 +47,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/buffer"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	mock_frontend "github.com/matrixorigin/matrixone/pkg/frontend/test"
-	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/txn"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/dispatch"
@@ -62,6 +64,24 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/message"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
+
+func TestHasOrderedGroupConcat(t *testing.T) {
+	ordered := &plan.Node{
+		AggList: []*plan.Expr{{
+			Expr: &plan.Expr_F{F: &plan.Function{
+				Func:          &plan.ObjectRef{ObjName: "group_concat"},
+				AggConfigType: plan.AggregateConfigType_AGG_CONFIG_GROUP_CONCAT_ORDER,
+			}},
+		}},
+	}
+	require.True(t, hasOrderedGroupConcat(ordered))
+
+	ordered.GroupBy = []*plan.Expr{{}}
+	require.True(t, hasOrderedGroupConcat(ordered))
+	ordered.GroupBy = nil
+	ordered.AggList[0].GetF().AggConfigType = plan.AggregateConfigType_AGG_CONFIG_NONE
+	require.False(t, hasOrderedGroupConcat(ordered))
+}
 
 func TestCompileRunPreservesBinaryPrepareParamAcrossRetries(t *testing.T) {
 	ctx := defines.AttachAccountId(context.Background(), catalog.System_Account)
@@ -290,6 +310,40 @@ func TestShouldPrePipelineLockTable(t *testing.T) {
 	require.False(t, target.LockTableAtTheEnd)
 }
 
+func TestConstructLockOpPreservesSharedTableMode(t *testing.T) {
+	for _, lockTable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("table=%t", lockTable), func(t *testing.T) {
+			node := &plan.Node{LockTargets: []*plan.LockTarget{{
+				TableId: 42, PrimaryColTyp: plan.Type{Id: int32(types.T_int64)},
+				Mode: lockpb.LockMode_Shared, LockTable: lockTable,
+			}}}
+
+			op, err := constructLockOp(node, nil)
+			require.NoError(t, err)
+			targets := op.CopyToPipelineTarget()
+			require.Len(t, targets, 1)
+			assert.Equal(t, lockTable, targets[0].LockTable)
+			assert.Equal(t, lockpb.LockMode_Shared, targets[0].Mode)
+		})
+	}
+}
+
+func TestValidateReplaceParentTxnMode(t *testing.T) {
+	ctx := context.Background()
+	query := &plan.Query{DetectSqls: []string{"REPLACE_PARENT_LOCK:select 1 for update"}}
+
+	require.NoError(t, validateReplaceParentTxnMode(ctx, query, true))
+	require.ErrorContains(t, validateReplaceParentTxnMode(ctx, query, false),
+		"optimistic transaction mode")
+	query.DetectSqls = []string{"REPLACE_PARENT_PLAN:"}
+	require.NoError(t, validateReplaceParentTxnMode(ctx, query, true))
+	require.ErrorContains(t, validateReplaceParentTxnMode(ctx, query, false),
+		"optimistic transaction mode")
+	require.NoError(t, validateReplaceParentTxnMode(ctx,
+		&plan.Query{DetectSqls: []string{"select true"}}, false))
+	require.NoError(t, validateReplaceParentTxnMode(ctx, nil, false))
+}
+
 func TestLockTableLocksAllPrePipelineTargets(t *testing.T) {
 	runtime.RunTest(
 		"",
@@ -335,7 +389,8 @@ func TestLockTableLocksAllPrePipelineTargets(t *testing.T) {
 					c := &Compile{
 						proc: proc,
 						lockTables: map[uint64]*plan.LockTarget{
-							10: {TableId: 10, PrimaryColTyp: plan.Type{Id: int32(types.T_int32)}},
+							10: {TableId: 10, PrimaryColTyp: plan.Type{Id: int32(types.T_int32)},
+								Mode: lockpb.LockMode_Shared},
 							11: {TableId: 11, PrimaryColTyp: plan.Type{Id: int32(types.T_int32)}},
 						},
 					}
@@ -343,6 +398,14 @@ func TestLockTableLocksAllPrePipelineTargets(t *testing.T) {
 					require.NoError(t, c.lockTable())
 					require.True(t, txnOp.HasLockTable(10))
 					require.True(t, txnOp.HasLockTable(11))
+
+					sharedTxn, err := txnClient.New(ctx, timestamp.Timestamp{})
+					require.NoError(t, err)
+					defer func() { require.NoError(t, sharedTxn.Rollback(ctx)) }()
+					sharedProc := process.NewTopProcess(ctx, mpool.MustNewZero(), txnClient, sharedTxn,
+						nil, services[0], nil, nil, nil, nil, nil)
+					require.NoError(t, lockop.LockTableWithMode(nil, sharedProc, 10,
+						types.T_int32.ToType(), lockpb.LockMode_Shared, false))
 				},
 				nil,
 			)
@@ -606,6 +669,69 @@ func TestCompileShuffleGroupUsesDistributedPathWhenScopeMcpuDiffersFromDop(t *te
 	}
 	require.Len(t, result[0].PreScopes, 1)
 	require.IsType(t, &shuffle.Shuffle{}, result[0].PreScopes[0].RootOp.GetOperatorBase().GetChildren(0))
+}
+
+func TestCompileShuffleGroupSupportsOrderedGroupConcat(t *testing.T) {
+	c := newCompileForShuffleGroupTest(t)
+	c.proc.SetResolveVariableFunc(func(name string, system, global bool) (interface{}, error) {
+		require.Equal(t, "group_concat_max_len", name)
+		require.True(t, system)
+		require.False(t, global)
+		return int64(1024), nil
+	})
+	aggNode, nodes := newShuffleGroupTestNodes(16)
+	aggNode.AggList = []*plan.Expr{{
+		Expr: &plan.Expr_F{F: &plan.Function{
+			Func: &plan.ObjectRef{
+				ObjName: plan2.NameGroupConcat,
+			},
+			AggConfigType: plan.AggregateConfigType_AGG_CONFIG_GROUP_CONCAT_ORDER,
+		}},
+	}}
+	scope := newShuffleGroupInputScope(t, 1)
+
+	require.True(t, hasOrderedGroupConcat(aggNode))
+	result := c.compileShuffleGroup(aggNode, []*Scope{scope}, nodes)
+
+	require.Len(t, result, 16)
+	for _, resultScope := range result {
+		groupOp, ok := resultScope.RootOp.(*group.Group)
+		require.True(t, ok)
+		require.True(t, groupOp.NeedEval)
+	}
+	require.IsType(t, &shuffle.Shuffle{}, result[0].PreScopes[0].RootOp.GetOperatorBase().GetChildren(0))
+}
+
+func TestCompileShuffleGroupGatesOrderedAggregateByProtocolVersion(t *testing.T) {
+	c := newCompileForShuffleGroupTest(t)
+	aggNode, _ := newShuffleGroupTestNodes(16)
+	aggNode.AggList = []*plan.Expr{{
+		Expr: &plan.Expr_F{F: &plan.Function{
+			Func: &plan.ObjectRef{
+				ObjName: plan2.NameGroupConcat,
+			},
+			AggConfigType: plan.AggregateConfigType_AGG_CONFIG_GROUP_CONCAT_ORDER,
+		}},
+	}}
+	rt := runtime.ServiceRuntime(c.proc.GetService())
+	defer rt.SetGlobalVariables(runtime.MOProtocolVersion, defines.MORPCLatestVersion)
+
+	rt.SetGlobalVariables(runtime.MOProtocolVersion, defines.MORPCVersion5)
+	require.False(t, c.supportsRemoteOrderedAggregates())
+	require.False(t, c.canCompileShuffleGroup(aggNode),
+		"mixed-version clusters must keep the final ordered aggregate local")
+
+	rt.SetGlobalVariables(runtime.MOProtocolVersion, defines.MORPCVersion6)
+	require.True(t, c.supportsRemoteOrderedAggregates())
+	require.True(t, c.canCompileShuffleGroup(aggNode))
+
+	rt.SetGlobalVariables(runtime.MOProtocolVersion, defines.MORPCVersion5)
+	require.False(t, c.canCompileShuffleGroup(aggNode),
+		"rollback must disable the v6 pipeline field before contacting old CNs")
+
+	aggNode.AggList = nil
+	require.True(t, c.canCompileShuffleGroup(aggNode),
+		"legacy shuffle aggregates remain safe on protocol v5")
 }
 
 func TestCompileShuffleGroupUsesDistributedPathWhenInputScopesNotSingle(t *testing.T) {

@@ -128,11 +128,17 @@ func mergeReceiverChannelBufferSize(s *Scope) int {
 }
 
 type operatorDupContext struct {
-	shufflePools map[*shuffle.Shuffle]*shuffle.ShufflePool
+	shufflePools       map[*shuffle.Shuffle]*shuffle.ShufflePool
+	hashJoinChannels   map[*hashjoin.HashJoin]chan *bitmap.Bitmap
+	dedupJoinMailboxes map[*dedupjoin.DedupJoin]*dedupjoin.WorkerJoinMailbox
 }
 
 func newOperatorDupContext() *operatorDupContext {
-	return &operatorDupContext{shufflePools: make(map[*shuffle.Shuffle]*shuffle.ShufflePool)}
+	return &operatorDupContext{
+		shufflePools:       make(map[*shuffle.Shuffle]*shuffle.ShufflePool),
+		hashJoinChannels:   make(map[*hashjoin.HashJoin]chan *bitmap.Bitmap),
+		dedupJoinMailboxes: make(map[*dedupjoin.DedupJoin]*dedupjoin.WorkerJoinMailbox),
+	}
 }
 
 func dupOperatorRecursivelyWithContext(sourceOp vm.Operator, index int, maxParallel int, dupCtx *operatorDupContext) vm.Operator {
@@ -223,10 +229,12 @@ func dupOperatorWithContext(sourceOp vm.Operator, index int, maxParallel int, du
 		op.CanSkipProbe = t.CanSkipProbe
 		op.IsShuffle = t.IsShuffle
 		if !t.IsShuffle {
-			if t.Channel == nil {
-				t.Channel = make(chan *bitmap.Bitmap, maxParallel)
+			channel := dupCtx.hashJoinChannels[t]
+			if channel == nil {
+				channel = make(chan *bitmap.Bitmap, maxParallel)
+				dupCtx.hashJoinChannels[t] = channel
 			}
-			op.Channel = t.Channel
+			op.Channel = channel
 			op.NumCPU = uint64(maxParallel)
 			op.IsMerger = (index == 0)
 		}
@@ -350,6 +358,8 @@ func dupOperatorWithContext(sourceOp vm.Operator, index int, maxParallel int, du
 		op.Partial = t.Partial
 		op.StartIDX = t.StartIDX
 		op.EndIDX = t.EndIDX
+		op.MaterializedSource = t.MaterializedSource
+		op.MaterializedReaderID = t.MaterializedReaderID
 		op.SetInfo(&info)
 		return op
 	case vm.MergeRecursive:
@@ -462,6 +472,7 @@ func dupOperatorWithContext(sourceOp vm.Operator, index int, maxParallel int, du
 		op.ShuffleRegIdxLocal = sourceArg.ShuffleRegIdxLocal
 		op.ShuffleRegIdxRemote = sourceArg.ShuffleRegIdxRemote
 		op.FuncId = sourceArg.FuncId
+		op.MaterializedSource = sourceArg.MaterializedSource
 		op.LocalRegs = make([]*process.WaitRegister, len(sourceArg.LocalRegs))
 		op.RemoteRegs = make([]colexec.ReceiveInfo, len(sourceArg.RemoteRegs))
 		for j := range op.LocalRegs {
@@ -598,10 +609,12 @@ func dupOperatorWithContext(sourceOp vm.Operator, index int, maxParallel int, du
 	case vm.DedupJoin:
 		t := sourceOp.(*dedupjoin.DedupJoin)
 		op := dedupjoin.NewArgument()
-		if t.Channel == nil {
-			t.Channel = make(chan *dedupjoin.WorkerJoinMsg, maxParallel)
+		mailbox := dupCtx.dedupJoinMailboxes[t]
+		if mailbox == nil {
+			mailbox = dedupjoin.NewWorkerJoinMailbox(maxParallel)
+			dupCtx.dedupJoinMailboxes[t] = mailbox
 		}
-		op.Channel = t.Channel
+		op.Mailbox = mailbox
 		op.NumCPU = uint64(maxParallel)
 		op.IsMerger = (index == 0)
 		op.Result = t.Result
@@ -829,11 +842,11 @@ func constructLockOp(node *plan.Node, eng engine.Engine) (*lockop.LockOp, error)
 			partitionColPos = target.PartitionColIdxInBat
 		}
 		typ := plan2.MakeTypeByPlan2Type(target.PrimaryColTyp)
-		arg.AddLockTarget(target.GetTableId(), target.GetObjRef(), target.GetPrimaryColIdxInBat(), typ, partitionColPos, target.GetRefreshTsIdxInBat(), target.GetLockRows(), target.GetLockTableAtTheEnd())
+		arg.AddLockTargetWithMode(target.GetTableId(), target.GetObjRef(), target.GetMode(), target.GetPrimaryColIdxInBat(), typ, partitionColPos, target.GetRefreshTsIdxInBat(), target.GetLockRows(), target.GetLockTableAtTheEnd())
 	}
 	for _, target := range node.LockTargets {
 		if target.LockTable {
-			arg.LockTable(target.TableId, false)
+			arg.LockTableWithMode(target.TableId, target.Mode, false)
 		}
 	}
 	return arg, nil
@@ -1618,9 +1631,10 @@ func constructWindow(_ context.Context, node *plan.Node, proc *process.Process) 
 		isDistinct := (uint64(f.F.Func.Obj) & function.Distinct) != 0
 		functionID := int64(uint64(f.F.Func.Obj) & function.DistinctMask)
 
+		configType := f.F.AggConfigType
 		args, cfg := constructAggregateConfig(f.F, proc)
 		aggregationExpressions[i] = aggexec.MakeAggFunctionExpression(
-			functionID, isDistinct, args, cfg)
+			functionID, isDistinct, args, cfg, configType)
 	}
 	arg := window.NewArgument()
 	arg.Aggs = aggregationExpressions
@@ -1655,10 +1669,11 @@ func constructGroup(_ context.Context, node, childNode *plan.Node, needEval bool
 			isDistinct := (uint64(f.F.Func.Obj) & function.Distinct) != 0
 			functionID := int64(uint64(f.F.Func.Obj) & function.DistinctMask)
 
+			configType := f.F.AggConfigType
 			args, cfg := constructAggregateConfig(f.F, proc)
 
 			aggregationExpressions[i] = aggexec.MakeAggFunctionExpression(
-				functionID, isDistinct, args, cfg)
+				functionID, isDistinct, args, cfg, configType)
 		}
 	}
 
@@ -1680,11 +1695,6 @@ func constructAggregateConfig(f *plan.Function, proc *process.Process) ([]*plan.
 	args := f.Args
 	switch f.Func.ObjName {
 	case plan2.NameGroupConcat:
-		separator := ","
-		if len(args) > 1 {
-			separator = evaluateAggregateConfigString(proc, args[len(args)-1])
-			args = args[:len(args)-1]
-		}
 		value, err := resolveVariableOrDefault(proc, "group_concat_max_len", true, false)
 		if err != nil {
 			panic(err)
@@ -1693,6 +1703,14 @@ func constructAggregateConfig(f *plan.Function, proc *process.Process) ([]*plan.
 		if !ok || maxLen < 0 {
 			panic(moerr.NewInternalErrorNoCtxf(
 				"group_concat_max_len has invalid value %v", value))
+		}
+		if f.AggConfigType == plan.AggregateConfigType_AGG_CONFIG_GROUP_CONCAT_ORDER {
+			return args, aggexec.EncodeGroupConcatOrderedConfig(f.AggConfig, uint64(maxLen))
+		}
+		separator := ","
+		if len(args) > 1 {
+			separator = evaluateAggregateConfigString(proc, args[len(args)-1])
+			args = args[:len(args)-1]
 		}
 		return args, aggexec.EncodeGroupConcatConfig(separator, uint64(maxLen))
 

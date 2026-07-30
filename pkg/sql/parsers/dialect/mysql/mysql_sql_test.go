@@ -60,6 +60,29 @@ func TestDebug(t *testing.T) {
 	}
 }
 
+func TestDropFunctionIfExists(t *testing.T) {
+	tests := []struct {
+		sql      string
+		ifExists bool
+	}{
+		{sql: "drop function f_lookup (int)"},
+		{sql: "drop function if exists f_lookup (p_id int)", ifExists: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.sql, func(t *testing.T) {
+			stmt, err := ParseOne(context.Background(), test.sql, 1)
+			require.NoError(t, err)
+			defer stmt.Free()
+
+			drop, ok := stmt.(*tree.DropFunction)
+			require.True(t, ok)
+			require.Equal(t, test.ifExists, drop.IfExists)
+			require.Equal(t, test.sql, tree.String(stmt, dialect.MYSQL))
+		})
+	}
+}
+
 func TestSQLModeParserModes(t *testing.T) {
 	t.Run("ansi quotes changes double quoted token from string to identifier", func(t *testing.T) {
 		stmt, err := ParseOneWithSQLMode(context.Background(), `select "abc"`, 1, "")
@@ -379,6 +402,17 @@ func TestPreparedWindowFrameMarkers(t *testing.T) {
 	require.IsType(t, &tree.ParamExpr{}, window.Frame.End.Expr)
 }
 
+func TestVarianceWindowSpec(t *testing.T) {
+	stmt, err := ParseOne(context.Background(),
+		"select variance(amount) over (partition by customer_id) from orders",
+		1)
+	require.NoError(t, err)
+	defer stmt.Free()
+
+	window := extractFirstWindowSpec(t, stmt)
+	require.Len(t, window.PartitionBy, 1)
+}
+
 func firstColumnType(t *testing.T, stmt tree.Statement) tree.InternalType {
 	t.Helper()
 	createTable, ok := stmt.(*tree.CreateTable)
@@ -689,6 +723,16 @@ func TestDataBranchCreateTableParsesWithLeadingComment(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, tree.Identifier("dst"), branchStmt.CreateTable.Table.ObjectName)
 	require.Equal(t, tree.Identifier("src"), branchStmt.SrcTable.ObjectName)
+}
+
+func TestDataBranchCreateTablePreservesQuotedApostropheIdentifier(t *testing.T) {
+	stmt, err := ParseOne(context.TODO(), "data branch create table `quote'dst` from `quote'src`", 1)
+	require.NoError(t, err)
+
+	branchStmt, ok := stmt.(*tree.DataBranchCreateTable)
+	require.True(t, ok)
+	require.Equal(t, tree.Identifier("quote'dst"), branchStmt.CreateTable.Table.ObjectName)
+	require.Equal(t, tree.Identifier("quote'src"), branchStmt.SrcTable.ObjectName)
 }
 
 func TestDataBranchDiffOutputModes(t *testing.T) {
@@ -1503,10 +1547,10 @@ var (
 			input: "select cast(variance(ff) as decimal(10, 3)) from t2",
 		}, {
 			input:  "SELECT GROUP_CONCAT(DISTINCT 2) from t1",
-			output: "select GROUP_CONCAT(distinct 2, ,) from t1",
+			output: "select GROUP_CONCAT(distinct 2 separator ,) from t1",
 		}, {
 			input:  "SELECT GROUP_CONCAT(DISTINCT a order by a) from t1",
-			output: "select GROUP_CONCAT(distinct a, ,order by a) from t1",
+			output: "select GROUP_CONCAT(distinct a order by a separator ,) from t1",
 		}, {
 			input: "select variance(2) from t1",
 		}, {
@@ -2566,7 +2610,7 @@ var (
 			input: "create table t (a float(20, 20) not null, b int(20) null, c int(30) null)",
 		}, {
 			input:  "create table t1 (t time(3) null, dt datetime(6) null, ts timestamp(1) null)",
-			output: "create table t1 (t time(3, 3) null, dt datetime(6, 6) null, ts timestamp(1, 1) null)",
+			output: "create table t1 (t time(3) null, dt datetime(6) null, ts timestamp(1) null)",
 		}, {
 			input:  "create table t1 (a int default 1 + 1 - 2 * 3 / 4 div 7 ^ 8 << 9 >> 10 % 11)",
 			output: "create table t1 (a int default 1 + 1 - 2 * 3 / 4 div 7 ^ 8 << 9 >> 10 % 11)",
@@ -4447,6 +4491,27 @@ func TestValid(t *testing.T) {
 			t.Errorf("Parsing failed. \nExpected/Got:\n%s\n%s", tcase.output, out)
 		}
 		ast.StmtKind()
+	}
+}
+
+func TestGroupConcatDeparseRoundTrip(t *testing.T) {
+	for _, sql := range []string{
+		"select group_concat(v order by v) from t",
+		"select group_concat(distinct v order by v desc separator '|') from t",
+	} {
+		ast, err := ParseOne(context.Background(), sql, 1)
+		require.NoError(t, err)
+
+		fmtCtx := tree.NewFmtCtx(dialect.MYSQL, tree.WithQuoteString(true))
+		ast.Format(fmtCtx)
+		formatted := fmtCtx.String()
+		require.Contains(t, formatted, " separator ")
+
+		roundTripped, err := ParseOne(context.Background(), formatted, 1)
+		require.NoError(t, err, formatted)
+		roundTripFmtCtx := tree.NewFmtCtx(dialect.MYSQL, tree.WithQuoteString(true))
+		roundTripped.Format(roundTripFmtCtx)
+		require.Equal(t, formatted, roundTripFmtCtx.String())
 	}
 }
 
