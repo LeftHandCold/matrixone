@@ -126,7 +126,11 @@ Scheduler只遍历显式Binding。它分页读取当前TAE Metadata，利用Obje
 
 Metadata分类只是hint。Reader和final transaction必须重新验证。
 
-不建设逐Object Catalog Index。Cursor只保存在Binding中，丢失后允许从头重扫。
+不建设逐Object Lifecycle Catalog Index，因为MO的`PartitionState`已经维护当前Object的
+name/TS B-tree；再复制一份会同时引入Merge更新、replay、热点和一致性成本。Lifecycle
+需要新增的是基于现有B-tree的有界分页Discovery API，而不是调用会物化全表结果的
+`GetNonAppendableObjectStats`。Cursor只在Binding保存O(1)进度hint，丢失或snapshot stale
+时从头重扫；每个cycle最终wrap。GC metadata不是当前可见Object集合的权威来源。
 
 ### 5.2 Whole Object
 

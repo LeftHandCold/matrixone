@@ -174,6 +174,56 @@ attempt和prefix永不复用。
 Scheduler维护内存中的Active Binding registry，只扫描显式Binding。每次读取一页当前
 TAE Metadata，Candidate有数量/bytes/TTL上限，crash后允许重扫。
 
+这里删除的是“把每个Object再复制到Lifecycle Catalog”的持久Object Index，不是删除
+MO已有Metadata索引。当前`PartitionState`已经维护：
+
+```text
+dataObjectsNameIndex
+tombstoneObjectsNameIndex
+dataObjectTSIndex
+```
+
+Lifecycle直接从这些当前可见Metadata发现Object。GC metadata包含历史删除和回收信息，
+不是当前活动Object集合的权威来源，不能替代`PartitionState`。
+
+当前`GetNonAppendableObjectStats`会把全表ObjectStats一次性收集到slice，Lifecycle不得在
+百万Object表上直接调用它。Gate A必须增加只读、有界的分页接口，例如：
+
+```go
+type LifecycleObjectCursor struct {
+    SnapshotTS      types.TS
+    LastObjectName  objectio.ObjectNameShort
+    Wrapped         bool
+}
+
+type LifecycleObjectPage struct {
+    Objects    []objectio.ObjectEntry
+    Next       LifecycleObjectCursor
+    EndOfCycle bool
+}
+
+ScanLifecycleObjects(
+    ctx context.Context,
+    state *logtailreplay.PartitionState,
+    cursor LifecycleObjectCursor,
+    maxObjects int,
+    maxMetaBytes uint64,
+) (LifecycleObjectPage, error)
+```
+
+接口从现有B-tree seek/iterator开始，最多返回`maxObjects/maxMetaBytes`，不会构造全表slice。
+cursor只是进度hint：
+
+- 一个cycle固定Metadata snapshot；
+- snapshot已stale或Merge改变Object集合时，重新开始当前cycle；
+- 到末尾后必须wrap，避免新Object或排序在cursor之前的Object永久漏扫；
+- Candidate和cursor丢失可重建；
+- final transaction始终以实时Metadata和exact source CAS为准。
+
+该接口及其分页/重启/百万Object基准是Gate A的交付物，不需要WAL、Replay或Catalog逐Object
+行。只有实测证明现有Metadata分页在1000绑定表认证负载下仍达不到Discovery SLO，才重新
+评估可丢失的派生summary；即使增加summary，也不能成为退休正确性的事实源。
+
 分类：
 
 ```text
