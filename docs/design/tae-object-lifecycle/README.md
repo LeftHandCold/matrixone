@@ -117,12 +117,12 @@ ALTER TABLE ... SET LIFECYCLE
        |
        +-- Whole TTL
        |     -> final transaction
-       |     -> OpCommitLifecycle + Receipt
+       |     -> Receipt + tagged LifecycleCommit in one commit payload
        |
        +-- Whole Archive
        |     -> exact Reader
        |     -> Root -> Parquet PUT -> readback -> VERIFIED
-       |     -> Dataset + Receipt + OpCommitLifecycle
+       |     -> Dataset + Receipt + tagged LifecycleCommit
        |
        +-- small Mixed TTL/Archive
        |     -> one writable SI transaction
@@ -139,7 +139,7 @@ ALTER TABLE ... SET LIFECYCLE
                   expired -> Archive/discard
                   live -> new TAE Objects + transfer destination
              -> verify outputs
-             -> Dataset/Receipt + OpCommitLifecycle
+             -> Dataset/Receipt + tagged LifecycleCommit
              -> source DropIntent + survivor-only transfer
 
 final transaction response lost
@@ -237,8 +237,9 @@ abort/replan；final结果未知时不能启动第二次提交。旧TAE文件仍
 
 ### I-10 Capability before retirement
 
-滚动升级期间，只有全部相关CN/TN支持同一`OpCommitLifecycle`协议版本，才允许
-真正退休数据。否则只允许：
+滚动升级期间，只有全部相关CN/TN支持同一tagged Lifecycle commit协议版本，且发送前
+exact target service/shard与topology generation仍匹配，才允许真正退休数据。更老TN
+必须被fence隔离，不能依赖其解释未知enum。否则只允许：
 
 - DDL；
 - Object Discovery；
@@ -285,7 +286,7 @@ digest的`SourceLayoutProof`；source digest覆盖source与proof全集。Rewrite
 Lifecycle Booking V1原样运输`DoMergeAndWrite`生成的TransferTable：编码每Block
 实际物理行数和稀疏live destination，零mapping Block也不能省略；未出现的source
 slot统一重建为`NoTransfer`。文件必须绑定Root child、TAE namespace、source layout
-和`CreatedObjs`顺序。它不编码D/E业务语义，也不允许重新生成或排序mapping。
+和`CreatedObjs` layout。它不编码D/E业务语义，也不允许重新生成或排序mapping。
 
 ### I-14 Rewrite 内存和读取前准入
 
@@ -306,6 +307,18 @@ TAE range/booking。
 WAL/Replay恢复source DropIntent、新live Object和final transaction Catalog/Tombstone，
 不恢复已提交事务的历史运行时transfer page。Booking V1只服务当前final transaction
 的Prepare/retry；TN restart后旧RowID事务缺页必须RW/WW conflict，不能静默成功。
+
+### I-17 Retry generation 与 runtime Owner
+
+Lifecycle tag必须位于可重放的`PrecommitWriteCmd.EntryList`中。外部逻辑attempt冻结
+entry bytes/digest、Root、Booking、绝对deadline和累计预算；每个内部TAE generation
+从immutable Booking构造私有Catalog node、TransferTable和txn entry，不复用上一代
+指针。
+
+`txn.LogTxnEntry`成功是TN runtime资源Owner线性化点：此前由builder清理slab/page/
+TransferDels，之后由txn entry清理；任何runtime清理都不得删除Root-owned staging。
+普通Merge的同类注册前缺口由[#26445](https://github.com/matrixorigin/matrixone/issues/26445)
+跟踪。
 
 ## 7. 权威数据与派生数据
 
@@ -357,7 +370,7 @@ dataset_identity =
 | Whole Object | Metadata 能严格证明 Object 所有物理行均到期 |
 | Mixed Object | 同一 Object 同时有到期和未到期行，或 Metadata 无法证明 Whole |
 | Exact Reader | 只读调用方给出的持久化 Object/Block 集合，并应用指定 Snapshot Tombstone 的 Reader |
-| Conditional Lifecycle Retire | 通过`OpCommitLifecycle`提交，任一准入条件不匹配即整体 abort |
+| Conditional Lifecycle Retire | 通过同一commit payload中的tagged Lifecycle entry提交，任一准入条件不匹配即整体abort |
 | Lifecycle Rewrite | 到期行写 Archive/丢弃、存活行写新 TAE Object，并在短事务中整体替换 source Object |
 | Source Reservation | TN 内存中的 exact Object 短租约，线性化普通 Merge/Lifecycle 准入；不替代 final CAS |
 | Source Protection | 复用 GC SyncProtection 保护 source Data/Tombstone 以及 Rewrite final 前未入 Catalog 的 live/booking staging 文件 |

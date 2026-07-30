@@ -33,7 +33,7 @@ Reader、mergesort、Object Writer、两阶段 RowID transfer、Object MVCC、WA
 3. 不修改普通 Merge 的候选、Level、Overlap、Small、目标大小或调度策略。新增独立
    Lifecycle Rewrite Executor；它复用当前 mergesort/Object Writer/transfer txn
    entry，而不是复制第二套存储引擎。
-4. Whole Object 使用独立、版本化的 `OpCommitLifecycle`：
+4. Whole Object 使用`PrecommitWriteCmd.EntryList`中的版本化tagged Lifecycle entry：
    - Archive 先由固定 Snapshot 的高层 Reader 导出并全量重读校验；
    - 最终短事务重新校验 table/schema generation、Feature Guard、source
      reservation/GC protection、exact Object、Footer digest 和 Tombstone delta；
@@ -115,7 +115,7 @@ Reader、mergesort、Object Writer、两阶段 RowID transfer、Object MVCC、WA
 Read-only Planner/分页 Discovery/Dry-run
   -> Export-only Parquet + verification
   -> Feature Guard/Profile/Attempt Root/resource protocol
-  -> OpCommitLifecycle + reservation/protection P0
+  -> tagged Lifecycle commit + reservation/protection P0
   -> Whole Object TTL/Archive
   -> small Mixed writable-SI Row DELETE
   -> Mixed Rewrite + transfer/WAL/replay
@@ -126,7 +126,7 @@ Read-only Planner/分页 Discovery/Dry-run
 ```
 
 前两步可以在不退休活动数据的情况下验证功能和成本。只要开始退休 Object，
-`OpCommitLifecycle`/WAL/replay、exact Object CAS、reservation/protection、system
+tagged Lifecycle entry/WAL/replay、exact Object CAS、reservation/protection、system
 retained Cleanup Root、Feature Guard 和资源上限就属于正确性前提。Archive 还必须
 增加 pre-side-effect Root、immutable Profile、全量 readback 和 Restore。
 

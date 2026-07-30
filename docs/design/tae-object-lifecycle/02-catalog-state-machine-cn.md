@@ -1021,6 +1021,10 @@ unknown                      -> 保持 VERIFIED
 ```
 
 普通Merge不创建这些Root Object，仍由普通Merge entry清理自己的created files。
+TN runtime资源则不归Root：`LifecycleEntryBuilder`持有decoder slab/page/
+TransferDels，`txn.LogTxnEntry`成功是唯一Owner转移点。注册前失败由builder释放；
+注册后由txn entry释放。两侧都不得删除Root-owned物理文件。普通Merge的同类注册前
+残留由[#26445](https://github.com/matrixorigin/matrixone/issues/26445)跟踪。
 
 ### 4.5 Account owner tombstone
 
@@ -1193,7 +1197,8 @@ Root VERIFIED -> FINALIZING committed in system transaction
   -> CAS Guard/Binding/active attempt
   -> insert Dataset
   -> insert Receipt
-  -> txnOp.Write(OpCommitLifecycle, WHOLE_ARCHIVE)
+  -> append tagged LifecycleCommit(WHOLE_ARCHIVE) to same tenant workspace
+  -> commit payload contains Catalog writes + Lifecycle tag
   -> commit
 ```
 
@@ -1220,18 +1225,18 @@ Root VERIFIED -> FINALIZING committed in system transaction
   -> CAS Guard/Binding/active attempt
   -> insert Dataset/Receipt               # Archive
      or insert Receipt only               # TTL
-  -> txnOp.Write(
-       OpCommitLifecycle,
-       exact source Objects + staged live Objects + transfer booking
-     )
+  -> append tagged LifecycleCommit(
+       exact source Objects + staged live Objects + transfer booking)
+     to the same tenant workspace
+  -> commit payload contains Catalog writes + Lifecycle tag
   -> commit
 ```
 
 这里wire为兼容Whole仍使用`source Objects`集合；`MIXED_REWRITE_*`模式的协议基数
 必须等于1，且只允许immutable external booking。
 
-TTL Whole/Rewrite 不写 Dataset，但同样在一个事务中提交 Receipt 和
-`OpCommitLifecycle`。TTL Rewrite committed 后把live/range child标为`TAE_OWNED`，
+TTL Whole/Rewrite 不写 Dataset，但同样在一个事务和同一个可重放commit payload中
+提交Receipt和tagged Lifecycle entry。TTL Rewrite committed 后把live/range child标为`TAE_OWNED`，
 Root进入`POST_COMMIT_CLEANUP`；temporary booking全部删除后才标`TRANSFERRED`。
 所有模式都不依赖长时间 SQL 表锁。
 
@@ -1367,10 +1372,11 @@ ClaimAttemptInSystemTxn(...)
 降级规则：
 
 - 存在 ACTIVE Binding 或未 PURGED Dataset 时，不允许降到不认识 Lifecycle
-  Catalog/`OpCommitLifecycle`的版本；
+  Catalog/tagged commit entry的版本；
 - emergency downgrade 必须先 cluster kill switch、等待 finalizing/unknown 收敛、暂停 Binding；
 - 旧版本不得把未知系统表当普通 tenant 表清理；
-- protobuf unknown entry 必须返回不支持，不能跳过后继续 commit。
+- 进入支持Lifecycle tag的协议代后，unknown version/非法tag必须返回不支持，不能跳过
+  后继续commit；更老TN必须由capability/topology fence保证收不到该tag。
 
 ## 10. Catalog 不变量检查器
 

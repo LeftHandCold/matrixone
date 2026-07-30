@@ -379,7 +379,7 @@ AND source ScanReport/content root冻结
 ```
 
 此后立即结束只读事务，再执行Provider full readback和Manifest PUT；这些步骤不能继续
-访问源TAE。最终`OpCommitLifecycle`仍可能因Object/Tombstone变化而abort。这样避免把
+访问源TAE。最终tagged `LifecycleCommitEntry`仍可能因Object/Tombstone变化而abort。这样避免把
 远端GET校验时间算进source Snapshot pin。
 
 小 Mixed Archive 不能采用该优化，因为 Reader 和 `Relation.Delete` 必须保留同一个

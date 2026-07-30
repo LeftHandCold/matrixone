@@ -30,7 +30,7 @@
    - Object 中所有物理行都能由可信 ZoneMap 证明已经到期；
    - TTL 不读取 payload，最终事务执行严格 Object 退休；
    - Archive 使用高层 Reader 导出 Snapshot 逻辑可见行；
-   - 最终短事务使用独立 `OpCommitLifecycle` 再校验 exact Object 和 Tombstone delta；
+   - 最终短事务使用tagged `LifecycleCommitEntry`再校验exact Object和Tombstone delta；
    - 只提交正常 Object DropIntent，不直接删除 TAE 文件；
    - 原文件继续由现有 TAE GC 异步物理回收。
 
@@ -244,7 +244,7 @@ resource budget 评估；超过已认证边界时 fail closed。
 | Manifest | Dataset 的 schema、行数、范围、Payload identity、checksum 和 root |
 | Attempt Control | system-owned 的 Job/事务收敛记录 |
 | Cleanup Root | 第一次 Archive PUT、TAE live staging 或 transfer booking 前创建的 system-owned 外部对象所有权记录 |
-| Conditional Lifecycle Retire | 通过`OpCommitLifecycle`提交；Object、generation、Guard、reservation/protection 或 Tombstone 条件不匹配时必须整体 abort |
+| Conditional Lifecycle Retire | 通过同一commit payload中的tagged `LifecycleCommitEntry`提交；Object、generation、Guard、reservation/protection或Tombstone条件不匹配时必须整体abort |
 | `MIXED_LAYOUT_BLOCKED` | 数据布局导致持续 Rewrite 放大超过 release profile，系统停止退休但保留源数据 |
 | `RESOURCE_BLOCKED` | source/live/transfer/staging 或 Provider 资源超过硬限额 |
 | `CONFLICT_BLOCKED` | 同一 source set 持续与 Merge/DML 冲突，当前 generation 停止重试并等待重新规划 |
@@ -276,7 +276,7 @@ Lifecycle 因而直接基于 TAE Object 和逻辑可见行实现：
 Policy/Binding
   -> Object Metadata
   -> exact source Object set
-  -> Reader/DELETE/Lifecycle Rewrite/OpCommitLifecycle
+  -> Reader/DELETE/Lifecycle Rewrite/LifecycleCommitEntry
   -> existing TAE GC
 ```
 
@@ -353,7 +353,7 @@ final transaction
 
 ### 6.4 正常事务与 commit-unknown 恢复
 
-Dataset/Receipt Catalog写入、普通Row DELETE和`OpCommitLifecycle`必须放在同一个
+Dataset/Receipt Catalog写入、普通Row DELETE和tagged `LifecycleCommitEntry`必须放在同一个
 正常MO分布式事务中：
 
 - 兼容时可走 1PC；
@@ -480,7 +480,7 @@ PartitionState/Metadata
 | Restore Service | 校验 Dataset，写隐藏 staging table，原子发布新表 |
 
 Job Executor运行在CN TaskService worker。TN增加reservation、source protection校验
-和独立`OpCommitLifecycle` handler；TN不运行跨云复制或Lifecycle Planner，普通
+和tagged `LifecycleCommitEntry` handler；TN不运行跨云复制或Lifecycle Planner，普通
 Merge worker不执行Lifecycle任务。
 
 ## 9. Catalog 与身份模型
@@ -881,7 +881,7 @@ Planner 证明 whole_expired
   -> create Attempt Control
   -> final short transaction
        CAS Guard/Binding/owner generation
-       OpCommitLifecycle(WHOLE_TTL, exact Object)
+       LifecycleCommitEntry(WHOLE_TTL, exact Object)
        insert Receipt
   -> commit
   -> existing TAE GC
@@ -921,7 +921,7 @@ Object/Block 都已完整扫描，但 Snapshot 下 `visible_rows == 0`：
 
 - 不创建空 Parquet、Manifest 或 Dataset；
 - 不进入外部 PUT，因此只需要 system-owned Attempt Control；
-- final transaction写入`EMPTY_ARCHIVE` Receipt并执行同一`OpCommitLifecycle`；
+- final transaction写入`EMPTY_ARCHIVE` Receipt并提交同一tagged entry；
 - coverage 不完整时绝不能走该分支。
 
 最终短事务：
@@ -931,7 +931,7 @@ CAS Guard/Binding/owner generation
   -> validate exact source Objects
   -> validate reservation/source protection
   -> publish Dataset/Manifest/Receipt
-  -> OpCommitLifecycle
+  -> LifecycleCommitEntry
        phase-1/phase-2 scan Tombstone in (source_snapshot_ts, prepare_ts]
        any Tombstone targets archived row -> abort
        DropIntent source Object
@@ -965,10 +965,12 @@ abort final transaction
 
 首个 GA 不用 Archive Delete Vector 修补已导出 Payload。
 
-### 13.3 `OpCommitLifecycle`
+### 13.3 Tagged `LifecycleCommitEntry`
 
-Whole和Rewrite共用独立、版本化的`OpCommitLifecycle`，不复用普通
-`OpCommitMerge`，也不把optional字段塞进老TN可能忽略的消息。
+Whole和Rewrite共用`PrecommitWriteCmd.EntryList`中的版本化
+`LifecycleCommitEntry` tag，不复用普通`OpCommitMerge`，也不在commit前发送独立
+`TxnOperator.Write`。Dataset/Receipt和该tag由同一workspace生成同一个可重放commit
+payload。
 
 协议冻结：
 
@@ -984,8 +986,10 @@ nested existing MergeCommitEntry + transfer digest
 entry digest
 ```
 
-TN handler复用现有`mergeObjectsEntry`的create/drop/两阶段transfer/WAL/replay。
-旧TN对新opcode明确返回unsupported；capability未全集群启用时只允许
+TN iterator在普通Entry转换前识别tag，handler复用现有`mergeObjectsEntry`的
+create/drop/两阶段transfer/WAL/replay。每个内部TAE retry generation从immutable
+Booking重建私有entry；旧generation的Catalog node、TransferTable和entry指针不得
+复用。老TN由capability gate阻止接收新tag；capability未全集群启用时只允许
 Dry-run/Export-only。
 
 ## 14. 少量 Mixed Object 路径
@@ -1104,7 +1108,7 @@ Acquire exact Object reservation
   -> full Archive readback + row/transfer conservation
   -> short final transaction:
        Dataset/Receipt
-       OpCommitLifecycle
+       LifecycleCommitEntry
        source DropIntent
        create live Objects
        transfer post-S live-row deletes
@@ -1371,11 +1375,11 @@ aborted。
 CAS Feature Guard/Binding/active child attempt/owner
 CAS Dataset VERIFIED_NOT_PUBLISHED -> PUBLISHED
 insert immutable Receipt
-OpCommitLifecycle(WHOLE_ARCHIVE, exact source Object)
+LifecycleCommitEntry(WHOLE_ARCHIVE, exact source Object)
 ```
 
 `EMPTY_ARCHIVE` 不写 Dataset，只提交匹配的 zero-visible Receipt 和
-`OpCommitLifecycle(WHOLE_ARCHIVE, exact source Object)`；其余 Guard、owner、
+`LifecycleCommitEntry(WHOLE_ARCHIVE, exact source Object)`；其余 Guard、owner、
 attempt、reservation、source protection 和 exact Object
 条件不放宽。
 
@@ -1395,7 +1399,7 @@ insert Receipt
 ```text
 Whole:
   CAS Guard/Binding/active child attempt/owner
-  OpCommitLifecycle(WHOLE_TTL, exact source Object)
+  LifecycleCommitEntry(WHOLE_TTL, exact source Object)
   insert Receipt
 
 Mixed:
@@ -1410,7 +1414,7 @@ Mixed:
 CAS Guard/Binding/active child attempt/owner
 CAS Dataset VERIFIED_NOT_PUBLISHED -> PUBLISHED    # Archive only
 insert immutable Receipt
-OpCommitLifecycle(
+LifecycleCommitEntry(
   MIXED_REWRITE,
   exact source Objects,
   staged live Objects,
@@ -1695,15 +1699,17 @@ source reservation/protection
 - commit unknown 保留 staging 和事务身份；
 - transaction/provider/workspace 均受硬 deadline。
 
-### P0-3：`OpCommitLifecycle`、WAL 与 Replay
+### P0-3：Tagged Lifecycle Entry、WAL 与 Replay
 
 证明：
 
 - table/physical generation、exact Object 和 Guard CAS；
 - Object-not-found 不被当作成功；
-- 独立opcode在老TN明确unsupported，不被降级为普通Merge；
+- tag位于可重放commit payload，老TN由capability gate阻止接收；
 - nested MergeCommitEntry、entry/transfer/Receipt digest一致；
-- duplicate Prepare、`ErrTAENeedRetry`、WAL replay 和 response lost 幂等；
+- duplicate Prepare、`ErrTAENeedRetry`多generation、WAL replay 和 response lost幂等；
+- 外部逻辑attempt冻结绝对deadline/累计预算，每个内部generation重建私有entry；
+- `LogTxnEntry`成功是runtime Owner转移点，前后故障无slab/page/TransferDels泄漏；
 - 复用create/drop/transfer command后重启Object集合正确；
 - 普通宽松 SoftDelete 行为不变。
 
@@ -1945,8 +1951,8 @@ SHOW LIFECYCLE BLOCKERS
 | 位置 | 改动 |
 |---|---|
 | `pkg/vm/engine/disttae` | exact-object Reader/Metadata page；内部可写SI封装；Lifecycle rewrite host |
-| `proto/api.proto` | 独立、版本化`OpCommitLifecycle/LifecycleCommitEntry` |
-| `pkg/txn/storage/tae`、`pkg/vm/engine/tae/rpc` | lifecycle opcode route、bounded validation、错误原样返回 |
+| `proto/api.proto` | 版本化tagged `LifecycleCommitEntry`及payload字段 |
+| `pkg/catalog`、`pkg/vm/engine/tae/rpc` | tagged entry route、bounded validation、错误原样返回 |
 | TAE Merge/txn/catalog | exact reservation admission；复用create/drop/两阶段transfer |
 | TAE GC | 复用SyncProtection并在Lifecycle Prepare验证 |
 | SQL/frontend | table-level DDL、Guard、Dry-run/SHOW/RESTORE、DROP owner tombstone |
@@ -2004,7 +2010,7 @@ SHOW LIFECYCLE BLOCKERS
 - Manifest PUT/verify 前后；
 - Root/Attempt `FINALIZING` commit 后、tenant final submit 前；
 - reservation/protection 获取、续租、过期、释放前后；
-- `OpCommitLifecycle` parse/validate/register 前后；
+- tagged Lifecycle entry parse/validate、builder和`LogTxnEntry`前后；
 - live staging Object/transfer booking 创建前后；
 - Relation.Delete workspace/write/prepare 前后；
 - Catalog participant prepare 前后；
@@ -2051,7 +2057,7 @@ SHOW LIFECYCLE BLOCKERS
 |---|---|---|
 | Gate A | Binding、Guard、Metadata Planner、Dry-run | 无 PUT、无退休 |
 | Gate B | Discovery、Exact Reader、Export-only、Parquet/Manifest | 只写 staging/export，不退休 |
-| Gate C | Attempt/Cleanup、reservation/protection、`OpCommitLifecycle`和Rewrite原型 | 测试环境退休 |
+| Gate C | Attempt/Cleanup、reservation/protection、tagged Lifecycle entry和Rewrite原型 | 测试环境退休 |
 | Gate D | Whole、小Mixed DELETE、Mixed Rewrite、八项P0、故障矩阵 | 受控试点 |
 | Gate E | 1/10 TiB、升级、运维、成本、客户试点 | Commercial GA |
 

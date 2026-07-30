@@ -419,7 +419,7 @@ LifecycleChild
   RootFinalizing
   FinalTxn
     CatalogCAS
-    OpCommitLifecycle / RelationDelete
+    tagged LifecycleCommitEntry / RelationDelete
     Commit
   Reconcile
 ```
@@ -436,7 +436,7 @@ Provider object ordinal可以span attribute，full key不进入普通trace。
 - Dataset PUBLISHED无Root；
 - Root PUBLISHED无Dataset且owner未DROP；
 - DELETING出现新lease；
-- 未知/不支持的`OpCommitLifecycle`协议被跳过或当普通Merge提交；
+- 未知/不支持的tagged Lifecycle协议被跳过或当普通Merge提交；
 - Rewrite row-conservation/transfer root不匹配；
 - Rewrite source object count不等于1或出现inline transfer；
 - Whole source/layout proof数量、顺序或identity不一致；

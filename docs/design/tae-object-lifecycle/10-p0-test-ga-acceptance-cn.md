@@ -131,19 +131,19 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 - 必须增加普通row lock或commit validation；
 - 不能靠“重复删除结果一样”接受，因为Archive会复活用户已删行。
 
-## 5. P0-3 `OpCommitLifecycle`、WAL 与 Replay
+## 5. P0-3 Tagged Lifecycle Entry、WAL 与 Replay
 
 ### 5.1 Wire
 
 | ID | 场景 | 通过条件 |
 |---|---|---|
 | WIR-001 | V1 deterministic marshal | digest稳定 |
-| WIR-002 | old TN/unknown opcode | 整txn unsupported abort |
+| WIR-002 | old TN/unsupported tag capability | CN不发送退休；整txn unsupported abort |
 | WIR-003 | unknown version/mode/field | abort |
 | WIR-004 | duplicate/reordered source Object | reject |
 | WIR-005 | entry Object/bytes边界 | limit严格 |
-| WIR-006 | `ErrTAENeedRetry` | 原payload/digest重放 |
-| WIR-007 | old TN看到new protobuf字段 | 不可能降级为普通Merge提交 |
+| WIR-006 | `ErrTAENeedRetry` G1 -> G2 | 原payload/digest重放；G2重建私有entry |
+| WIR-007 | old TN仍在目标拓扑 | capability/topology fence在发送前禁止retire |
 | WIR-008 | Dataset/Receipt缺少entry | finalizer API拒绝commit |
 | WIR-009 | Rewrite source基数0/1/2 | 只有1通过 |
 | WIR-010 | Rewrite inline transfer非空 | reject |
@@ -160,6 +160,15 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WIR-021 | canonical payload digest或完整文件SHA错误 | Prepare拒绝 |
 | WIR-022 | Rewrite token退化同类Whole/Empty | 允许且仍满足基数/child矩阵 |
 | WIR-023 | Whole token升级Rewrite或TTL/Archive互换 | Prepare拒绝 |
+| WIR-024 | G2复用G1 entry/Catalog node/TransferTable指针 | 测试必须检测并失败 |
+| WIR-025 | retry/restart | 绝对deadline、generation和累计预算不续期 |
+| WIR-026 | concurrent duplicate decode | 仅一个注册者；失败者释放私有资源 |
+| WIR-027 | Dataset/Receipt与Lifecycle tag任一缺失 | 整个事务拒绝提交 |
+| WIR-028 | phase1/page install/LogTxnEntry逐点失败 | 无slab/page/TransferDels残留 |
+| WIR-029 | 跨booking page重复destination/缺口 | 全局bitmap拒绝 |
+| WIR-030 | digest golden vector | CN/TN/离线codec四种digest逐字节一致 |
+| WIR-031 | slab 4/16 MiB边界与非默认schema Extra | 按allocator容量计费或读取前拒绝 |
+| WIR-032 | Root deadline D与commit request不一致/触发fallback | 发送前拒绝，不获得新deadline |
 
 ### 5.2 Condition
 
@@ -215,7 +224,7 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | RSV-011 | Merge handler error/panic | ticket exactly-once释放 |
 | RSV-012 | 多表/多Object压力 | 无单全局mutex热点 |
 
-Scheduler skip 只是性能优化；`OpCommitMerge`和`OpCommitLifecycle`的TN最终准入才是
+Scheduler skip只是性能优化；普通`OpCommitMerge`和tagged Lifecycle entry的TN最终准入才是
 安全边界。
 
 ### 6.2 GC SyncProtection
@@ -382,7 +391,7 @@ new_live_rows   = live_visible
 | RWT-023 | CreatedObjs被重排 | order digest不匹配，Prepare拒绝 |
 | RWT-024 | producer后注入mapping修改/重排 | 冻结的producer transfer digest不匹配，Prepare拒绝 |
 | RWT-025 | CN booking success/error/cancel | producer slab都exactly-once Release |
-| RWT-026 | duplicate Prepare并发解码 | 每次使用私有TransferTable，无共享修改或double Release |
+| RWT-026 | duplicate Prepare并发解码 | 仅一个注册；失败者私有TransferTable释放，无共享修改或double Release |
 
 ### 8.3 Review P0-1：Root-owned staging
 
@@ -437,7 +446,8 @@ new_live_rows   = live_visible
 - TN按source Object同序重算exact ObjectStats和全部`SourceLayoutProof`；
 - TN从Object metadata验证物理行数，校验CN计数等式、created rows、mapping
   bounds/count/digest和`CreatedObjs`顺序；
-- destination bitmap可拒绝重复destination和created row缺口，但不声称重新证明
+- 整个entry共享的全局destination bitmap必须拒绝跨page重复destination和created row
+  缺口，但不声称重新证明
   source row的TTL分类或destination业务语义；
 - TN不读取TTL业务值或Provider Parquet；
 - CN classifier做属性测试、mutation test和1/10 TiB源/Archive/live对账；
@@ -461,7 +471,27 @@ new_live_rows   = live_visible
   `LIFECYCLE_OVERSIZE_UNSUPPORTED/RESOURCE_BLOCKED`，
   source保持可见。
 
-### 8.10 普通 Merge 无回归
+### 8.10 Review P0-7：可重放 tagged entry
+
+- Dataset/Receipt和Lifecycle tag来自同一个workspace/commit payload；
+- G1 NeedRetry后G2完整重放tag，不能只提交Catalog DML；
+- 每代从immutable Booking重建私有entry/Catalog node/TransferTable/runtime page；
+- replay memo不保存或返回旧generation可变指针；
+- `TxnCommitRequest.DeadlineUnixNano`、最大generation和累计I/O/CPU/delta预算不续期；
+- same external txn/different digest、tag和Catalog写任一缺失均整体abort。
+
+### 8.11 Review P0-8：注册前 runtime Owner
+
+- builder -> txn entry只在`txn.LogTxnEntry`成功后转移Owner；
+- 注册API满足nil=唯一entry已接管、error=entry不可见；返回边界故障不能形成ambiguous
+  Owner；
+- phase1、page install、LogTxnEntry前/中/后逐点注入失败；
+- 注册前释放slab/page/TransferDels/decoder buffer，注册后由entry exactly-once释放；
+- concurrent duplicate decode失败者只清私有runtime状态；
+- 所有错误、rollback和NeedRetry都不能删除Root-owned live/booking文件；
+- 普通Merge #26445共享修复或Lifecycle独立builder至少有一条方案通过同一回归矩阵。
+
+### 8.12 普通 Merge 无回归
 
 - 未绑定表完全不进入 Lifecycle discovery/reservation；
 - 无 reservation 时普通 Merge 的选择、write、transfer、WAL 和 GC 字节级/语义级
@@ -641,10 +671,10 @@ case：
 |---|---|---|---|
 | old | old | old | 无Lifecycle retire |
 | new | old | old | Discovery/Dry-run only |
-| old+new | new | old | no `OpCommitLifecycle` |
+| old+new | new | old | no Lifecycle retirement tag |
 | new | new | old | no retire until protocol advance |
 | new | new | new | retire |
-| old TN receives new entry | mixed fault | any | explicit abort |
+| router将向old TN发送new entry | mixed fault | any | 发送前fence；该txn不发起retire |
 
 流程：
 

@@ -3,7 +3,7 @@
 > 文件名为兼容已有链接保留 `strict-object-retire`。
 >
 > 本文唯一负责 Whole Object 退休、Mixed Rewrite、source reservation/protection、
-> CN 构建器、`OpCommitLifecycle` wire、TN Prepare、两阶段 Tombstone transfer、
+> CN 构建器、tagged Lifecycle commit wire、TN Prepare、两阶段 Tombstone transfer、
 > WAL/replay、commit unknown、滚动升级以及与普通 Merge 的协调。
 
 ## 1. 结论
@@ -120,6 +120,9 @@ destination row的同一循环中记录当前位置，并在writer `Sync`顺序�
 [PR #26333](https://github.com/matrixorigin/matrixone/pull/26333)修复，后续不得回退；
 剩余deadline/工作量预算缺口由
 [Issue #26377](https://github.com/matrixorigin/matrixone/issues/26377)独立跟踪。
+`NewMergeObjectsEntry -> txn.LogTxnEntry`之间的注册前资源Owner缺口已经由真实TAE
+故障注入确认，并由
+[Issue #26445](https://github.com/matrixorigin/matrixone/issues/26445)独立跟踪。
 这些普通Merge行为仍未提供Lifecycle所需的Root ownership、有界delta和caller
 deadline。Lifecycle只复用排序、写Object、transfer page、create/drop WAL与Replay
 核心，并使用本文定义的wrapper和options。
@@ -144,7 +147,7 @@ deadline。Lifecycle只复用排序、写Object、transfer page、create/drop WA
 - DropIntent/checkpoint/logtail/GC 是当前唯一回收权威；
 - Lifecycle 不复制 Snapshot/PITR/ISCP/GC watermark 逻辑。
 
-### 2.3 Object Rewrite 六项 P0 决策
+### 2.3 Object Rewrite 八项 P0 决策
 
 | Review P0 | 固定决策 |
 |---|---|
@@ -154,6 +157,8 @@ deadline。Lifecycle只复用排序、写Object、transfer page、create/drop WA
 | RWT-P0-4 | Lifecycle只允许immutable external booking，禁止inline |
 | RWT-P0-5 | 一个Rewrite child严格一个source Object；资源按物理slot admission |
 | RWT-P0-6 | TN验证identity和结构守恒；CN承担TTL/D分类，不做第二次业务值全扫 |
+| RWT-P0-7 | Lifecycle tagged entry必须进入可重放Commit payload；每代TAE txn从immutable bytes重新构造私有entry |
+| RWT-P0-8 | `LogTxnEntry`成功是runtime资源Owner转移点；注册前失败由builder幂等清理，Root物理文件不动 |
 
 ## 3. 普通 Merge 的代码事实
 
@@ -399,7 +404,7 @@ SyncProtection的BloomFilter又能在读取前覆盖未来可能出现的live/bo
 
 - CN worker按现有 Publication worker模式续 `valid_ts`；
 - 任一次续租失败立即 cancel Reader/Writer；
-- TN `OpCommitLifecycle` Prepare 调用
+- TN Lifecycle entry Prepare 调用
   `ValidateSyncProtection(job_id, prepare_ts, expected_set_digest)`；
 - TN restart 后 protection 丢失，final transaction abort；
 - response unknown 后 protection 不因 worker lease丢失立即 unregister，直到原
@@ -772,7 +777,7 @@ Header:
   source_object_id              = canonical types.ObjectidSize(18) bytes
   source_object_stats_digest    = 32 bytes
   source_layout_digest          = 32 bytes
-  created_object_layout_digest  = 32 bytes
+  created_layout_digest         = 32 bytes
   first_source_block            = uint32
   source_block_count            = uint32
   block_record_count            = uint32
@@ -814,9 +819,13 @@ Root Object和wire中的`sha256`必须等于“完整文件（包含trailer）�
   `live_rows`和`sum(CreatedObject.Rows)`；
 - destination object ordinal必须小于CreatedObjs数量且小于`api.NoTransfer(255)`，
   block/row ordinal必须落在对应created Object的实际布局内；
-- TN可以使用destination bitmap做重复/缺口防御检查，但该检查只证明Booking的结构
-  自洽，不重新证明TTL分类、source row为何应当存活或mapping的业务语义；bitmap按
-  `ceil(live_rows/8)`计入TN booking memory token，在校验live row硬上限后才分配；
+- TN必须为整个`LifecycleCommitEntry`分配一张全局destination bitmap，不能按booking
+  page分别分配；destination按`CreatedObjs` producer顺序和各Block实际行数展平，
+  每读取一条mapping先校验bounds，再以test-and-set拒绝跨page/同page重复，全部page
+  结束后必须满足`set bits == live_rows == sum(CreatedObject.Rows)`且不存在缺口；
+  该检查只证明Booking结构自洽，不重新证明TTL分类、source row为何应当存活或mapping
+  的业务语义；bitmap按`ceil(live_rows/8)`计入TN booking memory token，并且只能在
+  `live_rows`、created layout和hard limit全部通过checked arithmetic后分配；
 - page的Block范围连续、互不重叠，全部page完整覆盖proof中的全部Block；
 - booking引用冻结`root_id + TAE_TRANSFER_BOOKING kind-local ordinal +
   TAE namespace digest`，不能借用另一Root下内容相同的文件。
@@ -832,6 +841,77 @@ Root Object和wire中的`sha256`必须等于“完整文件（包含trailer）�
 `CreatedObjs`顺序digest。该格式是Lifecycle V1 wire的一部分，普通Merge codec和
 临时`BookingLoc`字节保持兼容、不受影响。
 
+### 8.3.1 V1 Digest 唯一命名与公式
+
+V1只使用以下四个语义digest，禁止再引入
+`created_object_order_digest/transfer_layout_digest/transfer_digest`等同义字段：
+
+```text
+source_set_digest
+created_layout_digest
+transfer_mapping_digest
+entry_digest
+```
+
+共同编码规则：
+
+- 哈希算法固定`SHA-256`；
+- domain separator为下列ASCII字节并包含结尾`\x00`；
+- 所有整数big-endian，定长字段直接写入，变长字段使用`uint32 length + bytes`；
+- repeated字段严格按协议指定顺序聚合，禁止依赖Go map或protobuf未知字段顺序；
+- unknown field、重复field或non-canonical编码直接拒绝，不能先归一化后接受；
+- digest字段自身在计算对应digest时写全零。
+
+公式固定为：
+
+```text
+source_set_digest =
+  SHA256("MO-LIFECYCLE-SOURCE-SET-V1\x00"
+    || source_count:u32
+    || for each source in ObjectID order:
+         object_id
+         len(object_stats):u32 || object_stats
+         object_stats_digest
+         block_count:u32
+         physical_rows:u64
+         block_layout_digest)
+
+created_layout_digest =
+  SHA256("MO-LIFECYCLE-CREATED-LAYOUT-V1\x00"
+    || created_count:u32
+    || for each CreatedObj in exact DoMergeAndWrite producer order:
+         object_ordinal:u32
+         len(object_stats):u32 || canonical_object_stats
+         block_count:u32
+         rows:u64
+         for each block in physical block ordinal order:
+           block_ordinal:u32
+           actual_rows:u32)
+
+transfer_mapping_digest =
+  SHA256("MO-LIFECYCLE-TRANSFER-MAPPING-V1\x00"
+    || source_set_digest
+    || created_layout_digest
+    || booking_count:u32
+    || for each booking in ordinal order:
+         ordinal:u32
+         first_source_block:u32
+         source_block_count:u32
+         live_mapping_count:u64
+         canonical_payload_sha256)
+
+entry_digest =
+  SHA256("MO-LIFECYCLE-COMMIT-ENTRY-V1\x00"
+    || deterministic LifecycleCommitEntry bytes with entry_digest zeroed)
+```
+
+`canonical_payload_sha256`仍按8.3节覆盖单个booking canonical payload；
+`transfer_mapping_digest`负责跨booking page聚合，因此同一page换序、漏page、重复page
+或跨page destination重复都不能通过。`entry_digest`覆盖
+`source_set_digest/created_layout_digest/transfer_mapping_digest`、Root identity、
+Receipt/Dataset identity和全部CAS字段。CN encoder、TN decoder和离线round-trip测试
+必须共用同一codec包，禁止各自复制公式。
+
 内存所有权固定为：
 
 ```text
@@ -842,7 +922,8 @@ DoMergeAndWrite
   -> host在success/error/cancel任一路径exactly-once Release CN slab
 
 TN Booking decoder
-  -> 每次Write/Prepare重建本attempt私有TransferTable
+  -> 每个内部TAE generation首次注册时重建该generation私有TransferTable
+  -> 同generation duplicate命中memo，不重复共享/注册第二个可变entry
   -> validation失败/cancel时decoder exactly-once Release
   -> validation成功后原子移交所有权给txn entry
   -> txn Prepare/Rollback exactly-once Release
@@ -926,32 +1007,50 @@ child仍由Sweeper清理；不得把整个Root置为`DELETE_PENDING`而误删Arc
 
 ## 9. Wire 协议
 
-### 9.1 独立 opcode
+### 9.1 可重放的 tagged commit entry
 
-在当前 `OpFaultInject = 2017` 后新增：
+V1不使用独立`TxnOperator.Write(OpCommitLifecycle)`。Lifecycle必须作为
+`PrecommitWriteCmd.EntryList`中的显式tag，随正常commit request一起发送和重放：
 
 ```proto
-OpCommitLifecycle = 2018;
+message Entry {
+    enum EntryType {
+        // 0..6 保留当前已有值。
+        LifecycleCommit = 7;
+    }
+
+    // 当前已有字段保持不变。
+    bytes lifecycle_commit_payload = 11;
+}
 ```
 
-不把 optional lifecycle字段塞进 `OpCommitMerge`。原因：
-
-- 老 TN 会忽略未知 protobuf字段并按普通 Merge提交，违反 fail closed；
-- 新 opcode 在老 TN 返回 `unknown write op`；
-- capability gate 能明确阻止滚动升级期间退休。
-
-路由复用：
+唯一合法组合是：
 
 ```text
-txnOp.Write
-  -> pkg/txn/storage/tae/write.go
-  -> HandleCommitLifecycle
-  -> same TAE txn identified by TxnMeta
+entry_type                 = LifecycleCommit
+lifecycle_commit_payload  = canonical LifecycleCommitEntry bytes
+bat                        = nil
+file_name                  = empty
+database_id/table_id       = payload中的权威物理表路由
 ```
 
-`txnOp.Write`必须按`source physical_table_id`解析并路由到权威TN shard；不能复用
-调试Merge中“取第一个TN”的辅助路径。路由失败或拓扑generation变化返回可重试错误，
-不得把entry发给任意可用TN。
+CN Finalizer把该entry追加到tenant workspace；`workspace.Commit()`生成包含该tag的
+`PrecommitWriteCmd.EntryList`。TN iterator必须在普通`apiEntryToWriteEntry`之前识别
+该tag，解析后调用`HandleCommitLifecycle`。未知版本、非法字段组合或能力不匹配必须
+fail closed，绝不能把它按普通Insert/Delete Entry解释。
+
+采用commit payload而不是独立Write，是因为当前`ErrTAENeedRetry`会新建内部TAE
+transaction并只重放commit request中的payload。单独提前发送的Write不会自然进入新
+generation，可能出现Dataset/Receipt重放成功、Object retirement却缺失。tagged entry
+则在每个内部generation都从同一不可变payload和Booking重新构造。
+
+Capability gate必须在CN发起退休前确认所有可能承载该物理表的TN均支持
+`LifecycleCommit Entry V1`；滚动升级中未满足时只允许Planner/Export，不允许退休。
+`database_id/table_id`必须路由到`source physical_table_id`所属权威TN shard，不能复用
+调试Merge中“取第一个TN”的辅助路径。发送前检查必须绑定exact target service/shard
+和topology generation；检查后目标或generation变化则不发送并返回可重试错误。更老
+TN不能靠“收到后理解未知enum”保证安全，它必须被该fence隔离。重试不得改写payload、
+attempt identity或绝对deadline。
 
 ### 9.2 Protobuf
 
@@ -966,7 +1065,7 @@ message LifecycleReservation {
     uint64 executor_epoch = 2;
     uint64 reservation_generation = 3;
     int64 expire_at_unix_nano = 4;
-    bytes source_digest = 5;
+    bytes source_set_digest = 5;
     repeated SourceLayoutProof source_layouts = 6;
     LifecycleCommitEntry.Mode reserved_mode = 7;
 }
@@ -988,8 +1087,8 @@ message LifecycleTransferBooking {
     uint32 first_source_block = 6;
     uint32 source_block_count = 7;
     uint64 live_mapping_count = 8;
-    bytes transfer_layout_digest = 9;
-    bytes created_object_order_digest = 10;
+    bytes transfer_mapping_digest = 9;
+    bytes created_layout_digest = 10;
     bytes root_id = 11;
     uint32 root_object_ordinal = 12;
     bytes tae_storage_namespace_digest = 13;
@@ -1029,7 +1128,7 @@ message LifecycleCommitEntry {
     timestamp.Timestamp source_snapshot_ts = 18;
 
     repeated LifecycleSourceObject source_objects = 19;
-    bytes source_digest = 20;
+    bytes source_set_digest = 20;
     uint64 source_visible_rows = 21;
     uint64 snapshot_deleted_rows = 22;
     uint64 expired_rows = 23;
@@ -1046,7 +1145,7 @@ message LifecycleCommitEntry {
     string source_protection_job_id = 32;
     int64 source_protection_valid_ts = 33;
 
-    bytes transfer_digest = 34;
+    bytes transfer_mapping_digest = 34;
     bytes entry_digest = 35;
     repeated LifecycleTransferBooking transfer_bookings = 36;
     bytes source_protection_set_digest = 37;
@@ -1059,13 +1158,13 @@ message LifecycleCommitEntry {
 - `CreatedObjs` 是新 live TAE ObjectStats；
 - `Booking`和inline transfer字段必须为空；
 - `transfer_bookings`按ordinal连续递增，冻结每个external booking的exact
-  key/version/SHA/size、source block range、live mapping数、transfer layout digest
-  和`CreatedObjs`顺序digest，并绑定Root child/TAE namespace/codec version；
+  key/version/SHA/size、source block range、live mapping数、transfer mapping digest
+  和`CreatedObjs` layout digest，并绑定Root child/TAE namespace/codec version；
 - booking payload严格使用8.3节Lifecycle Transfer Booking V1；不得直接使用会省略
   全空Block和Root/layout binding的普通`TransferHashPage.Marshal()`；
 - 所有booking的source block range必须连续、无重叠、完整覆盖
   唯一`SourceLayoutProof.block_count`；
-- `reservation.source_digest == entry.source_digest`，且reservation
+- `reservation.source_set_digest == entry.source_set_digest`，且reservation
   `source_layouts`与entry `source_objects`逐项同序；
 - `reservation.reserved_mode -> entry.mode`符合4.3节单向转换矩阵；
 - `source_protection_set_digest`必须与TN manager当前job冻结值完全相同；
@@ -1087,9 +1186,9 @@ serialized entry          <= 1 MiB
 booking files/bytes       <= bounded release profile
 ```
 
-所有 repeated source按 Object ID升序。Digest基于 canonical protobuf（排除自身
-digest字段），`source_digest`同时覆盖全部source和全部layout proof。即使只有一个
-source，wire仍保留repeated字段以支持Whole和版本兼容；TN按mode执行严格基数校验。
+所有 repeated source按 Object ID升序。Digest严格使用8.3.1节的唯一公式；
+`source_set_digest`同时覆盖全部source和全部layout proof。即使只有一个source，
+wire仍保留repeated字段以支持Whole和版本兼容；TN按mode执行严格基数校验。
 Lifecycle不保留“少于50万行走inline”的第二条路径，
 避免entry大小、retry和Owner语义分叉。
 
@@ -1099,24 +1198,32 @@ Finalizer只在 Build `VERIFIED` 后开始：
 
 ```text
 allocate normal tenant txn
+  -> choose absolute final_prepare_deadline D and bind commit context deadline = D
   -> system txn CAS Root VERIFIED -> FINALIZING
        freeze final_txn_id
-       freeze LifecycleCommitEntry digest
+       freeze canonical LifecycleCommitEntry bytes/digest
+       freeze final_prepare_deadline = D
+       freeze max retry generations/cumulative budget profile
        freeze receipt/dataset/manifest identity
   -> tenant txn CAS Guard/Binding/active attempt
   -> tenant txn insert Dataset/Receipt（Archive）
      or TTL Receipt
-  -> txnOp.Write(OpCommitLifecycle, exact entry)
+  -> append tagged LifecycleCommit entry to the same tenant workspace
+  -> workspace.Commit builds one replayable PrecommitWriteCmd.EntryList
   -> commit
 ```
 
-Dataset/Receipt和 `OpCommitLifecycle` 必须由一个不可拆分的 finalizer API加入同一
-`TxnOperator`。任何一步写入 workspace失败都 rollback同一 transaction。
+Dataset/Receipt和tagged Lifecycle entry必须由一个不可拆分的finalizer API加入同一
+`TxnOperator`和同一个commit payload。任何一步写入workspace失败都rollback同一
+transaction；缺少tag时Dataset/Receipt也不得单独提交。`workspace.Commit()`生成的
+`TxnCommitRequest.DeadlineUnixNano`必须精确等于Root已冻结的`D`，不允许使用fallback
+deadline或在发送时重新延长。
 
 禁止：
 
 - 先提交 Dataset再退休；
 - 先退休再异步补 Dataset；
+- 把Lifecycle作为commit前的独立`TxnOperator.Write`发送；
 - response lost后用新 txn ID重发；
 - final transaction执行 Provider I/O；
 - reservation过期后只看 Object仍存在就提交。
@@ -1126,14 +1233,16 @@ Dataset/Receipt和 `OpCommitLifecycle` 必须由一个不可拆分的 finalizer 
 新增：
 
 ```text
-pkg/txn/storage/tae/write.go
+proto/api.proto
+pkg/catalog/tuplesParse.go（或等价Entry iterator扩展）
+pkg/vm/engine/tae/rpc/handle.go
 pkg/vm/engine/tae/rpc/handle_lifecycle.go
 pkg/vm/engine/tae/tables/txnentries/lifecycle_objects.go
 ```
 
 ### 11.1 解析和 digest
 
-1. opcode只接受 `LifecycleCommitEntry`;
+1. iterator只在`EntryType=LifecycleCommit`时接受`lifecycle_commit_payload`；
 2. protocol/version/capability匹配；
 3. canonical重新计算 `entry_digest`;
 4. mode字段组合合法；
@@ -1226,7 +1335,8 @@ TN独立执行的防御性校验：
 
 其中`source_physical_rows`来自TN当前Object metadata；`snapshot_deleted/expired/live`
 计数来自CN并参与算术守恒，Booking只携带`DoMergeAndWrite`实际产生的live mapping。
-TN可以使用destination bitmap拒绝重复destination或created row缺口，但这是传输格式
+TN必须为整个txn entry建立一个全局destination bitmap，拒绝跨Booking page的重复
+destination或created row缺口；不能每个page分别建bitmap。这是传输格式
 的防御性结构检查，不是另一套Merge证明。mapping的业务正确性来自复用同一个
 `DoMergeAndWrite` producer、`CreatedObjs`顺序冻结、producer属性测试和Booking
 编解码round-trip测试。destination唯一性不单列新的架构P0，也不要求修改普通Merge。
@@ -1262,8 +1372,8 @@ type LifecycleMergeOptions struct {
     PhysicalCreatedObjectOwner  PhysicalCreatedObjectOwner
     DeltaLimits                 TombstoneDeltaLimits
     ReservationToken           LifecycleReservationToken
-    ExpectedCreatedObjectOrderDigest [32]byte
-    ExpectedTransferDigest      [32]byte
+    ExpectedCreatedLayoutDigest  [32]byte
+    ExpectedTransferMappingDigest [32]byte
 }
 
 func HandleLifecycleMergeEntryInTxn(
@@ -1275,24 +1385,60 @@ func HandleLifecycleMergeEntryInTxn(
 ) error
 ```
 
-内部：
+内部必须使用显式builder关闭注册前Owner空窗：
 
-1. 以不修改request、不删除Root资产的loader读取immutable booking；
-2. `rel.SoftDeleteObject` source；
-3. `rel.CreateNonAppendableObject` created live Object；
-4. 按wire冻结顺序创建live Object，校验`CreatedObjs`顺序digest和原始
-   `TransferTable` digest；禁止重排或重建mapping；
-5. 构造带`CreatedObjectOwnedByCleanupRoot`的 `mergeObjectsEntry`；
-6. phase-1 Tombstone扫描起点使用 `source_snapshot_ts`，不是 final txn startTS；
-7. 使用共享预算的有界Lifecycle delta visitor执行phase 1/2并prepare transfer pages；
-8. 任一post-S Tombstone若找不到有效destination，包括nil Block map、
+1. 创建`LifecycleEntryBuilder`；它独占decoder私有TransferTable、尚未移交的runtime
+   transfer pages、`TransferDelsMap`和临时buffer；
+2. 以不修改request、不删除Root资产的loader读取immutable booking；
+3. `rel.SoftDeleteObject` source；
+4. `rel.CreateNonAppendableObject` created live Object；
+5. 按wire冻结顺序创建live Object，校验`CreatedObjs` layout digest和原始
+   `TransferTable` mapping digest；禁止重排或重建mapping；
+6. 构造带`CreatedObjectOwnedByCleanupRoot`的 `mergeObjectsEntry`；
+7. phase-1 Tombstone扫描起点使用 `source_snapshot_ts`，不是 final txn startTS；
+8. 使用共享预算的有界Lifecycle delta visitor执行phase 1并prepare transfer pages；
+9. 任一post-S Tombstone若找不到有效destination，包括nil Block map、
    `api.NoTransfer`和越界，都返回typed error并使整个final transaction abort；
-9. `txn.LogTxnEntry` 复用 create/drop/transfer/WAL command；
-10. Lifecycle wrapper只保存validation/digest memo，不创建第二套 Object WAL格式。
+10. 调用`txn.LogTxnEntry`；只有返回成功才把内存/runtime资源Owner从builder原子移交给
+    txn entry，这是唯一注册线性化点；
+11. 注册前任一步失败或并发重复注册的失败者调用`AbortBeforeRegistration()`，释放
+    slab、page、TransferDels和本地Catalog借用状态，但绝不删除Root-owned live/booking
+    文件；
+12. txn entry负责后续phase 2、rollback和exactly-once runtime cleanup，并复用
+    create/drop/transfer/WAL command；Lifecycle wrapper只保存validation/digest memo，
+    不创建第二套Object WAL格式。
+
+`LogTxnEntry`在这里必须满足all-or-nothing合同：返回`nil`表示exactly one entry已经
+可见并接管Owner；返回error表示entry不可见且Owner仍在builder。若当前通用接口不能
+证明“写入后不会返回error”，必须增加返回registration receipt的窄
+`RegisterLifecycleTxnEntry`包装层或等价CAS，不能在ambiguous返回后由builder和entry
+同时清理。并发duplicate必须在同一线性化点决出唯一注册者。
 
 这个wrapper不拥有物理文件cleanup权，不能触发普通CN Merge handler的
 `CleanUpUselessFiles` defer。Lifecycle request在duplicate Prepare和retry中保持
 immutable，booking location不能被loader原地截短。
+
+实现伪代码：
+
+```go
+builder := NewLifecycleEntryBuilder(...)
+defer builder.AbortIfUnregistered()
+
+entry, err := builder.BuildAndPreparePhase1(ctx)
+if err != nil {
+    return err
+}
+if err = txn.LogTxnEntry(tableID, entry); err != nil {
+    return err
+}
+builder.MarkRegistered() // 此后runtime资源只由txn entry释放
+return nil
+```
+
+普通Merge目前存在同类注册前资源残留，已由
+[Issue #26445](https://github.com/matrixorigin/matrixone/issues/26445)跟踪。Lifecycle
+Gate C必须满足二者之一：共享修复已合入并有回归测试；或Lifecycle builder提供独立且
+经过故障注入验证的等价Owner闭环。不得假设普通事务rollback会调用尚未Log的entry。
 
 普通 `HandleMergeEntryInTxn` 继续使用：
 
@@ -1372,11 +1518,19 @@ Root keeps staging until authoritative abort
 ### 12.2 Transfer slab admission
 
 当前mergesort按物理slot分配dense `[]TransferDestPos`，不是按live行数分配；分配
-失败会panic。Lifecycle admission必须按：
+失败会panic。Lifecycle不得硬编码`objectio.BlockMaxRows/ObjectMaxBlocks`，而要冻结并
+校验实际`schema.Extra.BlockMaxRows`和`schema.Extra.ObjectMaxBlocks`。准入计算为：
 
 ```text
-physical slots = block_count * objectio.BlockMaxRows
-CN dense slab bytes
+requested slots =
+  checked(block_count * certified schema.Extra.BlockMaxRows)
+
+allocator charged capacity =
+  requested slots <=   524,288 -> 4 MiB slab对应容量
+  requested slots <= 2,097,152 -> 16 MiB slab对应容量
+  otherwise                    -> checked exact allocation
+
+CN dense slab charged bytes（按allocator量化后容量，不按requested/live rows）
 + max certified decoded source Block vectors
 + mergesort output Batch/Object Writer/index buffer
 + Archive encoder buffer
@@ -1385,7 +1539,13 @@ CN dense slab bytes
 + safety margin
 ```
 
-计算，不使用`live_rows`估算。dense slab在`DoMergeAndWrite`内部创建merger时、首次
+计算，不使用`live_rows`估算。`block_count`、每Block实际行数和schema Extra必须同时
+满足release profile；非认证布局、乘法溢出或Object超过
+`schema.Extra.ObjectMaxBlocks`时在读数据和分配前fail closed。文档中的默认约22 MiB
+Booking估算只适用于`8192 rows/block × 256 blocks/object`认证profile，不代表所有
+合法表。
+
+dense slab在`DoMergeAndWrite`内部创建merger时、首次
 `BlockDataReadNoCopy`之前分配，因此必须在调用`DoMergeAndWrite`前取得覆盖上述峰值
 的task-level memory token；不能在读完Block后补做admission。每次Block读取前再按
 Object metadata的column extent `OriginSize`做checked uint64求和，取得该Block的
@@ -1514,16 +1674,17 @@ ValidateNoPostSnapshotDelete(
 
 ### 14.1 1PC/2PC
 
-`OpCommitLifecycle` 是正常 `TxnOperator.Write`：
+tagged Lifecycle entry属于正常commit payload：
 
-- 单 participant满足条件时可1PC；
-- Dataset/Receipt或其他 Catalog participant存在时走2PC；
-- 所有 participant同一 Txn ID和commit decision；
-- Lifecycle不自建 commit coordinator。
+- 单participant满足条件时可1PC；
+- Dataset/Receipt或其他Catalog participant存在时走2PC；
+- 所有participant共享同一外部Txn ID、entry bytes和commit decision；
+- Dataset/Receipt存在而Lifecycle tag缺失，或反向缺失，都必须使整个事务失败；
+- Lifecycle不自建commit coordinator，也不在commit前单独发送Write。
 
 ### 14.2 重复 Write/Prepare
 
-TAE txn memo key：
+外部逻辑attempt memo key：
 
 ```text
 (txn ID, attempt ID, entry digest)
@@ -1531,21 +1692,50 @@ TAE txn memo key：
 
 规则：
 
-- same txn/same digest重复到达：返回同一注册结果；
+- same txn/same digest重复到达：返回同一逻辑注册结果，但绝不能返回某个旧内部
+  generation的entry、Catalog node或TransferTable指针；
 - same txn/different digest：fatal transaction error；
 - different txn/same attempt：只有旧 txn明确 aborted且 Root CAS新 txn后才允许；
-- source Object missing不作为duplicate success。
+- source Object missing不作为duplicate success；
+- 同一内部generation并发decode时只有一个builder可以完成`LogTxnEntry`；失败者释放
+  全部私有runtime资源，不删除Root文件。
 
 ### 14.3 `ErrTAENeedRetry`
 
-Retry必须：
+必须区分两层身份：
 
-- 从原始 request bytes重新解析同一 Lifecycle entry；
-- 使用同一 final Txn ID语义和 entry digest；
-- 重新校验 reservation/protection；
-- 不重新执行 Build或Provider PUT；
-- 旧 TAE txn的DropIntent/created catalog node随rollback清理；
-- staging live/Archive仍由Root持有。
+```text
+external logical attempt:
+  external txn ID + attempt ID + canonical entry bytes/digest
+  Root/Booking identities
+  absolute final_prepare_deadline
+  max internal generations
+  cumulative I/O/CPU/delta budget
+
+internal TAE execution generation:
+  G1, G2, ...
+  private Catalog nodes + TransferTable + txn entry + runtime pages
+```
+
+Finalizer预先选择并在Root冻结绝对deadline `D`，再以同一`D`作为commit context
+deadline；`TxnCommitRequest.DeadlineUnixNano`是TN收到的唯一wire来源，且必须等于
+Root中的`D`。retry不得重新计算`now + 60s`；每代可以重新验证剩余预算，但所有
+generation共享同一个绝对deadline、最大generation数以及累计I/O/CPU/delta预算。
+
+每次retry必须：
+
+- 从commit request中的原始tagged entry bytes重新解析同一Lifecycle entry；
+- 使用同一external Txn ID、attempt ID和entry digest；
+- 从immutable Booking构造全新的私有TransferTable、Catalog node和txn entry；
+- 重新校验reservation/protection和当代剩余预算；
+- 不重新执行Build或Provider PUT；
+- G1 rollback后只清理G1 Catalog/runtime状态，任何G1指针不得交给G2；
+- staging live/Archive仍由Root持有；
+- 超过绝对deadline、最大generation或累计预算后fail closed，不再重试。
+
+Handler的replay context只保存不可变bytes/digest、Root identity、deadline/budget和最终
+逻辑结果；不得缓存可变entry指针。这样`ErrTAENeedRetry`重放Dataset/Receipt时，完整
+Lifecycle retirement也必然在新TAE txn中重新注册。
 
 ### 14.4 Response lost
 
@@ -1602,7 +1792,7 @@ checkpoint/GC后:
   existing TAE GC physically deletes old source
 ```
 
-Lifecycle不新建第二套WAL/Replay引擎；`OpCommitLifecycle`只在Prepare时验证额外的
+Lifecycle不新建第二套WAL/Replay引擎；tagged Lifecycle entry只在Prepare时验证额外的
 Archive/分类/Owner条件，成功后复用create/drop/transfer transaction command。
 
 ### 15.2 Transfer page
@@ -1738,7 +1928,11 @@ block-streaming Reader完成认证。
 - ordinary owner rollback删除created Object；
 - Lifecycle owner rollback不删Root live/booking，权威aborted后由Sweeper删除；
 - `ErrTAENeedRetry`后复用同一staging，最终Catalog引用文件仍存在；
-- transfer phase-1/phase-2每个错误都向上返回并abort。
+- transfer phase-1/phase-2每个错误都向上返回并abort；
+- phase-1、runtime page install、`LogTxnEntry`之前/之中/成功之后逐点注入失败；
+- 注册前失败释放slab/page/TransferDels/decoder状态，不删除Root文件；
+- `LogTxnEntry`成功后只由txn entry释放runtime资源，不double free；
+- 普通Merge #26445共享修复或Lifecycle独立builder回归测试。
 
 ### 19.3 并发
 
@@ -1770,24 +1964,34 @@ block-streaming Reader完成认证。
 ### 19.5 事务和恢复
 
 - 1PC/2PC；
-- duplicate Write/Prepare；
-- `ErrTAENeedRetry`；
+- duplicate tagged entry/Prepare；
+- G1 `ErrTAENeedRetry`后G2仍包含完整Dataset/Receipt和Lifecycle retire；
+- G2不复用G1 entry、Catalog node、TransferTable或runtime page；
+- retry/restart不延长`DeadlineUnixNano`，达到generation/累计预算上限后终止；
+- concurrent duplicate decode只有一个注册者，失败者释放私有资源；
+- Dataset/Receipt存在但Lifecycle tag缺失，以及反向缺失，整个事务都失败；
 - CN/TN crash在每个Create/Drop/transfer/catalog write之间；
 - commit response lost；
 - Receipt存在/缺失/digest mismatch；
 - WAL replay后active source/live Object集合正确；
-- rolling upgrade老TN明确拒绝2018 opcode。
+- rolling upgrade capability gate阻止老TN收到LifecycleCommit tag，新TN拒绝未知版本。
 
 ### 19.6 TN信任边界与资源
 
 - Whole多source的proof数量/顺序/Object ID/stats/layout任一变化都fail closed；
 - Rewrite proof数量严格为1；
 - CN计数不满足物理/可见/created rows算术守恒时TN拒绝；
-- Booking mapping越界、source offset重复、destination重复或created row缺口时TN拒绝；
+- Booking mapping越界、source offset重复、跨page destination重复或created row缺口时
+  TN全局bitmap拒绝；
+- digest四个唯一名称、domain separator、canonical endian/order和zeroed-self字段的
+  CN/TN/离线golden vector一致；
 - TN不重读TTL业务列或Provider Payload；
 - TN不根据D/E分类重新生成或修补destination mapping；
 - classifier属性测试覆盖所有支持时间类型、cutoff边界和D/E/L完备性；
 - 单源最大blocks/rows/bytes和几乎全部live的dense transfer峰值；
+- slab requested slots跨4 MiB/16 MiB量化边界，token按allocator capacity计费；
+- 非默认`schema.Extra.BlockMaxRows/ObjectMaxBlocks`在认证范围内正确计费，范围外读取
+  前拒绝；
 - metadata extent估算在limit-1/limit/limit+1、溢出和未知时读取前fail closed；
 - 3 GiB多Block Object通过；超认证单Block/单行不进入Reader；
 - 第二个source在Root/FileService/Provider side effect前拒绝；
@@ -1812,7 +2016,8 @@ block-streaming Reader完成认证。
 5. 复用SyncProtection保护exact Data/Tombstone文件，不增加长期table-only Snapshot。
 6. 到期行使用`NoTransfer`，不生成逐行Tombstone。
 7. 存活行复用现有Merge create/drop/两阶段transfer/WAL/GC。
-8. 使用独立`OpCommitLifecycle`，防止老TN把新协议当普通Merge执行。
+8. 使用`PrecommitWriteCmd.EntryList`中的tagged LifecycleCommit entry，确保每一代
+   TAE retry完整重放；capability gate防止老TN误解析。
 9. 首个GA不改变普通Merge的physical layout策略；乱序表的持续成本由budget和SLO限制。
 10. Lifecycle Rewrite严格单源、一律external booking，默认集群并发1。
 11. transfer只映射live survivor；首个GA对任何post-S `NoTransfer` DELETE统一
@@ -1826,3 +2031,7 @@ block-streaming Reader完成认证。
 15. Lifecycle Booking使用独立V1 envelope；普通Merge codec保持兼容。
 16. task-level内存令牌在`DoMergeAndWrite`前取得，未认证Block在payload读取前拒绝。
 17. WAL/Replay不恢复历史运行时transfer page；TN restart后的旧事务缺页必须冲突。
+18. 外部逻辑attempt与内部TAE execution generation分离；每代从immutable Booking构造
+    私有entry，绝对deadline和累计预算不因retry续期。
+19. `txn.LogTxnEntry`成功是runtime资源Owner线性化点；注册前由builder释放，注册后由
+    txn entry释放，任何一方都不删除Root-owned物理文件。

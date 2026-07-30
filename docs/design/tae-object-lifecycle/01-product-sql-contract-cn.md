@@ -248,7 +248,7 @@ Binding 只允许：
 - 没有不支持依赖；
 - 当前没有用户 Snapshot/PITR/Backup/Clone/Branch 操作；
 - 集群 capability 满足至少 Discovery/Dry-run；真正退休还需
-  `OpCommitLifecycle`/reservation/protection capability。
+  tagged Lifecycle commit/reservation/protection capability。
 
 以下表拒绝：
 
