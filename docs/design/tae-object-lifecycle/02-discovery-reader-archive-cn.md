@@ -333,9 +333,14 @@ chunk_ordinal
 file_ordinal
 row_group_ordinal
 row_count
+logical_bytes
 canonical_content_hash
 chunk_digest
 ```
+
+`logical_bytes`是该Row Group所有行经过同一canonical encoder及其framing后的未压缩字节数，
+不是Parquet压缩大小、文件大小或内存allocator用量。它与`row_count`共同构成Archive Writer
+和Restore共享的可恢复容量合同。
 
 公式冻结为：
 
@@ -346,7 +351,7 @@ canonical_content_hash =
 chunk_digest =
   SHA256("mo-lifecycle-chunk/v1"
          || chunk_ordinal || file_ordinal || row_group_ordinal
-         || row_count || canonical_content_hash)
+         || row_count || logical_bytes || canonical_content_hash)
 
 Manifest.dataset_content_hash =
   SHA256("mo-lifecycle-dataset-content/v1"
@@ -379,6 +384,7 @@ row_groups[] {
   chunk_ordinal
   row_group_ordinal
   row_count
+  logical_bytes
   canonical_content_hash
   chunk_digest
 }
@@ -389,13 +395,31 @@ Manifest记录Dataset/Root/Attempt、schema descriptor、文件集、
 `total_chunk_count`、`dataset_content_hash`、`hash_formula_version`、总行数、
 source snapshot/evaluation time/cutoff/source set digest、Lifecycle列min/max、Stage
 identity和加密信息。`total_chunk_count`必须等于所有文件Row Group数量之和，合法
-`chunk_ordinal`范围严格为`0..total_chunk_count-1`。
+`chunk_ordinal`范围严格为`0..total_chunk_count-1`。每个文件的`row_count`和
+`logical_bytes`必须分别等于其Row Group对应字段之和。
 
 Writer按`target_payload_file_bytes`流式切分，不按“每天一个文件”或“月底全量合并”。
 默认值在Provider/Restore认证后冻结，并同时受`max_payload_files_per_dataset`和单次Root
 bytes上限约束。每个Row Group对应一个Restore chunk，并受`max_chunks_per_dataset`硬上限；
 Writer在产生超限Manifest前必须缩小source batch或返回`RESOURCE_BLOCKED`。Phase 1不做
 Archive compaction；需要合并文件时作为独立优化设计。
+
+每个Row Group还必须同时满足：
+
+```text
+row_count <= max-restore-chunk-rows
+logical_bytes <= max-restore-chunk-logical-bytes
+```
+
+两个上限都是认证配置，启动时必须大于0且不能运行时自动放宽。Writer在追加下一行会使任一
+上限超出时，先flush当前非空Row Group，再把该行写入新Row Group；等于上限合法。若单行
+canonical logical bytes已经超过上限，返回`RESOURCE_BLOCKED`，禁止进入final transaction，
+源数据保持活动可见，Root异步清理此前已产生的staging。
+
+Provider full readback必须根据实际解码结果重新计算每个Row Group的`row_count`和
+`logical_bytes`并与Manifest比较。Restore在GET/解码前检查Manifest声明的两个值不超过
+当前release profile上限；unknown、缺失、0值或超限一律fail closed。Restore实际解码和
+普通INSERT仍使用现有CN内存/事务预算，不能把高压缩率后的物理size当作准入依据。
 
 Writer接口：
 

@@ -82,10 +82,17 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
   或chunk hash不一致均禁止发布；
 - Chunk事务不得更新增量SHA digest；最终发布事务一次性写
   `Attempt.verified_content_hash`；
+- Row Group行数和canonical logical bytes分别覆盖cap-1、cap、cap+1；
+- 极高压缩率、大BLOB/VARBINARY和单行超logical bytes上限；
+- Writer必须在越界前flush；单行超限返回`RESOURCE_BLOCKED`且源数据仍可见；
+- Manifest Row Group `logical_bytes`缺失、为0、超限或与readback/Restore实际值不一致；
+- Restore必须在GET/解码前拒绝声明超限，不能用压缩size替代；
+- Archive后调低运行时阈值返回`RESOURCE_BLOCKED`，恢复到release hard cap内可继续；
+- 同一Manifest reader/version跨升级保持认证Restore hard cap，非法降级fail closed；
 - Manifest/Receipt达到`max_chunks_per_dataset`边界，聚合使用有界分页内存；
 - 不持久化SHA内部状态，不依赖重新扫描隐藏表或全部Payload。
 
-### 6.2 Restore/Purge Lease
+### 6.2 Restore/Purge Lease与隐藏表Owner
 
 - Restore acquire与Purge竞争同一Dataset CAS；
 - 有有效lease时显式Purge返回`RESTORE_IN_PROGRESS`；
@@ -93,7 +100,15 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - lease终止或deadline后，Purge才能进入`DELETE_PENDING`；
 - 一旦进入`DELETE_PENDING`，旧worker的GET/chunk必须失败，且不存在“旧lease继续读”；
 - Restore最终DDL事务和Purge同时到达，验证双方CAS同一Dataset行且只能一方提交；
-- Restore发布成功必须同时清除lease并把Attempt置为DONE；
+- Restore发布事务必须校验Attempt PUBLISHING、lease、Chunk/row进度、
+  `verified_content_hash IS NULL`和隐藏表精确身份；
+- RUNNING→VERIFYING、VERIFYING→PUBLISHING及最终发布前后逐点crash和接管；
+- Restore发布成功必须同时清除lease、写`verified_content_hash`并把Attempt置为DONE；
+- 发布事务与deadline cleanup、旧worker cleanup逐点竞态，最终只能一方提交；
+- Rename后table ID保持不变，旧worker不得按ID删除正式目标表；
+- cleanup只能CAS非DONE Attempt，并校验隐藏名、database ID和table ID后按名称DROP；
+- cleanup CAS失败、目标名映射同一table ID、hidden identity不匹配和commit response lost；
+- COMMIT_UNKNOWN未收敛时清理必须fail closed；
 - DROP不等待lease或Provider，后台按相同CAS收敛。
 
 ### 6.3 Tombstone unknown fail-closed
@@ -256,6 +271,8 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - source和new Object双不可见；
 - Restore静默缺行/错类型；
 - Restore同ordinal不同digest被重复导入；
+- 已发布Dataset包含超认证上限且无法恢复的单Chunk；
+- 旧Restore清理者删除Rename后的正式新表；
 - Tombstone metadata unknown被当作不相交而跳过；
 - 逻辑分区表被部分处理；
 - Versioned Bucket被宣称完成物理Purge但历史版本仍计费；

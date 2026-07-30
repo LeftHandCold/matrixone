@@ -21,6 +21,8 @@ provider-bytes-per-second
 target-payload-file-bytes
 max-payload-files-per-dataset
 max-chunks-per-dataset
+max-restore-chunk-rows
+max-restore-chunk-logical-bytes
 max-certified-block-read-bytes
 max-source-objects-per-whole
 max-protection-files/bloom-bytes
@@ -32,12 +34,20 @@ root-unknown-count/bytes
 cleanup-backlog-count/bytes
 published-dataset-count/metadata-bytes
 archive-payload-bytes-per-account
-restore-concurrency/chunk-bytes/deadline
+restore-concurrency/deadline
 restore-attempt/chunk-receipt-count
 terminal-metadata-retention
 ```
 
 配置关系必须启动时校验，不能自动放宽hard cap。
+`max-restore-chunk-rows`和`max-restore-chunk-logical-bytes`必须由普通INSERT事务的内存、
+wire/WAL和时长认证结果反推，并受release profile hard cap约束；用户不能把它们调高到
+未经认证的范围。
+
+运行时配置可以调低Writer目标，但已有Dataset所需值超过当前配置时，Restore返回
+`RESOURCE_BLOCKED`并报告所需rows/logical bytes，不能标记corruption。运维可在release
+hard cap内恢复配置。同一Manifest reader/version的后续兼容release不得降低其已认证Restore
+hard cap；不满足该条件的降级必须在仍有对应Dataset时拒绝。
 
 ## 2. Metrics
 
@@ -63,6 +73,7 @@ lifecycle_root_bytes{state}
 lifecycle_cleanup_backlog_bytes
 lifecycle_restore{state}
 lifecycle_restore_bytes
+lifecycle_restore_chunk_rows/logical_bytes
 lifecycle_provider_errors{operation,reason}
 lifecycle_resource_rejections{resource}
 ```

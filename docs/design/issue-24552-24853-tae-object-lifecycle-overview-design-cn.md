@@ -199,7 +199,8 @@ canonical_encoder_version
 hash_formula_version
 total_chunk_count
 dataset_content_hash
-file ordinal/key/size/SHA-256/row_count
+file ordinal/key/size/SHA-256/row_count/logical_bytes
+row-group ordinal/row_count/logical_bytes/chunk hash
 total row_count
 必要的min/max
 stage namespace identity
@@ -230,6 +231,10 @@ Phase 1 Restore只恢复列结构和数据，不恢复PK、二级索引、FK、C
 `total_chunk_count`、`dataset_content_hash`和`hash_formula_version`。Dataset内容Hash按
 ordinal聚合这些Receipt字段。Archive Writer、full readback和Restore使用同一公式，CN
 crash后可从Chunk Receipt重建，不持久化SHA内部状态，也不重新扫描隐藏表或全部Payload。
+
+每个Row Group必须同时满足认证的最大Restore行数和未压缩canonical logical bytes上限；
+Writer在越界前flush，单行自身超限则`RESOURCE_BLOCKED`，禁止退休源数据。Manifest保存
+每个Row Group的`logical_bytes`，Restore在GET/解码前后分别校验声明值和实际值。
 
 ## 7. Stage与外部对象
 
@@ -384,11 +389,15 @@ Dataset获取有期限lease
 -> 按Receipt ordinal重建content hash
 -> 校验schema/row count/content hash
 -> 普通事务CAS匹配且未过期的Dataset lease
+-> CAS Attempt状态、lease、Chunk/row进度和隐藏表精确身份
 -> 一次性写Attempt.verified_content_hash
 -> 原子发布新表、Attempt DONE并清除lease
 ```
 
 Chunk事务不更新Hash；最终发布前必须证明Receipt严格连续覆盖Manifest声明的全部Chunk。
+失败清理禁止按`staging_table_id`直接DROP；必须在同一普通事务中CAS非DONE Attempt，并确认
+当前名称仍是该Restore的隐藏名且database/table ID完全匹配，再按隐藏名DROP。Rename后的
+正式表保持原table ID，因此任一身份不匹配都必须停止清理。
 Restore不使用tagged entry。Purge只更新Dataset状态：
 
 ```text

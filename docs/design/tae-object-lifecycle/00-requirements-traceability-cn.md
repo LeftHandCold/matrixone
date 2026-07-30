@@ -44,7 +44,7 @@
 | 500～1000绑定表 | 只扫描Binding、分页和公平调度 | 02/06/07 |
 | 1 TiB常见、10 TiB认证 | streaming、硬上限和scale test | 02/07 |
 | 普通MO稳定 | 普通查询/DML/Merge不访问Lifecycle；普通Merge算法不变 | 03/06 |
-| Archive可恢复 | schema descriptor、可重启Chunk Hash、full readback | 02/05 |
+| Archive可恢复 | schema descriptor、Chunk恢复上限、可重启Hash、隐藏表身份清理 | 02/05 |
 | Merge并发安全 | exact CAS、单源Rewrite、现有transfer | 03/07 |
 | 外部对象不泄漏/误删 | immutable key、Root/Sweeper | 04/07 |
 | 重启与升级安全 | SyncProtection fail closed、旧TN拒绝 | 02/03/07 |

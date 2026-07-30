@@ -181,6 +181,10 @@ Purge 只能在Dataset没有有效Restore lease时CAS进入`DELETE_PENDING`；�
 lease返回`RESTORE_IN_PROGRESS`，后台Purge延迟重试。进入`DELETE_PENDING`后不存在仍被
 允许读取的旧Restore，Sweeper再异步删除Payload。Purge事务不等待Provider。
 
+固定Row Group Chunk同时受认证行数和未压缩logical bytes上限，保证发布的Dataset可以由
+单个普通INSERT事务恢复。隐藏表发布/清理都CAS同一Attempt；清理必须校验隐藏名称、
+database ID和table ID，禁止仅凭Rename后仍不变的table ID执行DROP。
+
 ### I-10 Ordinary MO stays ordinary
 
 未绑定表：

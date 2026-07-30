@@ -276,14 +276,29 @@ mo_catalog.mo_lifecycle_restore_chunks
 restore_id                 BINARY(16) PK
 dataset_id                 BINARY(16)
 lease_id/deadline          BINARY(16)/TIMESTAMP
-staging_database/table_id  UINT64
-target_database/name       UINT64/TEXT
+staging_database_id        UINT64
+staging_table_id           UINT64
+target_database_id         UINT64
+target_name                TEXT
 state                      ENUM(RUNNING, VERIFYING, PUBLISHING, DONE, ABORTED)
 next_chunk_ordinal         UINT64
 restored_rows              UINT64
 verified_content_hash      BINARY(32) NULL
 last_error/updated_at       TEXT/TIMESTAMP
 ```
+
+`staging_database_id/staging_table_id`是隐藏表的精确身份；隐藏名由
+`__mo_lifecycle_restore_<restore-id>`确定。`staging_table_id`只能参与Rename/DROP前的
+身份校验，禁止作为无名称校验的DROP目标。
+
+Attempt只使用现有五个状态：
+
+```text
+RUNNING -> VERIFYING -> PUBLISHING -> DONE
+RUNNING/VERIFYING/PUBLISHING -> ABORTED
+```
+
+`DONE/ABORTED`是终态。发布和清理都必须条件更新同一Attempt行，不能只读取状态后执行DDL。
 
 Chunk Receipt：
 
@@ -293,6 +308,7 @@ chunk_ordinal              UINT64
 file_ordinal/row_group_ordinal UINT32/UINT32
 chunk_digest               BINARY(32)
 row_count                  UINT64
+logical_bytes              UINT64
 canonical_content_hash     BINARY(32)
 created_at                 TIMESTAMP
 PRIMARY KEY (restore_id, chunk_ordinal)

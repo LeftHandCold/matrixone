@@ -187,6 +187,7 @@ PRIMARY KEY (restore_id, chunk_ordinal)
 chunk_digest
 file_ordinal / row_group_ordinal
 row_count
+logical_bytes
 canonical_content_hash
 ```
 
@@ -377,6 +378,11 @@ Manifest必须保存`total_chunk_count`、`dataset_content_hash`和`hash_formula
 readback decoder必须得到相同chunk和Dataset hash。Restore根据Chunk Receipt重建聚合结果，
 不持久化SHA内部状态、不重新扫描隐藏表或全部Payload。readback失败不得进入final transaction。
 
+每个Row Group还必须满足`max-restore-chunk-rows`和
+`max-restore-chunk-logical-bytes`。`logical_bytes`按未压缩canonical encoder bytes计算；
+Writer在越界前flush，单行自身超限则`RESOURCE_BLOCKED`。Manifest保存每个Row Group的
+声明值，full readback和Restore按实际解码结果复核，不能使用压缩size替代。
+
 ## 8. Cleanup Root write-ahead
 
 第一次Provider multipart/PUT、TAE live staging或external booking前必须创建Root，并预先
@@ -551,6 +557,8 @@ acquire lease with fixed deadline
 -> verify schema/rows/content hash
 -> ordinary transaction:
      CAS matching unexpired Dataset lease
+     CAS Attempt PUBLISHING/lease/chunk progress/rows/verified hash
+     verify exact hidden-name + database ID + table ID
      atomic rename/publish
      Attempt.verified_content_hash = recomputed dataset_content_hash
      Attempt DONE + clear lease
@@ -558,6 +566,11 @@ acquire lease with fixed deadline
 
 Chunk事务不更新Hash；最终发布事务验证Receipt严格覆盖
 `0..Manifest.total_chunk_count-1`，并一次性写入`verified_content_hash`。
+
+失败清理使用一个短普通事务CAS非DONE Attempt，并确认Catalog中当前名称仍是
+`__mo_lifecycle_restore_<restore-id>`且database/table ID完全匹配，再按隐藏名DROP。禁止
+仅凭`staging_table_id`删除；CAS或身份校验失败先重读Attempt，`DONE`或目标名已映射到相同
+table ID时立即停止。COMMIT_UNKNOWN未按普通MO语义收敛前禁止清理。
 
 每次GET/chunk前验证lease。Purge只有在Dataset没有有效lease时才能CAS到
 `DELETE_PENDING`并递增access generation；显式Purge遇有效lease返回
