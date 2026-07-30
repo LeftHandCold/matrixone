@@ -148,6 +148,16 @@ ORDER BY purge_eligible_at, dataset_id
 LIMIT 1000
 ```
 
+Dataset页只生成候选；进入`DELETE_PENDING`前还必须按dataset ID读取matching system Root：
+
+```text
+Root.state = PUBLISHED
+AND Root.observed_commit_ts IS NOT NULL
+AND Root.observed_commit_ts + minimum_publish_grace <= now
+```
+
+任一条件不满足都跳过并告警，不能因为Dataset索引命中就开始Purge。
+
 原因是 `UNSET LIFECYCLE` 只停止新归档，已经发布的 Dataset 仍要在 retention 到期后
 正常 Purge。以 Binding 为入口会让这些 Dataset 永久泄漏。
 
@@ -173,6 +183,7 @@ AND access_generation/version expected
 max_lifecycle_value < requested_before
 AND purge_eligible_at <= now
 AND state=PUBLISHED
+AND matching Root observed_commit_ts + minimum_publish_grace <= now
 ```
 
 语句返回：

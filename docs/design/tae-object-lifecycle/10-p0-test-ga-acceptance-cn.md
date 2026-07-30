@@ -138,13 +138,13 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | ID | 场景 | 通过条件 |
 |---|---|---|
 | WIR-001 | V1 deterministic marshal | digest稳定 |
-| WIR-002 | old TN/unsupported tag capability | CN不发送退休；整txn unsupported abort |
+| WIR-002 | old TN/unsupported tag capability | CN不发送退休；若误达TN，在Batch解析前unsupported abort且不panic |
 | WIR-003 | unknown version/mode/field | abort |
 | WIR-004 | duplicate/reordered source Object | reject |
 | WIR-005 | entry Object/bytes边界 | limit严格 |
 | WIR-006 | `ErrTAENeedRetry` G1 -> G2 | 原payload/digest重放；G2重建私有entry |
 | WIR-007 | old TN或route identity变化 | capability与ServiceID/ShardID/ReplicaID fence在发送前禁止retire |
-| WIR-008 | Dataset/Receipt缺少entry | finalizer API拒绝commit |
+| WIR-008 | Dataset/Receipt adapter未返回有效token | finalizer API拒绝commit |
 | WIR-009 | Rewrite source基数0/1/2 | 只有1通过 |
 | WIR-010 | Rewrite inline transfer非空 | reject |
 | WIR-011 | external booking identity/layout | exact key/version/SHA/digest全部匹配 |
@@ -163,7 +163,7 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WIR-024 | G2复用G1 entry/Catalog node/TransferTable指针 | 测试必须检测并失败 |
 | WIR-025 | retry/restart | 绝对deadline、generation和累计预算不续期 |
 | WIR-026 | concurrent duplicate decode | mutation前仅一个BUILDING owner；follower不执行I/O/mutation |
-| WIR-027 | Dataset/Receipt与Lifecycle tag任一缺失 | 整个事务拒绝提交 |
+| WIR-027 | Dataset/Receipt adapter/token与Lifecycle tag任一缺失 | 整个事务拒绝提交 |
 | WIR-028 | phase1/page install/LogTxnEntry逐点失败 | 无slab/page/TransferDels残留 |
 | WIR-029 | 跨booking page重复destination/缺口 | 全局bitmap拒绝 |
 | WIR-030 | digest golden vector | CN/TN/离线codec四种digest逐字节一致 |
@@ -172,8 +172,8 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WIR-033 | `bat=nil` tag混入普通txn.writes | 测试先证明会被过滤；正式API禁止该路径 |
 | WIR-034 | control穿过dump/compact/merge/sort | payload bytes/digest逐字节不变 |
 | WIR-035a | 底层append helper：ordinary Entry为空、control非空 | 仍能编码tag，证明`bat=nil`不被静默过滤 |
-| WIR-035b | production finalizer：pair缺失、空Entry或只有无关ordinary write | `ErrLifecycleCatalogPairMissing`，不得发送请求 |
-| WIR-036 | control same/different digest重复设置 | same幂等；different发送前拒绝 |
+| WIR-035b | production finalizer：token缺失/失效/跨txn或ordinary Entry为空 | `ErrLifecycleCatalogPairMissing`，不得发送请求 |
+| WIR-036 | token重复消费或第二次Seal | fatal transaction error，不发送请求 |
 | WIR-037 | ServiceID/ShardID/ReplicaID/capability变化、多候选shard或refresh失败 | 发送前拒绝/replan |
 | WIR-038 | G1/G2 replay budget | 同一HandleCommit Owner累计，不按generation重置 |
 | WIR-039 | generation owner在SoftDelete/Create前竞争 | 恰好一个BUILDING owner |
@@ -182,8 +182,12 @@ Reader Snapshot == Archive Snapshot == DELETE Snapshot
 | WIR-042 | terminal后迟到duplicate | deadline拒绝，或source preflight后进入RECONCILE_REQUIRED；不读Booking |
 | WIR-043 | SEALED事务外部mutation | POISONED；只能full rollback，Commit不得发送请求 |
 | WIR-044 | COMMITTING内部workspace路径 | 专用internal helper可完成merge/dump/transfer，不接受外部mutation |
-| WIR-045 | Lifecycle commit admission饱和/超时/cancel/G1->G2 retry | 一次HandleCommit恰好一次获取/释放；hard cap不被retry绕过，无Booking I/O泄漏或永久等待 |
+| WIR-045 | Lifecycle commit admission饱和/cancel/G1->G2 retry | busy在内部TAE txn创建前立即返回；一次HandleCommit恰好一次获取/释放；无waiter |
 | WIR-046 | COMMITTING中route refresh/编码失败或response lost | 前者POISONED+full rollback；后者unknown finalize且Root资产不删 |
+| WIR-047 | Dataset/Receipt触发force flush或workspace threshold | 可变为Object Entry并与tag原子提交；final commit不重读Object |
+| WIR-048 | token签发后statement rollback/workspace generation变化 | Seal拒绝，不能复用旧token |
+| WIR-049 | unknown EntryType + nil Batch到Safety TN | Batch解析前返回unsupported；不panic、不提交其他Entry |
+| WIR-050 | capability heartbeat/HAKeeper/ClusterDetails任一层缺失、过期或Replica变化 | authoritative refresh得到unsupported，CN不发送 |
 
 ### 5.2 Condition
 
@@ -508,16 +512,22 @@ new_live_rows   = live_visible
 
 ### 8.12 Review P0-9：CN commit-control
 
-- `Transaction.lifecycleCommit`是单值、深拷贝、immutable；
+- `Transaction.lifecycleFinalize`仅Lifecycle Seal时按需分配，内部control单值、深拷贝、
+  immutable；
 - 不进入普通workspace size、statement offset、dump/compact/sort、PK dedup、Batch GC；
 - `genWriteReqs`在普通Entry之后直接追加，不调用`toPBEntry`；
-- 空ordinary Entry只允许私有编码helper单测；Archive必须有Dataset+Receipt，TTL必须有
-  Receipt，production缺pair统一`ErrLifecycleCatalogPairMissing`并禁止发请求；
-- same digest/bytes幂等，different digest/第二条control拒绝；
+- 空ordinary Entry只允许私有编码helper单测；Archive/TTL adapter必须返回绑定当前txn、
+  attempt和workspace generation的opaque token，production缺token统一
+  `ErrLifecycleCatalogPairMissing`并禁止发请求；
+- token跨txn、statement rollback后、workspace generation变化、重复消费和第二次Seal均拒绝；
+- force flush/threshold把Dataset/Receipt转成Object Entry后仍能提交，不增加post-dump逻辑
+  行扫描或FileService重读；
 - route只冻结ServiceID/ShardID/ReplicaID/protocol version；Address发送前权威重解析，route
   refresh不持有txn.Lock，多候选shard fail closed；
-- `OPEN -> SEALED -> COMMITTING -> TERMINAL`，外部mutation转`POISONED`并只能full
-  rollback；内部commit helper不走外部mutation检查；
+- 普通transaction的`lifecycleFinalize`恒为nil，`nil`就是概念上的OPEN，不分配对象、
+  不增加锁、不改变错误码；Lifecycle Seal全部校验成功后才创建初始状态SEALED的context，
+  执行`nil(OPEN) -> SEALED -> COMMITTING -> TERMINAL`，外部mutation转`POISONED`并
+  只能full rollback；Seal校验/deep-copy任一点失败都保持context为nil；
 - rollback/finalize只释放CN bytes，不删除Root/provider对象。
 
 ### 8.13 Review P0-10：generation-local slot
@@ -624,9 +634,9 @@ Rewrite amplification额外验证：
 
 ## 11. Feature Guard/Profile/Catalog Gate
 
-虽不在八项编号内，以下基础能力仍是P0：
+虽不在十项编号内，以下基础能力仍是P0：
 
-### 11.1 Guard首次创建竞态
+### 11.1 Guard与table DDL lock竞态
 
 两两并发：
 
@@ -640,7 +650,24 @@ Snapshot/Backup/Clone create
 TRUNCATE/ALTER/DROP
 ```
 
-每组循环10,000次，只允许一方提交或双方在兼容状态提交；不允许unsupported dependency + ACTIVE Binding。
+每组循环10,000次，Bind和依赖/DDL使用同一个`mo_tables`逻辑行排他锁，只允许一方提交
+或双方在兼容状态提交；不允许unsupported dependency + ACTIVE Binding。
+
+额外证明：
+
+- 未绑定表执行ALTER/DROP/TRUNCATE/CREATE INDEX等普通DDL不创建、不更新Guard；
+- 10万张未绑定表反复DDL后Guard行数仍为0；
+- 依赖先提交后Bind从真实Catalog检测并拒绝；
+- Bind先提交后依赖看到Binding/Guard并拒绝；
+- 多表FK按稳定logical table identity顺序加锁，无新增死锁；
+- Unbind在active/unknown child收敛前不删除Guard，收敛后可回收。
+- `max-bound-tables=1000`时权威Guard总行数不能超过1000；ERROR/PAUSED和卡在unknown的
+  Unbind都继续占名额，不能继续Bind第1001张表；
+- 并发Bind经cluster-scoped capacity lock串行，不能超卖名额；capacity锁超时、Owner失联
+  或权威计数不确定时新Bind fail closed，锁释放后可以重新准入；
+- old Guard删除前同一logical table不能重新Bind；收敛删除后容量名额可复用；
+- DROP TABLE成功写owner tombstone/fence后可级联删除tenant Guard，Root cleanup不依赖
+  Guard存在。
 
 ### 11.2 Profile
 
@@ -666,6 +693,9 @@ TRUNCATE/ALTER/DROP
 - Root kind的Archive/TAE namespace字段NULL/NOT NULL组合；
 - Root Object kind只能引用对应Archive或TAE namespace/encryption identity；
 - Root Object主键为`(root_id, object_kind, ordinal)`，ordinal按kind局部递增；
+- Dataset/Receipt/Restore chunk原事务不包含CommitTS；
+- committed Reconcile在Txn GetStatus保留窗口内把真实CommitTS持久化到Root；
+- `observed_commit_ts`为NULL时Purge fail closed；Root PUBLISHED时该值必须非NULL；
 - UNSET后无ACTIVE Binding的Dataset仍按purge_eligible_at清理；
 - invariant checker故障自动kill switch。
 
@@ -707,25 +737,25 @@ case：
 
 | CN | TN | cluster protocol | 预期 |
 |---|---|---|---|
-| old | old | old | 无Lifecycle retire |
-| new | old | old | Discovery/Dry-run only |
-| old+new | new | old | no Lifecycle retirement tag |
-| new | new | old | no retire until protocol advance |
-| new | new | new | retire |
-| router将向old TN发送new entry | mixed fault | any | 发送前fence；该txn不发起retire |
+| pre-safety legacy | pre-safety legacy | legacy | 无Lifecycle retire；不能作为retirement后的降级目标 |
+| safety | safety | safety | unknown Entry安全拒绝；Discovery/Dry-run/Export-only |
+| retirement | safety | safety | no Lifecycle retirement tag |
+| safety+retirement | retirement | safety | no Lifecycle retirement tag |
+| retirement | retirement | retirement | 按stage gate retire |
+| router误把new entry发给safety TN | mixed fault | any | Batch解析前unsupported；不panic、不提交 |
 
 流程：
 
-1. Catalog upgrade；
-2. new CN rollout；
-3. new TN rollout；
-4. query all protocol versions；
-5. advance final protocol；
-6. retirement enable；
+1. 发布Safety Release：Catalog、安全parser、capability传播、只读/Export；
+2. 确认所有允许作为降级目标的TN均为Safety或更新版本；
+3. 发布Retirement Release CN/TN；
+4. authoritative query exact shard protocol versions；
+5. advance retirement protocol；
+6. Whole enable，随后Small Mixed/Rewrite独立enable；
 7. rolling restart；
-8. kill switch；
-9. downgrade到支持Catalog但不retire版本；
-10. 不允许降到破坏Catalog/replay的版本。
+8. kill switch并等待`FINALIZING/COMMIT_UNKNOWN`收敛；
+9. downgrade到Safety Release；
+10. 不允许降到pre-safety或破坏Catalog/replay的版本。
 
 ## 15. Provider Certification
 

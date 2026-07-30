@@ -109,7 +109,8 @@
 
 ```text
 ALTER TABLE ... SET LIFECYCLE
-  -> Feature Guard 串行化准入
+  -> existing mo_tables row lock串行化准入
+  -> create Binding-scoped Feature Guard
   -> Binding ACTIVE
   -> Object Discovery 分页扫描当前 TAE Metadata
   -> Planner 形成有界 Candidate/Child
@@ -237,11 +238,14 @@ abort/replan；final结果未知时不能启动第二次提交。旧TAE文件仍
 
 ### I-10 Capability before retirement
 
-滚动升级期间，只有全部相关CN/TN支持同一tagged Lifecycle commit协议版本，且发送前
+Safety Release先在所有TN部署“unknown EntryType在Batch解析前fail closed”，并把
+capability从TN heartbeat经HAKeeper/ClusterDetails传播到`metadata.TNService`；
+retirement在该版本永久关闭。Retirement Release中，只有全部相关CN/TN支持同一tagged
+Lifecycle commit协议版本，且发送前
 冻结的`ServiceID + ShardID + ReplicaID + protocol version`仍匹配，才允许真正退休数据。
 Address发送前从权威cluster snapshot重新解析；不新造`TopologyGeneration`。refresh失败、
-capability变化或不能唯一解析一个target shard都fail closed。更老TN必须被fence隔离，
-不能依赖其解释未知enum。否则只允许：
+capability变化或不能唯一解析一个target shard都fail closed。Capability是发送fence，
+unknown Entry parser是最后进程安全边界；缺任一层都不允许retirement。否则只允许：
 
 - DDL；
 - Object Discovery；
@@ -316,12 +320,15 @@ Lifecycle tag必须位于可重放的`PrecommitWriteCmd.EntryList`中，但不�
 `txn.writes`：CN使用独立、单值、immutable `LifecycleCommitControl`，在普通
 workspace完成dump/compact/sort后由`genWriteReqs`原样追加。外部逻辑attempt冻结
 entry bytes/digest、Root、Booking、绝对deadline和累计预算。Archive finalizer必须先
-写Dataset+Receipt、TTL必须先写Receipt，并从实际workspace pair构造
-`LifecycleCatalogPair`；production不存在合法control-only transaction。
+写Dataset+Receipt、TTL必须先写Receipt；内部adapter在逻辑写成功加入当前workspace后
+返回txn-bound opaque `LifecycleCatalogPairToken`，Seal一次性消费。production不存在合法
+control-only transaction，也不在workspace dump后重扫逻辑行或读取Object。
 
-Lifecycle finalizer事务独占状态机：`OPEN -> SEALED -> COMMITTING -> TERMINAL`；Seal后
+Lifecycle finalizer按需分配context；`nil`就是普通事务概念上的OPEN，Seal全部校验成功后
+才分配初始SEALED context并进入：
+`nil(OPEN) -> SEALED -> COMMITTING -> TERMINAL`；Seal后
 任何外部workspace mutation转`POISONED`并只能full rollback。Commit内部使用专用helper
-继续既有merge/dump/transfer；普通transaction不进入此状态机。
+继续既有merge/dump/transfer；普通transaction context恒为nil，不分配Lifecycle对象。
 
 每个内部TAE generation在任何SoftDelete/Create前，先从ephemeral TxnMemo取得唯一
 `BUILDING` slot。Catalog node在对应API成功后归整个txn；slab/page/TransferDels在
@@ -333,6 +340,7 @@ Root-owned staging。失败的generation整体rollback，不能原地重建；G2
 重叠Commit由TxnService串行；terminal后迟到duplicate在Booking I/O前经deadline、admission
 和exact-source preflight收敛，已退休source返回`LIFECYCLE_RECONCILE_REQUIRED`。V1禁止
 增加进程全局无界replay memo；只有实证storage并行执行同一external txn时才加入有界registry。
+TN admission只TryAcquire，busy在创建内部TAE txn前立即返回`RESOURCE_BUSY`，不排队。
 普通Merge的同类注册前缺口由[#26445](https://github.com/matrixorigin/matrixone/issues/26445)
 跟踪。
 
@@ -348,6 +356,10 @@ Root-owned staging。失败的generation整体rollback，不能原地重建；G2
 | Attempt/Cleanup Root | 外部副作用所有权权威 | 不允许在 Root 前 PUT/live staging/booking write |
 | TaskService task/epoch | 投递 hint | 从 Catalog lease 重新接管 |
 | 普通 Merge/GC metadata | TAE 旧版本回收权威 | Lifecycle 不复制其职责 |
+
+Feature Guard只属于active或仍在收敛的Lifecycle表；两类所有者合计受同一个
+`max-bound-tables=1000`硬上限约束。未绑定表的普通DDL不创建Guard，卡住的Unbind也不能
+通过持续绑定新表造成Guard无界增长。
 
 ## 8. 核心身份
 

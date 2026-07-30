@@ -122,19 +122,24 @@ Archive Policy 的含义是：
 
 `archive_retention` 是最短保留语义，不是“到期必须删除”的 maximum retention。DROP owner 可以按产品契约提前放弃 Archive Restore；因此首个 GA 不能宣传为 Legal Hold、WORM 或七年不可删除的合规归档。
 
-Dataset 的删除资格按以下公式冻结：
+Dataset 冻结数据生命周期保留截止时间：
 
 ```text
 purge_eligible_at =
-  max(
-    max_lifecycle_value + archive_after + archive_retention,
-    publish_commit_ts + minimum_publish_grace
-  )
+  max_lifecycle_value + archive_after + archive_retention
+
+Archive payload deletable =
+  Dataset.purge_eligible_at reached
+  AND Root.observed_commit_ts is known
+  AND Root.observed_commit_ts + minimum_publish_grace reached
+  AND reference/lease/owner predicates pass
 ```
 
 这表示 `archive_retention` 是从数据具备归档资格到删除资格之间的最短逻辑窗口，
-不是从 Job 实际 publish 时重新起算。`minimum_publish_grace` 保证严重积压时刚发布的
-Dataset 也不会立即删除；后台积压只会把实际删除推迟，不会提前删除。
+不是从 Job 实际 publish 时重新起算。真实CommitTS由Reconciler从Txn GetStatus取得并
+持久化为system Root的`observed_commit_ts`；final transaction中的Dataset/Receipt不尝试
+提前填写尚不存在的CommitTS。该值未知时Purge fail closed。`minimum_publish_grace`
+保证严重积压时刚发布的Dataset也不会立即删除。
 
 ### 2.3 时间语义
 
@@ -466,7 +471,7 @@ PartitionState/Metadata
 | 组件 | 职责 |
 |---|---|
 | Policy/Binding | 保存表级动作、生命周期列、阈值和 Profile version |
-| Feature Guard | 关闭 DDL/依赖创建与 Binding/final commit 的首次创建竞态 |
+| table DDL lock + Feature Guard | 现有`mo_tables`行锁关闭首次Bind竞态；Guard只fence已绑定/收敛中的表与final commit，active+reconciling总量受1000硬上限约束 |
 | Object Discovery | 分页读取当前TAE Metadata，只持久化每表cursor和有界Candidate |
 | Planner | 计算 cutoff、Whole/Mixed 候选、alignment ratio 和成本 |
 | Scheduler | 只调度 Binding Registry，执行公平性和硬预算 |
@@ -513,7 +518,8 @@ state
 
 ### 9.2 Feature Guard
 
-每张发生 Lifecycle 或相关依赖控制面操作的表有一行权威 Guard：
+只有ACTIVE Binding或仍有child/unknown事务需要收敛的表才有权威Guard。未绑定普通表
+不创建Guard；首次Bind竞态由Bind与不兼容DDL共同获取现有`mo_tables`逻辑行排他锁关闭：
 
 ```text
 table_id
@@ -525,7 +531,7 @@ owner_state
 digest
 ```
 
-以下操作必须懒创建或 CAS 同一唯一 Guard 行：
+以下操作必须获取同一table DDL lock；只有读到Binding后才读取或CAS Guard：
 
 - Lifecycle bind/unbind/change；
 - ALTER、TRUNCATE、DROP；
@@ -533,7 +539,12 @@ digest
 - 创建/删除 CDC、FK、Publication、Fulltext、Vector 和插件依赖；
 - Backup/PITR/Snapshot/Clone/Branch 准入。
 
-双方第一次操作不能先检查“Guard 不存在”后跳过写入。双方都尝试插入相同唯一键，以唯一键冲突关闭首次创建竞态。
+Bind在锁内先检查真实依赖，再原子插入Binding+Guard。依赖创建先完成时Bind拒绝；
+Bind先完成时依赖创建看到Binding并拒绝或fence。无Binding的普通DDL保持原路径，
+不产生Lifecycle Catalog写。
+
+双方不能在取得table DDL lock前用“当前没有Binding”跳过准入。首次竞态由同一
+`mo_tables`行锁串行，不再要求未绑定DDL插入Guard。
 
 Guard 不进入普通 INSERT、UPDATE、DELETE、SELECT 和 Merge 热路径。
 
@@ -602,7 +613,7 @@ archive_profile_identity
 min/max lifecycle value
 purge_eligible_at
 state/version
-publish_transaction_id/commit_ts
+publish_transaction_id
 ```
 
 Manifest 是不可变内容，包含：
@@ -969,12 +980,13 @@ abort final transaction
 
 Whole和Rewrite共用`PrecommitWriteCmd.EntryList`中的版本化
 `LifecycleCommitEntry` tag，不复用普通`OpCommitMerge`，也不在commit前发送独立
-`TxnOperator.Write`。Dataset/Receipt仍走普通Catalog workspace写入；tag由
-`Transaction.lifecycleCommit`这条独立、最多一条、不可变的commit-control通道持有，
+`TxnOperator.Write`。Dataset/Receipt仍走普通Catalog workspace写入；tag由按需创建的
+`Transaction.lifecycleFinalize`持有独立、最多一条、不可变的commit-control，
 不进入普通`txn.writes`，不参与workspace dump/compact/sort/GC。`genWriteReqs`先编码
 普通Entry，再把tag直接追加到同一个可重放`PrecommitWriteCmd.EntryList`。生产finalizer
-必须同时持有实际写入workspace的Catalog pair：Archive为Dataset+Receipt，TTL为Receipt；
-pair缺失或no-op时禁止control和请求。空Entry编码只允许私有单测用于证明tag不会被CN
+必须消费内部Catalog adapter在成功写入Archive Dataset+Receipt或TTL Receipt后签发的
+txn-bound opaque token；token缺失、失效或no-op时禁止control和请求。workspace dump后
+不重扫逻辑行、不读取已dump Object。空Entry编码只允许私有单测用于证明tag不会被CN
 workspace过滤。
 
 协议冻结：
@@ -1001,8 +1013,10 @@ rollback，禁止在已部分修改的同一代中重新Build。`HandleCommit`�
 `LifecycleReplayBudget`向全部retry generation传递同一绝对deadline、最大代数和
 累计I/O/CPU/delta预算，不建立无界全局memo。Route不使用不存在的TopologyGeneration，
 只冻结ServiceID/ShardID/ReplicaID/protocol version；发送前在txn锁外权威刷新并重新解析
-Address，身份/capability变化或不能唯一解析目标shard即fail closed。老TN由capability gate阻止接收新tag；
-capability未全集群启用时只允许Dry-run/Export-only。
+Address，身份/capability变化或不能唯一解析目标shard即fail closed。Capability必须从
+TN heartbeat经HAKeeper/ClusterDetails权威传播；缺字段、过期或Replica变化均unsupported。
+此外TN必须在Batch解析前拒绝unknown EntryType，不能依赖capability完全避免误达。Safety
+Release完成parser/capability全员部署前只允许Dry-run/Export-only。
 
 ## 14. 少量 Mixed Object 路径
 
@@ -1537,7 +1551,11 @@ Archive Payload：
 
 ```text
 (
-  purge_eligible_at reached
+  (
+    purge_eligible_at reached
+    AND Root.observed_commit_ts known
+    AND minimum_publish_grace reached
+  )
   OR owner dropped
 )
 AND no active Restore/read lease
@@ -1802,28 +1820,35 @@ source reservation/protection
 证明：
 
 - Lifecycle tag不作为`bat == nil`的普通`txn.writes Entry`进入workspace；
-- `Transaction.lifecycleCommit`最多一条、payload deep-copy后不可变；
-- Archive必须有Dataset+Receipt、TTL必须有Receipt；production control不存在合法空Catalog
-  pair，`genWriteReqs`在最终workspace中按逻辑identity验证exact pair；缺失、空Entry或
-  只有无关write均返回`ErrLifecycleCatalogPairMissing`且不发请求；
-- 普通workspace dump/compact/sort/GC和只读判定不会过滤或改写control/pair；control设置后
+- `Transaction.lifecycleFinalize`仅Seal时按需创建，内部control最多一条、payload
+  deep-copy后不可变；
+- Archive必须有Dataset+Receipt、TTL必须有Receipt；对应内部Catalog adapter成功把逻辑写
+  加入当前workspace后，返回绑定txn ID、attempt、pair digest和workspace generation的
+  opaque `LifecycleCatalogPairToken`；缺token、跨txn token、statement rollback后的旧token
+  或重复消费均拒绝；
+- `genWriteReqs`不在dump后重新扫描Dataset/Receipt逻辑行。普通workspace可能把Cluster
+  Table行转换为Object Entry；Lifecycle复用现有workspace原子提交合同，只要求token仍绑定
+  当前txn且最终ordinary Entry非空；
+- 普通workspace dump/compact/sort/GC和只读判定不会过滤或改写control/token；control设置后
   状态机进入SEALED，禁止局部statement rollback或继续外部write；
 - `genWriteReqs`在普通Entry后恰好追加一次tag；私有编码helper可测试空Entry，production
   finalizer不得发送control-only；
-- 同digest同payload重复设置幂等；冻结身份仅为ServiceID/ShardID/ReplicaID/protocol
+- Seal/token消费是一次性本地线性化点；冻结身份仅为ServiceID/ShardID/ReplicaID/protocol
   version，发送前权威refresh，identity/capability变化或多候选shard时fail closed；
 - Dataset/Receipt普通Catalog写与tag属于同一外部事务，任一缺失整体不能提交。
 
-`Transaction`仅对Lifecycle final transaction增加：
+`Transaction`仅在Lifecycle final transaction Seal时按需创建
+`LifecycleFinalizeContext`：
 
 ```text
-OPEN -> SEALED -> COMMITTING -> TERMINAL
+nil(OPEN) -> SEALED -> COMMITTING -> TERMINAL
               \-> POISONED -> full rollback -> TERMINAL
 ```
 
-Seal后，外部Write/statement/snapshot/adjust类入口必须poison；只有Commit的未导出内部
-helper可在COMMITTING执行既有merge/dump/transfer。普通transaction、普通Merge和普通查询
-不进入该状态机。
+普通transaction的context恒为nil，`nil`就是概念上的OPEN，只经过可预测nil check，不分配
+对象、不增加锁、不访问Lifecycle Catalog。Seal全部校验成功后才分配初始SEALED context；
+Seal失败仍为nil。Seal后，外部Write/statement/snapshot/adjust类入口必须poison；只有Commit
+的未导出内部helper可在COMMITTING执行既有merge/dump/transfer。
 
 ### P0-10：内部 TAE generation 的并发与资源 Owner
 
@@ -2089,8 +2114,10 @@ SHOW LIFECYCLE BLOCKERS
 - 旧 executor 迟到 PUT；
 - 新 CN/旧 TN、新 TN/旧 CN；
 - capability 未全员开启；
-- 升级中只运行 Dry-run/Export-only；
-- 降级时禁止新 retirement，但继续 Cleanup/Reconcile/Restore/Purge。
+- Safety Release中只运行 Dry-run/Export-only，先部署unknown Entry fail-closed和
+  capability advertisement；
+- Retirement Release只有全部CN/TN ready后才允许打开retirement；
+- 降级前关闭新retirement并等待FINALIZING/UNKNOWN收敛；不能降到缺少安全parser的版本。
 
 ### 26.5 性能
 

@@ -31,14 +31,16 @@ Archive:
 - archive-aware Backup/PITR/DR；
 - CDC、Publication、FK、隐藏二级/唯一索引、Fulltext、Vector 和插件表。
 
-以上依赖必须在 Binding 和依赖创建两侧通过 Feature Guard fail closed。
+以上依赖必须在Bind与依赖创建两侧获取相同table DDL lock并双向检查；只有已绑定或
+仍在收敛的表使用Feature Guard，未绑定普通表不创建Guard。
 
 ## 2. 不可破坏的边界
 
 1. 普通 Merge 的 selector、level、sort-key overlap、small/vacuum、目标 Object 大小
    和调度频率不变。
-2. 未绑定表不进行 Lifecycle Catalog 查询，不写 Discovery/Candidate，不创建
-   reservation/protection。
+2. 未绑定表的普通DML、查询和Merge不进行Lifecycle Catalog查询，不写
+   Discovery/Candidate，不创建reservation/protection。仅不兼容DDL/依赖创建在已有
+   `mo_tables`行锁内查询Binding；无Binding时不创建Guard并立即回到普通路径。
 3. Planner/Candidate 不是权威；当前 Relation Metadata 和 TN Prepare exact CAS 才是
    Object 权威。
 4. Archive Verify 完成前绝不退休源行。
@@ -84,7 +86,66 @@ pkg/vm/engine/tae/tables/txnentries/
 目录名是建议边界，可以按仓库 package cycle 调整；协议和 Owner 边界不能因目录调整
 而合并。
 
-## 4. Gate A：Catalog、Feature Guard 与只读 Discovery
+## 4. Gate S：Safety Release
+
+Gate S先于任何会退休数据的代码发布。该生产版本中`retirement-enabled`不可打开，只
+交付协议安全底座和只读/导出能力。
+
+### S1. Unknown Entry fail-closed
+
+在`ParseEntryList/handleRequests`进入`apiEntryToWriteEntry`和
+`ProtoBatchToBatch`之前校验EntryType：
+
+```text
+known ordinary Entry -> require valid Batch -> existing path
+known Lifecycle Entry -> route to Lifecycle parser
+unknown Entry/version -> UNSUPPORTED_TXN_ENTRY
+```
+
+禁止panic、禁止忽略unknown tag后提交同一事务的其他Entry。Safety Release中的旧/新
+混部测试必须证明unknown numeric enum和nil Batch只返回错误。
+
+### S2. Capability权威传播
+
+实现链路：
+
+```text
+TN supported LifecycleCommitVersion
+  -> TNStoreHeartbeat
+  -> HAKeeper TNStoreInfo
+  -> ClusterDetails.TNStore
+  -> metadata.TNService
+  -> clusterservice authoritative refresh
+```
+
+需要修改：
+
+```text
+proto/logservice.proto
+  TNStoreHeartbeat.lifecycle_commit_protocol_version = 12
+  TNStoreInfo.lifecycle_commit_protocol_version = 12
+  TNStore.lifecycle_commit_protocol_version = 12
+
+proto/metadata.proto
+  TNService.lifecycle_commit_protocol_version = 10
+
+pkg/tnservice/store_heartbeat.go
+pkg/pb/logservice state update + HAKeeper RSM/ClusterDetails
+pkg/clusterservice/cluster.go
+```
+
+缺字段、heartbeat过期、Replica变化和传播层缺值一律为unsupported。CN只冻结
+`ServiceID + ShardID + ReplicaID + protocol_version`，Address发送前权威重解析。
+
+### S3. Safety Release exit
+
+- 全部允许作为未来降级目标的TN均已具备unknown Entry fail-closed；
+- capability从heartbeat到CN读回有golden/integration test；
+- Discovery/Dry-run/Export-only可用；
+- retirement kill switch不可绕过；
+- 混部、TN迁移、heartbeat过期都不发送Lifecycle tag。
+
+## 5. Gate A：Catalog、Feature Guard 与只读 Discovery
 
 Gate A 没有 Provider PUT 和活动数据退休。
 
@@ -116,17 +177,21 @@ Gate A 没有 Provider PUT 和活动数据退休。
 - system 表均有分页键，禁止一行全局 cursor。
 - Root Object主键固定为`(root_id, object_kind, kind-local ordinal)`，不同kind不共享
   全局ordinal分配器。
+- Dataset/Receipt/Restore chunk只写transaction ID，不在原事务内填写CommitTS；
+- Archive Root包含nullable `observed_commit_ts`，只由committed Reconciler从权威
+  Txn GetStatus写入；该值未知时禁止Purge。
 
 验收：
 
 - bootstrap、upgrade、rollback fence 测试；
-- 首次并发创建 Guard 只能有一个唯一行；
+- 未绑定普通表DDL不创建Guard；Bind/依赖并发由同一`mo_tables`行锁串行；
 - DROP ACCOUNT 后 Root/owner tombstone 仍可枚举；
 - Profile version 被 Dataset/Root 引用时不能删除或重指 namespace。
 
 ### A2. Feature Guard 双向准入
 
-所有相关 DDL 使用同一个 `table_id` 唯一 Guard 行：
+所有相关DDL使用同一个现有`mo_tables`逻辑行排他锁；Guard只存在于ACTIVE Binding或
+仍有child/unknown需要收敛的表：
 
 ```text
 Lifecycle bind/unbind
@@ -137,15 +202,30 @@ hidden index create/drop
 TRUNCATE/ALTER COPY/DROP
 ```
 
-每次操作：
+Bind：
 
-1. lazy insert Guard；
-2. 唯一键冲突后重读；
-3. CAS dependency generation；
-4. 检查 support matrix；
-5. 与 DDL 在同一事务提交。
+1. 获取table DDL lock并持有到事务终态；
+2. 检查authoritative dependency；
+3. 无不兼容依赖时插入Binding+Guard；
+4. 与DDL在同一事务提交。
 
-不能先做“没有 Binding”快照检查再跳过 Guard。
+依赖/DDL：
+
+1. 获取同一table DDL lock；
+2. 读取Binding；
+3. 无Binding时不创建/读取/CAS Guard，执行现有普通路径；
+4. 有ACTIVE/reconciling Binding时读取Guard并拒绝或fence；
+5. 多表操作按logical table identity排序加锁。
+
+不能在锁外先做“没有Binding”快照检查。`max-bound-tables`按权威Guard行数计数，包含
+ERROR/PAUSED等未解除Binding和DISABLING/reconciling owner；达到1000后新Bind fail
+closed。Bind使用cluster-scoped capacity lock串行容量准入，锁顺序固定为
+`capacity -> logical table identity`，并在锁内分页计算最多1000行的Guard权威计数、持有
+到Bind事务终态。该锁只进入Bind控制面，不进入普通DDL、DML、查询或Merge；获取失败、
+超时或计数不确定时拒绝新Bind。
+Unbind只有在active child和unknown final transaction收敛后才能删除Guard，且旧Guard
+删除前禁止同一logical table重新Bind。DROP TABLE在owner tombstone/fence与Catalog删除
+同事务成立后可删除tenant Guard，Root继续负责异步Provider cleanup。
 
 ### A3. 分页 Metadata Discovery API
 
@@ -226,7 +306,7 @@ Gate A exit：
 - Dry-run 报告 Whole/Mixed/bytes 和估算放大；
 - feature disabled 时普通 DML/Merge/GC 无新增写。
 
-## 5. Gate B：Exact Reader、Archive 与 Export-only
+## 6. Gate B：Exact Reader、Archive 与 Export-only
 
 Gate B 可以写 staging/export，但不退休活动数据。
 
@@ -290,7 +370,7 @@ Gate B exit：
 - Provider 429/5xx/timeout 下 memory/goroutine 有界；
 - 不存在活动数据 DropIntent/DELETE。
 
-## 6. Gate C：Reservation、GC Protection 与 Lifecycle Wire
+## 7. Gate C：Reservation、GC Protection 与 Lifecycle Wire
 
 Gate C 先在测试表上验证协议，不对客户表开放。
 
@@ -394,14 +474,18 @@ deadline `D`，把它同时冻结到Root并设为commit context deadline，生�
 bytes/digest、Root、Booking、最大内部generation和累计预算；每个TAE generation从
 Booking重建私有Catalog node、TransferTable和txn entry，严禁复用上一代指针。
 
-生产finalizer没有合法control-only路径：Archive必须先写Dataset+Receipt，TTL必须先写
-Receipt；finalizer从实际已进入workspace的逻辑pair构造`LifecycleCatalogPair`，随后调用
-`SealLifecycleCommit(pair, control)`。pair缺失、pair/payload digest不一致或ordinary
-Catalog pair为空均返回`ErrLifecycleCatalogPairMissing`，禁止生成TxnRequest。空ordinary
-Entry下append control仅保留为私有编码helper测试，证明`bat=nil`不会被过滤。
-`genWriteReqs`在workspace merge/dump后执行
-`ValidateLifecycleCatalogPairAfterWorkspace(entries, pair)`：按Dataset/Receipt逻辑主键确认
-Archive的两条、TTL的一条已留在最终ordinary Entry集合；无关write不能通过该检查。
+生产finalizer没有合法control-only路径：Archive adapter必须先把Dataset+Receipt、
+TTL adapter必须先把Receipt加入当前workspace，成功后返回包内不可构造、绑定txn ID、
+attempt、pair digest和workspace generation的`LifecycleCatalogPairToken`。Finalizer调用
+`SealLifecycleCommit(token, control)`一次性消费token；缺失、跨txn、statement rollback后
+失效、workspace generation变化、重复消费或digest不一致均返回
+`ErrLifecycleCatalogPairMissing`，禁止生成TxnRequest。
+
+`genWriteReqs`只要求已消费token仍绑定当前txn且最终ordinary Entry非空，不在workspace
+merge/dump后按逻辑主键扫描Dataset/Receipt。Lifecycle Cluster Table行可由现有workspace
+转换为Object Entry；final commit不得为重新证明pair而读取FileService/Object。强制flush
+和threshold下的原子性由opaque token、Seal后禁止statement rollback、现有workspace合同
+和端到端测试证明。空ordinary Entry下append control仅保留为私有编码helper测试。
 
 路由不使用不存在的`TopologyGeneration`。Finalizer和`genWriteReqs`在绝对deadline内、
 在`txn.Lock`外刷新权威cluster snapshot，冻结/比较
@@ -426,8 +510,8 @@ child/TAE namespace binding、每Block actual rows、原始sparse destination、
 ```text
 Lifecycle finalizer adapter
   -> ordinary Dataset/Receipt Catalog writes
-  -> actual LifecycleCatalogPair
-  -> SealLifecycleCommit: OPEN -> SEALED
+  -> internal adapter returns txn-bound LifecycleCatalogPairToken
+  -> SealLifecycleCommit consumes token: nil(OPEN) -> allocate SEALED context
   -> Commit: SEALED -> COMMITTING
   -> ordinary workspace dump/compact/sort
   -> genWriteReqs appends tag without toPBEntry
@@ -440,17 +524,17 @@ Lifecycle finalizer adapter
 
 ```text
 pkg/vm/engine/disttae/types.go
-  LifecycleCommitControl/CatalogPair/route identity
-  LifecycleFinalizeState state machine
+  LifecycleCommitControl/opaque CatalogPairToken/route identity
+  optional *LifecycleFinalizeContext
 
 pkg/vm/engine/disttae/txn.go
+  internal Dataset/Receipt adapter token issue
   SealLifecycleCommit + external mutation poison checks
   commit-only internal merge/dump/transfer helpers
   rollback/finalize lifecycle
 
 pkg/vm/engine/disttae/tools.go
-  production CatalogPair validation + authoritative route refresh
-  ValidateLifecycleCatalogPairAfterWorkspace by logical identity
+  consumed token/current txn validation + authoritative route refresh
   exact single-shard tag append
 
 pkg/catalog/tuplesParse.go（或等价iterator入口）
@@ -460,11 +544,13 @@ pkg/vm/engine/tae/rpc/handle_lifecycle.go
   parse/validate/register
 ```
 
-control/pair不进入普通dump/compact/sort/PK dedup/statement offset/Batch GC；一次txn最多
-一条，same bytes/digest重复设置幂等，different内容拒绝。payload在workspace dump和
-commit retry后必须逐字节不变。`OPEN -> SEALED -> COMMITTING -> TERMINAL`只对Lifecycle
-final transaction生效；SEALED/COMMITTING发生外部mutation时进入POISONED，只能full
-rollback。不得增加独立opcode，也不得把可选字段塞入`OpCommitMerge`。
+context/control/token不进入普通dump/compact/sort/PK dedup/statement offset/Batch GC；
+一次txn最多一条control，Seal是一次性本地线性化点。payload在workspace dump和commit
+retry后必须逐字节不变。普通txn的`lifecycleFinalize == nil`，`nil`就是概念上的OPEN且
+不分配对象；只有Lifecycle Seal全部校验成功后才创建初始SEALED context并执行
+`nil(OPEN) -> SEALED -> COMMITTING -> TERMINAL`，
+SEALED/COMMITTING发生外部mutation时进入POISONED，只能full rollback。不得增加独立
+opcode，也不得把可选字段塞入`OpCommitMerge`。
 
 WAL/Replay只恢复source DropIntent、新live Object和final transaction的
 Tombstone/Catalog状态，不恢复已提交事务的历史运行时transfer page。External
@@ -474,9 +560,11 @@ restart后旧事务缺页必须RW/WW conflict。
 ### C4. TN Prepare 顺序
 
 ```text
-validate protocol/capability/digest
 validate absolute request deadline
-acquire bounded Lifecycle commit-admission permit
+pre-scan max-one Lifecycle tag
+TryAcquire bounded Lifecycle commit-admission permit
+  busy -> RESOURCE_BUSY before GetOrCreateTxnWithMeta
+validate protocol/capability/digest
 validate authoritative frozen ServiceID/ShardID/ReplicaID route
 validate table/schema/Guard generation
 validate reservation token
@@ -497,8 +585,9 @@ append WAL through normal transaction path
 任一条件失败，整个 transaction abort。
 admission permit由一次`HandleCommit`持有并覆盖其所有internal retry generation；实现以
 `defer`或等价的单一terminal cleanup保证在任一parse/preflight/Booking/TAE失败、commit
-完成或deadline退出时exactly-once释放。不得按G1/G2重复获取，也不得让deadline后的请求
-继续排队。
+完成或deadline退出时exactly-once释放。不得按G1/G2重复获取。首个GA没有admission
+waiter：TryAcquire失败立即返回，CN scheduler带有界jitter重新调度。普通Commit没有
+Lifecycle tag时不触碰该permit。
 generation slot存放在internal txn的ephemeral TxnMemo：
 
 ```text
@@ -528,22 +617,28 @@ Gate C exit：
 
 - 1PC、2PC、duplicate Prepare、`ErrTAENeedRetry`多generation、response lost全矩阵通过；
 - 私有空Entry编码helper能保留control；production路径永不允许control-only；
-- production finalizer在Catalog pair缺失时不生成任何request；
+- production finalizer没有有效txn-bound token时不生成任何request；
+- Dataset/Receipt force flush成Object Entry仍原子提交，final commit不重读Object或扫描
+  逻辑行；
 - route refresh不持有txn.Lock，ServiceID/ShardID/ReplicaID/capability或唯一shard不满足时
   fail closed；
-- Lifecycle state machine拒绝全部外部mutation，但COMMITTING的内部merge/dump/transfer可完成；
+- ordinary txn context恒为nil；Lifecycle state machine拒绝全部外部mutation，但
+  COMMITTING的内部merge/dump/transfer可完成；
 - generation slot在第一次TAE mutation前唯一，失败后同代不能重建；
 - retry不延长绝对deadline/累计预算，budget有明确HandleCommit Owner，G2不复用G1
   可变指针；
 - overlapping duplicate Commit由现有TxnService串行；迟到duplicate在Booking I/O前按
   deadline/source preflight收敛，并受Lifecycle admission硬限流；
+- admission busy在创建内部TAE txn前立即返回，无TN waiter/queue；
+- unknown EntryType在Batch解析前unsupported，不panic；capability端到端传播缺一层即
+  unsupported；
 - `LogTxnEntry`前后逐点故障注入无runtime资源泄漏或Root物理误删；
 - old/new CN/TN 混部只允许 Dry-run/Export-only；
 - TN restart 丢 reservation/protection 后不会退休；
 - ordinary `OpCommitMerge`回归通过；
 -现有GC最终回收已提交DropIntent，未提交source不受Lifecycle直接Delete。
 
-## 7. Gate D：三条退休执行路径
+## 8. Gate D：三条退休执行路径
 
 ### D1. Whole Object
 
@@ -731,9 +826,10 @@ pkg/vm/engine/tae/iface/txnif/memo.go
   do not serialize slots into WAL memo
 
 pkg/vm/engine/tae/rpc/handle.go
-  pre-scan max-one tag
+  pre-scan max-one tag before internal TAE txn creation
+  TryAcquire Lifecycle permit; busy returns RESOURCE_BUSY without waiter
   own LifecycleReplayBudget across internal retry generations
-  enforce bounded Lifecycle commit admission before Booking I/O
+  reject unknown EntryType before Batch conversion
 
 pkg/vm/engine/tae/rpc/handle_lifecycle.go
   claim slot before TAE mutation
@@ -747,6 +843,7 @@ pkg/vm/engine/disttae/lifecycle_rewrite.go
 pkg/vm/engine/disttae/types.go
 pkg/vm/engine/disttae/txn.go
 pkg/vm/engine/disttae/tools.go
+  optional LifecycleFinalizeContext + opaque CatalogPairToken
   single immutable LifecycleCommitControl
   append control after ordinary workspace processing
 ```
@@ -766,7 +863,8 @@ AND Archive sees matching Dataset/Manifest root
 
 然后：
 
-- Archive Root -> `PUBLISHED`；
+- Archive Root在同一system CAS持久化权威`observed_commit_ts = commit_ts`并转
+  `PUBLISHED`；
 - Rewrite live/range child -> `TAE_OWNED`；
 - Rewrite booking child -> `DELETE_PENDING`；
 - TTL Rewrite Root -> `POST_COMMIT_CLEANUP`，booking全部删除后 -> `TRANSFERRED`；
@@ -775,6 +873,8 @@ AND Archive sees matching Dataset/Manifest root
 
 明确 aborted 才允许 Root -> `DELETE_PENDING`。仍 unknown 时保留
 reservation/protection、Root 和 staging，释放 worker slot并进入 Reconciler。
+Dataset/Receipt/Restore chunk不在原事务中填写CommitTS；Root的`observed_commit_ts`
+为NULL时禁止Purge，不能用worker wall clock或永久依赖Txn GetStatus替代持久化。
 
 Gate D exit：
 
@@ -792,7 +892,7 @@ Gate D exit：
 - source visible row 不出现缺失、重复或未归档即删除；
 - 普通 Merge/SELECT/DML/GC 回归在阈值内。
 
-## 8. Gate E：Restore、Purge、DROP 与 Reconcile
+## 9. Gate E：Restore、Purge、DROP 与 Reconcile
 
 ### E1. Restore
 
@@ -838,6 +938,10 @@ AND final txn not in-doubt
 AND CAS access_generation
 ```
 
+正常retention Purge还要求matching Root的`observed_commit_ts`非NULL且minimum publish
+grace已到；owner dropped按产品契约放弃Restore，可以绕过retention/grace，但仍不能
+绕过in-doubt final transaction或active lease。
+
 `DELETING`不可逆，不允许新 reference。按 exact key/version 删除；Provider 支持 version
 ID/CAS 时按具体版本删除。全部 HEAD/LIST 确认不存在后 Root/Dataset 才进入终态。
 
@@ -849,7 +953,7 @@ Gate E exit：
 - unavailable Backup/PITR/DR入口在执行前明确拒绝；
 - Provider credential失效只进入`DELETE_FAILED`，不丢证据。
 
-## 9. Gate F：运维、认证与 GA
+## 10. Gate F：运维、认证与 GA
 
 ### F1. Release profile
 
@@ -906,15 +1010,27 @@ reservation/protection lease and renew interval
 放量：
 
 ```text
-50 -> 200 -> 500 -> 1000 bound tables
+Safety Release:
+  retirement permanently disabled
+  -> parser/capability/Discovery/Dry-run/Export-only certification
+
+Retirement Release:
+  Whole: 50 -> 200 -> 500 -> 1000 bound tables
+  -> Small Mixed independent gate
+  -> Rewrite independent gate
 ```
 
 任一数据不变量失败立即关闭新 retirement，继续 Cleanup/Reconcile，不扩大下一阶段。
+降级前关闭retirement并等待`FINALIZING/COMMIT_UNKNOWN`收敛；禁止降到缺少Safety
+Release unknown-entry parser的版本。
 
-## 10. 开发依赖图
+## 11. 开发依赖图
 
 ```text
-A1 Catalog ──┬── A2 Guard
+S1 Safe parser ─┐
+S2 Capability  ─┼── Retirement feature gate
+                │
+A1 Catalog ─────┼── A2 Guard
              ├── A3 Discovery ── A4 Planner
              └── B3 Root
 
@@ -934,7 +1050,7 @@ D1/D2/D3 + E1 Restore + E2/E3 Cleanup ── F GA certification
 可以并行开发 Catalog、Reader/Archive、reservation/protection，但第一个会退休数据的
 测试必须等 C1～C4 和 Root 协议全部完成。
 
-## 11. Code Review Owner
+## 12. Code Review Owner
 
 | 变更 | 必须 Review |
 |---|---|
@@ -949,7 +1065,7 @@ D1/D2/D3 + E1 Restore + E2/E3 Cleanup ── F GA certification
 
 协议、MVCC、GC 和 replay 变更不能仅由 Lifecycle 模块自审。
 
-## 12. 每个任务的 Definition of Done
+## 13. 每个任务的 Definition of Done
 
 每个任务提交必须包含：
 

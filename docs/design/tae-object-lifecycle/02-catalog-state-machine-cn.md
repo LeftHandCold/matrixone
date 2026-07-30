@@ -190,6 +190,34 @@ WHERE account_incarnation = ?
 
 affected rows 必须为 1；否则事务 abort 并重做准入检查。
 
+Guard不是全表dependency registry。只有Lifecycle Binding仍占有功能，或Unbind后仍有
+active child、`FINALIZING/COMMIT_UNKNOWN`需要收敛时才允许存在；ERROR/PAUSED状态仍属于
+未解除的Binding，也继续占有Guard。DROP TABLE完成owner tombstone/fence后由Root接管
+Cleanup，不需要保留tenant Guard。
+
+Lifecycle Bind和所有不兼容DDL/依赖创建先获取相同的`mo_tables`逻辑行排他锁并持有到
+事务终态。Bind在锁内检查真实依赖后原子插入Binding+Guard；普通DDL在锁内先读Binding，
+无Binding时不创建、不读取、不CAS Guard，按现有路径继续。Bind/DDL首次竞态由现有
+table DDL lock关闭，不依赖给未绑定表预建Guard。多表操作按logical table identity稳定
+排序加锁；Guard只有在Binding和全部未决child收敛后才能删除。
+
+`max-bound-tables`的准入计数就是权威Guard行数，而不是只数`ACTIVE Binding`：
+
+```text
+COUNT(authoritative Feature Guard rows)
+<= max-bound-tables
+```
+
+因此Unbind卡在unknown child时仍占用一个名额，新Bind在同一权威计数达到上限时返回
+`LIFECYCLE_BINDING_CAPACITY`，不能通过“先Unbind一批旧表、再Bind新表”制造无界Guard。
+Bind先取得仅用于Lifecycle Bind的cluster-scoped capacity lock，再取得table DDL lock，
+在capacity lock内分页计算最多1000行的Guard权威计数并持锁到Bind事务终态；锁顺序固定为
+`capacity -> logical table identity`。该锁不进入普通DDL、DML、查询或Merge路径，获取
+失败、超时或计数不确定都拒绝新Bind。
+同一logical table在旧Guard收敛删除前禁止重新Bind。DROP TABLE在同一DROP事务写入
+system-owned owner tombstone并fence旧attempt后，可以随tenant Catalog级联删除Guard；
+后续外部对象清理由Root接管，不再依赖tenant Guard。
+
 `schema_generation` 在以下动作递增：
 
 - TRUNCATE；
@@ -444,7 +472,6 @@ CREATE CLUSTER TABLE mo_catalog.mo_lifecycle_datasets (
     state                   TINYINT UNSIGNED NOT NULL,
     access_generation       BIGINT UNSIGNED NOT NULL,
     publish_txn_id          VARBINARY(128) NOT NULL,
-    publish_commit_ts       VARBINARY(16) NOT NULL,
     last_restore_id         BINARY(16) NULL,
     last_restore_at         TIMESTAMP(6) NULL,
     version                 BIGINT UNSIGNED NOT NULL,
@@ -468,6 +495,9 @@ CREATE CLUSTER TABLE mo_catalog.mo_lifecycle_datasets (
 
 Dataset 只在 final transaction 中从“不存在”插入为 `PUBLISHED`。`VERIFIED_NOT_PUBLISHED`
 属于 system Root/Manifest 状态，不在 tenant 可见 Dataset 表制造预发布行。
+`publish_txn_id`是final transaction内可写入的权威identity；真正CommitTS在提交前尚不
+存在，不进入本行。`purge_eligible_at`只表示数据生命周期保留截止时间。Purge还必须
+等待matching Root的`observed_commit_ts`非NULL并超过minimum publish grace。
 
 状态机：
 
@@ -512,7 +542,6 @@ CREATE CLUSTER TABLE mo_catalog.mo_lifecycle_receipts (
     manifest_root           BINARY(32) NULL,
     protocol_version        INT UNSIGNED NOT NULL,
     capability_version      INT UNSIGNED NOT NULL,
-    commit_ts               VARBINARY(16) NOT NULL,
     created_at              TIMESTAMP(6) NOT NULL,
     PRIMARY KEY (account_incarnation, attempt_id),
     UNIQUE KEY lifecycle_txn_receipt (
@@ -536,6 +565,9 @@ Receipt：
 - 是 committed 的不可变业务证据；
 - 对账读取必须在正常一致性事务中进行。
 
+Receipt不保存提交前无法获得的CommitTS。Reconciler用`transaction_id`查询权威事务终态，
+并把已提交事务的真实CommitTS持久化到system-owned Root；不能提交后回写不可变Receipt。
+
 ### 3.6 Restore chunk Receipt
 
 Restore 可以分多个有界事务写隐藏 staging table。每个已提交 chunk 必须和 staging
@@ -552,7 +584,6 @@ CREATE CLUSTER TABLE mo_catalog.mo_lifecycle_restore_chunks (
     transaction_id          VARBINARY(128) NOT NULL,
     row_count               BIGINT UNSIGNED NOT NULL,
     content_root            BINARY(32) NOT NULL,
-    commit_ts               VARBINARY(16) NOT NULL,
     created_at              TIMESTAMP(6) NOT NULL,
     PRIMARY KEY (
         account_incarnation,
@@ -572,6 +603,10 @@ CREATE CLUSTER TABLE mo_catalog.mo_lifecycle_restore_chunks (
     )
 );
 ```
+
+Restore chunk同样不在原事务中保存CommitTS。`transaction_id + chunk_digest`负责幂等与
+unknown对账；需要长期观测值时写Restore Attempt的system-owned可变状态，不更新chunk
+Receipt。
 
 该 Receipt 只插入、不更新。相同 chunk key 但 digest 不同是 corruption。它解决
 Restore chunk commit response lost 后的重复插入问题。
@@ -822,6 +857,7 @@ CREATE TABLE mo_catalog.mo_lifecycle_cleanup_roots (
     final_txn_id            VARBINARY(128) NULL,
     final_entry_digest      BINARY(32) NULL,
     final_txn_status        TINYINT UNSIGNED NOT NULL,
+    observed_commit_ts      VARBINARY(16) NULL,
     lease_owner_cn          VARCHAR(64) NULL,
     lease_expire_at         TIMESTAMP(6) NULL,
     first_io_at             TIMESTAMP(6) NULL,
@@ -1179,14 +1215,16 @@ owner tombstone 后再开独立 Root CAS，不能反向持 Root 锁等待 accoun
 
 ```text
 table DDL lock
-  -> lazy create/read Feature Guard
   -> inspect authoritative table dependencies
+  -> reject when unsupported dependency exists
   -> insert/update Binding
-  -> CAS Feature Guard
+  -> create/CAS Feature Guard
   -> commit
 ```
 
 Profile 版本在 system registry 已经 committed，Binding 只冻结 identity，不和 Profile 创建组成 2PC。
+不兼容DDL/依赖创建获取同一锁后先读Binding；无Binding时不创建Guard。Unbind仅在
+active/unknown child全部收敛后删除Guard。
 
 ### 5.2 Child claim
 
@@ -1207,8 +1245,8 @@ Root VERIFIED -> FINALIZING committed in system transaction
   -> CAS Guard/Binding/active attempt
   -> insert Dataset
   -> insert Receipt
-  -> finalizer records actual Dataset+Receipt Catalog pair
-  -> SealLifecycleCommit atomically enters SEALED
+  -> internal adapter returns txn-bound LifecycleCatalogPairToken
+  -> SealLifecycleCommit consumes token and atomically enters SEALED
   -> commit payload contains Catalog writes + Lifecycle tag
   -> commit
 ```
@@ -1236,7 +1274,7 @@ Root VERIFIED -> FINALIZING committed in system transaction
   -> CAS Guard/Binding/active attempt
   -> insert Dataset/Receipt               # Archive
      or insert Receipt only               # TTL
-  -> finalizer records actual Catalog pair then SealLifecycleCommit(
+  -> internal adapter returns txn-bound token then SealLifecycleCommit(
        exact source Objects + staged live Objects + transfer booking)
   -> commit payload contains Catalog writes + Lifecycle tag
   -> commit
@@ -1247,7 +1285,7 @@ Root VERIFIED -> FINALIZING committed in system transaction
 
 TTL Whole/Rewrite不写Dataset，但同样在一个事务中写普通Receipt Catalog DML，并通过
 独立CN commit-control把tag追加到同一个可重放commit payload。control-only不是合法生产
-状态：pair缺失时finalizer拒绝提交。Seal后transaction立即Commit，不再进入通用SQL
+状态：token缺失或失效时finalizer拒绝提交。Seal后transaction立即Commit，不再进入通用SQL
 statement流程。TTL Rewrite committed
 后把live/range child标为`TAE_OWNED`，
 Root进入`POST_COMMIT_CLEANUP`；temporary booking全部删除后才标`TRANSFERRED`。
@@ -1376,11 +1414,17 @@ ClaimAttemptInSystemTxn(...)
 
 ## 9. Schema 升级和降级
 
-升级分三步：
+升级分两个生产版本：
 
-1. 先创建 system/tenant Catalog 表和只读视图；
-2. 再部署能识别新表但不退休数据的 CN；
-3. 最后在全部 TN/CN capability ready 后启用 retirement。
+1. Safety Release：
+   - 创建system/tenant Catalog表和只读视图；
+   - 所有TN在Batch解析前对unknown EntryType fail closed；
+   - TN heartbeat经HAKeeper/ClusterDetails发布Lifecycle protocol capability；
+   - CN支持authoritative refresh，但retirement永久关闭；
+   - 只开放Discovery/Dry-run/Export-only。
+2. Retirement Release：
+   - 只有全部CN/TN的exact ServiceID/ShardID/ReplicaID capability ready后才能启用；
+   - Whole、小Mixed、Rewrite分别受独立stage gate控制。
 
 降级规则：
 
@@ -1388,8 +1432,10 @@ ClaimAttemptInSystemTxn(...)
   Catalog/tagged commit entry的版本；
 - emergency downgrade 必须先 cluster kill switch、等待 finalizing/unknown 收敛、暂停 Binding；
 - 旧版本不得把未知系统表当普通 tenant 表清理；
-- 进入支持Lifecycle tag的协议代后，unknown version/非法tag必须返回不支持，不能跳过
-  后继续commit；更老TN必须由capability/topology fence保证收不到该tag。
+- 进入支持Lifecycle tag的协议代后，unknown version/非法tag必须在Batch解析前返回不支持，
+  不能跳过后继续commit；
+- 不能降到缺少Safety Release安全parser的版本。若产品不提供这一前置版本，则启用
+  retirement后的滚动降级不在支持范围，不能用capability fence替代该限制。
 
 ## 10. Catalog 不变量检查器
 
@@ -1397,7 +1443,7 @@ ClaimAttemptInSystemTxn(...)
 
 ```text
 Dataset PUBLISHED -> exactly one matching Root and Receipt
-Root PUBLISHED -> matching Dataset/Receipt or owner already dropped
+Root PUBLISHED -> matching Dataset/Receipt or owner already dropped; observed_commit_ts non-null
 Root FINALIZING -> final_txn_id and entry_digest non-empty
 Root DELETING/CLEANED -> no new ACTIVE lease at same/higher access generation
 Root POST_COMMIT_CLEANUP -> matching Receipt; live/range TAE_OWNED

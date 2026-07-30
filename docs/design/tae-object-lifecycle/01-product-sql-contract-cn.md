@@ -190,6 +190,8 @@ PURGE ARCHIVE BEFORE '2025-01-01 00:00:00';
 ```text
 dataset.max_lifecycle_value < requested_before
 AND now >= dataset.purge_eligible_at
+AND matching Root.observed_commit_ts is known
+AND now >= Root.observed_commit_ts + 24 hours
 AND owner still exists
 ```
 
@@ -221,15 +223,22 @@ expired = lifecycle_value < cutoff
 - duration/cutoff/purge 计算全部使用 checked arithmetic，发生 underflow/overflow 时 Job fail closed；
 - `action_after` 和 `archive_retention` 单项首个 GA hard max 为 100 年，DDL 时拒绝更大值。
 
-Archive 删除资格：
+Archive 生命周期保留截止时间：
 
 ```text
 purge_eligible_at =
-  max(
-    max_lifecycle_value + archive_after + archive_retention,
-    publish_commit_ts + 24 hours
-  )
+  max_lifecycle_value + archive_after + archive_retention
+
+Archive payload deletable =
+  Dataset.purge_eligible_at reached
+  AND Root.observed_commit_ts is known
+  AND Root.observed_commit_ts + 24 hours reached
+  AND ordinary reference/lease/owner predicates pass
 ```
+
+`observed_commit_ts`不是final tenant transaction中的插入字段。它由Reconciler从权威
+Txn GetStatus取得，并在事务状态仍可查询时持久化到system-owned Root。该值未知时
+fail closed，任何Purge都不得开始。
 
 `RETAIN FOR` 是 minimum retention。它不承诺到期立即删除，也不提供 maximum retention、Legal Hold 或 WORM。
 
@@ -266,7 +275,9 @@ Binding 只允许：
 
 ### 4.2 依赖竞态
 
-Lifecycle bind 和所有不支持依赖的创建/删除操作必须 CAS 同一 `Feature Guard`。
+Lifecycle bind 和所有不支持依赖的创建/删除操作必须取得同一个`mo_tables`逻辑行
+排他锁。Guard只属于已绑定或仍在收敛的Lifecycle表，不用于给所有普通表建立一份
+影子Catalog。
 
 禁止以下实现：
 
@@ -280,14 +291,25 @@ CDC:       查到 no Binding
 正确流程：
 
 ```text
-acquire table DDL lock
-  -> lazy INSERT Feature Guard(table_id)
-  -> read dependency state
-  -> CAS guard version/dependency bits/binding generation
-  -> commit
+Lifecycle bind:
+  acquire existing mo_tables row DDL lock
+    -> read authoritative dependency state
+    -> reject if unsupported dependency exists
+    -> insert Binding + Feature Guard
+    -> commit
+
+unsupported dependency/DDL:
+  acquire the same mo_tables row DDL lock
+    -> read Binding
+    -> no Binding: execute normal path; do not create Guard
+    -> active/reconciling Binding: read/CAS Guard and reject or fence
+    -> commit
 ```
 
-即使首次没有 Guard，双方也尝试插入同一个唯一键，以唯一键冲突关闭首次创建竞态。
+`mo_tables`行锁必须持有到事务终态。DDL先提交时，后续Bind从真实Catalog看到依赖；
+Bind先提交时，后续DDL看到Binding/Guard。涉及多张表的FK等操作按稳定logical table
+identity排序加锁。Unbind只有在active child和unknown final transaction收敛后才能删除
+Guard。未绑定普通表不写Guard、不更新Guard，也不进入Lifecycle状态机。
 
 ### 4.3 DDL 交互
 

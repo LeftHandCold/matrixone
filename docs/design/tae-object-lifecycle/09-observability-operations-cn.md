@@ -38,7 +38,7 @@ GA发布时 `retirement-enabled` 只有通过cluster capability和stage gate后�
 主要release profile：
 
 ```text
-max-bound-tables                  = 1000
+max-bound-tables                  = 1000 # Guard owner总量，含active与reconciling
 policy-scan-interval              = 1h
 index-catchup-interval            = 5m
 coordinator-page-size             = 1000
@@ -51,7 +51,7 @@ small-mixed-cluster-concurrency   = 2
 rewrite-cluster-concurrency       = 1
 rewrite-certified-hard-concurrency = 4
 lifecycle-commit-concurrency      = 4
-lifecycle-commit-admission-wait   = 30s
+lifecycle-commit-admission-mode   = try
 max-certified-block-read-bytes    = 256MiB
 restore-cluster-concurrency       = 2
 provider-io-timeout               = 2m
@@ -62,14 +62,18 @@ manual-reconcile-probe-interval   = 1h
 root-quiescence-window            = 24h
 ```
 
-数值与各协议文档的hard limit一致。启动时校验：
+数值与各协议文档的hard limit一致。`lifecycle-commit-admission-mode`首个GA只允许
+`try`：TN无waiter，permit不可用时在创建内部TAE txn前立即返回`RESOURCE_BUSY`，CN带
+有界jitter重新调度。禁止配置等待时间或无界队列。启动时校验：
 
 - hard >= soft；
 - timeout/lease/quiescence关系合法；
 - cleanup/reconcile不能同时关闭并开启retirement；
-- `lifecycle-commit-concurrency <= cluster-concurrency`，admission wait不得超过
-  final transaction绝对deadline；
+- `lifecycle-commit-concurrency <= cluster-concurrency`，admission mode必须为`try`且
+  waiter/queue capacity为0；
 - retention/grace非负；
+- `max-bound-tables`按权威Guard行数计数，包含非DISABLED Binding以及仍有child/unknown的
+  DISABLING/reconciling表；达到上限拒绝新Bind，不能只数ACTIVE Binding；
 - 配置超过已认证profile时拒绝启动retirement。
 
 256 MiB是首个GA的候选认证上限，表示4.1节保守估算后的单个Block
@@ -155,6 +159,7 @@ whole due objects/bytes
 mixed due objects/bytes
 blocked objects/bytes/reason
 rewrite 24h/7d attempted/retired/aborted bytes and amplification
+cluster/account guard owners active/reconciling/capacity
 last success/error
 quota pause reason
 ```
@@ -299,6 +304,8 @@ lifecycle_catalog_pair_missing_total
 lifecycle_finalize_state{state}
 lifecycle_route_refresh_total{result}
 lifecycle_route_changed_total{reason}
+lifecycle_protocol_capability{stage,result}
+lifecycle_unknown_entry_rejected_total{reason}
 lifecycle_commit_admission{state}
 lifecycle_reconcile_required_total{reason}
 lifecycle_generation_slot_total{result}
@@ -308,12 +315,17 @@ lifecycle_replay_budget_exhausted_total{dimension}
 
 其中：
 
-- `lifecycle_commit_control_total{result}`至少区分`set/idempotent/rejected`；生产环境出现
+- `lifecycle_commit_control_total{result}`至少区分`sealed/rejected/terminal`；生产环境出现
   `missing_after_finalize`必须触发P0 invariant告警并停止retirement；
-- Catalog pair缺失、SEALED/COMMITTING外部mutation、route refresh失败或多候选shard均是
+- Catalog pair token缺失/失效/跨txn/重复消费、SEALED/COMMITTING外部mutation、
+  route refresh失败或多候选shard均是
   P0 invariant事件：停止新retirement，保留Root并进入Reconcile，不允许降级发送control；
-- admission仅记录`waiting/running/rejected`等低基数状态；等待时间、permit泄漏和
+- admission仅记录`acquired/rejected/released`等低基数状态；`waiting`在首个GA中是
+  非法状态并触发P0告警。permit获取/释放不平、在拒绝后创建TAE txn和
   `LIFECYCLE_RECONCILE_REQUIRED`必须单独告警；
+- unknown Entry拒绝和capability传播用于Safety Release验收；旧/缺失capability一律为
+  unsupported，不能通过缺指标或默认值开启retirement；unknown numeric value只写有界
+  结构化日志，不作为metric label；
 - slot结果至少区分`builder/follower/registered/failed`，不能把follower重复计为执行；
 - replay generation和累计Booking/delta/CPU预算按一次`HandleCommit`聚合，不创建按
   transaction ID永久保留的高基数时序；

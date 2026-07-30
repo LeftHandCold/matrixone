@@ -329,7 +329,9 @@ AND non-empty Archive sees Dataset(dataset_id, manifest_root)
 
 ```text
 Archive Whole/Rewrite:
-  Root FINALIZING -> PUBLISHED
+  Root FINALIZING
+    -> persist observed_commit_ts = authoritative commit_ts
+    -> PUBLISHED
   仅当live > 0时：Rewrite live/range child -> TAE_OWNED
   仅当booking存在时：Rewrite booking child -> DELETE_PENDING
 
@@ -347,6 +349,11 @@ TTL Whole/EMPTY_ARCHIVE:
 service确认committed之后写入。`TAE_OWNED`表示normal TAE Catalog/WAL/GC已接管
 live文件，Sweeper禁止删除。`POST_COMMIT_CLEANUP`期间只允许删除temporary
 booking，不能删除live Object。
+
+`observed_commit_ts`必须和Archive Root `FINALIZING -> PUBLISHED`在同一个system CAS
+中持久化，来源只能是权威Txn GetStatus。Dataset/Receipt/final tenant transaction不包含
+该字段，也不能用worker本地时间代替。Root在Dataset Purge前持续保留，因此它是publish
+grace和长期对账的Owner；该字段为NULL时Purge永久fail closed并告警。
 
 ### 8.2 明确 aborted
 
@@ -413,6 +420,10 @@ GA要求Txn GetStatus权威记录/可解析窗口至少覆盖：
 max automatic reconcile age = 24 hours
 operator investigation window = 7 days
 ```
+
+此外，Archive Reconciler必须在窗口内把CommitTS持久化到Root；不能把长期审计和Purge
+正确性建立在事务状态永久存在的假设上。超过窗口仍未观测到终态时保持
+`COMMIT_UNKNOWN/MANUAL_RECONCILE_REQUIRED`，不清理Root、不Purge。
 
 如果现有Txn Service在该窗口前丢失状态，P0必须增加可查询的normal transaction result receipt或延长保留。不能用source Object missing推断成功。
 
