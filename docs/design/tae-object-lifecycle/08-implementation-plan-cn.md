@@ -56,7 +56,7 @@ DoD：百万Object分页不构造全表slice；普通查询/DML/Merge在未绑�
 - deterministic prefix/write-id；
 - Stage冻结target adapter、引用DDL和credential handle验证；
 - 部署Stage认证/allowlist与非Versioned专用Bucket准入；
-- immutable key、Provider full readback和生产Export-only；
+- immutable key、Provider full readback和测试/认证Export-only（非Phase 1生产模式）；
 - Provider multipart规则认证；
 - Sweeper、quiescence和metadata GC；
 - commit unknown只读对账；

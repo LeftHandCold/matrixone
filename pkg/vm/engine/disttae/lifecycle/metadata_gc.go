@@ -71,10 +71,18 @@ func (compactor SQLMetadataCompactor) CompactPage(
 	}
 	datasetCutoff := lifecycleSQLTime(now.Add(-datasetRetention))
 	for _, accountID := range accounts {
+		keepTTLReceipts, checkErr := compactor.hasUnknownTTLRewriteRoot(
+			ctx,
+			accountID,
+		)
+		if checkErr != nil {
+			return afterAccountID, wrapped, checkErr
+		}
 		for _, sql := range terminalLifecycleMetadataDeletes(
 			terminalCutoff,
 			datasetCutoff,
 			maxRows,
+			!keepTTLReceipts,
 		) {
 			result, execErr := compactor.Executor.Exec(
 				ctx,
@@ -108,6 +116,27 @@ where state='CLEANED' and updated_at<%s limit %d`,
 	return nextAccountID, wrapped, nil
 }
 
+func (compactor SQLMetadataCompactor) hasUnknownTTLRewriteRoot(
+	ctx context.Context,
+	accountID uint32,
+) (bool, error) {
+	result, err := compactor.Executor.Exec(
+		ctx,
+		fmt.Sprintf(
+			`select root_id from mo_catalog.mo_lifecycle_cleanup_roots
+where owner_account_id=%d and mode='TTL_REWRITE'
+and state='COMMIT_UNKNOWN' limit 1`,
+			accountID,
+		),
+		executor.Options{}.WithAccountID(catalog.System_Account),
+	)
+	if err != nil {
+		return false, err
+	}
+	defer result.Close()
+	return lifecycleResultHasRows(result), nil
+}
+
 func (compactor SQLMetadataCompactor) listAccounts(
 	ctx context.Context,
 	afterAccountID uint32,
@@ -135,8 +164,9 @@ func terminalLifecycleMetadataDeletes(
 	terminalCutoff string,
 	datasetCutoff string,
 	limit int,
+	includeTTLReceipts bool,
 ) []string {
-	return []string{
+	deletes := []string{
 		fmt.Sprintf(
 			`delete from mo_catalog.mo_lifecycle_restore_chunks
 where restore_id in (
@@ -156,17 +186,21 @@ and not exists (
 			terminalCutoff,
 			limit,
 		),
-		fmt.Sprintf(
+	}
+	if includeTTLReceipts {
+		deletes = append(deletes, fmt.Sprintf(
 			`delete from mo_catalog.mo_lifecycle_ttl_receipts
 where created_at<%s limit %d`,
 			terminalCutoff,
 			limit,
-		),
+		))
+	}
+	return append(deletes,
 		fmt.Sprintf(
 			`delete from mo_catalog.mo_lifecycle_datasets
 where state='PURGED' and updated_at<%s limit %d`,
 			datasetCutoff,
 			limit,
 		),
-	}
+	)
 }

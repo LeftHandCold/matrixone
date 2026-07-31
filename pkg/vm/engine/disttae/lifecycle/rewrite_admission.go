@@ -42,8 +42,25 @@ type RewriteAdmission struct {
 
 	profile      RewriteReleaseProfile
 	windowStart  time.Time
+	notBefore    time.Time
 	clusterBytes uint64
 	accountBytes map[uint32]uint64
+}
+
+// HoldUntilNextWindow is the fail-closed owner-handoff rule for the
+// in-memory fixed-window budget. A fresh Coordinator cannot know how much the
+// previous owner already charged, so it leaves Whole retirement available but
+// delays Mixed Rewrite until the next deterministic window. No persistent
+// quota or cross-CN state is introduced.
+func (admission *RewriteAdmission) HoldUntilNextWindow(now time.Time) error {
+	if admission == nil || now.IsZero() {
+		return fmt.Errorf("Lifecycle Rewrite handoff time is incomplete")
+	}
+	admission.mu.Lock()
+	defer admission.mu.Unlock()
+	admission.notBefore = now.Truncate(admission.profile.Window).
+		Add(admission.profile.Window)
+	return nil
 }
 
 func NewRewriteAdmission(profile RewriteReleaseProfile) (*RewriteAdmission, error) {
@@ -118,6 +135,14 @@ func (admission *RewriteAdmission) ReserveSource(
 	}
 	admission.mu.Lock()
 	defer admission.mu.Unlock()
+	if now.Before(admission.notBefore) {
+		metricv2.LifecycleResourceRejectionCounter.WithLabelValues(
+			"rewrite_owner_handoff",
+		).Inc()
+		return fmt.Errorf(
+			"RESOURCE_BLOCKED: Rewrite waits for the next fixed window after owner handoff",
+		)
+	}
 	window := now.Truncate(admission.profile.Window)
 	if admission.windowStart.IsZero() || !window.Equal(admission.windowStart) {
 		admission.windowStart = window

@@ -7,8 +7,8 @@
 
 上线前必须同时满足：
 
-1. 所有 CN/TN 都包含 Lifecycle tagged-entry 安全解析代码；旧节点仍在集群时只能
-   Export-only，不能开启 retirement。
+1. 所有 CN/TN 都包含 Lifecycle tagged-entry 安全解析代码；旧节点仍在集群时不能开启
+   production Lifecycle。Export-only只允许在隔离的测试/认证流程中显式运行。
 2. ARCHIVE 使用专用 S3-compatible Bucket/Container，Versioning 关闭，并配置
    incomplete multipart 自动回收。
 3. Stage 只使用 workload identity、IAM Role 或部署管理的 credential handle；

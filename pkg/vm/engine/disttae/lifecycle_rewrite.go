@@ -24,8 +24,10 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"github.com/matrixorigin/matrixone/pkg/pb/api"
 	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
+	taeoptions "github.com/matrixorigin/matrixone/pkg/vm/engine/tae/options"
 )
 
 var ErrLifecycleRewriteHasNoLiveRows = errors.New(
@@ -169,6 +171,21 @@ func validateLifecycleRewriteOptions(options LifecycleRewriteOptions) error {
 	return nil
 }
 
+// validateLifecycleRewriteLayout keeps the first GA inside the layout already
+// produced by cnMergeTask. Supporting a non-default physical layout requires a
+// common Merge change; Lifecycle must fail before reading instead of growing a
+// second producer or guessing a different transfer-slab shape.
+func validateLifecycleRewriteLayout(extra *api.SchemaExtra) error {
+	if extra == nil ||
+		extra.BlockMaxRows != taeoptions.DefaultBlockMaxRows ||
+		extra.ObjectMaxBlocks != uint32(taeoptions.DefaultBlocksPerObject) {
+		return fmt.Errorf(
+			"RESOURCE_BLOCKED: Lifecycle Rewrite supports only the certified default Object layout",
+		)
+	}
+	return nil
+}
+
 // LifecycleRewriteObject executes only the build phase. It writes Root-owned
 // live Objects and an immutable external booking, but it does not mutate the
 // source Catalog Object. The finalizer later publishes these outputs through a
@@ -178,6 +195,9 @@ func (tbl *txnTable) LifecycleRewriteObject(
 	options LifecycleRewriteOptions,
 ) (_ LifecycleRewriteResult, err error) {
 	if err := validateLifecycleRewriteOptions(options); err != nil {
+		return LifecycleRewriteResult{}, err
+	}
+	if err := validateLifecycleRewriteLayout(tbl.GetExtraInfo()); err != nil {
 		return LifecycleRewriteResult{}, err
 	}
 	state, err := tbl.getPartitionState(ctx)

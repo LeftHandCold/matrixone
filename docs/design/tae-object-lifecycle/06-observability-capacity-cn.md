@@ -42,7 +42,7 @@ archive-payload-bytes-per-account
 restore-concurrency/deadline
 restore-attempt/chunk-receipt-count
 max-active-restore-staging-bytes-per-account
-max-active-restore-staging-bytes-per-coordinator
+max-active-restore-staging-bytes-per-cluster
 terminal-metadata-retention
 ```
 
@@ -184,7 +184,8 @@ pause purge
 这里的`pause retirement`指不再启动新的child；已经进入执行的child可能完成当前Archive、
 readback或final transaction。Kill switch不强制清理FINALIZING/COMMIT_UNKNOWN，也不取消
 已进入普通事务Prepare的操作。需要Backup时必须保持gate关闭并等待in-flight指标归零。
-关闭retirement后Export-only仍可单独运行。
+Export-only只用于测试/认证Writer与Provider，不作为Phase 1生产模式。关闭retirement release
+后不创建新Root或执行Provider PUT，只继续收敛已有Root和终态元数据。
 
 ## 7. 普通MO隔离
 
@@ -288,23 +289,34 @@ sum(Dataset.logical_bytes for active IMPORTING/PUBLISHING attempts in account)
   + requested Dataset.logical_bytes
   <= max-active-restore-staging-bytes-per-account
 
-当前Coordinator内尚未转交给持久Attempt的reservation总和
-  <= max-active-restore-staging-bytes-per-coordinator
+sum(Dataset.logical_bytes for active IMPORTING/PUBLISHING attempts in cluster)
+  + requested Dataset.logical_bytes
+  <= max-active-restore-staging-bytes-per-cluster
 ```
 
-RESTORE命令由现有Lifecycle Coordinator完成准入后才执行05中的初始化普通事务。Coordinator
-从现有Restore Attempt和Dataset索引按page rows/bytes cap计算租户持久active usage；每轮有
-deadline，失败后有界退避并保持暂停新Restore。当前Coordinator另以进程内reservation关闭
-初始化事务尚未落Catalog时的并发窗口。这个计数不预分配持久Slot，不提供跨Coordinator的
-分布式精确总量，也不进入普通DML路径。Attempt
-`DONE`后表已转交用户Catalog，不再计入Lifecycle staging；`FAILED`只有在隐藏表确认DROP后
-才释放核算值。实际TAE物理bytes仍作为观测指标，若持续高于logical bytes认证系数则Gate I
-Stop Ship并降低上限。
+RESTORE不转发给TaskService Coordinator，也不创建持久Slot或CN本地reservation。05中的
+初始化普通事务在任何Dataset lease、隐藏表或Attempt副作用之前，短暂更新并锁定现有
+`mo_feature_registry('LIFECYCLE')`行；随后在同一`TxnExecutor`中完成以下动作：
 
-初始化前的内存reservation由发起Coordinator唯一持有：初始化事务明确失败时立即释放；提交
-成功后由active Attempt接管核算；结果unknown时保留reservation并按05的Dataset/Attempt/
-hidden identity对账，不能先释放后接受第二个Restore。Coordinator崩溃后不恢复纯内存
-reservation，实际已提交的初始化由active Attempt重建，实际未提交的reservation自然消失。
+1. 读取release gate，缺失或关闭时fail-closed；
+2. 从system-owned、尚未`CLEANED`的Cleanup Root中有界枚举可能拥有活动Restore的账户，
+   并显式加入当前账户；
+3. 切换statement account context，读取每个账户`IMPORTING/PUBLISHING` Attempt对应的
+   `Dataset.logical_bytes`，完成账户和全集群overflow/hard-cap检查；
+4. 通过后才执行Dataset lease CAS、创建隐藏表和插入Attempt，并与准入检查一起提交。
+
+枚举账户数hard cap为1024，初始化事务绝对deadline为30秒，feature-row lock wait上限为5秒；
+查询失败、身份异常、溢出或达到任一上限都在首次副作用前返回`RESOURCE_BLOCKED`或明确错误。
+所有CN的Restore初始化都锁同一现有feature row，因此“检查容量”和“创建持久Attempt”串行；
+事务提交后由Attempt计入下一次核算，事务失败则不留下reservation，响应丢失继续由普通MO事务
+结果和05中的Attempt身份对账处理。锁只覆盖短初始化事务，Chunk导入、发布和普通查询、DML、
+Merge均不访问该行。
+
+活动账户集合依赖既有所有权不变量：每个可Restore Dataset都有未`CLEANED`的system-owned Root，
+有效Restore lease阻止其Purge/Cleanup；当前账户仍显式加入以保证自身用量不会因元数据异常漏算。
+`DONE`后表已转交用户Catalog，不再计入Lifecycle staging；`FAILED`只有在隐藏表确认DROP后才释放
+核算值。实际TAE物理bytes仍作为观测指标，若持续高于logical bytes认证系数则Gate I Stop Ship
+并降低上限。
 
 ### 9.3 Cleanup backlog与Binding容量
 

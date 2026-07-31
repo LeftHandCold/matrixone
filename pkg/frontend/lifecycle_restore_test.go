@@ -20,21 +20,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLifecycleRestoreAdmissionUsageDoesNotDoubleCountResumedAttempt(
-	t *testing.T,
-) {
-	usage, err := lifecycleRestoreAdmissionUsage(30, 10, true)
-	require.NoError(t, err)
-	require.Equal(t, uint64(20), usage)
-
-	usage, err = lifecycleRestoreAdmissionUsage(30, 10, false)
-	require.NoError(t, err)
-	require.Equal(t, uint64(30), usage)
-
-	_, err = lifecycleRestoreAdmissionUsage(5, 10, true)
-	require.ErrorContains(t, err, "usage is inconsistent")
-}
-
 func TestLifecycleRestorePublishedRetryNeedsNoStaging(t *testing.T) {
 	require.True(t, lifecycleRestoreAlreadyPublished(true, "DONE"))
 	require.False(t, lifecycleRestoreAlreadyPublished(true, "IMPORTING"))

@@ -483,8 +483,9 @@ entry继续复用普通Merge/TXN资源路径。
 
 retirement上线采用两步发布：
 
-1. 先把unknown Entry/version在Batch解析前fail closed的安全解析部署到全部TN，只开放
-   Export-only；
+1. 先把unknown Entry/version在Batch解析前fail closed的安全解析部署到全部TN；此阶段
+   production release保持关闭，不创建新Root或Provider PUT，Export-only仅用于隔离的
+   测试/认证；
 2. 再发布会产生V1 entry的CN；全部CN/TN完成升级后才打开
    `lifecycle-retirement-enabled`。
 
@@ -637,9 +638,10 @@ Scheduler/CN并发、单源Rewrite、entry解码前硬上限和active-coexistenc
 私有状态机掩盖。
 
 Mixed Rewrite受`live_logical_bytes/expired_logical_bytes`上限和账户/集群固定窗口source
-bytes预算约束；Restore按Dataset logical bytes限制账户/集群active staging总量。预算由
-现有Lifecycle Coordinator管理，不增加Catalog Slot；Coordinator切换时Rewrite预算保守
-关闭到下一窗口，Restore计数从Attempt/Dataset重建。
+bytes预算约束；该Rewrite预算由现有Lifecycle Coordinator管理，Coordinator切换时保守关闭
+到下一窗口。Restore按Dataset logical bytes限制账户/集群active staging总量，并在已有
+feature-row短临界区内用同一普通初始化事务统计Attempt/Dataset、检查容量和创建Attempt；
+不增加Catalog Slot、CN本地reservation或TaskService转发。
 
 ## 19. P0测试
 
@@ -668,7 +670,7 @@ bytes预算约束；Restore按Dataset logical bytes限制账户/集群active sta
 ```text
 A Catalog/Binding/Discovery
 B Exact Reader/canonical encoder/Parquet format prototype
-C Cleanup Root/Stage identity/full readback/Export-only/Sweeper
+C Cleanup Root/Stage identity/full readback/测试认证Export-only/Sweeper
 D thin entry + Whole exact retire
 E single-source Rewrite + post-S Tombstone
 F TTL small Mixed

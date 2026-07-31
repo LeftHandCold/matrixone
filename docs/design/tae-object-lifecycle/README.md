@@ -293,7 +293,7 @@ thin retire control、现有 external booking、普通事务、Dataset/TTL Recei
 ```text
 Gate A  最小Catalog + Binding + Metadata Discovery
 Gate B  Exact Reader + canonical encoder + 固定Row Group Chunk + 可重启Hash + Parquet/ZSTD
-Gate C  Cleanup Root + 认证Stage身份/凭据 + full readback + 生产Export-only
+Gate C  Cleanup Root + 认证Stage身份/凭据 + full readback + 测试/认证Export-only
 Gate D  Whole exact retire + thin commit-control
 Gate E  单源Mixed Rewrite + post-S DELETE
 Gate F  TTL小Mixed DELETE（可关闭的性能优化）

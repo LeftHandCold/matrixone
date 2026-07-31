@@ -88,3 +88,24 @@ func TestRewriteAdmissionReservesSourceBeforeClassification(t *testing.T) {
 	)
 	require.NoError(t, admission.CheckAmplification(30, 20))
 }
+
+func TestRewriteAdmissionOwnerHandoffWaitsForNextFixedWindow(t *testing.T) {
+	admission, err := NewRewriteAdmission(RewriteReleaseProfile{
+		Window:                   time.Hour,
+		MaxAmplification:         4,
+		MaxSourceBytesPerAccount: 100,
+		MaxSourceBytesPerCluster: 150,
+	})
+	require.NoError(t, err)
+	now := time.Unix(3700, 0)
+	require.NoError(t, admission.HoldUntilNextWindow(now))
+	require.ErrorContains(t,
+		admission.ReserveSource(1, 10, now),
+		"owner handoff",
+	)
+	require.NoError(t, admission.ReserveSource(
+		1,
+		10,
+		now.Truncate(time.Hour).Add(time.Hour),
+	))
+}

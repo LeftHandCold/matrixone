@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,21 +32,10 @@ import (
 )
 
 const (
-	lifecycleMaxRestoreStagingBytesPerAccount     = uint64(12) << 40
-	lifecycleMaxRestoreStagingBytesPerCoordinator = uint64(24) << 40
-	lifecycleArchiveCloseTimeout                  = 30 * time.Second
+	lifecycleMaxRestoreStagingBytesPerAccount = uint64(12) << 40
+	lifecycleMaxRestoreStagingBytesPerCluster = uint64(24) << 40
+	lifecycleArchiveCloseTimeout              = 30 * time.Second
 )
-
-var lifecycleRestoreStagingAdmission = sync.OnceValue(func() *lifecyclepkg.RestoreStagingAdmission {
-	admission, err := lifecyclepkg.NewRestoreStagingAdmission(
-		lifecycleMaxRestoreStagingBytesPerAccount,
-		lifecycleMaxRestoreStagingBytesPerCoordinator,
-	)
-	if err != nil {
-		panic(err)
-	}
-	return admission
-})
 
 func handleRestoreArchiveDataset(
 	ctx context.Context,
@@ -107,6 +95,8 @@ func handleRestoreArchiveDataset(
 		Roots: lifecyclepkg.SQLCleanupRootRepository{
 			Executor: sqlExecutor,
 		},
+		MaxRestoreStagingBytesPerAccount: lifecycleMaxRestoreStagingBytesPerAccount,
+		MaxRestoreStagingBytesPerCluster: lifecycleMaxRestoreStagingBytesPerCluster,
 	}
 	restoreAttempt, resumed, err := repository.FindResumable(
 		ctx,
@@ -134,27 +124,6 @@ func handleRestoreArchiveDataset(
 			TargetName:         tableName,
 		}
 	}
-	activeBytes, err := datasetReader.ActiveRestoreLogicalBytes(ctx, accountID)
-	if err != nil {
-		return err
-	}
-	activeBytes, err = lifecycleRestoreAdmissionUsage(
-		activeBytes,
-		dataset.LogicalBytes,
-		resumed,
-	)
-	if err != nil {
-		return err
-	}
-	releaseStaging, err := lifecycleRestoreStagingAdmission().Reserve(
-		accountID,
-		activeBytes,
-		dataset.LogicalBytes,
-	)
-	if err != nil {
-		return err
-	}
-	defer releaseStaging()
 	target, err := lifecyclepkg.ParseFrozenArchiveTarget(dataset.StageIdentity)
 	if err != nil {
 		return err
@@ -193,22 +162,6 @@ func handleRestoreArchiveDataset(
 
 func lifecycleRestoreAlreadyPublished(resumed bool, state string) bool {
 	return resumed && state == "DONE"
-}
-
-func lifecycleRestoreAdmissionUsage(
-	activeBytes uint64,
-	datasetBytes uint64,
-	resumed bool,
-) (uint64, error) {
-	if !resumed {
-		return activeBytes, nil
-	}
-	if activeBytes < datasetBytes {
-		return 0, fmt.Errorf(
-			"Lifecycle Restore staging usage is inconsistent",
-		)
-	}
-	return activeBytes - datasetBytes, nil
 }
 
 func handlePurgeArchiveDataset(

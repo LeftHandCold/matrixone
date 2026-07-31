@@ -47,6 +47,11 @@ chunk数、Tombstone protection、wire bytes和30分钟attempt deadline仍可更
 
 Lifecycle不得重新排序、合并或修补mapping。
 
+Phase 1只认证普通CN Merge当前实际生产的默认物理布局：
+`BlockMaxRows=8192`、`ObjectMaxBlocks=256`。Lifecycle Rewrite在读取源Block之前检查
+`SchemaExtra`；非默认布局返回`RESOURCE_BLOCKED`，不修改普通Merge producer，也不在
+Lifecycle中实现第二套布局算法。未来若公共Merge原生支持参数化布局，再单独放开认证范围。
+
 在调用writer前根据source rows/blocks/bytes和当前schema参数计算created Object与booking
 page的保守upper bound，预分配唯一segment ID并写入Root。Lifecycle writer只能在该
 segment/range内创建对象；超过upper bound立即失败，不在写后扩张Root cleanup范围。
@@ -235,7 +240,8 @@ inspect EntryType/protocol version
 要求：
 
 - 未完成全量升级时retirement默认关闭；
-- Export-only可先开启；
+- Export-only只作为测试/认证模式验证Writer与Provider，不是Phase 1生产能力；生产release
+  关闭时不创建新Root，也不执行Provider PUT；
 - 第一阶段先把“未知Entry在Batch解析前返回unsupported”补丁部署到全部TN；
 - 第二阶段才允许能够生成`LifecycleCommit=7`的新CN上线；
 - 新CN→已具备安全解析但不支持V1的TN，在任何Batch解析/mutation前失败；

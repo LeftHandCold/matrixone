@@ -23,7 +23,9 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	"github.com/matrixorigin/matrixone/pkg/pb/api"
 	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/options"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,6 +76,22 @@ func TestValidateLifecycleBlockReadPeak(t *testing.T) {
 		validateLifecycleBlockReadPeak(^uint64(0), capBytes),
 		"cannot be estimated safely",
 	)
+}
+
+func TestValidateLifecycleRewriteLayout(t *testing.T) {
+	require.NoError(t, validateLifecycleRewriteLayout(&api.SchemaExtra{
+		BlockMaxRows:    options.DefaultBlockMaxRows,
+		ObjectMaxBlocks: uint32(options.DefaultBlocksPerObject),
+	}))
+	require.ErrorContains(t, validateLifecycleRewriteLayout(nil), "RESOURCE_BLOCKED")
+	require.ErrorContains(t, validateLifecycleRewriteLayout(&api.SchemaExtra{
+		BlockMaxRows:    1024,
+		ObjectMaxBlocks: uint32(options.DefaultBlocksPerObject),
+	}), "RESOURCE_BLOCKED")
+	require.ErrorContains(t, validateLifecycleRewriteLayout(&api.SchemaExtra{
+		BlockMaxRows:    options.DefaultBlockMaxRows,
+		ObjectMaxBlocks: 8,
+	}), "RESOURCE_BLOCKED")
 }
 
 func TestTxnTableExposesLifecycleRewriteCapability(t *testing.T) {

@@ -64,7 +64,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - 普通Catalog写缺失的control-only生产事务必须在CN拒绝；
 - ordinary transaction可选指针恒nil，不分配Lifecycle对象；
 - mixed version集群retirement开关不可开启；
-- Export-only可运行；
+- 测试/认证Export-only可显式运行；生产release关闭时不创建新Root或Provider PUT；
 - 升级全员ready后开启；
 - 降级前等待FINALIZING/COMMIT_UNKNOWN。
 
@@ -203,8 +203,11 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - account/cluster固定窗口source bytes按开始读取的attempt计费，失败重试不返还；
 - Coordinator切换在当前窗口保守停止Rewrite，不能重置预算；
 - Restore按Dataset logical bytes执行account/cluster active staging准入；
-- Coordinator重启从Attempt/Dataset重建Restore计数，重建期间拒绝新Restore；
-- Restore初始化明确失败、成功、unknown和Coordinator crash下reservation只释放或转交一次；
+- 两个CN并发Restore初始化必须由现有feature row短锁串行；前一事务提交后，后一事务在同一
+  普通事务中看到新Attempt并重新计算容量，不能共同越过account/cluster hard cap；
+- 前一初始化事务abort时不留下reservation，response lost/late commit由普通事务结果和
+  Attempt身份对账；账户枚举、lock wait或30秒deadline超限必须在Dataset lease、隐藏表和
+  Attempt首次副作用前fail-closed；
 - cleanup backlog cap暂停Archive Whole/Rewrite和TTL Rewrite等所有Root creator；
 - `max-bound-tables`只作为认证集群上限，不生成分布式Slot。
 
@@ -221,7 +224,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - Data source digest不包含Tombstone，protection-only Tombstone不进入Drop集合；
 - CreatedObjs顺序不可改变；
 - created Object Level沿用普通Merge晋级，不能把高Level source降级；
-- max Object和非默认BlockMaxRows/ObjectMaxBlocks；
+- max Object；非默认BlockMaxRows/ObjectMaxBlocks必须在读Block前`RESOURCE_BLOCKED`；
 - created Object/booking实际ordinal超过Root write-ahead upper bound时fail closed；
 - oversize Block读取前拒绝；
 - Batch release exactly once；

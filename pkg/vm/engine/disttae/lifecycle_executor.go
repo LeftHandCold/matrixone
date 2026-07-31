@@ -145,6 +145,9 @@ func LifecycleTaskExecutorFactory(
 			MaxSourceBytesPerCluster: 4 << 40,
 		},
 	)
+	if admissionErr == nil {
+		admissionErr = admission.HoldUntilNextWindow(time.Now())
+	}
 	cleanupReconcileCursor := ""
 	var metadataAccountCursor uint32
 	var restoreCleanupCursor lifecyclepkg.ExpiredRestoreCursor
