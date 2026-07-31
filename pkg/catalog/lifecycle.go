@@ -161,6 +161,7 @@ const (
 		segment_id varbinary(64),
 		booking_prefix text,
 		ordinal_upper_bound int unsigned,
+		reserved_cleanup_bytes bigint unsigned not null,
 		source_set_digest binary(32) not null,
 		final_txn_id varbinary(128),
 		state varchar(24) not null,

@@ -57,21 +57,23 @@ type ArchiveWriterConfig struct {
 	SchemaDigest         [32]byte
 	MaxRestoreChunkRows  uint64
 	MaxChunkLogicalBytes uint64
+	MaxPhysicalBytes     uint64
 	Faults               FaultInjector
 }
 
 type ArchiveWriter struct {
-	config       ArchiveWriterConfig
-	store        ArchiveStore
-	guard        ArchiveSideEffectGuard
-	schema       *parquet.Schema
-	pending      []archiveRow
-	pendingBytes uint64
-	files        []ArchiveFile
-	guarded      bool
-	closed       bool
-	autoMaxima   map[uint32]*big.Int
-	faults       FaultInjector
+	config        ArchiveWriterConfig
+	store         ArchiveStore
+	guard         ArchiveSideEffectGuard
+	schema        *parquet.Schema
+	pending       []archiveRow
+	pendingBytes  uint64
+	physicalBytes uint64
+	files         []ArchiveFile
+	guarded       bool
+	closed        bool
+	autoMaxima    map[uint32]*big.Int
+	faults        FaultInjector
 }
 
 type archiveRow struct {
@@ -93,8 +95,9 @@ func NewArchiveWriter(
 		config.Prefix == "" || config.WriteID == "" {
 		return nil, moerr.NewInvalidInput(ctx, "Lifecycle archive immutable identity is incomplete")
 	}
-	if config.MaxRestoreChunkRows == 0 || config.MaxChunkLogicalBytes == 0 {
-		return nil, moerr.NewInvalidInput(ctx, "Lifecycle restore chunk limits must be positive")
+	if config.MaxRestoreChunkRows == 0 || config.MaxChunkLogicalBytes == 0 ||
+		config.MaxPhysicalBytes == 0 {
+		return nil, moerr.NewInvalidInput(ctx, "Lifecycle archive writer limits must be positive")
 	}
 	if config.Schema.FormatVersion != schemaDescriptorFormatVersion {
 		return nil, moerr.NewInvalidInput(ctx, "Lifecycle archive schema version is invalid")
@@ -225,7 +228,7 @@ func (writer *ArchiveWriter) Close(
 	if err := writer.faults.Inject(ctx, FaultBeforeManifestPut); err != nil {
 		return nil, "", err
 	}
-	if err := writer.store.Put(ctx, key, encoded); err != nil {
+	if err := writer.put(ctx, key, encoded); err != nil {
 		return nil, "", err
 	}
 	if err := writer.faults.Inject(ctx, FaultAfterManifestPut); err != nil {
@@ -247,7 +250,7 @@ func (writer *ArchiveWriter) Close(
 	if err := writer.faults.Inject(ctx, FaultBeforeManifestPut); err != nil {
 		return nil, "", err
 	}
-	if err := writer.store.Put(ctx, verifiedKey, verifiedEncoded); err != nil {
+	if err := writer.put(ctx, verifiedKey, verifiedEncoded); err != nil {
 		return nil, "", err
 	}
 	if err := writer.faults.Inject(ctx, FaultAfterManifestPut); err != nil {
@@ -321,7 +324,7 @@ func (writer *ArchiveWriter) flushChunk(ctx context.Context) error {
 	if err := writer.faults.Inject(ctx, FaultBeforePayloadPut); err != nil {
 		return err
 	}
-	if err := writer.store.Put(ctx, key, payload); err != nil {
+	if err := writer.put(ctx, key, payload); err != nil {
 		return err
 	}
 	if err := writer.faults.Inject(ctx, FaultAfterPayloadPut); err != nil {
@@ -344,6 +347,25 @@ func (writer *ArchiveWriter) flushChunk(ctx context.Context) error {
 	})
 	writer.pending = nil
 	writer.pendingBytes = 0
+	return nil
+}
+
+func (writer *ArchiveWriter) put(
+	ctx context.Context,
+	key string,
+	value []byte,
+) error {
+	bytes := uint64(len(value))
+	if bytes > writer.config.MaxPhysicalBytes ||
+		writer.physicalBytes > writer.config.MaxPhysicalBytes-bytes {
+		return fmt.Errorf(
+			"RESOURCE_BLOCKED: Lifecycle Archive exceeds its reserved physical bytes",
+		)
+	}
+	if err := writer.store.Put(ctx, key, value); err != nil {
+		return err
+	}
+	writer.physicalBytes += bytes
 	return nil
 }
 

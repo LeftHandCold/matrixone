@@ -541,7 +541,8 @@ retirement，不为精确overlap建设Object列表；达到数量/bytes上限暂
 2. 只有`SET LIFECYCLE`在持有表锁后更新一次system account的`LIFECYCLE` feature row，
    形成与scope级依赖发布之间的write barrier；普通表DDL只做索引化Binding lookup；
 3. Snapshot/PITR/Publication/Clone/Branch创建先跨feature-row barrier，再查询目标scope
-   Binding；CDC复用PITR准入；Lifecycle retirement gate开启时物理Backup全局fail closed；
+   Binding；CDC复用PITR准入；物理Backup只有在Lifecycle retirement gate关闭且全集群
+   不存在Binding、非`PURGED` Dataset和未收敛Cleanup Root时才允许；
 4. 绑定表的不兼容DDL直接拒绝，DROP在同一barrier下删除Binding；
 5. Finalizer重新校验Binding generation、physical table、schema digest、Lifecycle列和exact
    source Object；

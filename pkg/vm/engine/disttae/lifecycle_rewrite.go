@@ -32,6 +32,10 @@ var ErrLifecycleRewriteHasNoLiveRows = errors.New(
 	"Lifecycle Rewrite has no live rows; finalize as Whole retirement",
 )
 
+var ErrLifecycleNoExpiredRows = errors.New(
+	"Lifecycle source Object has no expired visible rows",
+)
+
 // LifecycleRewriteOptions describes the Root-owned physical output of one
 // single-source Mixed Rewrite. The Root and its namespace must be durable
 // before this method is called.
@@ -57,6 +61,32 @@ type LifecycleRewriteResult struct {
 	TransferBookingLocation []string
 	TransferMappingDigest   [sha256.Size]byte
 	MergeLevel              int32
+	ScanReport              lifecyclepkg.ObjectScanReport
+}
+
+// lifecycleObjectPressureBytes is the single resource-accounting size for a
+// TAE Object. OriginSize is the preferred logical source size; Size protects
+// legacy or unusually encoded Objects whose physical representation is larger.
+// Exact identity still uses the complete ObjectStats bytes, not this value.
+func lifecycleObjectPressureBytes(stats objectio.ObjectStats) uint64 {
+	return uint64(max(stats.OriginSize(), stats.Size(), 1))
+}
+
+func lifecycleEstimatedExpiredPressureBytes(
+	sourceBytes uint64,
+	report lifecyclepkg.ObjectScanReport,
+) (uint64, error) {
+	visibleRows := report.ExpiredRows + report.LiveRows
+	if sourceBytes == 0 || report.ExpiredRows == 0 || visibleRows == 0 {
+		return 0, fmt.Errorf("MIXED_LAYOUT_BLOCKED: expired Rewrite pressure is zero")
+	}
+	// Mixed is strictly one Object, so both factors are bounded by uint32 and
+	// their product fits uint64. Round up so a tiny expired tail is not charged
+	// as zero bytes.
+	return max(
+		(sourceBytes*report.ExpiredRows+visibleRows-1)/visibleRows,
+		uint64(1),
+	), nil
 }
 
 func validateLifecycleRewriteOwnership(
@@ -209,6 +239,17 @@ func (tbl *txnTable) LifecycleRewriteObject(
 		base.commitEntry.Err = err.Error()
 		return LifecycleRewriteResult{}, err
 	}
+	report, err := host.ScanReport()
+	if err != nil {
+		return LifecycleRewriteResult{}, err
+	}
+	result := LifecycleRewriteResult{ScanReport: report}
+	if report.ExpiredRows == 0 {
+		return result, ErrLifecycleNoExpiredRows
+	}
+	if report.LiveRows == 0 {
+		return result, ErrLifecycleRewriteHasNoLiveRows
+	}
 	if base.transferTable == nil {
 		return LifecycleRewriteResult{}, moerr.NewInternalError(
 			ctx,
@@ -216,7 +257,10 @@ func (tbl *txnTable) LifecycleRewriteObject(
 		)
 	}
 	if len(base.commitEntry.CreatedObjs) == 0 {
-		return LifecycleRewriteResult{}, ErrLifecycleRewriteHasNoLiveRows
+		return LifecycleRewriteResult{}, moerr.NewInternalError(
+			ctx,
+			"Lifecycle Rewrite producer omitted live Objects",
+		)
 	}
 	digest := mergesort.TransferMappingDigest(
 		base.commitEntry.CreatedObjs,
@@ -234,18 +278,17 @@ func (tbl *txnTable) LifecycleRewriteObject(
 	if err != nil {
 		return LifecycleRewriteResult{}, err
 	}
-	return LifecycleRewriteResult{
-		CreatedObjectStats: append(
-			[][]byte(nil),
-			commitEntry.CreatedObjs...,
-		),
-		TransferBookingLocation: append(
-			[]string(nil),
-			commitEntry.BookingLoc...,
-		),
-		TransferMappingDigest: digest,
-		MergeLevel:            commitEntry.Level,
-	}, nil
+	result.CreatedObjectStats = append(
+		[][]byte(nil),
+		commitEntry.CreatedObjs...,
+	)
+	result.TransferBookingLocation = append(
+		[]string(nil),
+		commitEntry.BookingLoc...,
+	)
+	result.TransferMappingDigest = digest
+	result.MergeLevel = commitEntry.Level
+	return result, nil
 }
 
 const lifecycleBlockReadFixedOverhead = uint64(

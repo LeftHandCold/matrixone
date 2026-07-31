@@ -69,6 +69,47 @@ func TestLifecycleProcessorWholePublishesOnlyAfterVerifiedArchive(t *testing.T) 
 	require.GreaterOrEqual(t, fixture.store.puts, 3)
 }
 
+func TestLifecycleProcessorWholeAllSnapshotDeletedIsNoop(t *testing.T) {
+	fixture := newLifecycleProcessorFixture(t)
+	fixture.task.Table.(*lifecycleProcessorTable).snapshotDeleted =
+		nulls.Build(2, 0, 1)
+
+	root, err := fixture.processor.ProcessArchiveObject(
+		context.Background(),
+		fixture.task,
+	)
+	require.NoError(t, err)
+	require.Equal(t, lifecyclepkg.CleanupRootDeletePending, root.State)
+	require.Empty(t, root.LastError)
+	require.Zero(t, fixture.finalizer.calls)
+}
+
+func TestLifecycleProcessorMixedWithoutExpiredRowsIsNoop(t *testing.T) {
+	fixture := newLifecycleProcessorFixture(t)
+	fixture.task.Whole = false
+	fixture.task.Classifier = func(
+		context.Context,
+		*batch.Batch,
+		*nulls.Nulls,
+	) (*nulls.Nulls, error) {
+		return nulls.NewWithSize(2), nil
+	}
+	fixture.task.DeltaRows = 100
+	fixture.task.DeltaBytes = 1 << 20
+	fixture.task.DeltaBlocks = 8
+	fixture.task.MaxCreatedObjects = 16
+	fixture.task.Table.(*lifecycleProcessorTable).rewrite = true
+
+	root, err := fixture.processor.ProcessArchiveObject(
+		context.Background(),
+		fixture.task,
+	)
+	require.NoError(t, err)
+	require.Equal(t, lifecyclepkg.CleanupRootDeletePending, root.State)
+	require.Empty(t, root.LastError)
+	require.Zero(t, fixture.finalizer.calls)
+}
+
 func TestLifecycleProcessorWholeBatchUsesOneRootAndOneDataset(t *testing.T) {
 	fixture := newLifecycleProcessorFixture(t)
 	secondID := objectio.NewObjectid()
@@ -949,6 +990,7 @@ func newLifecycleProcessorFixture(t *testing.T) *lifecycleProcessorFixture {
 			MaxRestoreChunkRows:   1024,
 			MaxChunkBytes:         1 << 20,
 			MaxActiveCleanupRoots: 1024,
+			MaxActiveCleanupBytes: 1 << 40,
 			CleanupGrace:          time.Minute,
 		},
 		Roots:           roots,
@@ -997,6 +1039,7 @@ func newLifecycleProcessorFixture(t *testing.T) *lifecycleProcessorFixture {
 		Deadline:                   now.Add(time.Minute),
 		ExecutorEpoch:              1,
 		MaxCertifiedBlockReadBytes: 256 << 20,
+		TargetObjectSize:           128 << 20,
 		ProtectionLimits: logtailreplay.LifecycleTombstoneSelectionLimits{
 			MaxScannedObjects:  16,
 			MaxSelectedObjects: 16,
@@ -1032,25 +1075,36 @@ func lifecycleProcessorBatch(t *testing.T) *batch.Batch {
 }
 
 type lifecycleProcessorTable struct {
-	batch          *batch.Batch
-	rewrite        bool
-	noLiveRows     bool
-	waitForContext bool
-	rewriteCalls   int
+	batch           *batch.Batch
+	snapshotDeleted *nulls.Nulls
+	rewrite         bool
+	noLiveRows      bool
+	waitForContext  bool
+	rewriteCalls    int
 }
 
 func (table *lifecycleProcessorTable) LifecycleReadObject(
 	ctx context.Context,
 	_ types.TS,
-	_ objectio.ObjectStats,
+	source objectio.ObjectStats,
 	_ uint64,
 	consume lifecyclepkg.ExactBlockConsumer,
-) error {
+) (lifecyclepkg.ObjectScanReport, error) {
+	report := lifecyclepkg.NewObjectScanReport(
+		source.BlkCnt(),
+		uint64(source.Rows()),
+	)
 	if table.waitForContext {
 		<-ctx.Done()
-		return ctx.Err()
+		return report, ctx.Err()
 	}
-	return consume(table.batch, nil)
+	if err := report.ObservePhysicalBlock(
+		table.batch.RowCount(),
+		table.snapshotDeleted,
+	); err != nil {
+		return report, err
+	}
+	return report, consume(table.batch, table.snapshotDeleted)
 }
 
 func (table *lifecycleProcessorTable) LifecycleRewriteObject(
@@ -1072,7 +1126,15 @@ func (table *lifecycleProcessorTable) LifecycleRewriteObject(
 		return LifecycleRewriteResult{}, err
 	}
 	if table.noLiveRows {
-		return LifecycleRewriteResult{}, ErrLifecycleRewriteHasNoLiveRows
+		report := lifecyclepkg.NewObjectScanReport(1, uint64(table.batch.RowCount()))
+		if err := report.ObserveClassifiedBlock(
+			table.batch.RowCount(),
+			nil,
+			expired,
+		); err != nil {
+			return LifecycleRewriteResult{}, err
+		}
+		return LifecycleRewriteResult{ScanReport: report}, ErrLifecycleRewriteHasNoLiveRows
 	}
 	createdID := objectio.NewObjectidWithSegmentIDAndNum(
 		&options.LiveSegmentID,
@@ -1091,11 +1153,26 @@ func (table *lifecycleProcessorTable) LifecycleRewriteObject(
 	if err != nil {
 		return LifecycleRewriteResult{}, err
 	}
+	report := lifecyclepkg.NewObjectScanReport(1, uint64(table.batch.RowCount()))
+	if err := report.ObserveClassifiedBlock(
+		table.batch.RowCount(),
+		nil,
+		expired,
+	); err != nil {
+		return LifecycleRewriteResult{}, err
+	}
+	if report.ExpiredRows == 0 {
+		return LifecycleRewriteResult{ScanReport: report}, ErrLifecycleNoExpiredRows
+	}
+	if report.LiveRows == 0 {
+		return LifecycleRewriteResult{ScanReport: report}, ErrLifecycleRewriteHasNoLiveRows
+	}
 	return LifecycleRewriteResult{
 		CreatedObjectStats:      [][]byte{created.Clone().Marshal()},
 		TransferBookingLocation: []string{booking},
 		TransferMappingDigest:   [32]byte{1},
 		MergeLevel:              1,
+		ScanReport:              report,
 	}, nil
 }
 
@@ -1240,6 +1317,34 @@ func (store *lifecycleProcessorArchiveStore) Get(
 	return append([]byte(nil), value...), nil
 }
 
+func (store *lifecycleProcessorArchiveStore) Stat(
+	_ context.Context,
+	key string,
+) (int64, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	value, exists := store.objects[key]
+	if !exists {
+		return 0, fmt.Errorf("not found")
+	}
+	return int64(len(value)), nil
+}
+
+func (store *lifecycleProcessorArchiveStore) GetExact(
+	ctx context.Context,
+	key string,
+	size int64,
+) ([]byte, error) {
+	value, err := store.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(value)) != size {
+		return nil, fmt.Errorf("size changed")
+	}
+	return value, nil
+}
+
 type lifecycleProcessorRootStore struct {
 	mu          sync.Mutex
 	roots       map[string]lifecyclepkg.CleanupRoot
@@ -1306,6 +1411,8 @@ func (store *lifecycleProcessorRootStore) HasUnresolvedSource(
 func (store *lifecycleProcessorRootStore) CheckCreateCapacity(
 	_ context.Context,
 	_ int,
+	_ uint64,
+	_ uint64,
 ) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()

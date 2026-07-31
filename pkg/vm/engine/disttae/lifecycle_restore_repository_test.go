@@ -88,6 +88,33 @@ func TestSQLRestoreInitializeOwnsLeaseTableAndAttemptInOneTransaction(t *testing
 	require.Contains(t, statements[4], "insert into mo_catalog.mo_lifecycle_restore_attempts")
 }
 
+func TestSQLRestorePurgeRequiresLeaseFullyReleased(t *testing.T) {
+	mp := mpool.MustNewZero()
+	calls := 0
+	sqlExecutor := executor.NewMemExecutor(func(sql string) (executor.Result, error) {
+		calls++
+		lower := strings.ToLower(sql)
+		require.Contains(t, lower, "restore_lease_id is null")
+		require.NotContains(t, lower, "restore_deadline")
+		return executor.Result{AffectedRows: 0, Mp: mp}, nil
+	})
+	repository := SQLRestoreRepository{
+		AccountID: 17,
+		Executor:  sqlExecutor,
+	}
+	err := repository.RequestPurge(
+		context.Background(),
+		lifecyclepkg.RestoreDataset{
+			DatasetID: "22222222-2222-2222-2222-222222222222",
+			State:     "PUBLISHED",
+			Version:   3,
+		},
+		time.Now(),
+	)
+	require.ErrorIs(t, err, lifecyclepkg.ErrRestoreInProgress)
+	require.Equal(t, 1, calls)
+}
+
 func TestSQLRestoreFindsResumableAttemptByDatasetAndTarget(t *testing.T) {
 	mp := mpool.MustNewZero()
 	sqlExecutor := executor.NewMemExecutor(func(sql string) (executor.Result, error) {

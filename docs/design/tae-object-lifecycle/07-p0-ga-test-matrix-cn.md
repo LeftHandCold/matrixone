@@ -102,9 +102,13 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - Dataset lease、CREATE hidden和INSERT Attempt必须在同一普通事务；
 - 初始化事务在CREATE/Attempt INSERT/commit response lost各故障点不留下无Owner隐藏表；
 - Restore acquire与Purge竞争同一Dataset CAS；
-- 有有效lease时显式Purge返回`RESTORE_IN_PROGRESS`；
-- 有有效lease时后台Purge不等待，延迟重试；
-- lease终止或deadline后，Purge才能进入`DELETE_PENDING`；
+- 有任意非空lease时（包括已过期但尚未清理）显式Purge返回
+  `RESTORE_IN_PROGRESS`；
+- 有任意非空lease时后台Purge不等待，延迟重试；
+- lease deadline只使Attempt具备cleanup资格；`CleanupHidden`必须在同一普通事务中精确DROP
+  隐藏表、置Attempt FAILED并释放lease，随后Purge才能进入`DELETE_PENDING`；
+- 过期lease下并发`CleanupHidden`与Purge，验证Purge不会抢先改变Dataset state并导致隐藏表
+  清理事务回滚或留下永久孤儿；
 - 一旦进入`DELETE_PENDING`，旧worker的GET/chunk必须失败，且不存在“旧lease继续读”；
 - Restore最终DDL事务和Purge同时到达，验证双方CAS同一Dataset行且只能一方提交；
 - Restore发布事务必须校验Attempt IMPORTING、lease、Chunk/row进度、
@@ -315,8 +319,9 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - 新CN→旧TN、旧CN→新TN、滚动升级、关闭retirement后降级。
 
 验收必须证明真实锁或WW conflict，不能以“最后读取值正确”代替互斥。CDC使用PITR
-依赖门禁；Lifecycle retirement gate开启时物理Backup必须全局拒绝，DR不能静默恢复
-不完整历史。
+依赖门禁。物理Backup在retirement gate开启、任一账户仍有Binding/非`PURGED` Dataset，
+或system account仍有非`CLEANED` Root时必须拒绝；只有gate关闭且三类状态均清空/收敛后
+才允许。DR不能静默恢复不完整历史。
 
 ## 14. 规模
 

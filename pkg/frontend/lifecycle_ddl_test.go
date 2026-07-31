@@ -159,6 +159,15 @@ func TestValidateLifecyclePolicyRejectsUnsupportedTables(t *testing.T) {
 			},
 		},
 		{
+			name: "unique secondary index",
+			mutate: func(def *plan.TableDef) {
+				def.Indexes = []*plan.IndexDef{{
+					IndexName: "uk_created_at",
+					Unique:    true,
+				}}
+			},
+		},
+		{
 			name: "foreign key",
 			mutate: func(def *plan.TableDef) {
 				def.Fkeys = []*plan.ForeignKeyDef{{Name: "fk"}}
@@ -195,6 +204,25 @@ func TestValidateLifecyclePolicyRejectsUnsupportedTables(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestValidateLifecyclePolicyAllowsOrdinaryPrimaryKey(t *testing.T) {
+	def := lifecycleTableDef(types.T_timestamp)
+	def.Pkey = &plan.PrimaryKeyDef{
+		Cols:        []uint64{def.Cols[0].ColId},
+		PkeyColId:   def.Cols[0].ColId,
+		PkeyColName: def.Cols[0].Name,
+	}
+	_, _, err := validateLifecyclePolicy(
+		context.Background(),
+		def,
+		tree.LifecyclePolicy{
+			Column:          "created_at",
+			ExpireAfterDays: 90,
+			Action:          tree.LifecycleActionDelete,
+		},
+	)
+	require.NoError(t, err)
 }
 
 func TestLifecycleSchemaDigestChangesOnSemanticSchemaChange(t *testing.T) {

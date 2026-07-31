@@ -383,9 +383,10 @@ Lifecycle采用薄的管理路径fence，不建设Feature Guard表：
 - Snapshot/PITR/Publication/Clone/Branch创建跨同一write barrier，然后按目标scope索引化
   查询Binding；
 - 该行只承担管理操作发布顺序，不保存per-table owner、attempt或dependency集合；
-- CDC创建依赖PITR，因而复用PITR gate；物理Backup不是Archive-aware，Lifecycle
-  retirement release gate开启期间全局fail closed，关闭并drain后才允许执行。DR恢复仍
-  必须显式声明Archive不可用，不能静默生成缺失历史的数据副本；
+- CDC创建依赖PITR，因而复用PITR gate；物理Backup不是Archive-aware。关闭retirement
+  release gate只能停止新任务，不能消除已有外部Payload，因此Backup还必须确认全集群
+  不存在Binding、非`PURGED` Dataset和未收敛Cleanup Root。DR恢复仍必须显式声明Archive
+  不可用，不能静默生成缺失历史的数据副本；
 - Finalizer仍使用Binding generation/physical table/schema与exact source Object检查决定
   是否退休，不把feature row当作数据正确性Owner。
 

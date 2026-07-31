@@ -69,27 +69,99 @@ func TestRejectLifecycleBindingInScopeFailsClosed(t *testing.T) {
 	require.Contains(t, err.Error(), "Lifecycle-bound")
 }
 
-func TestRejectBackupWhenLifecycleRetirementEnabled(t *testing.T) {
+func TestLifecycleBackupStateProbesAreScopedAndTerminalAware(t *testing.T) {
+	bindingSQL := lifecycleBackupBindingProbeSQL(17)
+	require.Contains(t, bindingSQL, "account_id=17")
+	require.NotContains(t, bindingSQL, "state")
+	require.Contains(t, bindingSQL, "limit 1")
+
+	datasetSQL := lifecycleBackupDatasetProbeSQL(17)
+	require.Contains(t, datasetSQL, "account_id=17")
+	require.Contains(t, datasetSQL, "state <> 'PURGED'")
+	require.Contains(t, datasetSQL, "limit 1")
+
+	require.Contains(t, lifecycleBackupRootProbeSQL, "state <> 'CLEANED'")
+	require.Contains(t, lifecycleBackupRootProbeSQL, "limit 1")
+}
+
+func TestRejectBackupWithLifecycleStateWhenRetirementEnabled(t *testing.T) {
 	bh := &backgroundExecTest{}
 	bh.init()
 	bh.sql2result[lifecycleBackupGateProbeSQL] =
 		newMrsForPasswordOfUser([][]interface{}{{"LIFECYCLE"}})
 
-	err := rejectBackupWhenLifecycleRetirementEnabled(
+	err := rejectBackupWithLifecycleState(
 		context.Background(),
 		bh,
 	)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "BACKUP")
+	require.Contains(t, err.Error(), "enabled")
 }
 
-func TestAllowBackupWhenLifecycleRetirementDisabled(t *testing.T) {
+func TestRejectBackupWithLifecycleBindingAfterGateDisabled(t *testing.T) {
 	bh := &backgroundExecTest{}
 	bh.init()
-	bh.sql2result[lifecycleBackupGateProbeSQL] =
-		newMrsForPasswordOfUser(nil)
-	require.NoError(t, rejectBackupWhenLifecycleRetirementEnabled(
+	bh.sql2result[lifecycleBackupGateProbeSQL] = newMrsForPasswordOfUser(nil)
+	bh.sql2result[getAccountIdNamesSql] = newMrsForGetAllAccounts([][]interface{}{
+		{uint64(17), "account-17", "open", uint64(1), nil},
+	})
+	bh.sql2result[lifecycleBackupBindingProbeSQL(17)] =
+		newMrsForPasswordOfUser([][]interface{}{{"binding"}})
+
+	err := rejectBackupWithLifecycleState(context.Background(), bh)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Binding")
+}
+
+func TestRejectBackupWithLifecycleDatasetAfterGateDisabled(t *testing.T) {
+	bh := &backgroundExecTest{}
+	bh.init()
+	bh.sql2result[lifecycleBackupGateProbeSQL] = newMrsForPasswordOfUser(nil)
+	bh.sql2result[getAccountIdNamesSql] = newMrsForGetAllAccounts([][]interface{}{
+		{uint64(17), "account-17", "open", uint64(1), nil},
+	})
+	bh.sql2result[lifecycleBackupBindingProbeSQL(17)] = newMrsForPasswordOfUser(nil)
+	bh.sql2result[lifecycleBackupDatasetProbeSQL(17)] =
+		newMrsForPasswordOfUser([][]interface{}{{"dataset"}})
+
+	err := rejectBackupWithLifecycleState(context.Background(), bh)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "non-PURGED")
+}
+
+func TestRejectBackupWithUnconvergedLifecycleRootAfterGateDisabled(t *testing.T) {
+	bh := &backgroundExecTest{}
+	bh.init()
+	bh.sql2result[lifecycleBackupGateProbeSQL] = newMrsForPasswordOfUser(nil)
+	bh.sql2result[getAccountIdNamesSql] = newMrsForGetAllAccounts(nil)
+	bh.sql2result[lifecycleBackupRootProbeSQL] =
+		newMrsForPasswordOfUser([][]interface{}{{"root"}})
+
+	err := rejectBackupWithLifecycleState(context.Background(), bh)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Cleanup Root")
+}
+
+func TestAllowBackupWithoutLifecycleStateAfterGateDisabled(t *testing.T) {
+	bh := &backgroundExecTest{}
+	bh.init()
+	bh.sql2result[lifecycleBackupGateProbeSQL] = newMrsForPasswordOfUser(nil)
+	bh.sql2result[getAccountIdNamesSql] = newMrsForGetAllAccounts([][]interface{}{
+		{uint64(17), "account-17", "open", uint64(1), nil},
+	})
+	bh.sql2result[lifecycleBackupBindingProbeSQL(17)] = newMrsForPasswordOfUser(nil)
+	bh.sql2result[lifecycleBackupDatasetProbeSQL(17)] = newMrsForPasswordOfUser(nil)
+	bh.sql2result[lifecycleBackupRootProbeSQL] = newMrsForPasswordOfUser(nil)
+
+	require.NoError(t, rejectBackupWithLifecycleState(
 		context.Background(),
 		bh,
 	))
+	require.Equal(t, []string{
+		lifecycleBackupGateProbeSQL,
+		getAccountIdNamesSql,
+		lifecycleBackupBindingProbeSQL(17),
+		lifecycleBackupDatasetProbeSQL(17),
+		lifecycleBackupRootProbeSQL,
+	}, bh.executedSQLs)
 }

@@ -90,7 +90,7 @@ func planLifecycleObjectTasks(
 		wholeBytes = 0
 	}
 	for _, input := range inputs {
-		sourceBytes := uint64(max(input.Source.ObjectStats.OriginSize(), 1))
+		sourceBytes := lifecycleObjectPressureBytes(input.Source.ObjectStats)
 		if !input.Whole {
 			flushWhole()
 			plans = append(plans, lifecycleObjectPlan{
@@ -596,6 +596,7 @@ func (runner *lifecycleBindingExecutor) run(
 			MaxRestoreChunkRows:   65_536,
 			MaxChunkBytes:         64 << 20,
 			MaxActiveCleanupRoots: 4096,
+			MaxActiveCleanupBytes: 64 << 40,
 			CleanupGrace:          10 * time.Minute,
 		},
 		Roots: lifecyclepkg.SQLCleanupRootRepository{
@@ -648,7 +649,7 @@ func (runner *lifecycleBindingExecutor) run(
 		if !objectPlan.Whole {
 			source := objectPlan.Sources[0]
 			maxCreated = uint32(math.Ceil(
-				float64(max(source.ObjectStats.OriginSize(), 1))/
+				float64(lifecycleObjectPressureBytes(source.ObjectStats))/
 					float64(lifecycleTargetObjectBytes),
 			)) + 1
 			maxCreated = min(maxCreated, lifecycleMaxCreatedObjects)

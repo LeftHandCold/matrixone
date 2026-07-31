@@ -861,10 +861,9 @@ set state='DELETE_PENDING',access_generation=access_generation+1,
 version=version+1,updated_at=utc_timestamp()
 where dataset_id=unhex('%s') and state='PUBLISHED' and version=%d
 and purge_eligible_at<=%s
-and (restore_lease_id is null or restore_deadline<%s)`,
+and restore_lease_id is null`,
 				encoded,
 				dataset.Version,
-				lifecycleCatalogTime(now),
 				lifecycleCatalogTime(now),
 			),
 			executor.Options{}.WithAccountID(repository.AccountID),

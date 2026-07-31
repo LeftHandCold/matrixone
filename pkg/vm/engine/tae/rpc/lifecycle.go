@@ -121,10 +121,7 @@ func validateLifecycleCommitControl(
 		}
 		seen[objectID] = struct{}{}
 		sourceBlockCount += uint32(stats.BlkCnt())
-		objectBytes := uint64(stats.OriginSize())
-		if objectBytes == 0 {
-			objectBytes = 1
-		}
+		objectBytes := uint64(max(stats.OriginSize(), stats.Size(), 1))
 		sourceBytes += objectBytes
 		if sourceBytes > lifecycleWholeMaxSourceBytes {
 			return fmt.Errorf("Lifecycle source bytes exceed the certified limit")

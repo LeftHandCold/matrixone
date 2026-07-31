@@ -104,9 +104,32 @@ func ReadArchiveManifest(
 	store ArchiveStore,
 	manifestKey string,
 ) (*ArchiveManifest, error) {
-	encoded, err := store.Get(ctx, manifestKey)
+	manifestStore, ok := store.(archiveManifestReadStore)
+	if !ok {
+		return nil, fmt.Errorf(
+			"Lifecycle Archive Store does not support bounded Manifest reads",
+		)
+	}
+	manifestSize, err := manifestStore.Stat(ctx, manifestKey)
 	if err != nil {
 		return nil, err
+	}
+	if manifestSize <= 0 || manifestSize > int64(maxArchiveManifestBytes) {
+		return nil, fmt.Errorf(
+			"Lifecycle archive manifest size %d is outside the certified range",
+			manifestSize,
+		)
+	}
+	encoded, err := manifestStore.GetExact(ctx, manifestKey, manifestSize)
+	if err != nil {
+		return nil, err
+	}
+	manifestSizeAfterRead, err := manifestStore.Stat(ctx, manifestKey)
+	if err != nil {
+		return nil, err
+	}
+	if manifestSizeAfterRead != manifestSize || int64(len(encoded)) != manifestSize {
+		return nil, fmt.Errorf("Lifecycle archive manifest changed during bounded read")
 	}
 	manifestDigest := sha256.Sum256(encoded)
 	expectedManifestDigest, err := manifestDigestFromKey(manifestKey)

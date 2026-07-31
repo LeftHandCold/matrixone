@@ -118,6 +118,38 @@ func TestExactBlockReaderReleasesBorrowedBatchExactlyOnce(t *testing.T) {
 	require.Equal(t, []int{1, 1}, releases)
 }
 
+func TestObjectScanReportRequiresCompletePhysicalCoverageAndDEL(t *testing.T) {
+	report := NewObjectScanReport(2, 4)
+	require.NoError(t, report.ObserveClassifiedBlock(
+		2,
+		nulls.Build(2, 0),
+		nulls.Build(2, 1),
+	))
+	require.ErrorContains(t, report.ValidateComplete(), "scan is incomplete")
+
+	require.NoError(t, report.ObserveClassifiedBlock(2, nil, nil))
+	require.NoError(t, report.ValidateComplete())
+	require.Equal(t, uint64(1), report.SnapshotDeletedRows)
+	require.Equal(t, uint64(1), report.ExpiredRows)
+	require.Equal(t, uint64(2), report.LiveRows)
+}
+
+func TestObjectScanReportRejectsOutOfRangeAndOverlappingClasses(t *testing.T) {
+	report := NewObjectScanReport(1, 2)
+	require.Error(t, report.ObserveClassifiedBlock(
+		2,
+		nulls.Build(2, 2),
+		nil,
+	))
+
+	report = NewObjectScanReport(1, 2)
+	require.Error(t, report.ObserveClassifiedBlock(
+		2,
+		nulls.Build(2, 1),
+		nulls.Build(2, 1),
+	))
+}
+
 type testTombstoneSelector struct {
 	selected      []objectio.ObjectEntry
 	selectedStats []objectio.ObjectStats

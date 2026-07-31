@@ -46,14 +46,6 @@ func (processor *LifecycleProcessor) ProcessTTLObject(
 	attemptCtx, cancelAttempt := context.WithDeadline(ctx, task.Deadline)
 	defer cancelAttempt()
 	ctx = attemptCtx
-	if !task.Whole {
-		if err := processor.CleanupCapacity.CheckCreateCapacity(
-			ctx,
-			processor.Config.MaxActiveCleanupRoots,
-		); err != nil {
-			return lifecyclepkg.CleanupRoot{}, err
-		}
-	}
 	id := processor.ID
 	if id == nil {
 		id = func() string { return uuid.NewString() }
@@ -83,7 +75,7 @@ func (processor *LifecycleProcessor) ProcessTTLObject(
 		if processor.RewriteAdmission != nil {
 			if err := processor.RewriteAdmission.ReserveSource(
 				task.Binding.AccountID,
-				uint64(task.Sources[0].ObjectStats.OriginSize()),
+				lifecycleObjectPressureBytes(task.Sources[0].ObjectStats),
 				task.Now,
 			); err != nil {
 				return lifecyclepkg.CleanupRoot{}, err
@@ -134,6 +126,9 @@ func (processor *LifecycleProcessor) ProcessTTLObject(
 			ctx,
 			task,
 		)
+		if errors.Is(measureErr, ErrLifecycleNoExpiredRows) {
+			return lifecyclepkg.CleanupRoot{}, nil
+		}
 		if measureErr != nil {
 			return lifecyclepkg.CleanupRoot{}, measureErr
 		}
@@ -173,6 +168,18 @@ func (processor *LifecycleProcessor) ProcessTTLObject(
 	}
 
 	rootID := id()
+	reservedCleanupBytes, _, err := lifecycleCleanupReservation(task, false)
+	if err != nil {
+		return lifecyclepkg.CleanupRoot{}, err
+	}
+	if err := processor.CleanupCapacity.CheckCreateCapacity(
+		ctx,
+		processor.Config.MaxActiveCleanupRoots,
+		processor.Config.MaxActiveCleanupBytes,
+		reservedCleanupBytes,
+	); err != nil {
+		return lifecyclepkg.CleanupRoot{}, err
+	}
 	bookingPrefix := path.Join(
 		"lifecycle-staging",
 		rootID,
@@ -181,22 +188,23 @@ func (processor *LifecycleProcessor) ProcessTTLObject(
 	)
 	liveSegmentID := *objectio.NewSegmentid()
 	root := lifecyclepkg.CleanupRoot{
-		RootID:            rootID,
-		AttemptID:         attemptID,
-		Mode:              lifecyclepkg.CleanupModeTTLRewrite,
-		OwnerAccountID:    task.Binding.AccountID,
-		LogicalTableID:    task.Binding.LogicalTableID,
-		PhysicalTableID:   task.Binding.PhysicalTableID,
-		ExecutorEpoch:     task.ExecutorEpoch,
-		WorkerDeadline:    task.Deadline,
-		TAENamespace:      processor.Config.TAENamespace,
-		SegmentID:         liveSegmentID.String(),
-		BookingPrefix:     bookingPrefix,
-		OrdinalUpperBound: task.MaxCreatedObjects,
-		SourceSetDigest:   sourceSetDigest,
-		FinalTxnID:        finalTxnID,
-		State:             lifecyclepkg.CleanupRootRegistered,
-		StateVersion:      1,
+		RootID:               rootID,
+		AttemptID:            attemptID,
+		Mode:                 lifecyclepkg.CleanupModeTTLRewrite,
+		OwnerAccountID:       task.Binding.AccountID,
+		LogicalTableID:       task.Binding.LogicalTableID,
+		PhysicalTableID:      task.Binding.PhysicalTableID,
+		ExecutorEpoch:        task.ExecutorEpoch,
+		WorkerDeadline:       task.Deadline,
+		TAENamespace:         processor.Config.TAENamespace,
+		SegmentID:            liveSegmentID.String(),
+		BookingPrefix:        bookingPrefix,
+		OrdinalUpperBound:    task.MaxCreatedObjects,
+		ReservedCleanupBytes: reservedCleanupBytes,
+		SourceSetDigest:      sourceSetDigest,
+		FinalTxnID:           finalTxnID,
+		State:                lifecyclepkg.CleanupRootRegistered,
+		StateVersion:         1,
 		CleanupAfter: lifecycleCleanupAfter(
 			task.Now,
 			task.Deadline,
@@ -261,13 +269,25 @@ func (processor *LifecycleProcessor) ProcessTTLObject(
 			},
 		},
 	)
+	if errors.Is(err, ErrLifecycleNoExpiredRows) {
+		return processor.completeNoop(ctx, root)
+	}
 	if errors.Is(err, ErrLifecycleRewriteHasNoLiveRows) {
 		task.Whole = true
-		rewrite = LifecycleRewriteResult{}
+		rewrite.CreatedObjectStats = nil
+		rewrite.TransferBookingLocation = nil
+		rewrite.TransferMappingDigest = [32]byte{}
+		rewrite.MergeLevel = 0
 		err = nil
 	}
 	if err != nil {
 		return processor.abandon(ctx, root, err)
+	}
+	if err := rewrite.ScanReport.ValidateComplete(); err != nil {
+		return processor.abandon(ctx, root, err)
+	}
+	if rewrite.ScanReport.ExpiredRows == 0 {
+		return processor.completeNoop(ctx, root)
 	}
 	if !task.Whole {
 		if err := validateLifecycleRewriteOwnership(root, rewrite); err != nil {
@@ -280,30 +300,30 @@ func (processor *LifecycleProcessor) ProcessTTLObject(
 	); err != nil {
 		return processor.abandon(ctx, root, err)
 	}
-	if encoder.RowCount() == 0 {
+	if encoder.RowCount() == 0 ||
+		encoder.RowCount() != rewrite.ScanReport.ExpiredRows {
 		return processor.abandon(
 			ctx,
 			root,
-			fmt.Errorf("Lifecycle TTL Rewrite has no expired visible rows"),
+			fmt.Errorf(
+				"Lifecycle TTL measured %d of %d expired rows",
+				encoder.RowCount(),
+				rewrite.ScanReport.ExpiredRows,
+			),
 		)
 	}
 	if processor.RewriteAdmission != nil {
-		var liveBytes uint64
-		for _, raw := range rewrite.CreatedObjectStats {
-			if len(raw) != objectio.ObjectStatsLen {
-				return processor.abandon(
-					ctx,
-					root,
-					fmt.Errorf("Lifecycle TTL Rewrite created ObjectStats is malformed"),
-				)
-			}
-			var stats objectio.ObjectStats
-			copy(stats[:], raw)
-			liveBytes += uint64(stats.OriginSize())
+		sourceBytes := lifecycleObjectPressureBytes(task.Sources[0].ObjectStats)
+		retiredBytes, estimateErr := lifecycleEstimatedExpiredPressureBytes(
+			sourceBytes,
+			rewrite.ScanReport,
+		)
+		if estimateErr != nil {
+			return processor.abandon(ctx, root, estimateErr)
 		}
 		if err := processor.RewriteAdmission.CheckAmplification(
-			liveBytes,
-			encoder.LogicalBytes(),
+			sourceBytes,
+			retiredBytes,
 		); err != nil {
 			return processor.abandon(ctx, root, err)
 		}
@@ -413,7 +433,8 @@ func (processor *LifecycleProcessor) measureWholeTTL(
 ) (uint64, uint64, error) {
 	encoder := lifecyclepkg.NewCanonicalBatchEncoder(task.SchemaDigest)
 	for _, source := range task.Sources {
-		if err := task.Table.LifecycleReadObject(
+		var sourceExpiredRows uint64
+		report, err := task.Table.LifecycleReadObject(
 			ctx,
 			task.SourceSnapshot,
 			source.ObjectStats,
@@ -435,16 +456,22 @@ func (processor *LifecycleProcessor) measureWholeTTL(
 						"Lifecycle Whole TTL source contains live rows",
 					)
 				}
+				sourceExpiredRows += uint64(expired.Count())
 				return encoder.WriteBatch(ctx, value, expired)
 			},
-		); err != nil {
+		)
+		if err != nil {
+			return 0, 0, err
+		}
+		if err := report.SetVisibleClassification(sourceExpiredRows, 0); err != nil {
+			return 0, 0, err
+		}
+		if err := report.ValidateComplete(); err != nil {
 			return 0, 0, err
 		}
 	}
 	if encoder.RowCount() == 0 {
-		return 0, 0, fmt.Errorf(
-			"Lifecycle Whole TTL has no expired visible rows",
-		)
+		return 0, 0, ErrLifecycleNoExpiredRows
 	}
 	return encoder.RowCount(), encoder.LogicalBytes(), nil
 }
@@ -485,6 +512,7 @@ func (processor *LifecycleProcessor) validateTTLTask(
 		processor.TemporaryStore == nil ||
 		processor.Config.TAENamespace == "" ||
 		processor.Config.MaxActiveCleanupRoots <= 0 ||
+		processor.Config.MaxActiveCleanupBytes == 0 ||
 		processor.Config.CleanupGrace < 0 ||
 		len(task.Sources) != 1 ||
 		task.MaxCreatedObjects == 0 ||

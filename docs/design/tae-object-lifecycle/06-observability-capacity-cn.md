@@ -52,6 +52,10 @@ Writer在写第4097个Payload前返回`RESOURCE_BLOCKED`，Manifest parser和Res
 因为Phase 1每个Payload严格只有一个Row Group，这一个上限同时约束Payload文件、
 Manifest集合、Chunk Receipt和Restore聚合内存；后续若支持一个文件多个Row Group，再拆成
 两个独立配置。
+Manifest控制元数据另行冻结`max-manifest-bytes = 16 MiB`、
+`max-schema-columns = 4096`和字符串/对象key上限。Reader必须先通过Stage/FileService
+`StatFile`取得大小并完成上限检查，再执行exact bounded read；禁止用`Size=-1`把未知大小的
+Manifest完整载入内存。以上是V1持久格式认证常量，不能由租户或运行时配置放宽。
 `max-restore-chunk-rows`和`max-restore-chunk-logical-bytes`必须由普通INSERT事务的内存、
 wire/WAL和时长认证结果反推，并受release profile hard cap约束；用户不能把它们调高到
 未经认证的范围。

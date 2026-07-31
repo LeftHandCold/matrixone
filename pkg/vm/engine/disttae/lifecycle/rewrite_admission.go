@@ -31,11 +31,10 @@ type RewriteReleaseProfile struct {
 }
 
 type RewriteAdmissionRequest struct {
-	AccountID           uint32
-	SourceBytes         uint64
-	LiveLogicalBytes    uint64
-	ExpiredLogicalBytes uint64
-	Now                 time.Time
+	AccountID            uint32
+	SourceBytes          uint64
+	RetiredPressureBytes uint64
+	Now                  time.Time
 }
 
 type RewriteAdmission struct {
@@ -66,12 +65,12 @@ func NewRewriteAdmission(profile RewriteReleaseProfile) (*RewriteAdmission, erro
 func (admission *RewriteAdmission) Admit(request RewriteAdmissionRequest) error {
 	if request.Now.IsZero() ||
 		request.SourceBytes == 0 ||
-		request.ExpiredLogicalBytes == 0 {
+		request.RetiredPressureBytes == 0 {
 		return fmt.Errorf("MIXED_LAYOUT_BLOCKED: Rewrite accounting is incomplete")
 	}
 	if err := admission.CheckAmplification(
-		request.LiveLogicalBytes,
-		request.ExpiredLogicalBytes,
+		request.SourceBytes,
+		request.RetiredPressureBytes,
 	); err != nil {
 		return err
 	}
@@ -83,14 +82,14 @@ func (admission *RewriteAdmission) Admit(request RewriteAdmissionRequest) error 
 }
 
 func (admission *RewriteAdmission) CheckAmplification(
-	liveLogicalBytes uint64,
-	expiredLogicalBytes uint64,
+	sourcePressureBytes uint64,
+	retiredPressureBytes uint64,
 ) error {
-	if expiredLogicalBytes == 0 {
+	if sourcePressureBytes == 0 || retiredPressureBytes == 0 {
 		return fmt.Errorf("MIXED_LAYOUT_BLOCKED: expired Rewrite bytes are zero")
 	}
-	amplification := float64(liveLogicalBytes) /
-		float64(max(expiredLogicalBytes, 1))
+	amplification := float64(sourcePressureBytes) /
+		float64(retiredPressureBytes)
 	if math.IsInf(amplification, 0) ||
 		math.IsNaN(amplification) ||
 		amplification > admission.profile.MaxAmplification {

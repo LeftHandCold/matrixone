@@ -319,8 +319,7 @@ func (coordinator RestoreCoordinator) Purge(
 	if coordinator.Repository == nil || dataset.DatasetID == "" || now.IsZero() {
 		return fmt.Errorf("Lifecycle Purge input is incomplete")
 	}
-	if dataset.RestoreLeaseID != "" &&
-		dataset.RestoreDeadline.After(now) {
+	if dataset.RestoreLeaseID != "" {
 		return ErrRestoreInProgress
 	}
 	return coordinator.Repository.RequestPurge(

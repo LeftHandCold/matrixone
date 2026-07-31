@@ -476,12 +476,91 @@ manifest_format_version = 1
 ```
 
 Reader必须先按该字段选择parser；缺失、0或未知版本在读取任何可变长度集合前fail closed。
-Manifest记录Dataset/Root/Attempt、schema descriptor、AUTO_INCREMENT归档最大值、文件集、
-`total_chunk_count`、`dataset_content_hash`、`hash_formula_version`、总行数、
-source snapshot/evaluation time/cutoff/source set digest、Lifecycle列min/max、Stage
-identity和加密信息。`total_chunk_count`必须等于所有文件Row Group数量之和，合法
+Phase 1的V1 Manifest只记录Root/Attempt、schema descriptor、AUTO_INCREMENT归档最大值、
+文件集、`total_chunk_count`、`dataset_content_hash`、`hash_formula_version`、总行数和总逻辑
+字节。Dataset ID在归档验证后才由final transaction创建；source snapshot/cutoff/source set和
+Stage identity由Dataset、Cleanup Root和thin retire entry保存，V1不在Manifest中重复维护两份
+权威状态。`total_chunk_count`必须等于所有文件Row Group数量之和，合法
 `chunk_ordinal`范围严格为`0..total_chunk_count-1`。每个文件的`row_count`和
 `logical_bytes`必须分别等于其Row Group对应字段之和。
+
+### 11.1 Manifest V1永久字节合同
+
+Manifest V1是无空白的canonical UTF-8 JSON。Writer只能通过显式V1 wire DTO生成字节，不能
+直接序列化内存模型。顶层字段顺序固定为：
+
+```text
+manifest_format_version
+hash_formula_version
+canonical_encoder_version
+root_id
+attempt_id
+schema
+schema_digest
+content_hash
+row_count
+logical_bytes
+total_chunk_count
+files
+auto_increment_maxima       # 空集合时省略
+verification_status
+```
+
+嵌套顺序也固定：
+
+```text
+schema:
+  format_version, source_table_id, source_table_version,
+  source_database_name, source_table_name, columns
+
+schema.columns[]:
+  ordinal, source_column_id, name, type_id, width, scale,
+  enum_values?, not_null, auto_increment, default_expression?, charset?, collation?
+
+files[]:
+  file_ordinal, key, size, sha256, chunks
+
+files[].chunks[]:
+  chunk_ordinal, file_ordinal, row_group_ordinal,
+  row_count, logical_bytes, canonical_content_hash
+
+auto_increment_maxima[]:
+  column_ordinal, value
+```
+
+编码规则冻结如下：
+
+- 所有`uint64`，包括table/column ID、rows、logical bytes、file size和chunk ordinal，编码为
+  不带前导零的十进制JSON string；零只能写成`"0"`。这样跨语言读取不会受JavaScript
+  `2^53`精度边界影响。
+- SHA-256固定为64字符小写hex string，不接受数组、base64或大写hex。
+- `uint16/uint32/int32`和版本字段使用JSON number；布尔值使用JSON boolean。
+- 字符串使用JSON标准转义；控制字符、双引号和反斜杠必须转义，`<`、`>`、`&`分别使用
+  `\u003c`、`\u003e`、`\u0026`，U+2028/U+2029使用Unicode转义，其余合法非ASCII字符直接
+  使用UTF-8。禁止不必要的等价转义。
+- 除标记为`?`的空字符串和空`auto_increment_maxima`外，所有字段都必须存在；禁止`null`
+  代替数组或对象。
+- Reader拒绝未知字段、重复字段、尾随JSON、字段重排、额外空白和任何不能重新编码成完全
+  相同canonical bytes的输入。unknown version在解析`files/schema.columns`之前拒绝。
+
+永久认证上限为：
+
+```text
+max-manifest-bytes                  = 16 MiB
+max-files/chunks/schema-columns     = 4096
+max-root-id/attempt-id-bytes        = 256
+max-object-key-bytes                = 4096
+max-database/table/column-name      = 1024 bytes
+max-other-manifest-string-bytes     = 64 KiB
+max-json-depth                      = 16
+max-json-object-fields              = 64
+```
+
+Provider Reader必须执行：`HEAD/Stat -> 检查size -> exact bounded GET -> 再次Stat并比较size ->
+校验content-addressed Manifest SHA-256 -> V1严格解析`。缺少Stat/exact-read能力的Stage fail
+closed。`max-manifest-bytes`必须在完整GET和JSON反序列化之前检查；Parse API本身还要重复
+检查，防止非Provider调用绕过。完整V1 golden bytes属于兼容性测试，修改任何字段、顺序或
+编码都必须提升`manifest_format_version`，不能原地改变V1。
 
 Writer按`target_payload_file_bytes`流式切分，不按“每天一个文件”或“月底全量合并”。
 默认值在Provider/Restore认证后冻结，并同时受`max_payload_files_per_dataset`和单次Root

@@ -218,10 +218,10 @@ func (t *cnMergeTask) GetSortKeyType() types.Type {
 func (t *cnMergeTask) LoadNextBatch(ctx context.Context, objIdx uint32, _ *batch.Batch) (*batch.Batch, *nulls.Nulls, func(), error) {
 	iter := t.blkIters[objIdx]
 	if iter.Next() {
-		if err := t.admitLifecycleBlockRead(objIdx); err != nil {
+		blk := iter.Entry()
+		if err := t.admitLifecycleBlockRead(objIdx, &blk); err != nil {
 			return nil, nil, nil, err
 		}
-		blk := iter.Entry()
 		// update delta location
 		obj := t.targets[objIdx]
 		blk.SetFlagByObjStats(&obj)
@@ -264,7 +264,10 @@ func (t *cnMergeTask) configureLifecycleBlockReadBudget(
 	return nil
 }
 
-func (t *cnMergeTask) admitLifecycleBlockRead(objIdx uint32) error {
+func (t *cnMergeTask) admitLifecycleBlockRead(
+	objIdx uint32,
+	blockInfo *objectio.BlockInfo,
+) error {
 	budget := t.lifecycleReadBudget
 	if budget == nil {
 		return nil
@@ -279,6 +282,14 @@ func (t *cnMergeTask) admitLifecycleBlockRead(objIdx uint32) error {
 	if blockOrdinal >= meta.BlockCount() {
 		return moerr.NewInvalidInputNoCtx(
 			"Lifecycle Block read ordinal is out of range",
+		)
+	}
+	expectedObjectID := t.targets[objIdx].ObjectName().ObjectId()
+	if blockInfo == nil ||
+		*blockInfo.BlockID.Object() != *expectedObjectID ||
+		blockInfo.BlockID.Sequence() != uint16(blockOrdinal) {
+		return moerr.NewInvalidInputNoCtx(
+			"Lifecycle exact reader Block identity/order changed",
 		)
 	}
 	block := meta.GetBlockMeta(blockOrdinal)

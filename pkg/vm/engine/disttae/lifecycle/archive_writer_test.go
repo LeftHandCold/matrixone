@@ -30,6 +30,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const archiveTestMaxPhysicalBytes = uint64(1 << 30)
+
 func TestArchiveWriterRoundTripAndStableChunks(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryArchiveStore()
@@ -47,6 +49,7 @@ func TestArchiveWriterRoundTripAndStableChunks(t *testing.T) {
 		SchemaDigest:         schemaDigest,
 		MaxRestoreChunkRows:  2,
 		MaxChunkLogicalBytes: 1 << 20,
+		MaxPhysicalBytes:     archiveTestMaxPhysicalBytes,
 	}, store, guard)
 	require.NoError(t, err)
 
@@ -111,6 +114,7 @@ func TestArchiveWriterFlushesBeforeLogicalByteLimitAndRejectsOversizeRow(t *test
 		SchemaDigest:         schemaDigest,
 		MaxRestoreChunkRows:  100,
 		MaxChunkLogicalBytes: rowBytes + canonicalArchiveChunkOverhead(schemaDigest),
+		MaxPhysicalBytes:     archiveTestMaxPhysicalBytes,
 	}, store, &testArchiveSideEffectGuard{durable: true})
 	require.NoError(t, err)
 	mp := mpool.MustNewZero()
@@ -134,6 +138,7 @@ func TestArchiveWriterFlushesBeforeLogicalByteLimitAndRejectsOversizeRow(t *test
 		SchemaDigest:         schemaDigest,
 		MaxRestoreChunkRows:  100,
 		MaxChunkLogicalBytes: rowBytes + canonicalArchiveChunkOverhead(schemaDigest),
+		MaxPhysicalBytes:     archiveTestMaxPhysicalBytes,
 	}, oversizeStore, &testArchiveSideEffectGuard{durable: true})
 	require.NoError(t, err)
 	oversize := archiveTestBatch(t, mp, archiveTestRow{1, string(make([]byte, 4096))})
@@ -158,6 +163,7 @@ func TestArchiveWriterRejectsChunkBeforeExceedingDatasetLimit(t *testing.T) {
 		SchemaDigest:         schemaDigest,
 		MaxRestoreChunkRows:  1,
 		MaxChunkLogicalBytes: 1 << 20,
+		MaxPhysicalBytes:     archiveTestMaxPhysicalBytes,
 	}, store, &testArchiveSideEffectGuard{durable: true})
 	require.NoError(t, err)
 	writer.files = make([]ArchiveFile, maxArchiveChunksPerDataset)
@@ -186,6 +192,7 @@ func TestArchiveWriterRequiresCleanupRootBeforeFirstSideEffect(t *testing.T) {
 		SchemaDigest:         schemaDigest,
 		MaxRestoreChunkRows:  1,
 		MaxChunkLogicalBytes: 1 << 20,
+		MaxPhysicalBytes:     archiveTestMaxPhysicalBytes,
 	}, store, &testArchiveSideEffectGuard{durable: false})
 	require.NoError(t, err)
 	mp := mpool.MustNewZero()
@@ -195,6 +202,34 @@ func TestArchiveWriterRequiresCleanupRootBeforeFirstSideEffect(t *testing.T) {
 	require.NoError(t, writer.WriteBatch(ctx, value, nil))
 	_, _, err = writer.Close(ctx)
 	require.ErrorIs(t, err, ErrCleanupRootNotDurable)
+	require.Empty(t, store.keys())
+}
+
+func TestArchiveWriterRejectsPhysicalBytesBeforePut(t *testing.T) {
+	ctx := context.Background()
+	schema := archiveTestSchema()
+	schemaDigest, err := schema.Digest()
+	require.NoError(t, err)
+	store := newMemoryArchiveStore()
+	writer, err := NewArchiveWriter(ctx, ArchiveWriterConfig{
+		RootID:               "root-physical-cap",
+		AttemptID:            "attempt-physical-cap",
+		Prefix:               "archive/root-physical-cap/attempt-physical-cap",
+		WriteID:              "write-physical-cap",
+		Schema:               schema,
+		SchemaDigest:         schemaDigest,
+		MaxRestoreChunkRows:  1,
+		MaxChunkLogicalBytes: 1 << 20,
+		MaxPhysicalBytes:     1,
+	}, store, &testArchiveSideEffectGuard{durable: true})
+	require.NoError(t, err)
+	mp := mpool.MustNewZero()
+	value := archiveTestBatch(t, mp, archiveTestRow{1, "one"})
+	defer value.Clean(mp)
+	require.NoError(t, writer.WriteBatch(ctx, value, nil))
+
+	_, _, err = writer.Close(ctx)
+	require.ErrorContains(t, err, "reserved physical bytes")
 	require.Empty(t, store.keys())
 }
 
@@ -218,6 +253,7 @@ func TestArchiveWriterFaultAfterPayloadPutLeavesOnlyRootOwnedImmutableFile(
 		SchemaDigest:         schemaDigest,
 		MaxRestoreChunkRows:  1,
 		MaxChunkLogicalBytes: 1 << 20,
+		MaxPhysicalBytes:     archiveTestMaxPhysicalBytes,
 		Faults:               faults,
 	}, store, &testArchiveSideEffectGuard{durable: true})
 	require.NoError(t, err)
@@ -252,6 +288,7 @@ func TestArchiveWriterPersistsAndReadbackVerifiesAutoIncrementMaximum(t *testing
 		SchemaDigest:         schemaDigest,
 		MaxRestoreChunkRows:  2,
 		MaxChunkLogicalBytes: 1 << 20,
+		MaxPhysicalBytes:     archiveTestMaxPhysicalBytes,
 	}, store, &testArchiveSideEffectGuard{durable: true})
 	require.NoError(t, err)
 	mp := mpool.MustNewZero()
@@ -319,6 +356,7 @@ func writeArchiveTestDataset(t *testing.T, store *memoryArchiveStore) string {
 		SchemaDigest:         schemaDigest,
 		MaxRestoreChunkRows:  1,
 		MaxChunkLogicalBytes: 1 << 20,
+		MaxPhysicalBytes:     archiveTestMaxPhysicalBytes,
 	}, store, &testArchiveSideEffectGuard{durable: true})
 	require.NoError(t, err)
 	mp := mpool.MustNewZero()
@@ -410,6 +448,34 @@ func (store *memoryArchiveStore) Get(_ context.Context, key string) ([]byte, err
 	value, ok := store.objects[key]
 	if !ok {
 		return nil, errors.New("object not found")
+	}
+	return append([]byte(nil), value...), nil
+}
+
+func (store *memoryArchiveStore) Stat(_ context.Context, key string) (int64, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	value, ok := store.objects[key]
+	if !ok {
+		return 0, errors.New("object not found")
+	}
+	return int64(len(value)), nil
+}
+
+func (store *memoryArchiveStore) GetExact(
+	_ context.Context,
+	key string,
+	size int64,
+) ([]byte, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.gets[key]++
+	value, ok := store.objects[key]
+	if !ok {
+		return nil, errors.New("object not found")
+	}
+	if int64(len(value)) != size {
+		return nil, errors.New("object size changed")
 	}
 	return append([]byte(nil), value...), nil
 }

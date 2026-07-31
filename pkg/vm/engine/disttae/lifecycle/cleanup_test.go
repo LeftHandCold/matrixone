@@ -29,14 +29,15 @@ func TestCleanupRootMustPrecedeSideEffectsAndUseImmutableNamespace(t *testing.T)
 	ctx := context.Background()
 	repository := newMemoryCleanupRootRepository()
 	root := CleanupRoot{
-		RootID:        "root-1",
-		AttemptID:     "attempt-1",
-		Mode:          CleanupModeArchiveRewrite,
-		ArchivePrefix: "archive/root-1/attempt-1",
-		BookingPrefix: "tae/root-1/attempt-1/booking",
-		State:         CleanupRootRegistered,
-		StateVersion:  1,
-		CleanupAfter:  time.Now(),
+		RootID:               "root-1",
+		AttemptID:            "attempt-1",
+		Mode:                 CleanupModeArchiveRewrite,
+		ArchivePrefix:        "archive/root-1/attempt-1",
+		BookingPrefix:        "tae/root-1/attempt-1/booking",
+		ReservedCleanupBytes: 1,
+		State:                CleanupRootRegistered,
+		StateVersion:         1,
+		CleanupAfter:         time.Now(),
 	}
 	require.NoError(t, repository.Register(ctx, root))
 	guard := NewCleanupRootSideEffectGuard(repository)
@@ -530,14 +531,15 @@ func TestPublishedRewritePurgeDoesNotDeleteTransferredLiveObject(t *testing.T) {
 
 func lifecycleCleanupTestRoot() CleanupRoot {
 	return CleanupRoot{
-		RootID:        "root-test",
-		AttemptID:     "attempt-test",
-		Mode:          CleanupModeArchiveWhole,
-		ExecutorEpoch: 7,
-		ArchivePrefix: "archive/root-test/attempt-test",
-		State:         CleanupRootRegistered,
-		StateVersion:  1,
-		CleanupAfter:  time.Unix(1000, 0),
+		RootID:               "root-test",
+		AttemptID:            "attempt-test",
+		Mode:                 CleanupModeArchiveWhole,
+		ExecutorEpoch:        7,
+		ArchivePrefix:        "archive/root-test/attempt-test",
+		ReservedCleanupBytes: 1,
+		State:                CleanupRootRegistered,
+		StateVersion:         1,
+		CleanupAfter:         time.Unix(1000, 0),
 	}
 }
 

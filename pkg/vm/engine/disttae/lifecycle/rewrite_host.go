@@ -49,6 +49,7 @@ type RewriteHost struct {
 	mergesort.MergeTaskHost
 	classify RewriteBlockClassifier
 	archive  RewriteExpiredConsumer
+	report   ObjectScanReport
 }
 
 func NewRewriteHost(
@@ -66,10 +67,20 @@ func NewRewriteHost(
 			"Lifecycle Rewrite must have exactly one source Object",
 		)
 	}
+	blockCounts := base.GetBlkCnts()
+	if len(blockCounts) != 1 || blockCounts[0] <= 0 || base.GetTotalRowCnt() == 0 {
+		return nil, moerr.NewInvalidInputNoCtx(
+			"Lifecycle Rewrite source layout is incomplete",
+		)
+	}
 	return &RewriteHost{
 		MergeTaskHost: base,
 		classify:      classify,
 		archive:       archive,
+		report: NewObjectScanReport(
+			uint32(blockCounts[0]),
+			uint64(base.GetTotalRowCnt()),
+		),
 	}, nil
 }
 
@@ -114,6 +125,14 @@ func (host *RewriteHost) LoadNextBatch(
 		release()
 		return nil, nil, nil, err
 	}
+	if err := host.report.ObserveClassifiedBlock(
+		value.RowCount(),
+		snapshotDeleted,
+		expired,
+	); err != nil {
+		release()
+		return nil, nil, nil, err
+	}
 	if nulls.Any(expired) && host.archive != nil {
 		if err := host.archive(ctx, value, expired); err != nil {
 			release()
@@ -130,25 +149,22 @@ func (host *RewriteHost) LoadNextBatch(
 	return value, deletedOrExpired, release, nil
 }
 
+// ScanReport is called only after DoMergeAndWrite has reached EOF. A short,
+// duplicate, reordered, or row-incomplete read is a hard failure even if the
+// Archive payload written so far passed full readback.
+func (host *RewriteHost) ScanReport() (ObjectScanReport, error) {
+	report := host.report
+	if err := report.ValidateComplete(); err != nil {
+		return report, err
+	}
+	return report, nil
+}
+
 func validateRewriteClasses(
 	rowCount int,
 	snapshotDeleted *nulls.Nulls,
 	expired *nulls.Nulls,
 ) error {
-	if expired == nil {
-		return nil
-	}
-	for _, row := range expired.GetBitmap().ToArray() {
-		if row >= uint64(rowCount) {
-			return moerr.NewInvalidInputNoCtx(
-				"Lifecycle classifier returned an out-of-range row",
-			)
-		}
-		if snapshotDeleted != nil && snapshotDeleted.Contains(row) {
-			return moerr.NewInvalidInputNoCtx(
-				"Lifecycle classifier marked a snapshot-deleted row as expired",
-			)
-		}
-	}
-	return nil
+	probe := NewObjectScanReport(1, uint64(rowCount))
+	return probe.ObserveClassifiedBlock(rowCount, snapshotDeleted, expired)
 }

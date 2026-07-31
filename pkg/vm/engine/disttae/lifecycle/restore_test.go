@@ -129,6 +129,20 @@ func TestPurgeRefusesActiveRestoreLease(t *testing.T) {
 	require.Zero(t, repository.purgeCount)
 }
 
+func TestPurgeRefusesExpiredRestoreLeaseUntilCleanupReleasesIt(t *testing.T) {
+	repository := newMemoryRestoreRepository()
+	coordinator := RestoreCoordinator{Repository: repository}
+	now := time.Now()
+	err := coordinator.Purge(context.Background(), RestoreDataset{
+		DatasetID:       "dataset",
+		Version:         1,
+		RestoreLeaseID:  "expired-lease",
+		RestoreDeadline: now.Add(-time.Minute),
+	}, now)
+	require.ErrorIs(t, err, ErrRestoreInProgress)
+	require.Zero(t, repository.purgeCount)
+}
+
 func TestRestoreFaultAfterCommittedChunkResumesWithoutDuplicateRows(t *testing.T) {
 	store := newMemoryArchiveStore()
 	manifestKey := writeArchiveTestDataset(t, store)

@@ -63,9 +63,10 @@ Provider审计日志证明；它不是Lifecycle在每次PUT中注入的请求hea
   终态元数据回收继续运行；
 - 不删除 `COMMIT_UNKNOWN` Root，不猜测普通 MO 事务终态。
 
-Phase 1物理Backup不复制Archive Payload。`enabled=true`期间`BACKUP`会显式拒绝；需要
-Backup时先关闭release gate，等待所有FINALIZING/COMMIT_UNKNOWN与在途child按运维流程
-收敛，再执行Backup。DR目标也不承诺`RESTORE ARCHIVE`可用。
+Phase 1物理Backup不复制Archive Payload。`enabled=true`期间`BACKUP`会显式拒绝；仅关闭
+release gate和等待在途child收敛仍不够，因为Binding、已发布Dataset与Payload继续存在。
+执行Backup前必须同时满足：全集群不存在Binding、所有Dataset已`PURGED`、所有Cleanup
+Root已`CLEANED`。任一条件不满足都拒绝Backup。DR目标也不承诺`RESTORE ARCHIVE`可用。
 
 ## 3. 分阶段放量
 

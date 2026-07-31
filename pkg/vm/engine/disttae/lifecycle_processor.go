@@ -133,6 +133,7 @@ type LifecycleProcessorConfig struct {
 	MaxRestoreChunkRows   uint64
 	MaxChunkBytes         uint64
 	MaxActiveCleanupRoots int
+	MaxActiveCleanupBytes uint64
 	CleanupGrace          time.Duration
 }
 
@@ -159,12 +160,6 @@ func (processor *LifecycleProcessor) ProcessArchiveObject(
 	attemptCtx, cancelAttempt := context.WithDeadline(ctx, task.Deadline)
 	defer cancelAttempt()
 	ctx = attemptCtx
-	if err := processor.CleanupCapacity.CheckCreateCapacity(
-		ctx,
-		processor.Config.MaxActiveCleanupRoots,
-	); err != nil {
-		return lifecyclepkg.CleanupRoot{}, err
-	}
 	id := processor.ID
 	if id == nil {
 		id = func() string { return uuid.NewString() }
@@ -194,6 +189,19 @@ func (processor *LifecycleProcessor) ProcessArchiveObject(
 	if err != nil {
 		return lifecyclepkg.CleanupRoot{}, err
 	}
+	reservedCleanupBytes, archivePhysicalBytes, err :=
+		lifecycleCleanupReservation(task, true)
+	if err != nil {
+		return lifecyclepkg.CleanupRoot{}, err
+	}
+	if err := processor.CleanupCapacity.CheckCreateCapacity(
+		ctx,
+		processor.Config.MaxActiveCleanupRoots,
+		processor.Config.MaxActiveCleanupBytes,
+		reservedCleanupBytes,
+	); err != nil {
+		return lifecyclepkg.CleanupRoot{}, err
+	}
 	sourceSetDigest := lifecycleSourceDigest(task.Sources)
 	unresolved, err := processor.Roots.HasUnresolvedSource(
 		ctx,
@@ -212,7 +220,7 @@ func (processor *LifecycleProcessor) ProcessArchiveObject(
 	if !task.Whole && processor.RewriteAdmission != nil {
 		if err := processor.RewriteAdmission.ReserveSource(
 			task.Binding.AccountID,
-			uint64(task.Sources[0].ObjectStats.OriginSize()),
+			lifecycleObjectPressureBytes(task.Sources[0].ObjectStats),
 			task.Now,
 		); err != nil {
 			return lifecyclepkg.CleanupRoot{}, err
@@ -223,24 +231,25 @@ func (processor *LifecycleProcessor) ProcessArchiveObject(
 		mode = lifecyclepkg.CleanupModeArchiveWhole
 	}
 	root := lifecyclepkg.CleanupRoot{
-		RootID:            rootID,
-		AttemptID:         attemptID,
-		Mode:              mode,
-		OwnerAccountID:    task.Binding.AccountID,
-		LogicalTableID:    task.Binding.LogicalTableID,
-		PhysicalTableID:   task.Binding.PhysicalTableID,
-		ExecutorEpoch:     task.ExecutorEpoch,
-		WorkerDeadline:    task.Deadline,
-		ArchiveNamespace:  string(targetIdentity),
-		CredentialHandle:  task.ArchiveTarget.CredentialHandle,
-		ArchivePrefix:     archivePrefix,
-		TAENamespace:      processor.Config.TAENamespace,
-		BookingPrefix:     bookingPrefix,
-		OrdinalUpperBound: task.MaxCreatedObjects,
-		SourceSetDigest:   sourceSetDigest,
-		FinalTxnID:        finalTxnID,
-		State:             lifecyclepkg.CleanupRootRegistered,
-		StateVersion:      1,
+		RootID:               rootID,
+		AttemptID:            attemptID,
+		Mode:                 mode,
+		OwnerAccountID:       task.Binding.AccountID,
+		LogicalTableID:       task.Binding.LogicalTableID,
+		PhysicalTableID:      task.Binding.PhysicalTableID,
+		ExecutorEpoch:        task.ExecutorEpoch,
+		WorkerDeadline:       task.Deadline,
+		ArchiveNamespace:     string(targetIdentity),
+		CredentialHandle:     task.ArchiveTarget.CredentialHandle,
+		ArchivePrefix:        archivePrefix,
+		TAENamespace:         processor.Config.TAENamespace,
+		BookingPrefix:        bookingPrefix,
+		OrdinalUpperBound:    task.MaxCreatedObjects,
+		ReservedCleanupBytes: reservedCleanupBytes,
+		SourceSetDigest:      sourceSetDigest,
+		FinalTxnID:           finalTxnID,
+		State:                lifecyclepkg.CleanupRootRegistered,
+		StateVersion:         1,
 		CleanupAfter: lifecycleCleanupAfter(
 			task.Now,
 			task.Deadline,
@@ -319,6 +328,7 @@ func (processor *LifecycleProcessor) ProcessArchiveObject(
 			SchemaDigest:         task.SchemaDigest,
 			MaxRestoreChunkRows:  processor.Config.MaxRestoreChunkRows,
 			MaxChunkLogicalBytes: processor.Config.MaxChunkBytes,
+			MaxPhysicalBytes:     archivePhysicalBytes,
 			Faults:               faults,
 		},
 		processor.Store,
@@ -329,8 +339,9 @@ func (processor *LifecycleProcessor) ProcessArchiveObject(
 	}
 
 	var rewrite LifecycleRewriteResult
+	var scanReport lifecyclepkg.ObjectScanReport
 	if task.Whole {
-		err = processor.archiveWhole(ctx, task, writer)
+		scanReport, err = processor.archiveWhole(ctx, task, writer)
 	} else {
 		if err := faults.Inject(
 			ctx,
@@ -374,14 +385,27 @@ func (processor *LifecycleProcessor) ProcessArchiveObject(
 				},
 			},
 		)
+		scanReport = rewrite.ScanReport
+		if errors.Is(err, ErrLifecycleNoExpiredRows) {
+			return processor.completeNoop(ctx, root)
+		}
 		if errors.Is(err, ErrLifecycleRewriteHasNoLiveRows) {
 			task.Whole = true
-			rewrite = LifecycleRewriteResult{}
+			rewrite.CreatedObjectStats = nil
+			rewrite.TransferBookingLocation = nil
+			rewrite.TransferMappingDigest = [sha256.Size]byte{}
+			rewrite.MergeLevel = 0
 			err = nil
 		}
 	}
 	if err != nil {
 		return processor.abandon(ctx, root, err)
+	}
+	if err := scanReport.ValidateComplete(); err != nil {
+		return processor.abandon(ctx, root, err)
+	}
+	if scanReport.ExpiredRows == 0 {
+		return processor.completeNoop(ctx, root)
 	}
 	if !task.Whole {
 		if err := validateLifecycleRewriteOwnership(root, rewrite); err != nil {
@@ -395,35 +419,32 @@ func (processor *LifecycleProcessor) ProcessArchiveObject(
 	if err != nil {
 		return processor.abandon(ctx, root, err)
 	}
-	if manifest.RowCount == 0 {
+	if manifest.RowCount == 0 || manifest.RowCount != scanReport.ExpiredRows {
 		return processor.abandon(
 			ctx,
 			root,
-			fmt.Errorf("Lifecycle source Object has no expired visible rows"),
+			fmt.Errorf(
+				"Lifecycle Archive row count %d does not cover %d expired rows",
+				manifest.RowCount,
+				scanReport.ExpiredRows,
+			),
 		)
 	}
 	if err := faults.Inject(ctx, lifecyclepkg.FaultAfterPayloadWrite); err != nil {
 		return processor.abandon(ctx, root, err)
 	}
 	if !task.Whole && processor.RewriteAdmission != nil {
-		var liveBytes uint64
-		for _, raw := range rewrite.CreatedObjectStats {
-			if len(raw) != objectio.ObjectStatsLen {
-				return processor.abandon(
-					ctx,
-					root,
-					fmt.Errorf(
-						"Lifecycle Archive Rewrite created ObjectStats is malformed",
-					),
-				)
-			}
-			var stats objectio.ObjectStats
-			copy(stats[:], raw)
-			liveBytes += uint64(stats.OriginSize())
+		sourceBytes := lifecycleObjectPressureBytes(task.Sources[0].ObjectStats)
+		retiredBytes, estimateErr := lifecycleEstimatedExpiredPressureBytes(
+			sourceBytes,
+			scanReport,
+		)
+		if estimateErr != nil {
+			return processor.abandon(ctx, root, estimateErr)
 		}
 		if err := processor.RewriteAdmission.CheckAmplification(
-			liveBytes,
-			manifest.LogicalBytes,
+			sourceBytes,
+			retiredBytes,
 		); err != nil {
 			return processor.abandon(ctx, root, err)
 		}
@@ -565,11 +586,97 @@ func lifecycleCleanupAfter(
 	return cleanupAfter
 }
 
+const (
+	lifecycleArchivePhysicalOverhead = uint64(32 << 20)
+	lifecycleBookingPhysicalOverhead = uint64(1 << 20)
+	lifecycleTransferEntryBytes      = uint64(11)
+)
+
+// lifecycleCleanupReservation freezes a conservative, executable upper bound
+// before Root registration. ArchiveWriter enforces archivePhysicalBytes before
+// every PUT. Live Object and booking bounds come from the already-certified
+// Merge output count, target size, Block-read ceiling, and transfer encoding.
+func lifecycleCleanupReservation(
+	task LifecycleObjectTask,
+	archive bool,
+) (reservedBytes uint64, archivePhysicalBytes uint64, err error) {
+	var sourceBytes uint64
+	var sourceRows uint64
+	for _, source := range task.Sources {
+		sourceBytes, err = lifecycleCheckedAdd(
+			sourceBytes,
+			lifecycleObjectPressureBytes(source.ObjectStats),
+		)
+		if err != nil {
+			return 0, 0, err
+		}
+		sourceRows, err = lifecycleCheckedAdd(
+			sourceRows,
+			uint64(source.ObjectStats.Rows()),
+		)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	if archive {
+		archivePhysicalBytes, err = lifecycleCheckedAdd(
+			sourceBytes*2,
+			lifecycleArchivePhysicalOverhead,
+		)
+		if err != nil {
+			return 0, 0, err
+		}
+		reservedBytes = archivePhysicalBytes
+	}
+	if task.Whole {
+		return reservedBytes, archivePhysicalBytes, nil
+	}
+	if task.MaxCreatedObjects == 0 || task.TargetObjectSize == 0 {
+		return 0, 0, fmt.Errorf(
+			"RESOURCE_BLOCKED: Lifecycle Rewrite output bound is incomplete",
+		)
+	}
+	liveBytes := uint64(task.MaxCreatedObjects) * uint64(task.TargetObjectSize)
+	liveBytes, err = lifecycleCheckedAdd(
+		liveBytes,
+		task.MaxCertifiedBlockReadBytes,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	bookingBytes := sourceRows * lifecycleTransferEntryBytes
+	bookingBytes, err = lifecycleCheckedAdd(
+		bookingBytes,
+		lifecycleBookingPhysicalOverhead,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	reservedBytes, err = lifecycleCheckedAdd(reservedBytes, liveBytes)
+	if err != nil {
+		return 0, 0, err
+	}
+	reservedBytes, err = lifecycleCheckedAdd(reservedBytes, bookingBytes)
+	if err != nil {
+		return 0, 0, err
+	}
+	return reservedBytes, archivePhysicalBytes, nil
+}
+
+func lifecycleCheckedAdd(left uint64, right uint64) (uint64, error) {
+	value := left + right
+	if value < left {
+		return 0, fmt.Errorf("RESOURCE_BLOCKED: Lifecycle cleanup byte bound overflow")
+	}
+	return value, nil
+}
+
 func (processor *LifecycleProcessor) archiveWhole(
 	ctx context.Context,
 	task LifecycleObjectTask,
 	writer *lifecyclepkg.ArchiveWriter,
-) error {
+) (lifecyclepkg.ObjectScanReport, error) {
+	var aggregate lifecyclepkg.ObjectScanReport
 	sources := append([]objectio.ObjectEntry(nil), task.Sources...)
 	slices.SortFunc(sources, func(left, right objectio.ObjectEntry) int {
 		return bytes.Compare(
@@ -578,7 +685,7 @@ func (processor *LifecycleProcessor) archiveWhole(
 		)
 	})
 	for _, source := range sources {
-		if err := task.Table.LifecycleReadObject(
+		report, err := task.Table.LifecycleReadObject(
 			ctx,
 			task.SourceSnapshot,
 			source.ObjectStats,
@@ -593,11 +700,40 @@ func (processor *LifecycleProcessor) archiveWhole(
 				}
 				return writer.WriteBatch(ctx, value, selected)
 			},
-		); err != nil {
-			return err
+		)
+		if err != nil {
+			return aggregate, err
+		}
+		expiredRows := report.ScannedRows - report.SnapshotDeletedRows
+		if err := report.SetVisibleClassification(expiredRows, 0); err != nil {
+			return aggregate, err
+		}
+		if err := report.ValidateComplete(); err != nil {
+			return aggregate, err
+		}
+		if err := aggregate.Add(report); err != nil {
+			return aggregate, err
 		}
 	}
-	return nil
+	return aggregate, aggregate.ValidateComplete()
+}
+
+// completeNoop records that the exact scan found no visible expired rows.
+// No Dataset/Receipt or retirement entry is published; Root-owned staging is
+// left to the ordinary bounded sweeper and the scheduler may advance its
+// cursor without treating a normal boundary Object as a failed Binding.
+func (processor *LifecycleProcessor) completeNoop(
+	ctx context.Context,
+	root lifecyclepkg.CleanupRoot,
+) (lifecyclepkg.CleanupRoot, error) {
+	cleanupCtx, cancelCleanup := lifecycleTemporaryCleanupContext(ctx)
+	defer cancelCleanup()
+	return processor.transition(
+		cleanupCtx,
+		root,
+		lifecyclepkg.CleanupRootDeletePending,
+		nil,
+	)
 }
 
 func (processor *LifecycleProcessor) commitControl(
@@ -681,6 +817,7 @@ func (processor *LifecycleProcessor) validateTask(
 		processor.Config.MaxRestoreChunkRows == 0 ||
 		processor.Config.MaxChunkBytes == 0 ||
 		processor.Config.MaxActiveCleanupRoots <= 0 ||
+		processor.Config.MaxActiveCleanupBytes == 0 ||
 		processor.Config.CleanupGrace < 0 {
 		return moerr.NewInvalidInput(ctx, "Lifecycle Object task is incomplete")
 	}
@@ -702,7 +839,7 @@ func (processor *LifecycleProcessor) validateTask(
 	if task.Whole {
 		var sourceBytes uint64
 		for _, source := range task.Sources {
-			sourceBytes += uint64(max(source.ObjectStats.OriginSize(), 1))
+			sourceBytes += lifecycleObjectPressureBytes(source.ObjectStats)
 			if sourceBytes > lifecycleWholeBatchMaxSourceBytes {
 				return moerr.NewInvalidInput(
 					ctx,

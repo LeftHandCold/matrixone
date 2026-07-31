@@ -34,7 +34,7 @@ type LifecycleObjectReader interface {
 		objectio.ObjectStats,
 		uint64,
 		lifecyclepkg.ExactBlockConsumer,
-	) error
+	) (lifecyclepkg.ObjectScanReport, error)
 }
 
 func (tbl *txnTable) LifecycleReadObject(
@@ -43,23 +43,27 @@ func (tbl *txnTable) LifecycleReadObject(
 	source objectio.ObjectStats,
 	maxCertifiedBlockReadBytes uint64,
 	consume lifecyclepkg.ExactBlockConsumer,
-) error {
+) (report lifecyclepkg.ObjectScanReport, err error) {
 	if snapshot.IsEmpty() ||
 		source.IsZero() ||
 		source.GetAppendable() ||
 		maxCertifiedBlockReadBytes == 0 ||
 		consume == nil {
-		return moerr.NewInvalidInput(ctx, "Lifecycle exact Object reader input is incomplete")
+		return report, moerr.NewInvalidInput(ctx, "Lifecycle exact Object reader input is incomplete")
 	}
+	report = lifecyclepkg.NewObjectScanReport(
+		source.BlkCnt(),
+		uint64(source.Rows()),
+	)
 	state, err := tbl.getPartitionState(ctx)
 	if err != nil {
-		return err
+		return report, err
 	}
 	current, exists := state.GetObject(*source.ObjectShortName())
 	if !exists ||
 		(!current.DeleteTime.IsEmpty() && current.DeleteTime.LE(&snapshot)) ||
 		current.ObjectStats != source {
-		return moerr.NewTxnWWConflictNoCtx(
+		return report, moerr.NewTxnWWConflictNoCtx(
 			tbl.tableId,
 			"Lifecycle reader source Object identity changed",
 		)
@@ -76,32 +80,45 @@ func (tbl *txnTable) LifecycleReadObject(
 		0,
 	)
 	if err != nil {
-		return err
+		return report, err
 	}
 	defer host.Release()
 	if err := host.configureLifecycleBlockReadBudget(
 		ctx,
 		maxCertifiedBlockReadBytes,
 	); err != nil {
-		return err
+		return report, err
 	}
 	for {
 		value, deleted, release, err := host.LoadNextBatch(ctx, 0, nil)
 		if errors.Is(err, mergesort.ErrNoMoreBlocks) {
-			return nil
+			if validateErr := report.ValidatePhysicalComplete(); validateErr != nil {
+				return report, validateErr
+			}
+			return report, nil
 		}
 		if err != nil {
-			return err
+			return report, err
 		}
-		if release == nil {
-			return moerr.NewInternalError(ctx, "Lifecycle exact Object reader has no release callback")
+		if value == nil || release == nil {
+			if release != nil {
+				release()
+			}
+			return report, moerr.NewInternalError(
+				ctx,
+				"Lifecycle exact Object reader returned incomplete ownership",
+			)
+		}
+		if err := report.ObservePhysicalBlock(value.RowCount(), deleted); err != nil {
+			release()
+			return report, err
 		}
 		err = func() error {
 			defer release()
 			return consume(value, deleted)
 		}()
 		if err != nil {
-			return err
+			return report, err
 		}
 	}
 }

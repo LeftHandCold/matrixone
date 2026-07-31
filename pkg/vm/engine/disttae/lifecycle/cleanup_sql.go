@@ -64,10 +64,10 @@ func (repository SQLCleanupRootRepository) Register(
 root_id,attempt_id,mode,owner_account_id,logical_table_id,physical_table_id,
 executor_epoch,worker_lease_deadline,archive_namespace_blob,credential_handle,
 archive_prefix,manifest_key,manifest_digest,tae_namespace_blob,segment_id,
-booking_prefix,ordinal_upper_bound,source_set_digest,final_txn_id,state,
+booking_prefix,ordinal_upper_bound,reserved_cleanup_bytes,source_set_digest,final_txn_id,state,
 state_version,cleanup_after,temporary_cleanup_done,quiescence_since,last_list_at,
 last_error,created_at,updated_at)
-values(unhex('%s'),unhex('%s'),%s,%d,%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s,%s,%d,
+values(unhex('%s'),unhex('%s'),%s,%d,%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s,%s,%d,%d,
 unhex('%s'),%s,%s,%d,%s,%t,%s,%s,%s,utc_timestamp(),utc_timestamp())`,
 			rootID,
 			attemptID,
@@ -86,6 +86,7 @@ unhex('%s'),%s,%s,%d,%s,%t,%s,%s,%s,utc_timestamp(),utc_timestamp())`,
 			lifecycleSQLNullableString(root.SegmentID),
 			lifecycleSQLNullableString(root.BookingPrefix),
 			root.OrdinalUpperBound,
+			root.ReservedCleanupBytes,
 			hex.EncodeToString(root.SourceSetDigest[:]),
 			lifecycleSQLNullableString(root.FinalTxnID),
 			lifecycleSQLQuote(string(root.State)),
@@ -179,14 +180,18 @@ and state in ('FINALIZING','COMMIT_UNKNOWN') limit 1`,
 
 func (repository SQLCleanupRootRepository) CheckCreateCapacity(
 	ctx context.Context,
-	maxActive int,
+	maxActiveRoots int,
+	maxReservedBytes uint64,
+	requestedBytes uint64,
 ) error {
-	if repository.Executor == nil || maxActive <= 0 {
+	if repository.Executor == nil || maxActiveRoots <= 0 ||
+		maxReservedBytes == 0 || requestedBytes == 0 {
 		return fmt.Errorf("Lifecycle Cleanup Root capacity check is incomplete")
 	}
 	result, err := repository.Executor.Exec(
 		ctx,
-		`select cast(count(*) as bigint unsigned)
+		`select cast(count(*) as bigint unsigned),
+cast(coalesce(sum(reserved_cleanup_bytes),0) as bigint unsigned)
 from mo_catalog.mo_lifecycle_cleanup_roots
 where state in ('REGISTERED','UPLOADING','VERIFIED','FINALIZING',
 'COMMIT_UNKNOWN','DELETE_PENDING','DELETING')
@@ -197,30 +202,13 @@ or (state='PUBLISHED' and temporary_cleanup_done=false)`,
 		return err
 	}
 	defer result.Close()
-	var active uint64
-	rowsRead := 0
-	var decodeErr error
-	result.ReadRows(func(rows int, columns []*vector.Vector) bool {
-		if len(columns) != 1 || rowsRead+rows != 1 {
-			decodeErr = fmt.Errorf(
-				"Lifecycle Cleanup Root capacity query is invalid",
-			)
-			return false
-		}
-		active, decodeErr = lifecycleUint64At(columns[0], 0)
-		rowsRead += rows
-		return decodeErr == nil
-	})
-	if decodeErr != nil {
-		return decodeErr
+	activeRoots, reservedBytes, err := decodeCleanupCapacity(result)
+	if err != nil {
+		return err
 	}
-	if rowsRead != 1 {
-		return fmt.Errorf(
-			"Lifecycle Cleanup Root capacity query returned %d rows",
-			rowsRead,
-		)
-	}
-	if active >= uint64(maxActive) {
+	if activeRoots >= uint64(maxActiveRoots) ||
+		reservedBytes >= maxReservedBytes ||
+		requestedBytes > maxReservedBytes-reservedBytes {
 		metricv2.LifecycleResourceRejectionCounter.WithLabelValues(
 			"cleanup_roots",
 		).Inc()
@@ -229,6 +217,35 @@ or (state='PUBLISHED' and temporary_cleanup_done=false)`,
 		)
 	}
 	return nil
+}
+
+func decodeCleanupCapacity(result executor.Result) (uint64, uint64, error) {
+	var activeRoots uint64
+	var reservedBytes uint64
+	rowsRead := 0
+	var decodeErr error
+	result.ReadRows(func(rows int, columns []*vector.Vector) bool {
+		if len(columns) != 2 || rowsRead+rows != 1 {
+			decodeErr = fmt.Errorf("Lifecycle Cleanup Root capacity query is invalid")
+			return false
+		}
+		activeRoots, decodeErr = lifecycleUint64At(columns[0], 0)
+		if decodeErr == nil {
+			reservedBytes, decodeErr = lifecycleUint64At(columns[1], 0)
+		}
+		rowsRead += rows
+		return decodeErr == nil
+	})
+	if decodeErr != nil {
+		return 0, 0, decodeErr
+	}
+	if rowsRead != 1 {
+		return 0, 0, fmt.Errorf(
+			"Lifecycle Cleanup Root capacity query returned %d rows",
+			rowsRead,
+		)
+	}
+	return activeRoots, reservedBytes, nil
 }
 
 func (repository SQLCleanupRootRepository) Transition(
@@ -456,7 +473,7 @@ hex(root_id),hex(attempt_id),mode,owner_account_id,logical_table_id,
 physical_table_id,executor_epoch,cast(worker_lease_deadline as varchar),
 archive_namespace_blob,credential_handle,archive_prefix,manifest_key,
 hex(manifest_digest),tae_namespace_blob,segment_id,booking_prefix,
-ordinal_upper_bound,hex(source_set_digest),final_txn_id,state,state_version,
+ordinal_upper_bound,reserved_cleanup_bytes,hex(source_set_digest),final_txn_id,state,state_version,
 cast(cleanup_after as varchar),temporary_cleanup_done,cast(quiescence_since as varchar),
 cast(last_list_at as varchar),last_error
 from mo_catalog.mo_lifecycle_cleanup_roots`
@@ -467,7 +484,7 @@ func decodeLifecycleCleanupRoots(
 	roots := make([]CleanupRoot, 0)
 	var decodeErr error
 	result.ReadRows(func(rows int, columns []*vector.Vector) bool {
-		if len(columns) != 26 {
+		if len(columns) != 27 {
 			decodeErr = fmt.Errorf(
 				"Lifecycle Cleanup Root query returned %d columns",
 				len(columns),
@@ -485,8 +502,8 @@ func decodeLifecycleCleanupRoots(
 				decodeErr = err
 				return false
 			}
-			numbers := make([]uint64, 0, 6)
-			for _, column := range []int{3, 4, 5, 6, 16, 20} {
+			numbers := make([]uint64, 0, 7)
+			for _, column := range []int{3, 4, 5, 6, 16, 17, 21} {
 				number, numberErr := lifecycleUint64At(columns[column], row)
 				if numberErr != nil {
 					decodeErr = numberErr
@@ -502,13 +519,13 @@ func decodeLifecycleCleanupRoots(
 				return false
 			}
 			cleanupAfter, err := lifecycleParseSQLTime(
-				columns[21].GetStringAt(row),
+				columns[22].GetStringAt(row),
 			)
 			if err != nil {
 				decodeErr = err
 				return false
 			}
-			temporaryCleanupDone, err := lifecycleBoolAt(columns[22], row)
+			temporaryCleanupDone, err := lifecycleBoolAt(columns[23], row)
 			if err != nil {
 				decodeErr = err
 				return false
@@ -530,12 +547,13 @@ func decodeLifecycleCleanupRoots(
 				SegmentID:            lifecycleNullableString(columns[14], row),
 				BookingPrefix:        lifecycleNullableString(columns[15], row),
 				OrdinalUpperBound:    uint32(numbers[4]),
-				FinalTxnID:           lifecycleNullableString(columns[18], row),
-				State:                CleanupRootState(columns[19].GetStringAt(row)),
-				StateVersion:         numbers[5],
+				ReservedCleanupBytes: numbers[5],
+				FinalTxnID:           lifecycleNullableString(columns[19], row),
+				State:                CleanupRootState(columns[20].GetStringAt(row)),
+				StateVersion:         numbers[6],
 				CleanupAfter:         cleanupAfter,
 				TemporaryCleanupDone: temporaryCleanupDone,
-				LastError:            lifecycleNullableString(columns[25], row),
+				LastError:            lifecycleNullableString(columns[26], row),
 			}
 			if err := lifecycleDecodeDigest(
 				columns[12].GetStringAt(row),
@@ -546,25 +564,25 @@ func decodeLifecycleCleanupRoots(
 				return false
 			}
 			if err := lifecycleDecodeDigest(
-				columns[17].GetStringAt(row),
+				columns[18].GetStringAt(row),
 				&root.SourceSetDigest,
 				false,
 			); err != nil {
 				decodeErr = err
 				return false
 			}
-			if !columns[23].GetNulls().Contains(uint64(row)) {
+			if !columns[24].GetNulls().Contains(uint64(row)) {
 				root.QuiescenceSince, err = lifecycleParseSQLTime(
-					columns[23].GetStringAt(row),
+					columns[24].GetStringAt(row),
 				)
 				if err != nil {
 					decodeErr = err
 					return false
 				}
 			}
-			if !columns[24].GetNulls().Contains(uint64(row)) {
+			if !columns[25].GetNulls().Contains(uint64(row)) {
 				root.LastListAt, err = lifecycleParseSQLTime(
-					columns[24].GetStringAt(row),
+					columns[25].GetStringAt(row),
 				)
 				if err != nil {
 					decodeErr = err

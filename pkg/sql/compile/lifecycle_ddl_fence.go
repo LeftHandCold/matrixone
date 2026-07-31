@@ -35,7 +35,12 @@ func rejectBoundLifecycleDDL(
 	operation string,
 	query lifecycleDDLQuery,
 ) error {
-	if query == nil || accountID == 0 || physicalTableID == 0 {
+	// Lifecycle bindings are forbidden in the system account. Keep ordinary
+	// system-account DDL completely outside the Lifecycle Catalog path.
+	if accountID == 0 {
+		return nil
+	}
+	if query == nil || physicalTableID == 0 {
 		return moerr.NewInternalError(ctx, "Lifecycle DDL fence input is incomplete")
 	}
 	result, err := query(

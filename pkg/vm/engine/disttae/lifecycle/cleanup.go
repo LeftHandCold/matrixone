@@ -67,6 +67,10 @@ type CleanupRoot struct {
 	SegmentID         string
 	BookingPrefix     string
 	OrdinalUpperBound uint32
+	// ReservedCleanupBytes is the worst-case physical footprint this Root is
+	// allowed to create while it can become cleanup backlog. It is frozen
+	// before the first side effect; writers must fail before exceeding it.
+	ReservedCleanupBytes uint64
 
 	SourceSetDigest      [32]byte
 	FinalTxnID           string
@@ -83,7 +87,8 @@ func ValidateCleanupRoot(root CleanupRoot) error {
 	if root.RootID == "" || root.AttemptID == "" {
 		return fmt.Errorf("Lifecycle cleanup root identity is incomplete")
 	}
-	if root.StateVersion == 0 || root.CleanupAfter.IsZero() {
+	if root.StateVersion == 0 || root.CleanupAfter.IsZero() ||
+		root.ReservedCleanupBytes == 0 {
 		return fmt.Errorf("Lifecycle cleanup root state identity is incomplete")
 	}
 	switch root.Mode {
@@ -191,14 +196,17 @@ type CleanupRootRepository interface {
 	) (CleanupRoot, error)
 }
 
-// CleanupCapacityChecker is a Lifecycle-only admission check. It bounds the
-// number of Roots with in-flight, ambiguous, temporary, or cleanup backlog
-// side effects. A healthy PUBLISHED Archive Root whose temporary files are
-// already gone is retained metadata, not active backlog; counting it would
-// stop a 10 TiB table after only a few thousand Objects. This checker is not a
-// distributed correctness lock and ordinary MO paths never call it.
+// CleanupCapacityChecker is advisory admission for Lifecycle workers. Root
+// count, scheduler concurrency, and per-Root reservation together provide a
+// deterministic upper bound; this is intentionally not a distributed lock or
+// a new transaction protocol.
 type CleanupCapacityChecker interface {
-	CheckCreateCapacity(context.Context, int) error
+	CheckCreateCapacity(
+		context.Context,
+		int,
+		uint64,
+		uint64,
+	) error
 }
 
 type cleanupRootSideEffectGuard struct {

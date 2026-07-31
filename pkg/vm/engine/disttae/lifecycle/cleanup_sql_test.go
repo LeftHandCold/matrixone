@@ -158,11 +158,11 @@ func TestSQLCleanupRootRepositoryRejectsActiveCapacityAtLimit(t *testing.T) {
 'commit_unknown','delete_pending','deleting')
 or (state='published' and temporary_cleanup_done=false)`,
 			accountID: 0,
-			result:    lifecycleUint64Result(t, mp, 64),
+			result:    lifecycleUint64Result(t, mp, 64, 0),
 		}},
 	}
 	err := (SQLCleanupRootRepository{Executor: fake}).
-		CheckCreateCapacity(context.Background(), 64)
+		CheckCreateCapacity(context.Background(), 64, 1<<30, 1)
 	require.ErrorContains(t, err, "Cleanup Root capacity")
 	require.Equal(t, 1, fake.offset)
 }
@@ -304,12 +304,19 @@ func lifecycleStringResult(
 func lifecycleUint64Result(
 	t *testing.T,
 	mp *mpool.MPool,
-	value uint64,
+	values ...uint64,
 ) executor.Result {
 	t.Helper()
-	bat := batch.NewWithSize(1)
-	bat.Vecs[0] = vector.NewVec(types.T_uint64.ToType())
-	require.NoError(t, vector.AppendFixed(bat.Vecs[0], value, false, mp))
+	bat := batch.NewWithSize(len(values))
+	for column, value := range values {
+		bat.Vecs[column] = vector.NewVec(types.T_uint64.ToType())
+		require.NoError(t, vector.AppendFixed(
+			bat.Vecs[column],
+			value,
+			false,
+			mp,
+		))
+	}
 	bat.SetRowCount(1)
 	return executor.Result{Batches: []*batch.Batch{bat}, Mp: mp}
 }
@@ -318,31 +325,32 @@ func lifecycleSQLCleanupRoot() CleanupRoot {
 	rootID := "2d55f9be-4d3e-4ac7-a58a-1f7995d88f7f"
 	attemptID := "e091026d-114b-44f9-81f3-326bf6481446"
 	return CleanupRoot{
-		RootID:            rootID,
-		AttemptID:         attemptID,
-		Mode:              CleanupModeArchiveRewrite,
-		OwnerAccountID:    17,
-		LogicalTableID:    42,
-		PhysicalTableID:   43,
-		ExecutorEpoch:     7,
-		WorkerDeadline:    time.Date(2026, 7, 31, 1, 2, 3, 4000, time.UTC),
-		ArchiveNamespace:  `{"stage_id":9}`,
-		CredentialHandle:  "default",
-		ArchivePrefix:     "archive/" + rootID + "/" + attemptID,
-		ManifestKey:       "manifest",
-		ManifestDigest:    [32]byte{1},
-		TAENamespace:      "shared",
-		SegmentID:         "segment",
-		BookingPrefix:     "booking/" + rootID + "/" + attemptID,
-		OrdinalUpperBound: 8,
-		SourceSetDigest:   [32]byte{2},
-		FinalTxnID:        "txn",
-		State:             CleanupRootUploading,
-		StateVersion:      3,
-		CleanupAfter:      time.Date(2026, 8, 1, 1, 2, 3, 4000, time.UTC),
-		QuiescenceSince:   time.Date(2026, 8, 1, 2, 0, 0, 0, time.UTC),
-		LastListAt:        time.Date(2026, 8, 1, 2, 1, 0, 0, time.UTC),
-		LastError:         "provider timeout",
+		RootID:               rootID,
+		AttemptID:            attemptID,
+		Mode:                 CleanupModeArchiveRewrite,
+		OwnerAccountID:       17,
+		LogicalTableID:       42,
+		PhysicalTableID:      43,
+		ExecutorEpoch:        7,
+		WorkerDeadline:       time.Date(2026, 7, 31, 1, 2, 3, 4000, time.UTC),
+		ArchiveNamespace:     `{"stage_id":9}`,
+		CredentialHandle:     "default",
+		ArchivePrefix:        "archive/" + rootID + "/" + attemptID,
+		ManifestKey:          "manifest",
+		ManifestDigest:       [32]byte{1},
+		TAENamespace:         "shared",
+		SegmentID:            "segment",
+		BookingPrefix:        "booking/" + rootID + "/" + attemptID,
+		OrdinalUpperBound:    8,
+		ReservedCleanupBytes: 1 << 30,
+		SourceSetDigest:      [32]byte{2},
+		FinalTxnID:           "txn",
+		State:                CleanupRootUploading,
+		StateVersion:         3,
+		CleanupAfter:         time.Date(2026, 8, 1, 1, 2, 3, 4000, time.UTC),
+		QuiescenceSince:      time.Date(2026, 8, 1, 2, 0, 0, 0, time.UTC),
+		LastListAt:           time.Date(2026, 8, 1, 2, 1, 0, 0, time.UTC),
+		LastError:            "provider timeout",
 	}
 }
 
@@ -352,7 +360,7 @@ func lifecycleCleanupRootResult(
 	root CleanupRoot,
 ) executor.Result {
 	t.Helper()
-	value := batch.NewWithSize(26)
+	value := batch.NewWithSize(27)
 	rootUUID := uuid.MustParse(root.RootID)
 	attemptUUID := uuid.MustParse(root.AttemptID)
 	strings := map[int]string{
@@ -368,13 +376,13 @@ func lifecycleCleanupRootResult(
 		13: root.TAENamespace,
 		14: root.SegmentID,
 		15: root.BookingPrefix,
-		17: hex.EncodeToString(root.SourceSetDigest[:]),
-		18: root.FinalTxnID,
-		19: string(root.State),
-		21: root.CleanupAfter.Format(lifecycleSQLTimestampLayout),
-		23: root.QuiescenceSince.Format(lifecycleSQLTimestampLayout),
-		24: root.LastListAt.Format(lifecycleSQLTimestampLayout),
-		25: root.LastError,
+		18: hex.EncodeToString(root.SourceSetDigest[:]),
+		19: root.FinalTxnID,
+		20: string(root.State),
+		22: root.CleanupAfter.Format(lifecycleSQLTimestampLayout),
+		24: root.QuiescenceSince.Format(lifecycleSQLTimestampLayout),
+		25: root.LastListAt.Format(lifecycleSQLTimestampLayout),
+		26: root.LastError,
 	}
 	numbers := map[int]uint64{
 		3:  uint64(root.OwnerAccountID),
@@ -382,10 +390,11 @@ func lifecycleCleanupRootResult(
 		5:  root.PhysicalTableID,
 		6:  root.ExecutorEpoch,
 		16: uint64(root.OrdinalUpperBound),
-		20: root.StateVersion,
+		17: root.ReservedCleanupBytes,
+		21: root.StateVersion,
 	}
 	for column := 0; column < len(value.Vecs); column++ {
-		if column == 22 {
+		if column == 23 {
 			value.Vecs[column] = vector.NewVec(types.T_bool.ToType())
 			require.NoError(t, vector.AppendFixed(
 				value.Vecs[column],

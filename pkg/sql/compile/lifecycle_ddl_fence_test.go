@@ -64,6 +64,21 @@ func TestRejectBoundLifecycleDDLAllowsUnboundTable(t *testing.T) {
 	))
 }
 
+func TestRejectBoundLifecycleDDLAllowsSystemAccountWithoutCatalogLookup(t *testing.T) {
+	called := false
+	require.NoError(t, rejectBoundLifecycleDDL(
+		context.Background(),
+		0,
+		43,
+		"ALTER TABLE",
+		func(string, int32) (executor.Result, error) {
+			called = true
+			return executor.Result{}, nil
+		},
+	))
+	require.False(t, called)
+}
+
 func TestLifecycleDatabaseDropBindingDeleteSQLIsTenantAndDatabaseScoped(t *testing.T) {
 	sql := lifecycleDatabaseDropBindingDeleteSQL(17, 43)
 	require.Contains(t, sql, "account_id=17")

@@ -239,8 +239,8 @@ DDL fence 不进入查询、DML或Merge热路径。实现只作用于`SET LIFECY
    `mo_feature_registry`行，关闭与scope级依赖发布的首次Binding空集合竞态；
 3. Snapshot、PITR、Publication和Clone/Branch创建跨同一个feature-row barrier，再按索引
    查询目标scope中是否存在Binding；
-4. CDC依赖PITR，因此复用PITR准入；物理Backup不是Archive-aware，Lifecycle retirement
-   release gate开启期间全局fail closed，关闭并drain Lifecycle后才能执行；
+4. CDC依赖PITR，因此复用PITR准入；物理Backup不是Archive-aware，因此只有release gate
+   已关闭、全集群不存在Binding、非`PURGED` Dataset和未收敛Cleanup Root时才允许执行；
 5. 已绑定表的TRUNCATE、ALTER、CREATE INDEX等不兼容DDL fail closed；DROP TABLE在同一
    `mo_tables`锁事务中删除Binding，DROP DATABASE在原数据库DDL事务中按database identity
    补删孤儿Binding；外部Payload按Cleanup Root异步回收；

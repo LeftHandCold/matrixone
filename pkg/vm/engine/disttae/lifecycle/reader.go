@@ -216,6 +216,175 @@ type ExactBlockLoader func(
 
 type ExactBlockConsumer func(*batch.Batch, *nulls.Bitmap) error
 
+// ObjectScanReport is an in-memory proof that one Lifecycle attempt consumed
+// one exact source Object completely. It is deliberately not persisted or
+// sent to TN: the final transaction still fences the immutable ObjectStats,
+// while this report prevents CN from retiring an Object after a short read.
+type ObjectScanReport struct {
+	ExpectedBlocks      uint32
+	ScannedBlocks       uint32
+	ExpectedRows        uint64
+	ScannedRows         uint64
+	SnapshotDeletedRows uint64
+	ExpiredRows         uint64
+	LiveRows            uint64
+
+	classified bool
+}
+
+func NewObjectScanReport(expectedBlocks uint32, expectedRows uint64) ObjectScanReport {
+	return ObjectScanReport{
+		ExpectedBlocks: expectedBlocks,
+		ExpectedRows:   expectedRows,
+	}
+}
+
+// ObservePhysicalBlock accounts for one complete physical Block before the
+// caller classifies its visible rows. The bitmap is validated instead of
+// trusting Count(), because an out-of-range bit would otherwise make the
+// D/E/L conservation equation meaningless.
+func (report *ObjectScanReport) ObservePhysicalBlock(
+	rowCount int,
+	snapshotDeleted *nulls.Nulls,
+) error {
+	if report == nil || rowCount < 0 {
+		return fmt.Errorf("Lifecycle Object scan report input is invalid")
+	}
+	deletedRows, err := lifecycleBitmapRowCount(rowCount, snapshotDeleted)
+	if err != nil {
+		return err
+	}
+	report.ScannedBlocks++
+	report.ScannedRows += uint64(rowCount)
+	report.SnapshotDeletedRows += deletedRows
+	return nil
+}
+
+// ObserveClassifiedBlock accounts for D/E/L in the same physical Batch that
+// is passed to DoMergeAndWrite. Lifecycle must never pre-filter L into a new
+// Batch before calling this method.
+func (report *ObjectScanReport) ObserveClassifiedBlock(
+	rowCount int,
+	snapshotDeleted *nulls.Nulls,
+	expired *nulls.Nulls,
+) error {
+	if report == nil || rowCount < 0 {
+		return fmt.Errorf("Lifecycle Object scan report input is invalid")
+	}
+	deletedRows, err := lifecycleBitmapRowCount(rowCount, snapshotDeleted)
+	if err != nil {
+		return err
+	}
+	expiredRows, err := lifecycleBitmapRowCount(rowCount, expired)
+	if err != nil {
+		return err
+	}
+	if snapshotDeleted != nil && expired != nil {
+		for _, row := range expired.GetBitmap().ToArray() {
+			if snapshotDeleted.Contains(row) {
+				return fmt.Errorf(
+					"Lifecycle row cannot be both snapshot-deleted and expired",
+				)
+			}
+		}
+	}
+	visibleRows := uint64(rowCount) - deletedRows
+	if expiredRows > visibleRows {
+		return fmt.Errorf("Lifecycle expired rows exceed visible rows")
+	}
+	report.ScannedBlocks++
+	report.ScannedRows += uint64(rowCount)
+	report.SnapshotDeletedRows += deletedRows
+	report.ExpiredRows += expiredRows
+	report.LiveRows += visibleRows - expiredRows
+	report.classified = true
+	return nil
+}
+
+// SetVisibleClassification completes a physical-only report produced by the
+// exact Whole reader. The caller must derive E/L from the same borrowed
+// Batches before they are released.
+func (report *ObjectScanReport) SetVisibleClassification(
+	expiredRows uint64,
+	liveRows uint64,
+) error {
+	if report == nil || report.classified {
+		return fmt.Errorf("Lifecycle Object scan classification is duplicated")
+	}
+	visibleRows := report.ScannedRows - report.SnapshotDeletedRows
+	if expiredRows > visibleRows || liveRows != visibleRows-expiredRows {
+		return fmt.Errorf("Lifecycle Object scan classification is incomplete")
+	}
+	report.ExpiredRows = expiredRows
+	report.LiveRows = liveRows
+	report.classified = true
+	return nil
+}
+
+func (report ObjectScanReport) ValidatePhysicalComplete() error {
+	if report.ExpectedBlocks == 0 || report.ExpectedRows == 0 ||
+		report.ScannedBlocks != report.ExpectedBlocks ||
+		report.ScannedRows != report.ExpectedRows ||
+		report.SnapshotDeletedRows > report.ScannedRows {
+		return fmt.Errorf(
+			"Lifecycle Object scan is incomplete: blocks=%d/%d rows=%d/%d deleted=%d",
+			report.ScannedBlocks,
+			report.ExpectedBlocks,
+			report.ScannedRows,
+			report.ExpectedRows,
+			report.SnapshotDeletedRows,
+		)
+	}
+	return nil
+}
+
+func (report ObjectScanReport) ValidateComplete() error {
+	if err := report.ValidatePhysicalComplete(); err != nil {
+		return err
+	}
+	if !report.classified ||
+		report.SnapshotDeletedRows+report.ExpiredRows+report.LiveRows != report.ScannedRows {
+		return fmt.Errorf(
+			"Lifecycle Object scan D/E/L conservation failed: D=%d E=%d L=%d rows=%d",
+			report.SnapshotDeletedRows,
+			report.ExpiredRows,
+			report.LiveRows,
+			report.ScannedRows,
+		)
+	}
+	return nil
+}
+
+func (report *ObjectScanReport) Add(other ObjectScanReport) error {
+	if report == nil {
+		return fmt.Errorf("Lifecycle Object scan aggregate is incomplete")
+	}
+	if err := other.ValidateComplete(); err != nil {
+		return err
+	}
+	report.ExpectedBlocks += other.ExpectedBlocks
+	report.ScannedBlocks += other.ScannedBlocks
+	report.ExpectedRows += other.ExpectedRows
+	report.ScannedRows += other.ScannedRows
+	report.SnapshotDeletedRows += other.SnapshotDeletedRows
+	report.ExpiredRows += other.ExpiredRows
+	report.LiveRows += other.LiveRows
+	report.classified = true
+	return nil
+}
+
+func lifecycleBitmapRowCount(rowCount int, bitmap *nulls.Nulls) (uint64, error) {
+	if bitmap == nil {
+		return 0, nil
+	}
+	for _, row := range bitmap.GetBitmap().ToArray() {
+		if row >= uint64(rowCount) {
+			return 0, fmt.Errorf("Lifecycle row bitmap contains an out-of-range row")
+		}
+	}
+	return uint64(bitmap.Count()), nil
+}
+
 // ReadExactBlocks serially consumes complete physical Blocks in caller-provided
 // Object/block order. A borrowed Batch is released exactly once before the
 // next Block is loaded, including callback and cancellation failures.

@@ -31,46 +31,40 @@ func TestRewriteAdmissionAmplificationAndWindowBudgets(t *testing.T) {
 	require.NoError(t, err)
 	now := time.Unix(3600, 0)
 	require.Error(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:           1,
-		SourceBytes:         50,
-		LiveLogicalBytes:    90,
-		ExpiredLogicalBytes: 10,
-		Now:                 now,
+		AccountID:            1,
+		SourceBytes:          50,
+		RetiredPressureBytes: 10,
+		Now:                  now,
 	}))
 	require.NoError(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:           1,
-		SourceBytes:         60,
-		LiveLogicalBytes:    30,
-		ExpiredLogicalBytes: 20,
-		Now:                 now,
+		AccountID:            1,
+		SourceBytes:          60,
+		RetiredPressureBytes: 20,
+		Now:                  now,
 	}))
 	require.Error(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:           1,
-		SourceBytes:         60,
-		LiveLogicalBytes:    30,
-		ExpiredLogicalBytes: 20,
-		Now:                 now,
+		AccountID:            1,
+		SourceBytes:          60,
+		RetiredPressureBytes: 20,
+		Now:                  now,
 	}))
 	require.NoError(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:           2,
-		SourceBytes:         90,
-		LiveLogicalBytes:    30,
-		ExpiredLogicalBytes: 20,
-		Now:                 now,
+		AccountID:            2,
+		SourceBytes:          90,
+		RetiredPressureBytes: 30,
+		Now:                  now,
 	}))
 	require.Error(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:           3,
-		SourceBytes:         1,
-		LiveLogicalBytes:    1,
-		ExpiredLogicalBytes: 1,
-		Now:                 now,
+		AccountID:            3,
+		SourceBytes:          1,
+		RetiredPressureBytes: 1,
+		Now:                  now,
 	}))
 	require.NoError(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:           1,
-		SourceBytes:         100,
-		LiveLogicalBytes:    1,
-		ExpiredLogicalBytes: 1,
-		Now:                 now.Add(time.Hour),
+		AccountID:            1,
+		SourceBytes:          100,
+		RetiredPressureBytes: 25,
+		Now:                  now.Add(time.Hour),
 	}))
 }
 

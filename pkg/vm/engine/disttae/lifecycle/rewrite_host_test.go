@@ -72,7 +72,35 @@ func TestRewriteHostPreservesPhysicalBatchAndUnionsDAndE(t *testing.T) {
 	require.False(t, skipped.Contains(0))
 	release()
 	require.Equal(t, 1, base.releaseCount)
+	report, err := host.ScanReport()
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), report.SnapshotDeletedRows)
+	require.Equal(t, uint64(1), report.ExpiredRows)
+	require.Equal(t, uint64(3), report.LiveRows)
 	source.Clean(mp)
+}
+
+func TestRewriteHostRejectsShortObjectScan(t *testing.T) {
+	value := batch.NewWithSize(0)
+	value.SetRowCount(2)
+	base := &rewriteFakeMergeHost{
+		bat:            value,
+		expectedBlocks: 2,
+		expectedRows:   4,
+	}
+	host, err := NewRewriteHost(base, func(
+		context.Context,
+		*batch.Batch,
+		*nulls.Nulls,
+	) (*nulls.Nulls, error) {
+		return nulls.Build(2, 0), nil
+	}, nil)
+	require.NoError(t, err)
+	_, _, release, err := host.LoadNextBatch(context.Background(), 0, nil)
+	require.NoError(t, err)
+	release()
+	_, err = host.ScanReport()
+	require.ErrorContains(t, err, "scan is incomplete")
 }
 
 func TestRewriteHostRejectsInvalidClassAndMultipleSources(t *testing.T) {
@@ -104,11 +132,13 @@ func TestRewriteHostRejectsInvalidClassAndMultipleSources(t *testing.T) {
 }
 
 type rewriteFakeMergeHost struct {
-	bat          *batch.Batch
-	deleted      *nulls.Nulls
-	mp           *mpool.MPool
-	releaseCount int
-	objectCount  int
+	bat            *batch.Batch
+	deleted        *nulls.Nulls
+	mp             *mpool.MPool
+	releaseCount   int
+	objectCount    int
+	expectedBlocks int
+	expectedRows   uint32
 }
 
 func (host *rewriteFakeMergeHost) GetVector(
@@ -135,7 +165,12 @@ func (host *rewriteFakeMergeHost) GetObjectCnt() int {
 	}
 	return host.objectCount
 }
-func (*rewriteFakeMergeHost) GetBlkCnts() []int    { return []int{1} }
+func (host *rewriteFakeMergeHost) GetBlkCnts() []int {
+	if host.expectedBlocks == 0 {
+		return []int{1}
+	}
+	return []int{host.expectedBlocks}
+}
 func (*rewriteFakeMergeHost) GetAccBlkCnts() []int { return []int{0} }
 func (*rewriteFakeMergeHost) GetSortKeyType() types.Type {
 	return types.T_int64.ToType()
@@ -147,8 +182,16 @@ func (host *rewriteFakeMergeHost) LoadNextBatch(
 ) (*batch.Batch, *nulls.Nulls, func(), error) {
 	return host.bat, host.deleted, func() { host.releaseCount++ }, nil
 }
-func (*rewriteFakeMergeHost) GetTotalSize() uint64       { return 0 }
-func (*rewriteFakeMergeHost) GetTotalRowCnt() uint32     { return 0 }
+func (*rewriteFakeMergeHost) GetTotalSize() uint64 { return 0 }
+func (host *rewriteFakeMergeHost) GetTotalRowCnt() uint32 {
+	if host.expectedRows != 0 {
+		return host.expectedRows
+	}
+	if host.bat != nil {
+		return uint32(host.bat.RowCount())
+	}
+	return 1
+}
 func (*rewriteFakeMergeHost) GetBlockMaxRows() uint32    { return 8192 }
 func (*rewriteFakeMergeHost) GetObjectMaxBlocks() uint16 { return 256 }
 func (*rewriteFakeMergeHost) GetTargetObjSize() uint32   { return 0 }

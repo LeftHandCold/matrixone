@@ -158,6 +158,17 @@ type FileServiceArchiveStore struct {
 	MaxListEntries int
 }
 
+// archiveManifestReadStore is the bounded metadata-read extension required by
+// the permanent Manifest protocol. Payload reads continue to use ArchiveStore;
+// Manifest readers must know the provider object size before allocating it.
+type archiveManifestReadStore interface {
+	ArchiveStore
+	Stat(ctx context.Context, key string) (int64, error)
+	GetExact(ctx context.Context, key string, size int64) ([]byte, error)
+}
+
+var _ archiveManifestReadStore = FileServiceArchiveStore{}
+
 func (store FileServiceArchiveStore) Put(
 	ctx context.Context,
 	key string,
@@ -177,7 +188,14 @@ func (store FileServiceArchiveStore) Put(
 	if !moerr.IsMoErrCode(err, moerr.ErrFileAlreadyExists) {
 		return err
 	}
-	existing, readErr := store.Get(ctx, key)
+	existingSize, statErr := store.Stat(ctx, key)
+	if statErr != nil {
+		return statErr
+	}
+	if existingSize != int64(len(value)) {
+		return fmt.Errorf("Lifecycle immutable Archive key %s already has different size", key)
+	}
+	existing, readErr := store.GetExact(ctx, key, existingSize)
 	if readErr != nil {
 		return readErr
 	}
@@ -191,6 +209,54 @@ func (store FileServiceArchiveStore) Get(
 	ctx context.Context,
 	key string,
 ) ([]byte, error) {
+	return store.read(ctx, key, -1)
+}
+
+func (store FileServiceArchiveStore) Stat(
+	ctx context.Context,
+	key string,
+) (int64, error) {
+	if store.FileService == nil {
+		return 0, fmt.Errorf("Lifecycle Archive FileService is nil")
+	}
+	entry, err := store.FileService.StatFile(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	if entry == nil || entry.IsDir || entry.Size < 0 {
+		return 0, fmt.Errorf("Lifecycle Archive object %s has invalid metadata", key)
+	}
+	return entry.Size, nil
+}
+
+func (store FileServiceArchiveStore) GetExact(
+	ctx context.Context,
+	key string,
+	size int64,
+) ([]byte, error) {
+	if size <= 0 {
+		return nil, fmt.Errorf("Lifecycle Archive exact read size must be positive")
+	}
+	value, err := store.read(ctx, key, size)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(value)) != size {
+		return nil, fmt.Errorf(
+			"Lifecycle Archive object %s size changed from %d to %d",
+			key,
+			size,
+			len(value),
+		)
+	}
+	return value, nil
+}
+
+func (store FileServiceArchiveStore) read(
+	ctx context.Context,
+	key string,
+	size int64,
+) ([]byte, error) {
 	if store.FileService == nil {
 		return nil, fmt.Errorf("Lifecycle Archive FileService is nil")
 	}
@@ -199,7 +265,7 @@ func (store FileServiceArchiveStore) Get(
 		Policy:   fileservice.SkipAllCache,
 		Entries: []fileservice.IOEntry{{
 			Offset: 0,
-			Size:   -1,
+			Size:   size,
 		}},
 	}
 	if err := store.FileService.Read(ctx, &vector); err != nil {

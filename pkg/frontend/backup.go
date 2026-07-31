@@ -33,7 +33,7 @@ func doBackup(ctx context.Context, ses FeSession, bs *tree.BackupStart) error {
 	)
 	background := ses.GetBackgroundExec(ctx)
 	defer background.Close()
-	if err = rejectBackupWhenLifecycleRetirementEnabled(
+	if err = rejectBackupWithLifecycleState(
 		ctx,
 		background,
 	); err != nil {

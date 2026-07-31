@@ -194,8 +194,9 @@ identity对账，不建设Lifecycle终态协议。
 - credential失败：保持Attempt并告警，deadline后abort；
 - 发布失败且目标名不存在：可在deadline内重试；
 - 发布结果未知：禁止Purge，先按普通Catalog检查目标table identity。
-- 明确abort且仍持有自己的lease：CAS清除lease；CAS失败说明Purge/其他终态已推进，只能按
-  本节身份事务清理自己的隐藏表，不覆盖新状态。
+- 明确abort且仍持有自己的lease：必须在同一普通事务中按精确身份DROP隐藏表、把Attempt置为
+  FAILED并CAS清除lease；只要lease仍非NULL，Purge就不能推进。CAS失败说明发布或其他终态已
+  推进，只能重新按本节身份规则对账，不能覆盖新状态。
 
 SQL级重试在分配新`restore_id`前同时查找两种精确身份：
 
@@ -265,7 +266,7 @@ claim、Journal或专用事务协议。
 `purge_eligible_at`必须拒绝；DROP owner表示产品契约已放弃Restore，可覆盖该时间：
 
 ```text
-Dataset PUBLISHED AND no unexpired Restore lease
+Dataset PUBLISHED AND restore_lease_id IS NULL
 -> CAS DELETE_PENDING and increment access_generation
 -> reject new Restore lease
 -> Root PUBLISHED -> DELETE_PENDING
@@ -283,13 +284,14 @@ SET state = 'DELETE_PENDING',
 WHERE dataset_id = ?
   AND state = 'PUBLISHED'
   AND version = ?
-  AND (restore_lease_id IS NULL OR restore_deadline <= current_timestamp);
+  AND restore_lease_id IS NULL;
 ```
 
-显式Purge遇到有效lease返回`RESTORE_IN_PROGRESS`；后台Purge延迟到lease终止或deadline后
-重试。Purge SQL事务不等待lease或Provider。过期Restore停止新GET/chunk并按本节身份事务
-清理隐藏表；
-只有随后成功取得上述CAS的Purge才能推进Root。
+显式Purge遇到任何非空lease（包括已经到期但尚未清理的lease）都返回
+`RESTORE_IN_PROGRESS`；后台Purge不等待lease或Provider，只延迟重试。lease deadline只使
+Attempt具备cleanup资格，不直接使Purge具备准入资格。过期Restore必须先由`CleanupHidden`
+在同一普通事务中按精确身份DROP隐藏表、把Attempt置为FAILED并释放Dataset lease；只有随后
+重试且成功取得上述`restore_lease_id IS NULL` CAS的Purge才能推进Root。
 
 ## 9. DROP
 
@@ -314,7 +316,9 @@ DROP TABLE/DATABASE/ACCOUNT沿用普通MO业务语义：
 
 ## 10. Backup/PITR/DR
 
-Lifecycle绑定表的普通Snapshot/PITR/Backup/Clone/Branch在Phase 1准入时拒绝。DR目标没有
+Lifecycle绑定表的普通Snapshot/PITR/Clone/Branch在Phase 1准入时拒绝。物理Backup按
+全集群处理：release gate必须已关闭，且不得存在任何Binding、非`PURGED` Dataset或未收敛
+Cleanup Root；仅关闭开关或等待child drain不足以证明Backup包含完整历史。DR目标没有
 Archive Catalog/Stage时，`RESTORE ARCHIVE`明确返回unsupported，不能返回空数据或声称
 恢复完整。
 
@@ -339,7 +343,10 @@ Dataset控制逻辑可见性，Root控制物理删除：
 - 最终发布事务在Attempt CAS、SetOffset、Rename、DONE和lease释放各点crash/response lost；
 - target映射到staging table ID、两个身份均不匹配和cleanup `ErrTxnUnknown`均fail closed；
 - Purge与GET/chunk/publish逐点竞态；
-- 显式Purge遇有效lease返回`RESTORE_IN_PROGRESS`，后台Purge不等待并延迟重试；
+- 显式Purge遇任意非空lease（含已过期但尚未完成隐藏表清理）返回
+  `RESTORE_IN_PROGRESS`，后台Purge不等待并延迟重试；
+- lease到期只触发`CleanupHidden`资格；隐藏表、Attempt和lease在同一事务收敛完成后，Purge
+  才能进入`DELETE_PENDING`；
 - lease deadline、CN crash、Stage credential轮换；
 - DROP table/database/account；
 - Manifest版本不支持、文件篡改和目标表名冲突。
