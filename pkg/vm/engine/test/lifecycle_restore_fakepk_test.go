@@ -695,6 +695,128 @@ where reldatabase_id=%d and relname='%s'`,
 			cleanupErr,
 		)
 	}
+
+	// Close the physical Purge loop with the real tenant Dataset row and real
+	// system-owned SQL Root.  Dataset visibility changes first; Provider files
+	// are removed asynchronously and PURGED is published only after quiescence.
+	rootRepository := lifecyclepkg.SQLCleanupRootRepository{Executor: sqlExecutor}
+	purgeNow := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Microsecond)
+	archivePrefix := "archive/" + rootID + "/" + archiveAttemptID
+	cleanupRoot := lifecyclepkg.CleanupRoot{
+		RootID:               rootID,
+		AttemptID:            archiveAttemptID,
+		Mode:                 lifecyclepkg.CleanupModeArchiveWhole,
+		OwnerAccountID:       accountID,
+		LogicalTableID:       900,
+		PhysicalTableID:      901,
+		ExecutorEpoch:        1,
+		WorkerDeadline:       purgeNow.Add(time.Minute),
+		ArchiveNamespace:     "restore-test-archive",
+		CredentialHandle:     "restore-test-credential",
+		ArchivePrefix:        archivePrefix,
+		ManifestKey:          archivePrefix + "/manifest.json",
+		ReservedCleanupBytes: datasetLogicalCap,
+		State:                lifecyclepkg.CleanupRootPublished,
+		StateVersion:         1,
+		CleanupAfter:         purgeNow,
+		TemporaryCleanupDone: true,
+	}
+	require.NoError(t, rootRepository.Register(ctx, cleanupRoot))
+	repository.Roots = rootRepository
+	purgeDatasetVersion := queryLifecycleRestoreUint64(
+		t,
+		ctx,
+		sqlExecutor,
+		accountID,
+		fmt.Sprintf(
+			`select version from mo_catalog.mo_lifecycle_datasets
+where dataset_id=unhex('%s')`,
+			lifecycleRestoreTestUUIDHex(datasetID),
+		),
+	)
+	require.NoError(t, repository.RequestPurge(
+		ctx,
+		lifecyclepkg.RestoreDataset{
+			DatasetID: datasetID,
+			RootID:    rootID,
+			State:     "PUBLISHED",
+			Version:   purgeDatasetVersion,
+		},
+		purgeNow,
+	))
+	require.Equal(t, uint64(1), queryLifecycleRestoreUint64(
+		t,
+		ctx,
+		sqlExecutor,
+		accountID,
+		fmt.Sprintf(
+			`select cast(count(*) as bigint unsigned)
+from mo_catalog.mo_lifecycle_datasets
+where dataset_id=unhex('%s') and state='DELETE_PENDING'`,
+			lifecycleRestoreTestUUIDHex(datasetID),
+		),
+	))
+	rootAfterRequest, err := rootRepository.Get(ctx, rootID)
+	require.NoError(t, err)
+	require.Equal(t, lifecyclepkg.CleanupRootDeletePending, rootAfterRequest.State)
+	sweepStart := rootAfterRequest.CleanupAfter.Add(time.Second)
+
+	archive := newLifecycleRestoreCleanupStore()
+	archive.put(archivePrefix+"/payload-0.parquet", []byte("payload"))
+	archive.put(archivePrefix+"/manifest.json", []byte("manifest"))
+	finalizeDataset := func(finalizeCtx context.Context, _ lifecyclepkg.CleanupRoot) error {
+		result, finalizeErr := sqlExecutor.Exec(
+			finalizeCtx,
+			fmt.Sprintf(
+				`update mo_catalog.mo_lifecycle_datasets
+set state='PURGED',version=version+1,updated_at=utc_timestamp()
+where dataset_id=unhex('%s') and state='DELETE_PENDING'`,
+				lifecycleRestoreTestUUIDHex(datasetID),
+			),
+			executor.Options{}.
+				WithAccountID(accountID).
+				WithWaitCommittedLogApplied(),
+		)
+		if finalizeErr != nil {
+			return finalizeErr
+		}
+		defer result.Close()
+		if result.AffectedRows != 1 {
+			return fmt.Errorf(
+				"Lifecycle Dataset Purge finalizer affected %d rows",
+				result.AffectedRows,
+			)
+		}
+		return nil
+	}
+	sweeper := lifecyclepkg.CleanupSweeper{
+		Roots:               rootRepository,
+		Archive:             archive,
+		QuiescenceWindow:    time.Second,
+		FinalizePublication: finalizeDataset,
+	}
+	require.NoError(t, sweeper.SweepOne(ctx, rootID, sweepStart))
+	require.Empty(t, archive.keys())
+	archive.put(archivePrefix+"/late-put.parquet", []byte("late"))
+	require.NoError(t, sweeper.SweepOne(ctx, rootID, sweepStart.Add(time.Second)))
+	require.Empty(t, archive.keys())
+	require.NoError(t, sweeper.SweepOne(ctx, rootID, sweepStart.Add(2*time.Second)))
+	require.NoError(t, sweeper.SweepOne(ctx, rootID, sweepStart.Add(4*time.Second)))
+	require.Equal(t, uint64(1), queryLifecycleRestoreUint64(
+		t,
+		ctx,
+		sqlExecutor,
+		accountID,
+		fmt.Sprintf(
+			`select cast(count(*) as bigint unsigned)
+from mo_catalog.mo_lifecycle_datasets
+where dataset_id=unhex('%s') and state='PURGED'`,
+			lifecycleRestoreTestUUIDHex(datasetID),
+		),
+	))
+	cleanedRoot, err := rootRepository.Get(ctx, rootID)
+	require.NoError(t, err)
+	require.Equal(t, lifecyclepkg.CleanupRootCleaned, cleanedRoot.State)
 }
 
 func mustExecLifecycleRestoreSQL(
@@ -860,6 +982,56 @@ func lifecycleRestoreTestUUIDHex(value string) string {
 type failLifecycleRestoreChunkReceiptExecutor struct {
 	delegate executor.SQLExecutor
 	failed   bool
+}
+
+type lifecycleRestoreCleanupStore struct {
+	mu      sync.Mutex
+	objects map[string][]byte
+}
+
+func newLifecycleRestoreCleanupStore() *lifecycleRestoreCleanupStore {
+	return &lifecycleRestoreCleanupStore{objects: make(map[string][]byte)}
+}
+
+func (store *lifecycleRestoreCleanupStore) put(key string, value []byte) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.objects[key] = append([]byte(nil), value...)
+}
+
+func (store *lifecycleRestoreCleanupStore) List(
+	_ context.Context,
+	prefix string,
+) ([]string, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	keys := make([]string, 0, len(store.objects))
+	for key := range store.objects {
+		if strings.HasPrefix(key, strings.TrimSuffix(prefix, "/")+"/") {
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
+}
+
+func (store *lifecycleRestoreCleanupStore) Delete(
+	_ context.Context,
+	key string,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	delete(store.objects, key)
+	return nil
+}
+
+func (store *lifecycleRestoreCleanupStore) keys() []string {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	keys := make([]string, 0, len(store.objects))
+	for key := range store.objects {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func (sqlExecutor *failLifecycleRestoreChunkReceiptExecutor) Exec(
