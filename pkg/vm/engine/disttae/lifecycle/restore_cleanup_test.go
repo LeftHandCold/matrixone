@@ -51,18 +51,51 @@ func TestSQLExpiredRestorePagerReturnsBoundedTenantWork(t *testing.T) {
 	}
 	refs, next, err := (SQLExpiredRestorePager{Executor: fake}).Next(
 		context.Background(),
-		0,
+		ExpiredRestoreCursor{},
 		time.Now(),
 		8,
 		64,
 	)
 	require.NoError(t, err)
-	require.Equal(t, uint32(17), next)
+	require.Equal(t, ExpiredRestoreCursor{AccountID: 17}, next)
 	require.Equal(t, []ExpiredRestoreAttempt{{
 		AccountID:          17,
 		RestoreID:          restoreID.String(),
 		TargetDatabaseName: "db",
 	}}, refs)
+}
+
+func TestSQLExpiredRestorePagerContinuesPastFailedAttempt(t *testing.T) {
+	mp := mpool.MustNewZero()
+	first := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	second := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+	fake := &scriptedLifecycleSQLExecutor{
+		t: t,
+		steps: []lifecycleSQLStep{{
+			contains:  "a.restore_id>unhex('00000000000000000000000000000001')",
+			accountID: 17,
+			result: expiredRestoreResult(
+				t, mp, hex.EncodeToString(second[:]), "db",
+			),
+		}},
+	}
+	refs, next, err := (SQLExpiredRestorePager{Executor: fake}).Next(
+		context.Background(),
+		ExpiredRestoreCursor{AccountID: 17, RestoreID: first.String()},
+		time.Now(),
+		8,
+		1,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []ExpiredRestoreAttempt{{
+		AccountID:          17,
+		RestoreID:          second.String(),
+		TargetDatabaseName: "db",
+	}}, refs)
+	require.Equal(t, ExpiredRestoreCursor{
+		AccountID: 17,
+		RestoreID: second.String(),
+	}, next)
 }
 
 func expiredRestoreResult(

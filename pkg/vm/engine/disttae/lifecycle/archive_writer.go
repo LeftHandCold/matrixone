@@ -321,6 +321,11 @@ func (writer *ArchiveWriter) flushChunk(ctx context.Context) error {
 		writer.config.WriteID,
 	)
 	payload := output.Bytes()
+	if uint64(len(payload)) > maxArchivePayloadPhysicalBytes {
+		return fmt.Errorf(
+			"RESOURCE_BLOCKED: Lifecycle Archive payload exceeds the certified physical limit",
+		)
+	}
 	if err := writer.faults.Inject(ctx, FaultBeforePayloadPut); err != nil {
 		return err
 	}
@@ -575,6 +580,13 @@ func accumulateAutoIncrementMaxima(
 				column.Name,
 				err,
 			)
+		}
+		// MO's existing increment service advances its offset only for explicit
+		// positive values. Signed AUTO_INCREMENT columns may legally contain
+		// zero or negative historical rows; persisting those as an unsigned
+		// Restore offset would make an otherwise valid Dataset unpublishable.
+		if value.Sign() <= 0 {
+			continue
 		}
 		current := maxima[column.Ordinal]
 		if current == nil || value.Cmp(current) > 0 {

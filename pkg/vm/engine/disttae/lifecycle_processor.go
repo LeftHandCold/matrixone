@@ -126,6 +126,10 @@ type LifecycleObjectTask struct {
 	DeltaBytes                 uint64
 	DeltaBlocks                uint32
 	ProtectionLimits           logtailreplay.LifecycleTombstoneSelectionLimits
+	// OnFinalCommit is a CN-local observation hook used only by the scheduler
+	// to advance its in-memory Binding version after the ordinary final
+	// transaction has actually committed. No-op scans must not look committed.
+	OnFinalCommit func()
 }
 
 type LifecycleProcessorConfig struct {
@@ -520,6 +524,9 @@ func (processor *LifecycleProcessor) ProcessArchiveObject(
 			return updated, err
 		}
 		return processor.abandon(ctx, root, err)
+	}
+	if task.OnFinalCommit != nil {
+		task.OnFinalCommit()
 	}
 	// The committed created Objects are now owned by the ordinary TAE
 	// Catalog/WAL/GC path. Remove their deterministic segment range from the

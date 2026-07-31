@@ -39,6 +39,8 @@ import (
 
 func TestLifecycleProcessorWholePublishesOnlyAfterVerifiedArchive(t *testing.T) {
 	fixture := newLifecycleProcessorFixture(t)
+	committed := false
+	fixture.task.OnFinalCommit = func() { committed = true }
 	root, err := fixture.processor.ProcessArchiveObject(
 		context.Background(),
 		fixture.task,
@@ -53,6 +55,7 @@ func TestLifecycleProcessorWholePublishesOnlyAfterVerifiedArchive(t *testing.T) 
 	require.NotEmpty(t, root.ManifestKey)
 	require.NotEmpty(t, root.ManifestDigest)
 	require.Equal(t, 1, fixture.finalizer.calls)
+	require.True(t, committed)
 	require.Equal(t, root.RootID, fixture.finalizer.request.Control.RootId)
 	require.Equal(t, root.AttemptID, fixture.finalizer.request.Control.AttemptId)
 	require.Equal(
@@ -71,6 +74,8 @@ func TestLifecycleProcessorWholePublishesOnlyAfterVerifiedArchive(t *testing.T) 
 
 func TestLifecycleProcessorWholeAllSnapshotDeletedIsNoop(t *testing.T) {
 	fixture := newLifecycleProcessorFixture(t)
+	committed := false
+	fixture.task.OnFinalCommit = func() { committed = true }
 	fixture.task.Table.(*lifecycleProcessorTable).snapshotDeleted =
 		nulls.Build(2, 0, 1)
 
@@ -82,10 +87,13 @@ func TestLifecycleProcessorWholeAllSnapshotDeletedIsNoop(t *testing.T) {
 	require.Equal(t, lifecyclepkg.CleanupRootDeletePending, root.State)
 	require.Empty(t, root.LastError)
 	require.Zero(t, fixture.finalizer.calls)
+	require.False(t, committed)
 }
 
 func TestLifecycleProcessorMixedWithoutExpiredRowsIsNoop(t *testing.T) {
 	fixture := newLifecycleProcessorFixture(t)
+	committed := false
+	fixture.task.OnFinalCommit = func() { committed = true }
 	fixture.task.Whole = false
 	fixture.task.Classifier = func(
 		context.Context,
@@ -108,6 +116,7 @@ func TestLifecycleProcessorMixedWithoutExpiredRowsIsNoop(t *testing.T) {
 	require.Equal(t, lifecyclepkg.CleanupRootDeletePending, root.State)
 	require.Empty(t, root.LastError)
 	require.Zero(t, fixture.finalizer.calls)
+	require.False(t, committed)
 }
 
 func TestLifecycleProcessorWholeBatchUsesOneRootAndOneDataset(t *testing.T) {

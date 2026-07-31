@@ -158,6 +158,9 @@ func (processor *LifecycleProcessor) ProcessTTLObject(
 		); err != nil {
 			return lifecyclepkg.CleanupRoot{}, err
 		}
+		if task.OnFinalCommit != nil {
+			task.OnFinalCommit()
+		}
 		if err := faults.Inject(
 			ctx,
 			lifecyclepkg.FaultAfterFinalCommit,
@@ -378,6 +381,9 @@ func (processor *LifecycleProcessor) ProcessTTLObject(
 			return updated, err
 		}
 		return processor.abandon(ctx, root, err)
+	}
+	if task.OnFinalCommit != nil {
+		task.OnFinalCommit()
 	}
 
 	root.SegmentID = ""

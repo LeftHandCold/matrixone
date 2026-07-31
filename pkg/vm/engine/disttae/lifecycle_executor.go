@@ -147,10 +147,32 @@ func LifecycleTaskExecutorFactory(
 	)
 	cleanupReconcileCursor := ""
 	var metadataAccountCursor uint32
-	var restoreCleanupAccountCursor uint32
+	var restoreCleanupCursor lifecyclepkg.ExpiredRestoreCursor
 	rewriteSlots := make(chan struct{}, 1)
 	runSlots := make(chan struct{}, 1)
 	var lastMetadataCompaction time.Time
+	var activeRunner *lifecycleBindingExecutor
+	coordinator := lifecyclepkg.NewCoordinator(
+		lifecyclepkg.CoordinatorConfig{
+			Enabled:             true,
+			PageSize:            64,
+			MaxBindingsPerRun:   1000,
+			MaxClusterChildren:  8,
+			MaxAccountChildren:  4,
+			MaxDatabaseChildren: 2,
+			MaxTableChildren:    1,
+		},
+		pager,
+		func(ctx context.Context, binding lifecyclepkg.Binding) error {
+			// runSlots keeps activeRunner stable until every child from this
+			// tick has completed. The Coordinator itself is retained so its
+			// in-process Binding cursor survives across TaskService ticks.
+			if activeRunner == nil {
+				return fmt.Errorf("Lifecycle coordinator runner is not installed")
+			}
+			return activeRunner.run(ctx, binding)
+		},
+	)
 	return func(ctx context.Context, scheduled taskpb.Task) error {
 		// TaskService declares coordinator concurrency one, and this local guard
 		// also protects cursors if a duplicate invocation is delivered during
@@ -174,11 +196,11 @@ func LifecycleTaskExecutorFactory(
 			cleanupReconcileCursor,
 		)
 		var restoreCleanupErr error
-		restoreCleanupAccountCursor, restoreCleanupErr =
+		restoreCleanupCursor, restoreCleanupErr =
 			cleanupExpiredLifecycleRestores(
 				ctx,
 				sqlExecutor,
-				restoreCleanupAccountCursor,
+				restoreCleanupCursor,
 			)
 		var metadataErr error
 		now := time.Now()
@@ -208,7 +230,7 @@ func LifecycleTaskExecutorFactory(
 			)
 		}
 		epoch := lifecycleTaskEpoch(scheduled)
-		runner := &lifecycleBindingExecutor{
+		activeRunner = &lifecycleBindingExecutor{
 			engine:       txnEngine,
 			txnClient:    txnClient,
 			sqlExecutor:  sqlExecutor,
@@ -221,19 +243,6 @@ func LifecycleTaskExecutorFactory(
 			now:          time.Now,
 			epoch:        epoch,
 		}
-		coordinator := lifecyclepkg.NewCoordinator(
-			lifecyclepkg.CoordinatorConfig{
-				Enabled:             true,
-				PageSize:            64,
-				MaxBindingsPerRun:   1000,
-				MaxClusterChildren:  8,
-				MaxAccountChildren:  4,
-				MaxDatabaseChildren: 2,
-				MaxTableChildren:    1,
-			},
-			pager,
-			runner.run,
-		)
 		return errors.Join(
 			cleanupErr,
 			restoreCleanupErr,
@@ -257,19 +266,19 @@ func tryAcquireLifecycleCoordinatorRunSlot(
 func cleanupExpiredLifecycleRestores(
 	ctx context.Context,
 	sqlExecutor executor.SQLExecutor,
-	afterAccountID uint32,
-) (uint32, error) {
+	cursor lifecyclepkg.ExpiredRestoreCursor,
+) (lifecyclepkg.ExpiredRestoreCursor, error) {
 	attempts, next, err := (lifecyclepkg.SQLExpiredRestorePager{
 		Executor: sqlExecutor,
 	}).Next(
 		ctx,
-		afterAccountID,
+		cursor,
 		time.Now(),
 		8,
 		64,
 	)
 	if err != nil {
-		return afterAccountID, err
+		return cursor, err
 	}
 	var cleanupErr error
 	for _, attempt := range attempts {
@@ -416,7 +425,16 @@ func sweepLifecycleCleanupRoots(
 			defer cancelRoot()
 			return sweeper.SweepOne(rootCtx, root.RootID, now)
 		}()
-		sweepErr = errors.Join(sweepErr, rootErr)
+		if rootErr != nil {
+			_, deferErr := lifecyclepkg.DeferCleanupRoot(
+				ctx,
+				roots,
+				root.RootID,
+				now,
+				rootErr,
+			)
+			sweepErr = errors.Join(sweepErr, rootErr, deferErr)
+		}
 	}
 	return nextCursor, sweepErr
 }
@@ -689,6 +707,8 @@ func (runner *lifecycleBindingExecutor) run(
 				MaxMetaBytes:       64 << 20,
 			},
 		}
+		committed := false
+		objectTask.OnFinalCommit = func() { committed = true }
 		processErr := func() error {
 			releaseRewrite := func() {}
 			if !objectPlan.Whole {
@@ -722,7 +742,13 @@ func (runner *lifecycleBindingExecutor) run(
 			return processErr
 		}()
 		if processErr != nil {
+			if isLifecycleDeferredObjectError(processErr) {
+				continue
+			}
 			return processErr
+		}
+		if !applyLifecycleObjectOutcome(&binding, committed) {
+			continue
 		}
 		operation := "ttl_whole"
 		if archiveAction {
@@ -741,10 +767,31 @@ func (runner *lifecycleBindingExecutor) run(
 		metricv2.LifecycleBytesCounter.WithLabelValues(
 			"retired_source",
 		).Add(float64(objectPlan.SourceBytes))
-		// The final Binding fence increments the same row version.
-		binding.Version++
 	}
 	return nil
+}
+
+func applyLifecycleObjectOutcome(
+	binding *lifecyclepkg.Binding,
+	committed bool,
+) bool {
+	if binding == nil || !committed {
+		return false
+	}
+	// The final Binding fence increments the same row version. A complete
+	// no-op scan publishes no fence and therefore must not advance this local
+	// copy before the next Object in the same metadata page.
+	binding.Version++
+	return true
+}
+
+func isLifecycleDeferredObjectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "MIXED_LAYOUT_BLOCKED:") ||
+		strings.Contains(message, "RESOURCE_BLOCKED:")
 }
 
 // tryAcquireLifecycleRewriteSlot is a CN-local Scheduler guard. It applies

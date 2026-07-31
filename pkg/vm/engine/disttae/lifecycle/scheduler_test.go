@@ -17,6 +17,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +30,36 @@ import (
 type sliceBindingPager struct {
 	pages [][]Binding
 	calls int
+}
+
+type orderedBindingPager struct {
+	bindings []Binding
+	starts   []BindingCursor
+}
+
+func (p *orderedBindingPager) NextActiveBindings(
+	_ context.Context,
+	cursor BindingCursor,
+	limit int,
+) ([]Binding, BindingCursor, bool, error) {
+	p.starts = append(p.starts, cursor)
+	start := 0
+	for start < len(p.bindings) {
+		binding := p.bindings[start]
+		if binding.AccountID > cursor.AccountID ||
+			(binding.AccountID == cursor.AccountID && binding.ID > cursor.BindingID) {
+			break
+		}
+		start++
+	}
+	end := min(start+limit, len(p.bindings))
+	page := append([]Binding(nil), p.bindings[start:end]...)
+	next := cursor
+	if len(page) > 0 {
+		last := page[len(page)-1]
+		next = BindingCursor{AccountID: last.AccountID, BindingID: last.ID}
+	}
+	return page, next, end == len(p.bindings), nil
 }
 
 func (p *sliceBindingPager) NextActiveBindings(
@@ -178,4 +209,81 @@ func TestCoordinatorBindingFailureDoesNotCancelIndependentBindings(t *testing.T)
 
 	require.ErrorIs(t, coordinator.Run(context.Background()), failed)
 	require.Equal(t, map[string]bool{"a1": true, "b1": true}, seen)
+}
+
+func TestCoordinatorContinuesBindingCursorAcrossRunsAndWrapsAtEnd(t *testing.T) {
+	const bindingCount = 1001
+	bindings := make([]Binding, 0, bindingCount)
+	for index := range bindingCount {
+		bindings = append(bindings, Binding{
+			ID:              fmt.Sprintf("%032x", index+1),
+			AccountID:       1,
+			DatabaseID:      1,
+			PhysicalTableID: uint64(index + 1),
+			State:           BindingStateActive,
+		})
+	}
+	pager := &orderedBindingPager{bindings: bindings}
+	seen := make(map[string]int, bindingCount)
+	var seenMu sync.Mutex
+	coordinator := NewCoordinator(CoordinatorConfig{
+		Enabled:             true,
+		PageSize:            64,
+		MaxBindingsPerRun:   1000,
+		MaxClusterChildren:  8,
+		MaxAccountChildren:  4,
+		MaxDatabaseChildren: 2,
+		MaxTableChildren:    1,
+	}, pager, func(_ context.Context, binding Binding) error {
+		seenMu.Lock()
+		seen[binding.ID]++
+		seenMu.Unlock()
+		return nil
+	})
+
+	require.NoError(t, coordinator.Run(context.Background()))
+	require.Len(t, seen, 1000)
+	require.Zero(t, seen[bindings[1000].ID])
+
+	require.NoError(t, coordinator.Run(context.Background()))
+	require.Equal(t, 1, seen[bindings[1000].ID])
+	require.Len(t, seen, bindingCount)
+	require.Equal(t, BindingCursor{}, coordinator.cursor)
+	require.NotEmpty(t, pager.starts)
+	require.NotEqual(t, BindingCursor{}, pager.starts[len(pager.starts)-1])
+}
+
+func TestCoordinatorConcurrentRunWaitIsCancellable(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	coordinator := NewCoordinator(CoordinatorConfig{
+		Enabled:             true,
+		PageSize:            1,
+		MaxBindingsPerRun:   1,
+		MaxClusterChildren:  1,
+		MaxAccountChildren:  1,
+		MaxDatabaseChildren: 1,
+		MaxTableChildren:    1,
+	}, &sliceBindingPager{pages: [][]Binding{{{
+		ID:              "00000000000000000000000000000001",
+		AccountID:       1,
+		DatabaseID:      1,
+		PhysicalTableID: 1,
+		State:           BindingStateActive,
+	}}}}, func(context.Context, Binding) error {
+		close(started)
+		<-release
+		return nil
+	})
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- coordinator.Run(context.Background()) }()
+	<-started
+
+	secondCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, coordinator.Run(secondCtx), context.Canceled)
+
+	close(release)
+	require.NoError(t, <-firstDone)
 }

@@ -49,7 +49,7 @@ func ReadAndVerifyArchive(
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		payload, err := store.Get(ctx, file.Key)
+		payload, err := readArchivePayload(ctx, store, file)
 		if err != nil {
 			return nil, err
 		}
@@ -174,7 +174,7 @@ func ReadArchiveChunk(
 			"Lifecycle Restore chunk exceeds the certified limit",
 		)
 	}
-	payload, err := store.Get(ctx, file.Key)
+	payload, err := readArchivePayload(ctx, store, file)
 	if err != nil {
 		return nil, ArchiveChunk{}, err
 	}
@@ -197,6 +197,53 @@ func ReadArchiveChunk(
 		return nil, ArchiveChunk{}, err
 	}
 	return rows, actual, nil
+}
+
+func readArchivePayload(
+	ctx context.Context,
+	store ArchiveStore,
+	file ArchiveFile,
+) ([]byte, error) {
+	if file.Size == 0 || file.Size > maxArchivePayloadPhysicalBytes {
+		return nil, fmt.Errorf(
+			"Lifecycle archive payload %s size %d is outside the certified range",
+			file.Key,
+			file.Size,
+		)
+	}
+	bounded, ok := store.(archiveManifestReadStore)
+	if !ok {
+		return nil, fmt.Errorf(
+			"Lifecycle Archive Store does not support bounded payload reads",
+		)
+	}
+	before, err := bounded.Stat(ctx, file.Key)
+	if err != nil {
+		return nil, err
+	}
+	if before != int64(file.Size) {
+		return nil, fmt.Errorf(
+			"Lifecycle archive payload %s size changed from %d to %d",
+			file.Key,
+			file.Size,
+			before,
+		)
+	}
+	payload, err := bounded.GetExact(ctx, file.Key, before)
+	if err != nil {
+		return nil, err
+	}
+	after, err := bounded.Stat(ctx, file.Key)
+	if err != nil {
+		return nil, err
+	}
+	if after != before {
+		return nil, fmt.Errorf(
+			"Lifecycle archive payload %s changed during bounded read",
+			file.Key,
+		)
+	}
+	return payload, nil
 }
 
 func verifyArchivePayload(

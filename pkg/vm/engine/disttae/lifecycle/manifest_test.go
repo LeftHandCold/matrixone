@@ -31,7 +31,7 @@ func TestArchiveManifestV1GoldenBytesAndRoundTrip(t *testing.T) {
 	manifest := archiveManifestV1GoldenFixture()
 	encoded, _, err := MarshalArchiveManifest(manifest)
 	require.NoError(t, err)
-	const golden = `{"manifest_format_version":1,"hash_formula_version":1,"canonical_encoder_version":1,"root_id":"root-1","attempt_id":"attempt-1","schema":{"format_version":1,"source_table_id":"9007199254740993","source_table_version":7,"source_database_name":"db","source_table_name":"events","columns":[{"ordinal":0,"source_column_id":"9007199254740995","name":"id","type_id":28,"width":0,"scale":0,"not_null":true,"auto_increment":false}]},"schema_digest":"01ab000000000000000000000000000000000000000000000000000000000000","content_hash":"02cd000000000000000000000000000000000000000000000000000000000000","row_count":"9007199254740997","logical_bytes":"9007199254740999","total_chunk_count":"1","files":[{"file_ordinal":0,"key":"archive/root-1/attempt-1/payload-000000-write.parquet","size":"9007199254741001","sha256":"03ef000000000000000000000000000000000000000000000000000000000000","chunks":[{"chunk_ordinal":"0","file_ordinal":0,"row_group_ordinal":0,"row_count":"9007199254740997","logical_bytes":"9007199254740999","canonical_content_hash":"04aa000000000000000000000000000000000000000000000000000000000000"}]}],"verification_status":"FULL_READBACK_VERIFIED"}`
+	const golden = `{"manifest_format_version":1,"hash_formula_version":1,"canonical_encoder_version":1,"root_id":"root-1","attempt_id":"attempt-1","schema":{"format_version":1,"source_table_id":"9007199254740993","source_table_version":7,"source_database_name":"db","source_table_name":"events","columns":[{"ordinal":0,"source_column_id":"9007199254740995","name":"id","type_id":28,"width":0,"scale":0,"not_null":true,"auto_increment":false}]},"schema_digest":"01ab000000000000000000000000000000000000000000000000000000000000","content_hash":"02cd000000000000000000000000000000000000000000000000000000000000","row_count":"9007199254740997","logical_bytes":"9007199254740999","total_chunk_count":"1","files":[{"file_ordinal":0,"key":"archive/root-1/attempt-1/payload-000000-write.parquet","size":"134217728","sha256":"03ef000000000000000000000000000000000000000000000000000000000000","chunks":[{"chunk_ordinal":"0","file_ordinal":0,"row_group_ordinal":0,"row_count":"9007199254740997","logical_bytes":"9007199254740999","canonical_content_hash":"04aa000000000000000000000000000000000000000000000000000000000000"}]}],"verification_status":"FULL_READBACK_VERIFIED"}`
 	require.Equal(t, golden, string(encoded))
 
 	decoded, err := ParseArchiveManifest(encoded)
@@ -132,6 +132,11 @@ func TestArchiveManifestV1RejectsBoundsBeforeUse(t *testing.T) {
 	_, _, err = MarshalArchiveManifest(manifest)
 	require.NoError(t, err)
 	manifest.Files[0].Key += "k"
+	_, _, err = MarshalArchiveManifest(manifest)
+	require.ErrorContains(t, err, "file identity")
+
+	manifest = archiveManifestV1GoldenFixture()
+	manifest.Files[0].Size = maxArchivePayloadPhysicalBytes + 1
 	_, _, err = MarshalArchiveManifest(manifest)
 	require.ErrorContains(t, err, "file identity")
 
@@ -305,7 +310,7 @@ func archiveManifestV1GoldenFixture() *ArchiveManifest {
 		Files: []ArchiveFile{{
 			FileOrdinal: 0,
 			Key:         "archive/root-1/attempt-1/payload-000000-write.parquet",
-			Size:        9007199254741001,
+			Size:        maxArchivePayloadPhysicalBytes,
 			SHA256:      [sha256.Size]byte{0x03, 0xef},
 			Chunks: []ArchiveChunk{{
 				ChunkOrdinal:         0,

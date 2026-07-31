@@ -45,6 +45,8 @@ const (
 	CleanupModeArchiveWhole   CleanupMode = "ARCHIVE_WHOLE"
 	CleanupModeArchiveRewrite CleanupMode = "ARCHIVE_REWRITE"
 	CleanupModeTTLRewrite     CleanupMode = "TTL_REWRITE"
+	cleanupRetryBackoff                   = 5 * time.Minute
+	maxCleanupLastErrorBytes              = 4096
 )
 
 type CleanupRoot struct {
@@ -343,6 +345,37 @@ type CleanupSweeper struct {
 	FinalizePublication func(context.Context, CleanupRoot) error
 	QuiescenceWindow    time.Duration
 	Faults              FaultInjector
+}
+
+// DeferCleanupRoot prevents one permanently failing provider/credential item
+// from monopolizing the bounded oldest-first cleanup page. It changes only the
+// next retry time and diagnostics; ownership and state remain unchanged.
+func DeferCleanupRoot(
+	ctx context.Context,
+	roots CleanupRootRepository,
+	rootID string,
+	now time.Time,
+	cause error,
+) (CleanupRoot, error) {
+	if roots == nil || rootID == "" || now.IsZero() || cause == nil {
+		return CleanupRoot{}, fmt.Errorf("Lifecycle cleanup deferral is incomplete")
+	}
+	root, err := roots.Get(ctx, rootID)
+	if err != nil {
+		return CleanupRoot{}, err
+	}
+	if !CanSweepCleanupRoot(root) {
+		return root, nil
+	}
+	retryAt := now.Add(cleanupRetryBackoff)
+	if root.CleanupAfter.Before(retryAt) {
+		root.CleanupAfter = retryAt
+	}
+	root.LastError = cause.Error()
+	if len(root.LastError) > maxCleanupLastErrorBytes {
+		root.LastError = root.LastError[:maxCleanupLastErrorBytes]
+	}
+	return roots.UpdateCleanup(ctx, root, root.StateVersion)
 }
 
 func (sweeper CleanupSweeper) SweepOne(

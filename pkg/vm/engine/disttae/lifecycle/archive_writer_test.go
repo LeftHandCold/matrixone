@@ -310,6 +310,37 @@ func TestArchiveWriterPersistsAndReadbackVerifiesAutoIncrementMaximum(t *testing
 	require.Equal(t, manifest.AutoIncrementMaxima, persisted.AutoIncrementMaxima)
 }
 
+func TestArchiveWriterIgnoresNonPositiveSignedAutoIncrementValues(t *testing.T) {
+	ctx := context.Background()
+	store := newMemoryArchiveStore()
+	schema := archiveTestSchema()
+	schema.Columns[0].AutoIncrement = true
+	schemaDigest, err := schema.Digest()
+	require.NoError(t, err)
+	writer, err := NewArchiveWriter(ctx, ArchiveWriterConfig{
+		RootID:               "root-auto-negative",
+		AttemptID:            "attempt-auto-negative",
+		Prefix:               "archive/root-auto-negative/attempt-auto-negative",
+		WriteID:              "write-auto-negative",
+		Schema:               schema,
+		SchemaDigest:         schemaDigest,
+		MaxRestoreChunkRows:  8,
+		MaxChunkLogicalBytes: 1 << 20,
+		MaxPhysicalBytes:     archiveTestMaxPhysicalBytes,
+	}, store, &testArchiveSideEffectGuard{durable: true})
+	require.NoError(t, err)
+	mp := mpool.MustNewZero()
+	value := archiveTestBatch(t, mp,
+		archiveTestRow{-7, "negative"},
+		archiveTestRow{0, "zero"},
+	)
+	defer value.Clean(mp)
+	require.NoError(t, writer.WriteBatch(ctx, value, nil))
+	manifest, _, err := writer.Close(ctx)
+	require.NoError(t, err)
+	require.Empty(t, manifest.AutoIncrementMaxima)
+}
+
 func TestArchiveReadbackRejectsCorruptionAndReorderedManifest(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryArchiveStore()
@@ -339,6 +370,24 @@ func TestArchiveReadbackRejectsCorruptionAndReorderedManifest(t *testing.T) {
 	require.NoError(t, store.Put(ctx, manifestKey, reordered))
 	_, err = ReadAndVerifyArchive(ctx, store, manifestKey)
 	require.Error(t, err)
+}
+
+func TestArchiveReadbackRejectsPayloadSizeChangeBeforeReadingBody(t *testing.T) {
+	ctx := context.Background()
+	store := newMemoryArchiveStore()
+	manifestKey := writeArchiveTestDataset(t, store)
+	manifest, err := ReadArchiveManifest(ctx, store, manifestKey)
+	require.NoError(t, err)
+	file := manifest.Files[0]
+	beforeReads := store.getCount(file.Key)
+
+	store.mu.Lock()
+	store.objects[file.Key] = append(store.objects[file.Key], 0x01)
+	store.mu.Unlock()
+
+	_, err = ReadAndVerifyArchive(ctx, store, manifestKey)
+	require.ErrorContains(t, err, "size changed")
+	require.Equal(t, beforeReads, store.getCount(file.Key))
 }
 
 func writeArchiveTestDataset(t *testing.T, store *memoryArchiveStore) string {

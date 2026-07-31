@@ -16669,6 +16669,98 @@ func TestDeterminePrivilegeSetOfStatementLifecycleRestoreAndPurge(t *testing.T) 
 	)
 }
 
+func TestLifecycleStatementRequiresAccountAdmin(t *testing.T) {
+	archiveSet := &tree.AlterTable{Options: []tree.AlterTableOption{
+		tree.NewAlterOptionLifecycle(
+			tree.LifecycleOperationSet,
+			tree.LifecyclePolicy{Action: tree.LifecycleActionArchive},
+		),
+	}}
+	deleteSet := &tree.AlterTable{Options: []tree.AlterTableOption{
+		tree.NewAlterOptionLifecycle(
+			tree.LifecycleOperationSet,
+			tree.LifecyclePolicy{Action: tree.LifecycleActionDelete},
+		),
+	}}
+	pause := &tree.AlterTable{Options: []tree.AlterTableOption{
+		tree.NewAlterOptionLifecycle(
+			tree.LifecycleOperationPause,
+			tree.LifecyclePolicy{},
+		),
+	}}
+
+	require.True(t, lifecycleStatementRequiresAccountAdmin(&tree.ShowLifecycle{}))
+	require.True(t, lifecycleStatementRequiresAccountAdmin(&tree.RestoreArchiveDataset{}))
+	require.True(t, lifecycleStatementRequiresAccountAdmin(archiveSet))
+	require.False(t, lifecycleStatementRequiresAccountAdmin(deleteSet))
+	require.False(t, lifecycleStatementRequiresAccountAdmin(pause))
+	require.False(t, lifecycleStatementRequiresAccountAdmin(&tree.PurgeArchiveDataset{}))
+	require.False(t, lifecycleStatementRequiresAccountAdmin(&tree.Select{}))
+}
+
+func TestLifecycleAccountAdminAdmissionUsesExistingAdminRoles(t *testing.T) {
+	statement := &tree.ShowLifecycle{}
+	require.True(t, lifecycleAccountAdminMayExecute(
+		&TenantInfo{Tenant: sysAccountName, DefaultRole: moAdminRoleName},
+		statement,
+	))
+	require.True(t, lifecycleAccountAdminMayExecute(
+		&TenantInfo{Tenant: "tenant", DefaultRole: accountAdminRoleName},
+		statement,
+	))
+	require.False(t, lifecycleAccountAdminMayExecute(
+		&TenantInfo{Tenant: "tenant", DefaultRole: "application_role"},
+		statement,
+	))
+	require.False(t, lifecycleAccountAdminMayExecute(nil, statement))
+	require.True(t, lifecycleAccountAdminMayExecute(
+		&TenantInfo{Tenant: "tenant", DefaultRole: "application_role"},
+		&tree.Select{},
+	))
+}
+
+func TestAuthenticateRejectsLifecycleAdminOperationsForOrdinaryRole(t *testing.T) {
+	archiveTarget := tree.NewTableName(
+		tree.Identifier("orders"),
+		tree.ObjectNamePrefix{
+			SchemaName:     tree.Identifier("sales"),
+			ExplicitSchema: true,
+		},
+		nil,
+	)
+	archiveSet := &tree.AlterTable{
+		Table: archiveTarget,
+		Options: []tree.AlterTableOption{
+			tree.NewAlterOptionLifecycle(
+				tree.LifecycleOperationSet,
+				tree.LifecyclePolicy{Action: tree.LifecycleActionArchive},
+			),
+		},
+	}
+	statements := []tree.Statement{
+		&tree.ShowLifecycle{},
+		&tree.RestoreArchiveDataset{Target: archiveTarget},
+		archiveSet,
+	}
+	for _, statement := range statements {
+		ctrl := gomock.NewController(t)
+		ses := newSes(nil, ctrl)
+		ses.SetTenantInfo(&TenantInfo{
+			Tenant:      "tenant",
+			User:        "application_user",
+			DefaultRole: "application_role",
+			TenantID:    17,
+		})
+		_, err := authenticateUserCanExecuteStatement(
+			context.Background(),
+			ses,
+			statement,
+		)
+		require.ErrorContains(t, err, "do not have privilege")
+		ctrl.Finish()
+	}
+}
+
 func TestLifecycleCleanupRootsIsSystemAccountTable(t *testing.T) {
 	require.Contains(t, sysAccountTables, catalog.MO_LIFECYCLE_CLEANUP_ROOTS)
 	require.False(t, isClusterTable(catalog.MO_CATALOG, catalog.MO_LIFECYCLE_CLEANUP_ROOTS))

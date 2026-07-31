@@ -17,16 +17,71 @@ package compile
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/pb/lock"
 	plan2 "github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
 )
 
 type lifecycleDDLQuery func(string, int32) (executor.Result, error)
+
+type lifecycleForeignKeyParent struct {
+	databaseName string
+	tableName    string
+}
+
+func lifecycleForeignKeyIsSelfReference(
+	childDatabaseName string,
+	childTableName string,
+	parentDatabaseName string,
+	parentTableName string,
+) bool {
+	return strings.EqualFold(parentDatabaseName, childDatabaseName) &&
+		strings.EqualFold(parentTableName, childTableName)
+}
+
+func lifecycleForeignKeyParents(
+	ctx context.Context,
+	childDatabaseName string,
+	childTableName string,
+	parentDatabaseNames []string,
+	parentTableNames []string,
+) ([]lifecycleForeignKeyParent, error) {
+	if len(parentDatabaseNames) != len(parentTableNames) {
+		return nil, moerr.NewInternalError(
+			ctx,
+			"foreign key parent metadata is incomplete",
+		)
+	}
+	parents := make([]lifecycleForeignKeyParent, 0, len(parentTableNames))
+	seen := make(map[string]struct{}, len(parentTableNames))
+	for index, tableName := range parentTableNames {
+		databaseName := parentDatabaseNames[index]
+		if lifecycleForeignKeyIsSelfReference(
+			childDatabaseName,
+			childTableName,
+			databaseName,
+			tableName,
+		) {
+			continue
+		}
+		key := strings.ToLower(databaseName) + "\x00" + strings.ToLower(tableName)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		parents = append(parents, lifecycleForeignKeyParent{
+			databaseName: databaseName,
+			tableName:    tableName,
+		})
+	}
+	return parents, nil
+}
 
 func rejectBoundLifecycleDDL(
 	ctx context.Context,
@@ -96,6 +151,73 @@ func (c *Compile) rejectBoundLifecycleDDL(
 		physicalTableID,
 		operation,
 		c.runSqlWithResult,
+	)
+}
+
+// lockAndRejectLifecycleForeignKeyParents closes the reverse dependency race
+// between SET LIFECYCLE on a parent and CREATE/ALTER FOREIGN KEY on a child.
+// It runs only for user-facing DDL, after using the same mo_tables row lock as
+// SET LIFECYCLE, and reuses the indexed Binding lookup above.
+func (c *Compile) lockAndRejectLifecycleForeignKeyParents(
+	childDatabaseName string,
+	childTableName string,
+	parentDatabaseNames []string,
+	parentTableNames []string,
+) error {
+	if !c.proc.Base.IsFrontend {
+		return nil
+	}
+	parents, err := lifecycleForeignKeyParents(
+		c.proc.Ctx,
+		childDatabaseName,
+		childTableName,
+		parentDatabaseNames,
+		parentTableNames,
+	)
+	if err != nil {
+		return err
+	}
+	for _, parent := range parents {
+		if err = lockMoTable(
+			c,
+			parent.databaseName,
+			parent.tableName,
+			lock.LockMode_Exclusive,
+		); err != nil {
+			return err
+		}
+		if err = c.rejectLifecycleForeignKeyParentAfterLock(
+			parent.databaseName,
+			parent.tableName,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Compile) rejectLifecycleForeignKeyParentAfterLock(
+	databaseName string,
+	tableName string,
+) error {
+	if !c.proc.Base.IsFrontend {
+		return nil
+	}
+	database, err := c.e.Database(
+		c.proc.Ctx,
+		databaseName,
+		c.proc.GetTxnOperator(),
+	)
+	if err != nil {
+		return err
+	}
+	relation, err := database.Relation(c.proc.Ctx, tableName, nil)
+	if err != nil {
+		return err
+	}
+	return c.rejectBoundLifecycleDDL(
+		relation.GetTableID(c.proc.Ctx),
+		"ADD FOREIGN KEY referencing",
 	)
 }
 

@@ -694,14 +694,26 @@ func (s *Scope) AlterTableInplace(c *Compile) error {
 				}
 				newAddedFkNames[act.AddFk.Fkey.Name] = true
 
-				// lock fk table
-				if !(act.AddFk.DbName != dbName && act.AddFk.TableName != tblName) { //skip self ref foreign key
+				// Lock the referenced parent mo_tables row. SET LIFECYCLE takes
+				// the same lock, so the following indexed Binding lookup closes
+				// the first-binding race without a global Guard.
+				if !lifecycleForeignKeyIsSelfReference(
+					dbName,
+					tblName,
+					act.AddFk.DbName,
+					act.AddFk.TableName,
+				) {
 					if err = lockMoTable(c, act.AddFk.DbName, act.AddFk.TableName, lock.LockMode_Exclusive); err != nil {
 						if !moerr.IsMoErrCode(err, moerr.ErrTxnNeedRetry) &&
 							!moerr.IsMoErrCode(err, moerr.ErrTxnNeedRetryWithDefChanged) {
 							return err
 						}
 						retryErr = moerr.NewTxnNeedRetryWithDefChangedNoCtx()
+					} else if err = c.rejectLifecycleForeignKeyParentAfterLock(
+						act.AddFk.DbName,
+						act.AddFk.TableName,
+					); err != nil {
+						return err
 					}
 				}
 			}
@@ -1465,6 +1477,14 @@ func (s *Scope) CreateTable(c *Compile) error {
 				zap.String("tableName", qry.GetTableDef().GetName()),
 				zap.Error(err),
 			)
+			return err
+		}
+		if err = c.lockAndRejectLifecycleForeignKeyParents(
+			dbName,
+			tblName,
+			qry.GetFkDbs(),
+			qry.GetFkTables(),
+		); err != nil {
 			return err
 		}
 	}

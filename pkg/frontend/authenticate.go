@@ -256,6 +256,34 @@ func (ti *TenantInfo) IsNameOfAdminRoles(name string) bool {
 	}
 }
 
+// lifecycleStatementRequiresAccountAdmin identifies the Phase 1 Lifecycle
+// operations that expose account-wide archive metadata or external storage.
+// It is an additional admission check: the statement keeps its ordinary
+// database/table privilege checks as well.
+func lifecycleStatementRequiresAccountAdmin(stmt tree.Statement) bool {
+	switch statement := stmt.(type) {
+	case *tree.ShowLifecycle, *tree.RestoreArchiveDataset:
+		return true
+	case *tree.AlterTable:
+		option, ok := lifecycleOptionFromAlterTable(statement)
+		return ok &&
+			option.Operation == tree.LifecycleOperationSet &&
+			option.Policy.Action == tree.LifecycleActionArchive
+	default:
+		return false
+	}
+}
+
+func lifecycleAccountAdminMayExecute(
+	tenant *TenantInfo,
+	stmt tree.Statement,
+) bool {
+	if !lifecycleStatementRequiresAccountAdmin(stmt) {
+		return true
+	}
+	return tenant != nil && tenant.IsAdminRole()
+}
+
 func (ti *TenantInfo) SetUseSecondaryRole(v bool) {
 	ti.mu.Lock()
 	defer ti.mu.Unlock()

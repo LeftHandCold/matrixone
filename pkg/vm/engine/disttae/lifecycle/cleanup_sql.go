@@ -845,7 +845,7 @@ func (catalogAdapter SQLCleanupReconcileCatalog) RequestCleanup(
 			`update mo_catalog.mo_lifecycle_datasets
 set state='DELETE_PENDING',version=version+1,updated_at=utc_timestamp()
 where root_id=unhex('%s') and attempt_id=unhex('%s') and state='PUBLISHED'
-and (restore_lease_id is null or restore_deadline<utc_timestamp())%s`,
+and restore_lease_id is null%s`,
 			rootID,
 			attemptID,
 			eligibility,

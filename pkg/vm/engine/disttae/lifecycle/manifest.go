@@ -34,6 +34,10 @@ const (
 	// against provider metadata before allocating the object body and again by
 	// ParseArchiveManifest for non-provider callers.
 	maxArchiveManifestBytes = 16 << 20
+	// One payload is one Restore Chunk/Parquet Row Group. Bound its compressed
+	// representation as well as its logical rows/bytes so an external object
+	// cannot force an unbounded allocation before digest verification.
+	maxArchivePayloadPhysicalBytes = 128 << 20
 	// Phase 1 writes exactly one Row Group per payload file, so this one
 	// certified bound caps payload files, Restore Chunk Receipts, Manifest
 	// collection growth, and Restore aggregation memory at the same time.
@@ -267,7 +271,7 @@ func validateArchiveManifestShape(manifest *ArchiveManifest) error {
 			return fmt.Errorf("Lifecycle archive file ordinals are not continuous")
 		}
 		if !validArchiveManifestString(file.Key, maxArchiveObjectKeyBytes, true) ||
-			file.Size == 0 {
+			file.Size == 0 || file.Size > maxArchivePayloadPhysicalBytes {
 			return fmt.Errorf("Lifecycle archive file identity is invalid")
 		}
 		if _, exists := fileKeys[file.Key]; exists {
@@ -311,7 +315,8 @@ func validateArchiveManifestShape(manifest *ArchiveManifest) error {
 		if !validArchiveManifestString(maximum.Value, maxArchiveManifestString, true) {
 			return fmt.Errorf("Lifecycle archive auto-increment maximum is too large")
 		}
-		if _, ok := new(big.Int).SetString(maximum.Value, 10); !ok {
+		parsed, ok := new(big.Int).SetString(maximum.Value, 10)
+		if !ok || parsed.Sign() <= 0 {
 			return fmt.Errorf("Lifecycle archive auto-increment maximum is invalid")
 		}
 		previous = maximum.ColumnOrdinal

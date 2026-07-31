@@ -234,7 +234,7 @@ func TestSQLCleanupReconcileCatalogRequestsDueDatasetCleanup(t *testing.T) {
 				result:    lifecycleAccountResult(t, mp, uint64(root.OwnerAccountID)),
 			},
 			{
-				contains:    "set state='delete_pending'",
+				contains:    "and restore_lease_id is null",
 				notContains: "%!(extra",
 				accountID:   root.OwnerAccountID,
 				result: executor.Result{

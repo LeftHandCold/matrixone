@@ -17,6 +17,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -479,6 +480,28 @@ func TestCleanupRootCASResponseLossResumesFromPersistedState(t *testing.T) {
 	persisted, err = repository.Get(context.Background(), root.RootID)
 	require.NoError(t, err)
 	require.Equal(t, CleanupRootCleaned, persisted.State)
+}
+
+func TestCleanupRootFailureMovesBehindDuePage(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(2000, 0)
+	repository := newMemoryCleanupRootRepository()
+	root := lifecycleCleanupTestRoot()
+	root.State = CleanupRootDeleting
+	root.CleanupAfter = now.Add(-time.Minute)
+	require.NoError(t, repository.Register(ctx, root))
+
+	updated, err := DeferCleanupRoot(
+		ctx,
+		repository,
+		root.RootID,
+		now,
+		fmt.Errorf("permanent credential failure"),
+	)
+	require.NoError(t, err)
+	require.Equal(t, now.Add(cleanupRetryBackoff), updated.CleanupAfter)
+	require.Equal(t, "permanent credential failure", updated.LastError)
+	require.Equal(t, root.State, updated.State)
 }
 
 func TestPublishedRewritePurgeDoesNotDeleteTransferredLiveObject(t *testing.T) {

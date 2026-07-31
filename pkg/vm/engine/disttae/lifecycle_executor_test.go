@@ -17,6 +17,7 @@ package disttae
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,30 @@ func TestLifecycleRewriteSlotBoundsLocalRewriteConcurrency(t *testing.T) {
 	)
 	require.NoError(t, err)
 	releaseSecond()
+}
+
+func TestLifecycleObjectOutcomeAdvancesBindingOnlyAfterFinalCommit(t *testing.T) {
+	binding := lifecyclepkg.Binding{Version: 7}
+
+	recorded := applyLifecycleObjectOutcome(&binding, false)
+	require.False(t, recorded)
+	require.Equal(t, uint64(7), binding.Version)
+
+	recorded = applyLifecycleObjectOutcome(&binding, true)
+	require.True(t, recorded)
+	require.Equal(t, uint64(8), binding.Version)
+}
+
+func TestLifecycleDeferredObjectErrorDoesNotBlockPage(t *testing.T) {
+	require.True(t, isLifecycleDeferredObjectError(
+		fmt.Errorf("MIXED_LAYOUT_BLOCKED: amplification exceeded"),
+	))
+	require.True(t, isLifecycleDeferredObjectError(
+		fmt.Errorf("RESOURCE_BLOCKED: rewrite window exhausted"),
+	))
+	require.False(t, isLifecycleDeferredObjectError(
+		fmt.Errorf("Lifecycle source Object identity changed"),
+	))
 }
 
 func TestPlanLifecycleObjectTasksBatchesWholeAndKeepsMixedSingleton(t *testing.T) {

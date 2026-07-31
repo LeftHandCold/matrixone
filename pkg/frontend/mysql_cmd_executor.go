@@ -3511,6 +3511,12 @@ func authenticateUserCanExecuteStatement(reqCtx context.Context, ses *Session, s
 	}
 	if ses.GetTenantInfo() != nil {
 		ses.SetPrivilege(determinePrivilegeSetOfStatement(stmt))
+		if !lifecycleAccountAdminMayExecute(ses.GetTenantInfo(), stmt) {
+			return stats, moerr.NewInternalError(
+				reqCtx,
+				"do not have privilege to execute the statement",
+			)
+		}
 
 		// can or not execute in retricted status
 		if ses.getRoutine() != nil && ses.getRoutine().isRestricted() && !ses.GetPrivilege().canExecInRestricted {

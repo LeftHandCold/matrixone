@@ -93,6 +93,13 @@ type Coordinator struct {
 	config CoordinatorConfig
 	pager  BindingPager
 	child  BindingChild
+
+	// The cursor is an in-process scheduling hint. It prevents bindings past
+	// MaxBindingsPerRun from starving when the certified binding population is
+	// temporarily larger than one run. The final retirement transaction still
+	// validates all authoritative metadata and exact source Objects.
+	runSlot chan struct{}
+	cursor  BindingCursor
 }
 
 func NewCoordinator(
@@ -100,10 +107,24 @@ func NewCoordinator(
 	pager BindingPager,
 	child BindingChild,
 ) *Coordinator {
-	return &Coordinator{config: config, pager: pager, child: child}
+	runSlot := make(chan struct{}, 1)
+	runSlot <- struct{}{}
+	return &Coordinator{
+		config:  config,
+		pager:   pager,
+		child:   child,
+		runSlot: runSlot,
+	}
 }
 
 func (c *Coordinator) Run(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.runSlot:
+	}
+	defer func() { c.runSlot <- struct{}{} }()
+
 	if !c.config.Enabled {
 		return nil
 	}
@@ -223,7 +244,7 @@ func (c *Coordinator) validate(ctx context.Context) error {
 
 func (c *Coordinator) loadBindings(ctx context.Context) ([]Binding, error) {
 	bindings := make([]Binding, 0, min(c.config.PageSize, c.config.MaxBindingsPerRun))
-	cursor := BindingCursor{}
+	cursor := c.cursor
 	for len(bindings) < c.config.MaxBindingsPerRun {
 		remaining := c.config.MaxBindingsPerRun - len(bindings)
 		limit := min(c.config.PageSize, remaining)
@@ -240,6 +261,10 @@ func (c *Coordinator) loadBindings(ctx context.Context) ([]Binding, error) {
 			}
 		}
 		if end {
+			// The next successful run starts a new full scan. Reset only after
+			// this page has loaded successfully so a pager error never skips
+			// bindings which have not been dispatched.
+			c.cursor = BindingCursor{}
 			return bindings, nil
 		}
 		if next == cursor {
@@ -247,6 +272,7 @@ func (c *Coordinator) loadBindings(ctx context.Context) ([]Binding, error) {
 		}
 		cursor = next
 	}
+	c.cursor = cursor
 	return bindings, nil
 }
 
