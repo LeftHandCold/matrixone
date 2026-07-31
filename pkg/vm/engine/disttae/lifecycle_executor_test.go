@@ -205,7 +205,7 @@ func TestLifecycleCoordinatorRunSlotDoesNotQueueDuplicateRun(t *testing.T) {
 	releaseSecond()
 }
 
-func TestLifecycleDisabledSkipsTenantMaintenanceAndBindingScan(t *testing.T) {
+func TestLifecycleDisabledContinuesMaintenanceAndSkipsBindingScan(t *testing.T) {
 	fake := &disabledLifecycleSQLExecutor{
 		t:  t,
 		mp: mpool.MustNewZero(),
@@ -213,11 +213,20 @@ func TestLifecycleDisabledSkipsTenantMaintenanceAndBindingScan(t *testing.T) {
 	run := LifecycleTaskExecutorFactory(nil, nil, fake, nil, nil)
 	require.NoError(t, run(context.Background(), &task.AsyncTask{}))
 	require.NotEmpty(t, fake.queries)
+	sawAccountPage := false
+	sawMetadataCompaction := false
 	for _, query := range fake.queries {
-		require.NotContains(t, query, "mo_account")
+		if strings.Contains(query, "mo_account") {
+			sawAccountPage = true
+		}
+		if strings.Contains(query, "delete from mo_catalog.mo_lifecycle_cleanup_roots") {
+			sawMetadataCompaction = true
+		}
+		require.NotContains(t, query, "mo_lifecycle_bindings")
 		require.NotContains(t, query, "mo_lifecycle_restore_attempts")
-		require.NotContains(t, query, "delete from mo_catalog")
 	}
+	require.True(t, sawAccountPage)
+	require.True(t, sawMetadataCompaction)
 }
 
 type disabledLifecycleSQLExecutor struct {

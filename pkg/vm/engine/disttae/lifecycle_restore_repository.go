@@ -105,7 +105,7 @@ func (repository SQLRestoreRepository) Initialize(
 set restore_lease_id=unhex('%s'),restore_deadline=%s,
 access_generation=access_generation+1,version=version+1,updated_at=utc_timestamp()
 where dataset_id=unhex('%s') and state='PUBLISHED' and version=%d
-and (restore_lease_id is null or restore_deadline<utc_timestamp())`,
+and restore_lease_id is null`,
 					leaseID,
 					lifecycleCatalogTime(request.Attempt.Deadline),
 					datasetID,

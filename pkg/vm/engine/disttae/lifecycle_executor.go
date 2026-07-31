@@ -173,13 +173,6 @@ func LifecycleTaskExecutorFactory(
 			faults,
 			cleanupReconcileCursor,
 		)
-		enabled, err := release.Enabled(ctx)
-		if err != nil || !enabled {
-			return errors.Join(
-				cleanupErr,
-				err,
-			)
-		}
 		var restoreCleanupErr error
 		restoreCleanupAccountCursor, restoreCleanupErr =
 			cleanupExpiredLifecycleRestores(
@@ -204,6 +197,15 @@ func LifecycleTaskExecutorFactory(
 			if metadataErr == nil {
 				lastMetadataCompaction = now
 			}
+		}
+		enabled, err := release.Enabled(ctx)
+		if err != nil || !enabled {
+			return errors.Join(
+				cleanupErr,
+				restoreCleanupErr,
+				metadataErr,
+				err,
+			)
 		}
 		epoch := lifecycleTaskEpoch(scheduled)
 		runner := &lifecycleBindingExecutor{

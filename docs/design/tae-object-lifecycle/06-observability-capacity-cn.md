@@ -181,7 +181,9 @@ pause restore
 pause purge
 ```
 
-Kill switch不强制清理FINALIZING/COMMIT_UNKNOWN，也不取消已进入普通事务Prepare的操作。
+这里的`pause retirement`指不再启动新的child；已经进入执行的child可能完成当前Archive、
+readback或final transaction。Kill switch不强制清理FINALIZING/COMMIT_UNKNOWN，也不取消
+已进入普通事务Prepare的操作。需要Backup时必须保持gate关闭并等待in-flight指标归零。
 关闭retirement后Export-only仍可单独运行。
 
 ## 7. 普通MO隔离
@@ -190,7 +192,8 @@ feature off：
 
 - 不创建新的Lifecycle attempt、Dataset、Restore或staging；
 - Coordinator cron仍只为历史Cleanup Root执行有界reconcile/sweep，避免关闭开关后遗留外部
-  对象永久泄漏；Binding调度、租户Restore扫描和元数据压缩均跳过；
+  对象永久泄漏；过期Restore隐藏表清理与有界终态元数据压缩也继续，Binding调度和新
+  Restore执行跳过；
 - 除上述历史Root清理外无新的Provider PUT/readback；
 - 普通查询、DML、Merge、checkpoint、GC和logtail无Lifecycle Catalog访问；
 - 表级管理DDL仍执行一次索引化Binding检查，但不取得集群级feature-row写锁；

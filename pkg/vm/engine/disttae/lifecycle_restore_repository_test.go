@@ -84,6 +84,8 @@ func TestSQLRestoreInitializeOwnsLeaseTableAndAttemptInOneTransaction(t *testing
 	require.Equal(t, uint64(88), attempt.StagingTableID)
 	require.Equal(t, "IMPORTING", attempt.State)
 	require.Contains(t, statements[1], "restore_lease_id")
+	require.Contains(t, statements[1], "and restore_lease_id is null")
+	require.NotContains(t, statements[1], "or restore_deadline")
 	require.Contains(t, statements[2], "create table")
 	require.Contains(t, statements[4], "insert into mo_catalog.mo_lifecycle_restore_attempts")
 }

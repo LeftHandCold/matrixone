@@ -20,6 +20,7 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	gc "github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/gc/v3"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,6 +33,15 @@ func TestBuildLifecycleSyncProtectionFilterAndResponse(t *testing.T) {
 	decoded, err := base64.StdEncoding.DecodeString(filter)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(decoded), 24)
+
+	manager := gc.NewSyncProtectionManager()
+	require.NoError(t, manager.RegisterSyncProtection(
+		"lifecycle-round-trip",
+		filter,
+		1,
+		"lifecycle-test",
+	))
+	require.True(t, manager.IsProtected(name.String()))
 
 	require.NoError(t, validateLifecycleMoCtlResponse(
 		`{"result":[{"ReturnStr":"{\"status\":\"ok\"}"}]}`,

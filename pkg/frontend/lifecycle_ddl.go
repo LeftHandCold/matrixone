@@ -171,6 +171,15 @@ func handleAlterTableLifecycle(ctx context.Context, ses *Session, alter *tree.Al
 			return rollback(err)
 		}
 	}
+	if option.Operation == tree.LifecycleOperationSet ||
+		option.Operation == tree.LifecycleOperationResume {
+		// The pre-BEGIN probe is only a fast rejection. Recheck after the
+		// table lock (and, for SET, after the feature-row barrier) so a release
+		// gate disable that wins the race cannot create or resume a Binding.
+		if err = ensureLifecycleFeatureEnabled(ctx, ses, background); err != nil {
+			return rollback(err)
+		}
+	}
 
 	switch option.Operation {
 	case tree.LifecycleOperationSet:

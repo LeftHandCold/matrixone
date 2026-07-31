@@ -23,16 +23,15 @@ import (
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
-	"github.com/matrixorigin/matrixone/pkg/common/bloomfilter"
-	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 )
-
-const lifecycleSyncProtectionFalsePositiveRate = 0.001
 
 // SQLSyncProtectionClient reuses MO's existing disk-cleaner control command.
 // The command is broadcast to TNs by mo_ctl; Lifecycle adds no GC registry.
@@ -164,27 +163,24 @@ func buildLifecycleSyncProtectionFilter(
 	if len(objects) == 0 {
 		return "", fmt.Errorf("Lifecycle SyncProtection Object set is empty")
 	}
-	filter := bloomfilter.New(
-		int64(max(len(objects), 64)),
-		lifecycleSyncProtectionFalsePositiveRate,
+	// SyncProtectionManager decodes pkg/vm/engine/tae/index.BloomFilter.
+	// Produce that exact existing wire format rather than introducing a
+	// Lifecycle-specific filter codec.
+	values := containers.MakeVector(
+		types.T_varchar.ToType(),
+		common.DefaultAllocator,
 	)
-	mp := mpool.MustNewZero()
-	values := vector.NewVec(types.T_varchar.ToType())
-	defer values.Free(mp)
+	defer values.Close()
 	for _, object := range objects {
 		if object.IsZero() {
 			return "", fmt.Errorf("Lifecycle SyncProtection Object identity is empty")
 		}
-		if err := vector.AppendBytes(
-			values,
-			[]byte(object.ObjectName().String()),
-			false,
-			mp,
-		); err != nil {
-			return "", err
-		}
+		values.Append([]byte(object.ObjectName().String()), false)
 	}
-	filter.Add(values)
+	filter, err := index.NewBloomFilter(values, nil, nil, nil)
+	if err != nil {
+		return "", err
+	}
 	encoded, err := filter.Marshal()
 	if err != nil {
 		return "", err
