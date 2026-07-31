@@ -25,6 +25,8 @@ import (
 	"math/big"
 	"strconv"
 	"unicode/utf8"
+
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 )
 
 const (
@@ -347,6 +349,15 @@ func validateArchiveSchemaShape(schema SchemaDescriptor) error {
 			!validArchiveManifestString(column.Charset, maxArchiveSQLNameBytes, false) ||
 			!validArchiveManifestString(column.Collation, maxArchiveSQLNameBytes, false) {
 			return fmt.Errorf("Lifecycle archive schema column metadata exceeds limit")
+		}
+		if !isPhase1ArchiveColumnSupported(
+			types.T(column.TypeID),
+			column.EnumValues,
+		) {
+			return fmt.Errorf(
+				"Lifecycle archive schema column %s uses an unsupported encoded SQL type",
+				column.Name,
+			)
 		}
 	}
 	return nil

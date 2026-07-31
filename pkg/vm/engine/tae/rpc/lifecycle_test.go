@@ -15,10 +15,14 @@
 package rpc
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
@@ -97,6 +101,52 @@ func TestValidateLifecycleBookingHeader(t *testing.T) {
 		objectio.BlockMaxRows,
 	))
 	require.Error(t, validateLifecycleBookingHeader(valid[:2], 1, objectio.BlockMaxRows))
+}
+
+func TestValidateTransferMapSourceBounds(t *testing.T) {
+	pool := mpool.MustNewZero()
+	for _, test := range []struct {
+		name      string
+		sourceBlk int32
+		sourceRow uint32
+		wantError bool
+	}{
+		{name: "valid", sourceBlk: 0, sourceRow: 0},
+		{name: "negative block", sourceBlk: -1, sourceRow: 0, wantError: true},
+		{name: "block overflow", sourceBlk: 1, sourceRow: 0, wantError: true},
+		{name: "row overflow", sourceBlk: 0, sourceRow: 1, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := batch.NewWithSize(2)
+			value.Vecs[0] = vector.NewVec(types.T_int32.ToType())
+			value.Vecs[1] = vector.NewVec(types.T_uint32.ToType())
+			t.Cleanup(func() { value.Clean(pool) })
+			require.NoError(t, vector.AppendFixed(
+				value.Vecs[0],
+				test.sourceBlk,
+				false,
+				pool,
+			))
+			require.NoError(t, vector.AppendFixed(
+				value.Vecs[1],
+				test.sourceRow,
+				false,
+				pool,
+			))
+			value.SetRowCount(1)
+
+			err := validateTransferMapSourceBounds(
+				context.Background(),
+				value,
+				api.TransferMaps{make(api.TransferMap, 1)},
+			)
+			if test.wantError {
+				require.ErrorContains(t, err, "out-of-range source")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestValidateLifecycleCommitControlRejectsDuplicateSourcesAndWrongDigest(t *testing.T) {

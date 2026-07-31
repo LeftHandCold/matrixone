@@ -401,7 +401,9 @@ identity复核和TTL Receipt原子写，必须在Gate F故障测试中证明。
 - commit后源物理文件由现有GC删除；
 - Lifecycle不直接Delete源TAE Object。
 
-Lifecycle复用普通MO 1PC/2PC、NeedRetry和duplicate Commit语义。通用问题在公共实现修复。
+Lifecycle复用普通MO当前生产支持的悲观事务、单TN 1PC、NeedRetry和duplicate Commit语义。
+未来公共MO恢复multi-TN/2PC后复跑同一黑盒原子性测试；Lifecycle不增加私有提交协议。
+通用问题在公共实现修复。
 
 ## 13. DDL Gate
 

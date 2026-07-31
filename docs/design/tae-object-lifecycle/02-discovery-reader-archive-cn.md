@@ -352,12 +352,15 @@ Phase 1优先采用确定、无损、容易跨版本恢复的物理表示：
 | DECIMAL | UTF8规范字符串；precision/scale保存在descriptor |
 | DATE/TIME/DATETIME/TIMESTAMP | UTF8规范字符串；scale/时区语义保存在descriptor |
 | CHAR/VARCHAR/TEXT/JSON/UUID | UTF8规范字符串；精确MO类型保存在descriptor |
-| ENUM | UINT32；枚举值语义保存在descriptor |
 | BINARY/VARBINARY/BLOB | BYTE_ARRAY |
 
 不在合同和golden test矩阵中的类型，Bind或Archive开始前fail closed。这里的字符串映射是
 Phase 1显式、版本化的持久格式，不是遇到未知类型时的隐式降级；Manifest descriptor和
 canonical hash仍保存、验证精确MO类型语义。
+
+MO使用`Enumvalues`承载若干不能仅由OID还原的SQL类型语义：`ENUM`、以`UINT64`编码的
+`SET`、以及以`JSON`编码的typed ARRAY。Phase 1在`SET LIFECYCLE`时统一拒绝这三类，
+禁止Restore时静默退化成普通整数或JSON。
 
 ## 10. Canonical逻辑编码
 

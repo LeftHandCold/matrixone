@@ -83,6 +83,48 @@ func TestBuildSchemaDescriptorRejectsUnsupportedColumn(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestBuildSchemaDescriptorRejectsEncodedSQLTypes(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		typ  plan.Type
+	}{
+		{
+			name: "enum",
+			typ: plan.Type{
+				Id:         int32(types.T_enum),
+				Enumvalues: "red,green",
+			},
+		},
+		{
+			name: "set encoded as uint64",
+			typ: plan.Type{
+				Id:         int32(types.T_uint64),
+				Enumvalues: "read,write",
+			},
+		},
+		{
+			name: "typed array encoded as json",
+			typ: plan.Type{
+				Id:         int32(types.T_json),
+				Enumvalues: "array(varchar(20))",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			table := &plan.TableDef{
+				Name: "encoded_type",
+				Cols: []*plan.ColDef{{
+					ColId: 1,
+					Name:  "value",
+					Typ:   test.typ,
+				}},
+			}
+			_, _, err := BuildSchemaDescriptor(context.Background(), table)
+			require.ErrorContains(t, err, "encoded SQL type")
+		})
+	}
+}
+
 func TestSchemaDescriptorRestoreDDLDoesNotReuseSourceColumnIDs(t *testing.T) {
 	descriptor := SchemaDescriptor{
 		FormatVersion:   1,

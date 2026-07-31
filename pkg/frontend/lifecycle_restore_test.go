@@ -20,6 +20,8 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/testutil"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
+	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
 	"github.com/stretchr/testify/require"
 )
 
@@ -68,4 +70,29 @@ func TestLifecycleRestoreRejectsReservedPublishTarget(t *testing.T) {
 		catalog.LifecycleRestoreTableNamePrefix+"user_table",
 	))
 	require.NoError(t, validateLifecycleRestoreTargetName("events_history"))
+}
+
+func TestLifecycleRestoreCoordinatorUsesMOFaultControlPlane(t *testing.T) {
+	point := lifecyclepkg.FaultBeforeRestoreInitialize
+	fault.Enable()
+	t.Cleanup(func() {
+		_, _ = fault.RemoveFaultPoint(
+			context.Background(),
+			lifecyclepkg.MOFaultPointName(point),
+		)
+		fault.Disable()
+	})
+	require.NoError(t, fault.AddFaultPoint(
+		context.Background(),
+		lifecyclepkg.MOFaultPointName(point),
+		":::",
+		"echo",
+		31,
+		"frontend restore injection",
+		false,
+	))
+
+	coordinator := newLifecycleRestoreCoordinator(nil, nil)
+	err := coordinator.Faults.Inject(context.Background(), point)
+	require.ErrorContains(t, err, "frontend restore injection")
 }

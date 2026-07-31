@@ -145,11 +145,26 @@ func handleRestoreArchiveDataset(
 		archiveFS.Close(closeCtx)
 	}()
 
-	coordinator := lifecyclepkg.RestoreCoordinator{
-		Store: lifecyclepkg.FileServiceArchiveStore{
+	coordinator := newLifecycleRestoreCoordinator(
+		lifecyclepkg.FileServiceArchiveStore{
 			FileService:    archiveFS,
 			MaxListEntries: 100_000,
 		},
+		repository,
+	)
+	return coordinator.Restore(
+		ctx,
+		dataset,
+		restoreAttempt,
+	)
+}
+
+func newLifecycleRestoreCoordinator(
+	store lifecyclepkg.ArchiveStore,
+	repository lifecyclepkg.RestoreRepository,
+) lifecyclepkg.RestoreCoordinator {
+	return lifecyclepkg.RestoreCoordinator{
+		Store:      store,
 		Repository: repository,
 		Config: lifecyclepkg.RestoreConfig{
 			MaxChunkRows:         65_536,
@@ -158,11 +173,6 @@ func handleRestoreArchiveDataset(
 		},
 		Faults: lifecyclepkg.MOFaultInjector{},
 	}
-	return coordinator.Restore(
-		ctx,
-		dataset,
-		restoreAttempt,
-	)
 }
 
 func validateLifecycleRestoreTargetName(tableName string) error {

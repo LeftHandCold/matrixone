@@ -46,10 +46,14 @@ Golden类型矩阵：
 integer/unsigned/float/decimal
 date/datetime/timestamp/time
 char/varchar/text/binary
-json/uuid/enum/blob
+json/uuid/blob
 NULL/non-NULL
 AUTO_INCREMENT
 ```
+
+Phase 1在Binding阶段明确拒绝`ENUM`、`SET`以及借`JSON + Enumvalues`编码的typed ARRAY，
+避免将其静默恢复成普通整数或JSON；这些类型只有补齐独立的Archive/Restore golden闭环后
+才能开放。
 
 验证历史Dataset在源表DROP/schema变化后仍能创建新表；AUTO_INCREMENT计数器安全推进；
 PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
@@ -261,7 +265,8 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - Lifecycle先提交，普通Merge安全失败；
 - TN restart；
 - NeedRetry；
-- 1PC/2PC；
+- 当前生产支持的悲观事务、单TN 1PC；未来公共MO支持multi-TN/2PC后复跑同一矩阵，
+  Lifecycle不建设私有2PC；
 - response lost；
 - NeedRetry后的内部TAE txn从entry/booking重建，不复用上一代runtime指针；
 - LogTxnEntry前后逐点失败，runtime exactly-once释放且Root文件不被txn rollback删除；
@@ -329,8 +334,8 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - schema digest变化；
 - finalizer与DDL同时到达。
 - 首次SET与Snapshot/PITR/Publication/Clone/Branch创建同时到达；
-- pessimistic/optimistic事务下`SET LIFECYCLE`的`mo_tables -> feature row`锁顺序，以及
-  普通表DDL不取得feature row；
+- 当前生产使用的悲观事务下`SET LIFECYCLE`的`mo_tables -> feature row`锁顺序，以及
+  普通表DDL不取得feature row；Phase 1不为未启用的乐观事务另建write barrier；
 - feature关闭时只允许历史Cleanup Root的有界reconcile/sweep、过期Restore隐藏表清理和
   终态元数据压缩，不启动Binding调度、新Restore或数据路径；未绑定表的普通查询/DML/Merge
   不访问Lifecycle元数据，可能冲突的管理DDL仍只走一次有界控制面检查；

@@ -255,7 +255,10 @@ func (h *Handle) HandleLifecycleCommit(
 			mergeEntry,
 			h.db.Runtime.SID(),
 			h.db.Runtime.Fs,
-			false,
+			transferMapLoadOptions{
+				deleteAfterRead:    false,
+				strictSourceBounds: true,
+			},
 		)
 		if err != nil {
 			return err

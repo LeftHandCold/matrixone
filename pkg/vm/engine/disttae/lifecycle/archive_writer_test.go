@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -87,6 +88,180 @@ func TestArchiveWriterRoundTripAndStableChunks(t *testing.T) {
 	persisted, err := ReadArchiveManifest(ctx, store, manifestKey)
 	require.NoError(t, err)
 	require.Equal(t, "FULL_READBACK_VERIFIED", persisted.VerificationStatus)
+}
+
+func TestArchiveWriterPhase1ScalarMatrixRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	scalars := archivePhase1ScalarTestCases(t)
+	schema := SchemaDescriptor{
+		FormatVersion:      schemaDescriptorFormatVersion,
+		SourceTableID:      84,
+		SourceTableVersion: 3,
+		SourceDatabaseName: "db",
+		SourceTableName:    "scalar_matrix",
+		Columns:            make([]SchemaColumn, len(scalars)),
+	}
+	attributes := make([]string, len(scalars))
+	for ordinal, scalar := range scalars {
+		require.True(t, isPhase1ArchiveColumnSupported(scalar.typ.Oid, ""), scalar.name)
+		attributes[ordinal] = scalar.name
+		schema.Columns[ordinal] = SchemaColumn{
+			Ordinal:        uint32(ordinal),
+			SourceColumnID: uint64(ordinal + 1),
+			Name:           scalar.name,
+			TypeID:         int32(scalar.typ.Oid),
+			Width:          scalar.typ.Width,
+			Scale:          scalar.typ.Scale,
+		}
+	}
+	schemaDigest, err := schema.Digest()
+	require.NoError(t, err)
+
+	mp := mpool.MustNewZero()
+	value := batch.New(attributes)
+	defer value.Clean(mp)
+	for ordinal, scalar := range scalars {
+		value.Vecs[ordinal] = vector.NewVec(scalar.typ)
+		require.NoError(t, vector.AppendAny(
+			value.Vecs[ordinal],
+			scalar.value,
+			false,
+			mp,
+		), scalar.name)
+		require.NoError(t, vector.AppendAny(
+			value.Vecs[ordinal],
+			nil,
+			true,
+			mp,
+		), scalar.name+" null")
+	}
+	value.SetRowCount(2)
+	sourceEncoder := NewCanonicalBatchEncoder(schemaDigest)
+	require.NoError(t, sourceEncoder.WriteBatch(ctx, value, nil))
+
+	store := newMemoryArchiveStore()
+	writer, err := NewArchiveWriter(ctx, ArchiveWriterConfig{
+		RootID:               "root-scalar-matrix",
+		AttemptID:            "attempt-scalar-matrix",
+		Prefix:               "archive/root-scalar-matrix/attempt-scalar-matrix",
+		WriteID:              "write-scalar-matrix",
+		Schema:               schema,
+		SchemaDigest:         schemaDigest,
+		MaxRestoreChunkRows:  2,
+		MaxChunkLogicalBytes: 1 << 20,
+		MaxPhysicalBytes:     archiveTestMaxPhysicalBytes,
+	}, store, &testArchiveSideEffectGuard{durable: true})
+	require.NoError(t, err)
+	require.NoError(t, writer.WriteBatch(ctx, value, nil))
+	manifest, _, err := writer.Close(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "FULL_READBACK_VERIFIED", manifest.VerificationStatus)
+	require.Equal(t, uint64(2), manifest.RowCount)
+	require.Equal(t, uint64(1), manifest.TotalChunkCount)
+	require.Len(t, manifest.Files, 1)
+	require.Equal(t, uint64(1), store.getCount(manifest.Files[0].Key),
+		"Close must full-read and canonically verify the ZSTD Parquet payload")
+
+	rows, chunk, err := ReadArchiveChunk(
+		ctx,
+		store,
+		manifest,
+		0,
+		2,
+		1<<20,
+	)
+	require.NoError(t, err)
+	require.Equal(t, sourceEncoder.Sum(), chunk.CanonicalContentHash)
+	require.Equal(t, sourceEncoder.LogicalBytes(), chunk.LogicalBytes)
+	restored, err := CanonicalRowsToBatch(ctx, schema, rows, mp)
+	require.NoError(t, err)
+	defer restored.Clean(mp)
+	require.NoError(t, VerifyRestoreBatch(
+		ctx,
+		schemaDigest,
+		restored,
+		chunk.RowCount,
+		chunk.LogicalBytes,
+		chunk.CanonicalContentHash,
+	))
+	for ordinal, scalar := range scalars {
+		restoredType := restored.Vecs[ordinal].GetType()
+		require.Equal(t, scalar.typ.Oid, restoredType.Oid, scalar.name)
+		require.Equal(t, scalar.typ.Width, restoredType.Width, scalar.name)
+		require.Equal(t, scalar.typ.Scale, restoredType.Scale, scalar.name)
+	}
+}
+
+type archivePhase1ScalarTestCase struct {
+	name  string
+	typ   types.Type
+	value any
+}
+
+func archivePhase1ScalarTestCases(t *testing.T) []archivePhase1ScalarTestCase {
+	t.Helper()
+	dateValue, err := types.ParseDateCast("2026-07-31")
+	require.NoError(t, err)
+	datetimeValue, err := types.ParseDatetime("2026-07-31 12:34:56.123456", 6)
+	require.NoError(t, err)
+	timestampValue, err := types.ParseTimestamp(
+		time.UTC,
+		"2026-07-31 12:34:56.123456",
+		6,
+	)
+	require.NoError(t, err)
+	timeValue, err := types.ParseTime("12:34:56.123456", 6)
+	require.NoError(t, err)
+	decimal64Value, err := types.ParseDecimal64("12345.67", 18, 2)
+	require.NoError(t, err)
+	decimal128Value, err := types.ParseDecimal128(
+		"-12345678901234567890.1234",
+		38,
+		4,
+	)
+	require.NoError(t, err)
+	decimal256Value, err := types.ParseDecimal256(
+		"12345678901234567890123456789012345.123456",
+		76,
+		6,
+	)
+	require.NoError(t, err)
+	uuidValue, err := types.ParseUuid("018f2a65-7ca4-7c95-b6d3-1a2b3c4d5e6f")
+	require.NoError(t, err)
+	jsonValue, err := types.ParseStringToByteJson(`{"array":[1,true],"key":"value"}`)
+	require.NoError(t, err)
+	encodedJSON, err := types.EncodeJson(jsonValue)
+	require.NoError(t, err)
+
+	return []archivePhase1ScalarTestCase{
+		{name: "bool_value", typ: types.T_bool.ToType(), value: true},
+		{name: "bit_value", typ: types.New(types.T_bit, 8, 0), value: uint64(0b101101)},
+		{name: "int8_value", typ: types.T_int8.ToType(), value: int8(-8)},
+		{name: "int16_value", typ: types.T_int16.ToType(), value: int16(-1600)},
+		{name: "int32_value", typ: types.T_int32.ToType(), value: int32(-320000)},
+		{name: "int64_value", typ: types.T_int64.ToType(), value: int64(-64000000)},
+		{name: "uint8_value", typ: types.T_uint8.ToType(), value: uint8(8)},
+		{name: "uint16_value", typ: types.T_uint16.ToType(), value: uint16(1600)},
+		{name: "uint32_value", typ: types.T_uint32.ToType(), value: uint32(320000)},
+		{name: "uint64_value", typ: types.T_uint64.ToType(), value: uint64(64000000)},
+		{name: "float32_value", typ: types.T_float32.ToType(), value: float32(12.5)},
+		{name: "float64_value", typ: types.T_float64.ToType(), value: float64(-18.75)},
+		{name: "char_value", typ: types.New(types.T_char, 16, 0), value: []byte("fixed value")},
+		{name: "varchar_value", typ: types.New(types.T_varchar, 128, 0), value: []byte("varchar value")},
+		{name: "binary_value", typ: types.New(types.T_binary, 8, 0), value: []byte{0, 1, 2, 255}},
+		{name: "varbinary_value", typ: types.New(types.T_varbinary, 32, 0), value: []byte{255, 0, 127}},
+		{name: "blob_value", typ: types.T_blob.ToType(), value: []byte("blob\x00value")},
+		{name: "text_value", typ: types.T_text.ToType(), value: []byte("生命周期 text")},
+		{name: "json_value", typ: types.T_json.ToType(), value: encodedJSON},
+		{name: "date_value", typ: types.T_date.ToType(), value: dateValue},
+		{name: "datetime_value", typ: types.New(types.T_datetime, 0, 6), value: datetimeValue},
+		{name: "timestamp_value", typ: types.New(types.T_timestamp, 0, 6), value: timestampValue},
+		{name: "time_value", typ: types.New(types.T_time, 0, 6), value: timeValue},
+		{name: "decimal64_value", typ: types.New(types.T_decimal64, 18, 2), value: decimal64Value},
+		{name: "decimal128_value", typ: types.New(types.T_decimal128, 38, 4), value: decimal128Value},
+		{name: "decimal256_value", typ: types.New(types.T_decimal256, 76, 6), value: decimal256Value},
+		{name: "uuid_value", typ: types.T_uuid.ToType(), value: uuidValue},
+	}
 }
 
 func TestArchiveWriterFlushesBeforeLogicalByteLimitAndRejectsOversizeRow(t *testing.T) {

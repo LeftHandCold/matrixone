@@ -175,6 +175,11 @@ func TestArchiveManifestV1RejectsBoundsBeforeUse(t *testing.T) {
 	manifest.Schema.Columns[0].SourceColumnID = 0
 	_, _, err = MarshalArchiveManifest(manifest)
 	require.NoError(t, err, "MO source column ID zero is valid lineage")
+
+	manifest = archiveManifestV1GoldenFixture()
+	manifest.Schema.Columns[0].EnumValues = "read,write"
+	_, _, err = MarshalArchiveManifest(manifest)
+	require.ErrorContains(t, err, "unsupported encoded SQL type")
 }
 
 func TestArchiveManifestV1AcceptsFileCapAndRejectsExtraChunk(t *testing.T) {

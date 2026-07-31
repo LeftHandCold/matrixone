@@ -72,10 +72,14 @@ func BuildSchemaDescriptor(
 			continue
 		}
 		oid := types.T(column.Typ.Id)
-		if !isCanonicalTypeSupported(oid) {
+		// MO encodes ENUM directly and encodes SET/typed ARRAY semantics in
+		// Enumvalues while reusing UINT64/JSON OIDs. Phase 1 cannot round-trip
+		// those SQL types as independent restore-table DDL, so fail closed while
+		// binding instead of silently restoring them as another type.
+		if !isPhase1ArchiveColumnSupported(oid, column.Typ.Enumvalues) {
 			return SchemaDescriptor{}, [32]byte{}, moerr.NewNotSupportedf(
 				ctx,
-				"Lifecycle archive column %s type %s",
+				"Lifecycle archive column %s encoded SQL type %s",
 				column.Name,
 				oid,
 			)
@@ -114,6 +118,10 @@ func BuildSchemaDescriptor(
 		return SchemaDescriptor{}, [32]byte{}, err
 	}
 	return descriptor, sha256.Sum256(encoded), nil
+}
+
+func isPhase1ArchiveColumnSupported(oid types.T, enumValues string) bool {
+	return oid != types.T_enum && enumValues == "" && isCanonicalTypeSupported(oid)
 }
 
 func (descriptor SchemaDescriptor) Digest() ([32]byte, error) {

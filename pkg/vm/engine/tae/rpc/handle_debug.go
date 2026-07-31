@@ -1110,7 +1110,18 @@ func marshalTransferMaps(
 	sid string,
 	fs fileservice.FileService,
 ) (api.TransferMaps, error) {
-	return marshalTransferMapsWithOptions(ctx, req, sid, fs, true)
+	return marshalTransferMapsWithOptions(
+		ctx,
+		req,
+		sid,
+		fs,
+		transferMapLoadOptions{deleteAfterRead: true},
+	)
+}
+
+type transferMapLoadOptions struct {
+	deleteAfterRead    bool
+	strictSourceBounds bool
 }
 
 func marshalTransferMapsWithOptions(
@@ -1118,7 +1129,7 @@ func marshalTransferMapsWithOptions(
 	req *api.MergeCommitEntry,
 	sid string,
 	fs fileservice.FileService,
-	deleteAfterRead bool,
+	options transferMapLoadOptions,
 ) (api.TransferMaps, error) {
 	if len(req.BookingLoc) > 0 {
 		// load transfer info from s3
@@ -1154,21 +1165,22 @@ func marshalTransferMapsWithOptions(
 			}
 
 			for _, bat := range bats {
+				if options.strictSourceBounds {
+					if err := validateTransferMapSourceBounds(
+						ctx,
+						bat,
+						booking,
+					); err != nil {
+						releases()
+						return nil, err
+					}
+				}
 				for i := range bat.RowCount() {
 					srcBlk := vector.GetFixedAtNoTypeCheck[int32](bat.Vecs[0], i)
 					srcRow := vector.GetFixedAtNoTypeCheck[uint32](bat.Vecs[1], i)
 					destObj := vector.GetFixedAtNoTypeCheck[uint8](bat.Vecs[2], i)
 					destBlk := vector.GetFixedAtNoTypeCheck[uint16](bat.Vecs[3], i)
 					destRow := vector.GetFixedAtNoTypeCheck[uint32](bat.Vecs[4], i)
-					if srcBlk < 0 ||
-						int(srcBlk) >= len(booking) ||
-						int(srcRow) >= len(booking[srcBlk]) {
-						releases()
-						return nil, moerr.NewInvalidInput(
-							ctx,
-							"transfer booking contains an out-of-range source position",
-						)
-					}
 
 					booking[srcBlk][srcRow] = api.TransferDestPos{
 						ObjIdx: destObj,
@@ -1178,7 +1190,7 @@ func marshalTransferMapsWithOptions(
 				}
 			}
 			releases()
-			if deleteAfterRead {
+			if options.deleteAfterRead {
 				_ = fs.Delete(ctx, filepath)
 			}
 		}
@@ -1215,6 +1227,26 @@ func marshalTransferMapsWithOptions(
 		return booking, nil
 	}
 	return nil, nil
+}
+
+func validateTransferMapSourceBounds(
+	ctx context.Context,
+	bat *batch.Batch,
+	booking api.TransferMaps,
+) error {
+	for i := range bat.RowCount() {
+		srcBlk := vector.GetFixedAtNoTypeCheck[int32](bat.Vecs[0], i)
+		srcRow := vector.GetFixedAtNoTypeCheck[uint32](bat.Vecs[1], i)
+		if srcBlk < 0 ||
+			int(srcBlk) >= len(booking) ||
+			int(srcRow) >= len(booking[srcBlk]) {
+			return moerr.NewInvalidInput(
+				ctx,
+				"transfer booking contains an out-of-range source position",
+			)
+		}
+	}
+	return nil
 }
 
 func (h *Handle) HandleFaultInject(

@@ -91,6 +91,7 @@ Phase 1拒绝：
 - Snapshot/PITR/Backup/Clone/Branch与Lifecycle同时启用；
 - inline-only Stage secret；
 - 未经部署认证的Archive Stage，以及启用对象Versioning的Bucket/Container；
+- `ENUM`、`SET`和typed ARRAY等仅靠OID不能无损重建的编码SQL类型；
 - append-only语义无法保证的外部表。
 
 这些检查只发生在Binding DDL和相关能力DDL，不进入普通DML。

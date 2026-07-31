@@ -167,8 +167,10 @@ Mixed Rewrite 输入保持原始 Object、Block 和 row offset 顺序。D/E 只�
 
 ### I-6 Existing MO owns common transaction semantics
 
-Lifecycle 复用普通 MO 的 1PC/2PC、`ErrTAENeedRetry`、WAL、Replay 和 GC，不承诺比普通
-MO 更强的 exactly-once，也不建立终态 Journal、私有事务执行器或第二套 Replay。
+Lifecycle 复用普通 MO 当前生产支持的悲观事务、单 TN 1PC、`ErrTAENeedRetry`、WAL、
+Replay 和 GC，不承诺比普通 MO 更强的 exactly-once，也不建立终态 Journal、私有事务
+执行器或第二套 Replay。未来公共 MO 支持 multi-TN/2PC 后，复跑同一原子性矩阵；
+Lifecycle 不提前实现私有 2PC。
 
 ### I-7 Root before side effect
 
