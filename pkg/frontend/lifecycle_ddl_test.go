@@ -124,6 +124,7 @@ func TestValidateLifecycleArchiveRequiresExplicitPurgeEligibility(t *testing.T) 
 }
 
 func TestValidateLifecyclePolicyRejectsDurationOverflow(t *testing.T) {
+	require.Equal(t, uint32(106751), lifecycleMaxIntervalDays)
 	def := lifecycleTableDef(types.T_timestamp)
 	policy := tree.LifecyclePolicy{
 		Column:             "created_at",
@@ -148,6 +149,15 @@ func TestValidateLifecyclePolicyRejectsDurationOverflow(t *testing.T) {
 	policy.HasPurgeAfter = false
 	policy.PurgeAfterDays = 0
 	policy.ExpireAfterDays = 106752
+	_, _, err = validateLifecyclePolicy(context.Background(), def, policy)
+	require.ErrorContains(t, err, "interval exceeds the supported range")
+
+	policy.ExpireAfterDays = lifecycleMaxIntervalDays - 1
+	policy.LateArrivalDays = 1
+	_, _, err = validateLifecyclePolicy(context.Background(), def, policy)
+	require.NoError(t, err)
+
+	policy.LateArrivalDays++
 	_, _, err = validateLifecyclePolicy(context.Background(), def, policy)
 	require.ErrorContains(t, err, "interval exceeds the supported range")
 }

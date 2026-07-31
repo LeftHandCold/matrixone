@@ -79,6 +79,24 @@ func lockLifecycleDependencyPublication(
 	)
 }
 
+// runLifecycleCloneDependencyFence keeps Data Branch Clone on the same lock
+// order as SET LIFECYCLE: source mo_tables row(s), feature-row publication
+// barrier, then the Binding probe. Ordinary Clone does not request the source
+// row lock, so its behavior is unchanged.
+func runLifecycleCloneDependencyFence(
+	lockSource func() error,
+	lockPublication func() error,
+	probeBinding func() error,
+) error {
+	if err := lockSource(); err != nil {
+		return err
+	}
+	if err := lockPublication(); err != nil {
+		return err
+	}
+	return probeBinding()
+}
+
 func rejectLifecyclePublicationScope(
 	ctx context.Context,
 	background BackgroundExec,

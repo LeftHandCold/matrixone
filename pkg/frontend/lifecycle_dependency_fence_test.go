@@ -37,6 +37,23 @@ func TestLifecycleDependencyPublicationLockUsesSystemFeatureRow(t *testing.T) {
 	}, bh.executedSQLs)
 }
 
+func TestLifecycleCloneDependencyFenceLocksSourceBeforePublication(t *testing.T) {
+	steps := make([]string, 0, 3)
+	record := func(step string) func() error {
+		return func() error {
+			steps = append(steps, step)
+			return nil
+		}
+	}
+
+	require.NoError(t, runLifecycleCloneDependencyFence(
+		record("source"),
+		record("publication"),
+		record("binding"),
+	))
+	require.Equal(t, []string{"source", "publication", "binding"}, steps)
+}
+
 func TestLifecycleBindingScopeProbeSQL(t *testing.T) {
 	require.Equal(t,
 		"select binding_id from mo_catalog.mo_lifecycle_bindings where state in ('ACTIVE','PAUSED','BLOCKED') limit 1",
