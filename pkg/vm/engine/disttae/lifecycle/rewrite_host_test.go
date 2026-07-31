@@ -23,11 +23,179 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRewriteHostUsesDoMergeAndWriteAsOnlyProducer(t *testing.T) {
+	ctx := context.Background()
+	mp := mpool.MustNewZero()
+	fs, err := fileservice.NewMemoryFS(
+		"lifecycle-rewrite-producer",
+		fileservice.DisabledCacheConfig,
+		nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { fs.Close(ctx) })
+
+	first := makeRewriteProducerBatch(t, mp, 0, 1, 2)
+	second := makeRewriteProducerBatch(t, mp, 3, 4, 5)
+	t.Cleanup(func() {
+		first.Clean(mp)
+		second.Clean(mp)
+		require.Zero(t, mp.CurrNB())
+		mpool.DeleteMPool(mp)
+	})
+	base := &rewriteProducerMergeHost{
+		batches: []*batch.Batch{first, second},
+		deleted: []*nulls.Nulls{
+			nulls.Build(3, 0),
+			nulls.Build(3, 1),
+		},
+		mp: mp,
+		fs: fs,
+	}
+	t.Cleanup(func() {
+		if base.transferTable != nil {
+			base.transferTable.Release()
+			base.transferTable = nil
+		}
+		mergesort.DrainTransferSlabPool()
+	})
+	host, err := NewRewriteHost(
+		base,
+		func(
+			_ context.Context,
+			physicalBlock *batch.Batch,
+			_ *nulls.Nulls,
+		) (*nulls.Nulls, error) {
+			if physicalBlock == first {
+				return nulls.Build(3, 1), nil
+			}
+			return nulls.Build(3, 2), nil
+		},
+		nil,
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, mergesort.DoMergeAndWrite(ctx, "lifecycle-test", 0, host))
+	report, err := host.ScanReport()
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), report.SnapshotDeletedRows)
+	require.Equal(t, uint64(2), report.ExpiredRows)
+	require.Equal(t, uint64(2), report.LiveRows)
+	require.Equal(t, 2, base.releaseCount)
+
+	require.Len(t, base.commitEntry.CreatedObjs, 1)
+	created := objectio.ObjectStats(base.commitEntry.CreatedObjs[0])
+	require.Equal(t, uint32(2), created.Rows())
+	require.Equal(t, uint32(1), created.BlkCnt())
+	require.NotNil(t, base.transferTable)
+	require.Equal(t, 2, base.transferTable.Len())
+	firstMap := base.transferTable.GetBlockMap(0)
+	require.Equal(t, api.NoTransfer, firstMap[0].ObjIdx)
+	require.Equal(t, api.NoTransfer, firstMap[1].ObjIdx)
+	require.Equal(t, api.TransferDestPos{
+		ObjIdx: 0,
+		BlkIdx: 0,
+		RowIdx: 0,
+	}, firstMap[2])
+	secondMap := base.transferTable.GetBlockMap(1)
+	require.Equal(t, api.TransferDestPos{
+		ObjIdx: 0,
+		BlkIdx: 0,
+		RowIdx: 1,
+	}, secondMap[0])
+	require.Equal(t, api.NoTransfer, secondMap[1].ObjIdx)
+	require.Equal(t, api.NoTransfer, secondMap[2].ObjIdx)
+}
+
+func makeRewriteProducerBatch(
+	t *testing.T,
+	mp *mpool.MPool,
+	values ...int64,
+) *batch.Batch {
+	t.Helper()
+	value := batch.NewWithSize(1)
+	value.Vecs[0] = vector.NewVec(types.T_int64.ToType())
+	for _, item := range values {
+		require.NoError(t, vector.AppendFixed(value.Vecs[0], item, false, mp))
+	}
+	value.SetRowCount(len(values))
+	return value
+}
+
+type rewriteProducerMergeHost struct {
+	batches       []*batch.Batch
+	deleted       []*nulls.Nulls
+	next          int
+	releaseCount  int
+	mp            *mpool.MPool
+	fs            fileservice.FileService
+	commitEntry   api.MergeCommitEntry
+	transferTable *mergesort.TransferTable
+}
+
+func (host *rewriteProducerMergeHost) GetVector(
+	typ *types.Type,
+) (*vector.Vector, func()) {
+	value := vector.NewVec(*typ)
+	return value, func() { value.Free(host.mp) }
+}
+func (host *rewriteProducerMergeHost) GetMPool() *mpool.MPool { return host.mp }
+func (*rewriteProducerMergeHost) Name() string                { return "lifecycle-producer-test" }
+func (*rewriteProducerMergeHost) HostHintName() string        { return "test" }
+func (*rewriteProducerMergeHost) TaskSourceNote() string      { return "test" }
+func (host *rewriteProducerMergeHost) GetCommitEntry() *api.MergeCommitEntry {
+	return &host.commitEntry
+}
+func (*rewriteProducerMergeHost) HasBigDelEvent() bool { return false }
+func (host *rewriteProducerMergeHost) SetTransferTable(table *mergesort.TransferTable) {
+	host.transferTable = table
+}
+func (host *rewriteProducerMergeHost) PrepareNewWriter() *ioutil.BlockWriter {
+	return ioutil.ConstructWriterWithSegmentID(
+		objectio.NewSegmentid(),
+		0,
+		0,
+		[]uint16{0},
+		0,
+		true,
+		false,
+		host.fs,
+		nil,
+	)
+}
+func (*rewriteProducerMergeHost) DoTransfer() bool     { return false }
+func (*rewriteProducerMergeHost) GetObjectCnt() int    { return 1 }
+func (*rewriteProducerMergeHost) GetBlkCnts() []int    { return []int{2} }
+func (*rewriteProducerMergeHost) GetAccBlkCnts() []int { return []int{0} }
+func (*rewriteProducerMergeHost) GetSortKeyType() types.Type {
+	return types.T_int64.ToType()
+}
+func (host *rewriteProducerMergeHost) LoadNextBatch(
+	_ context.Context,
+	_ uint32,
+	_ *batch.Batch,
+) (*batch.Batch, *nulls.Nulls, func(), error) {
+	if host.next == len(host.batches) {
+		return nil, nil, nil, mergesort.ErrNoMoreBlocks
+	}
+	index := host.next
+	host.next++
+	return host.batches[index], host.deleted[index], func() {
+		host.releaseCount++
+	}, nil
+}
+func (*rewriteProducerMergeHost) GetTotalSize() uint64       { return 0 }
+func (*rewriteProducerMergeHost) GetTotalRowCnt() uint32     { return 6 }
+func (*rewriteProducerMergeHost) GetBlockMaxRows() uint32    { return 3 }
+func (*rewriteProducerMergeHost) GetObjectMaxBlocks() uint16 { return 2 }
+func (*rewriteProducerMergeHost) GetTargetObjSize() uint32   { return 0 }
 
 func TestRewriteHostPreservesPhysicalBatchAndUnionsDAndE(t *testing.T) {
 	mp := mpool.MustNewZero()

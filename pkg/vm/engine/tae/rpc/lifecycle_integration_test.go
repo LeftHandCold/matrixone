@@ -301,6 +301,11 @@ func TestLifecycleWholeCommitUsesTAECommitAndSurvivesReplay(t *testing.T) {
 	opts := config.WithLongScanAndCKPOpts(nil)
 	h := mockTAEHandle(ctx, t, opts)
 	t.Cleanup(func() { opts.Fs.Close(ctx) })
+	t.Cleanup(func() {
+		if h.Handle != nil {
+			_ = h.HandleClose(ctx)
+		}
+	})
 
 	table := newLifecycleRPCTable(t, ctx, h)
 	sourceSnapshot := h.db.TxnMgr.Now()
@@ -313,10 +318,10 @@ func TestLifecycleWholeCommitUsesTAECommitAndSurvivesReplay(t *testing.T) {
 
 	directory := h.db.Dir
 	require.NoError(t, h.HandleClose(ctx))
+	h.Handle = nil
 	reopened, err := db.Open(ctx, directory, opts)
 	require.NoError(t, err)
 	h.Handle = &Handle{db: reopened}
-	t.Cleanup(func() { _ = h.HandleClose(ctx) })
 	require.False(t, lifecycleRPCObjectVisible(t, ctx, h.db, table))
 }
 
@@ -325,8 +330,8 @@ func TestLifecycleWholePostSnapshotDeleteAbortsRetirement(t *testing.T) {
 	ctx := context.Background()
 	opts := config.WithLongScanAndCKPOpts(nil)
 	h := mockTAEHandle(ctx, t, opts)
-	t.Cleanup(func() { _ = h.HandleClose(ctx) })
 	t.Cleanup(func() { opts.Fs.Close(ctx) })
+	t.Cleanup(func() { _ = h.HandleClose(ctx) })
 
 	table := newLifecycleRPCTable(t, ctx, h)
 	sourceSnapshot := h.db.TxnMgr.Now()
@@ -344,8 +349,8 @@ func TestLifecycleWholeExactSourceCASLosesToOrdinaryMerge(t *testing.T) {
 	ctx := context.Background()
 	opts := config.WithLongScanAndCKPOpts(nil)
 	h := mockTAEHandle(ctx, t, opts)
-	t.Cleanup(func() { _ = h.HandleClose(ctx) })
 	t.Cleanup(func() { opts.Fs.Close(ctx) })
+	t.Cleanup(func() { _ = h.HandleClose(ctx) })
 
 	table := newLifecycleRPCTable(t, ctx, h)
 	sourceSnapshot := h.db.TxnMgr.Now()
