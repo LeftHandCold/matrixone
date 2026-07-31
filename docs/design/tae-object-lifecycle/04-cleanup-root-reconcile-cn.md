@@ -239,8 +239,10 @@ Root `CLEANED`后保留审计窗口。只有：
 
 才物理删除Root行。Reconciler按分片分页，不全表高频扫描。终态元数据Compactor按5分钟
 固定节奏仅消费一个有界页（当前每页8个账户、每类最多256行），使用Coordinator进程内的
-account cursor轮转；它不进入普通查询、DML、Merge或事务提交路径。该消费速度覆盖首期
-最多1000个Binding的认证产生速率，并避免“每天只消费一页”造成净增长。
+account cursor轮转；它不进入普通查询、DML、Merge或事务提交路径。Gate I必须在最多1000个
+Binding、故障重试和Provider限流组合下证明终态元数据与Cleanup的持续消费率不低于最大
+认证产生率，且30天soak没有正向backlog斜率。证明失败时必须Stop Ship并调高仍然有界的
+消费页配置或降低生产侧上限，不能以未经验证的固定批次宣称增长已经闭环。
 
 `COMMIT_UNKNOWN`只保护与Root中`root_id + attempt_id`精确匹配的TTL Receipt；禁止因为
 同一账户存在一个unknown Root而停止该账户全部Receipt回收。unknown Root集合由现有active

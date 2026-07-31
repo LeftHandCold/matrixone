@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
@@ -120,6 +121,35 @@ func TestValidateLifecycleArchiveRequiresExplicitPurgeEligibility(t *testing.T) 
 	policy.PurgeAfterDays = 365
 	_, _, err = validateLifecyclePolicy(context.Background(), def, policy)
 	require.NoError(t, err)
+}
+
+func TestValidateLifecyclePolicyRejectsDurationOverflow(t *testing.T) {
+	def := lifecycleTableDef(types.T_timestamp)
+	policy := tree.LifecyclePolicy{
+		Column:             "created_at",
+		ExpireAfterDays:    1,
+		Action:             tree.LifecycleActionArchive,
+		HasStage:           true,
+		Stage:              "archive",
+		HasPurgeAfter:      true,
+		PurgeAfterDays:     106751,
+		EvaluationTimezone: "UTC",
+	}
+	_, _, err := validateLifecyclePolicy(context.Background(), def, policy)
+	require.NoError(t, err)
+
+	policy.PurgeAfterDays++
+	_, _, err = validateLifecyclePolicy(context.Background(), def, policy)
+	require.ErrorContains(t, err, "interval exceeds the supported range")
+
+	policy.Action = tree.LifecycleActionDelete
+	policy.HasStage = false
+	policy.Stage = ""
+	policy.HasPurgeAfter = false
+	policy.PurgeAfterDays = 0
+	policy.ExpireAfterDays = 106752
+	_, _, err = validateLifecyclePolicy(context.Background(), def, policy)
+	require.ErrorContains(t, err, "interval exceeds the supported range")
 }
 
 func TestValidateLifecyclePolicyRejectsUnsupportedPayloadColumn(t *testing.T) {
@@ -435,6 +465,21 @@ func TestBuildLifecycleBindingStateSQL(t *testing.T) {
 		"delete from mo_catalog.mo_lifecycle_bindings")
 }
 
+func TestLifecycleCommandFailsClosedBeforeCatalogUpgrade(t *testing.T) {
+	ctx := context.Background()
+	background := &backgroundExecTest{}
+	background.init()
+	sql := `select binding_id from mo_catalog.mo_lifecycle_bindings where account_id = 17 and physical_table_id = 42`
+	background.sql2err[sql] = moerr.NewNoSuchTableNoCtx(
+		"mo_catalog",
+		"mo_lifecycle_bindings",
+	)
+
+	_, err := lifecycleBindingExists(ctx, background, 17, 42)
+	require.Error(t, err)
+	require.True(t, moerr.IsMoErrCode(err, moerr.ErrNoSuchTable))
+}
+
 func TestRejectReferencedLifecycleStageMutation(t *testing.T) {
 	ctx := context.Background()
 	background := &backgroundExecTest{}
@@ -480,6 +525,25 @@ func TestRejectReferencedLifecycleStageMutation(t *testing.T) {
 	)
 	background.sql2result[bindingSQL] = newMrsForPasswordOfUser(nil)
 	background.sql2result[datasetSQL] = newMrsForPasswordOfUser(nil)
+	require.NoError(t, rejectReferencedLifecycleStageMutation(
+		ctx,
+		background,
+		"archive_stage",
+	))
+
+	background = &backgroundExecTest{}
+	background.init()
+	background.sql2result[lockSQL] = newMrsForPasswordOfUser(
+		[][]interface{}{{uint64(12)}},
+	)
+	background.sql2err[bindingSQL] = moerr.NewNoSuchTableNoCtx(
+		"mo_catalog",
+		"mo_lifecycle_bindings",
+	)
+	background.sql2err[datasetSQL] = moerr.NewNoSuchTableNoCtx(
+		"mo_catalog",
+		"mo_lifecycle_datasets",
+	)
 	require.NoError(t, rejectReferencedLifecycleStageMutation(
 		ctx,
 		background,

@@ -36,6 +36,17 @@ from mo_catalog.mo_lifecycle_cleanup_roots
 where state <> 'CLEANED'
 limit 1`
 
+// ignoreMissingLifecycleCatalog keeps ordinary management operations usable
+// while a tenant's asynchronous upgrade has not created Lifecycle tables yet.
+// Absence means that no Lifecycle state can exist; all other errors remain
+// fail-closed. Lifecycle commands themselves do not use this helper.
+func ignoreMissingLifecycleCatalog(err error) error {
+	if err == nil || moerr.IsMoErrCode(err, moerr.ErrNoSuchTable) {
+		return nil
+	}
+	return err
+}
+
 func lifecycleBackupBindingProbeSQL(accountID uint32) string {
 	return fmt.Sprintf(
 		`select binding_id from mo_catalog.mo_lifecycle_bindings
@@ -109,7 +120,7 @@ and t.relname in (%s) limit 1`,
 		strings.Join(quoted, ","),
 	)
 	if err := background.Exec(accountCtx, sql); err != nil {
-		return err
+		return ignoreMissingLifecycleCatalog(err)
 	}
 	results, err := getResultSet(accountCtx, background)
 	if err != nil {
@@ -151,7 +162,7 @@ where b.state in ('ACTIVE','PAUSED','BLOCKED') and %s limit 1`,
 		predicate,
 	)
 	if err := background.Exec(accountCtx, sql); err != nil {
-		return err
+		return ignoreMissingLifecycleCatalog(err)
 	}
 	results, err := getResultSet(accountCtx, background)
 	if err != nil {
@@ -198,7 +209,7 @@ func rejectLifecycleBindingInScope(
 		accountCtx,
 		lifecycleBindingScopeProbeSQL(databaseID, physicalTableID),
 	); err != nil {
-		return err
+		return ignoreMissingLifecycleCatalog(err)
 	}
 	results, err := getResultSet(accountCtx, background)
 	if err != nil {
@@ -280,7 +291,10 @@ func lifecycleBackupProbeHasRows(
 ) (bool, error) {
 	background.ClearExecResultSet()
 	if err := background.Exec(ctx, sql); err != nil {
-		return false, err
+		if ignoreErr := ignoreMissingLifecycleCatalog(err); ignoreErr != nil {
+			return false, ignoreErr
+		}
+		return false, nil
 	}
 	results, err := getResultSet(ctx, background)
 	if err != nil {

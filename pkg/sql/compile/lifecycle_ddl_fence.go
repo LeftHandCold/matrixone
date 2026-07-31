@@ -35,6 +35,17 @@ type lifecycleForeignKeyParent struct {
 	tableName    string
 }
 
+// ignoreMissingLifecycleCatalog keeps ordinary management DDL usable while a
+// tenant's asynchronous version upgrade has not created the Lifecycle tables
+// yet. Table absence proves that no Lifecycle Binding can exist; every other
+// Catalog error remains fail-closed.
+func ignoreMissingLifecycleCatalog(err error) error {
+	if err == nil || moerr.IsMoErrCode(err, moerr.ErrNoSuchTable) {
+		return nil
+	}
+	return err
+}
+
 func lifecycleForeignKeyIsSelfReference(
 	childDatabaseName string,
 	childTableName string,
@@ -109,7 +120,7 @@ and state in ('ACTIVE','PAUSED','BLOCKED') limit 1`,
 		int32(accountID),
 	)
 	if err != nil {
-		return err
+		return ignoreMissingLifecycleCatalog(err)
 	}
 	defer result.Close()
 	bound := false
@@ -231,7 +242,7 @@ func (c *Compile) detachLifecycleBindingForDrop(
 	if err != nil {
 		return err
 	}
-	return c.runSqlWithAccountId(
+	return ignoreMissingLifecycleCatalog(c.runSqlWithAccountId(
 		fmt.Sprintf(
 			`delete from mo_catalog.mo_lifecycle_bindings
 where account_id=%d and physical_table_id=%d`,
@@ -239,7 +250,7 @@ where account_id=%d and physical_table_id=%d`,
 			physicalTableID,
 		),
 		int32(accountID),
-	)
+	))
 }
 
 func lifecycleDatabaseDropBindingDeleteSQL(
@@ -261,10 +272,10 @@ func (c *Compile) detachLifecycleBindingsForDatabaseDrop(
 	if !c.proc.Base.IsFrontend {
 		return nil
 	}
-	return c.runSqlWithAccountId(
+	return ignoreMissingLifecycleCatalog(c.runSqlWithAccountId(
 		lifecycleDatabaseDropBindingDeleteSQL(accountID, databaseID),
 		int32(accountID),
-	)
+	))
 }
 
 func (c *Compile) lockLifecycleDependencyPublication() error {
@@ -328,7 +339,10 @@ func (c *Compile) rejectLifecyclePitrBindings(
 			executor.StatementOption{}.WithDisableLog(),
 		)
 		if err != nil {
-			return err
+			if ignoreErr := ignoreMissingLifecycleCatalog(err); ignoreErr != nil {
+				return ignoreErr
+			}
+			continue
 		}
 		bound := false
 		result.ReadRows(func(rows int, _ []*vector.Vector) bool {

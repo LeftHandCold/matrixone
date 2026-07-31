@@ -57,6 +57,9 @@ PURGE ARCHIVE DATASET '<dataset-id>';
 时间语义：
 
 - Phase 1只接受正数`INTERVAL ... DAY`，不接受MONTH/YEAR等变长日历单位；
+- `expire_interval + late_arrival_grace`和`purge_interval`都必须能由worker使用的
+  `time.Duration`精确表示；当前最大值为106751天，SET时越界直接拒绝，禁止运行时溢出成
+  更早的cutoff或Purge时间；
 - 每个child冻结`evaluation_time`，同一attempt重试不能重新取“现在”；
 - `effective_cutoff = evaluation_time - expire_interval - late_arrival_grace`；
 - TIMESTAMP按UTC比较；DATE/DATETIME使用Binding冻结的`evaluation_timezone`；
@@ -108,13 +111,16 @@ Phase 1拒绝：
 
 Tenant表由普通事务读写，但只允许Lifecycle内部adapter写，tenant用户不能直接DML；
 Cleanup Root必须由system account持有，使账户删除后仍可清理。
-Root表不是按`owner_account_id`自动级联删除的tenant Cluster Table；该字段只是业务Owner，
-`DROP ACCOUNT`后Root仍由system Reconciler读取和清理。
+Cleanup Root物理上复用MO已有Cluster Table类型并保持自动`account_id=0`，仅用于滚动升级时
+让不知道新表名的旧CN沿既有租户过滤安全返回空集；它不是按`owner_account_id`分片或级联
+删除的tenant数据表。`owner_account_id`仍是唯一业务Owner，`DROP ACCOUNT`后Root继续由
+system Reconciler读取和清理。
 
 部署必须同时覆盖两条建表路径：已存在tenant由版本upgrade创建五张tenant表；当前版本
 新建tenant由标准`createSqls`创建相同五张表。五张tenant表登记为普通predefined tenant
-Catalog表，Cleanup Root单独登记为system-account table，二者都不得被误分类为共享
-Cluster Table。
+Catalog表，Cleanup Root单独登记为system-account table。Restore Attempt/Chunk中的
+`account_id=0`只是在旧CN按未知Cluster Table执行`DROP ACCOUNT ... WHERE account_id=?`
+时使用的兼容哨兵，不参与Owner、查询或索引语义。
 
 ## 5. Binding
 
@@ -237,10 +243,12 @@ created_at                 TIMESTAMP
 
 ## 8. Cleanup Root
 
-逻辑表名：system account的`mo_catalog.mo_lifecycle_cleanup_roots`。它不是tenant可写
-Cluster Table。
+逻辑表名：system account的`mo_catalog.mo_lifecycle_cleanup_roots`。物理Cluster Table类型
+只复用旧CN已有的租户过滤；新CN仍把它登记为system-account管理表。产品保证是tenant
+无法观察或修改Root行，不依赖“表名一定无法解析”这一更强假设。
 
 ```text
+account_id                UINT32 = 0  # 物理兼容列，不是业务Owner
 root_id                   BINARY(16) PK
 attempt_id                BINARY(16)
 mode                       ENUM(ARCHIVE_WHOLE, ARCHIVE_REWRITE, TTL_REWRITE)
@@ -256,6 +264,7 @@ tae_namespace_blob         BLOB NULL
 segment_id                 BINARY NULL
 booking_prefix             TEXT NULL
 ordinal_upper_bound        UINT32 NULL
+reserved_cleanup_bytes     UINT64
 source_set_digest          BINARY(32)
 final_txn_id               BINARY NULL
 state                      ENUM(REGISTERED, UPLOADING, VERIFIED, FINALIZING,
@@ -290,6 +299,7 @@ mo_catalog.mo_lifecycle_restore_chunks
 
 ```text
 restore_id                 BINARY(16) PK
+account_id                 UINT32 = 0  # 旧CN滚动升级兼容，不参与业务语义
 dataset_id                 BINARY(16)
 lease_id/deadline          BINARY(16)/TIMESTAMP
 staging_database_id        UINT64
@@ -326,6 +336,7 @@ CAS中间值出现；同一事务继续完成`SetOffset`、Rename、`DONE`和Dat
 Chunk Receipt：
 
 ```text
+account_id                 UINT32 = 0  # 旧CN滚动升级兼容，不参与业务语义
 restore_id                 BINARY(16)
 chunk_ordinal              UINT64
 file_ordinal/row_group_ordinal UINT32/UINT32

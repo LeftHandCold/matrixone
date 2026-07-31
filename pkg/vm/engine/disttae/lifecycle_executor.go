@@ -164,6 +164,7 @@ func LifecycleTaskExecutorFactory(
 		lifecyclepkg.CoordinatorConfig{
 			Enabled:             true,
 			PageSize:            64,
+			MaxPagesPerRun:      4,
 			MaxBindingsPerRun:   1000,
 			MaxClusterChildren:  8,
 			MaxAccountChildren:  4,

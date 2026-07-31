@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 )
 
@@ -67,6 +68,37 @@ func TestRejectLifecycleBindingInScopeFailsClosed(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Lifecycle-bound")
+}
+
+func TestRejectLifecycleBindingInScopeAllowsTenantBeforeCatalogUpgrade(t *testing.T) {
+	bh := &backgroundExecTest{}
+	bh.init()
+	sql := lifecycleBindingScopeProbeSQL(17, 23)
+	bh.sql2err[sql] = moerr.NewNoSuchTableNoCtx(
+		"mo_catalog",
+		"mo_lifecycle_bindings",
+	)
+
+	require.NoError(t, rejectLifecycleBindingInScope(
+		context.Background(),
+		bh,
+		9,
+		17,
+		23,
+		"CREATE SNAPSHOT",
+	))
+
+	wantErr := moerr.NewInternalErrorNoCtx("catalog read failed")
+	bh.sql2err[sql] = wantErr
+	err := rejectLifecycleBindingInScope(
+		context.Background(),
+		bh,
+		9,
+		17,
+		23,
+		"CREATE SNAPSHOT",
+	)
+	require.ErrorIs(t, err, wantErr)
 }
 
 func TestLifecycleBackupStateProbesAreScopedAndTerminalAware(t *testing.T) {
@@ -164,4 +196,24 @@ func TestAllowBackupWithoutLifecycleStateAfterGateDisabled(t *testing.T) {
 		lifecycleBackupDatasetProbeSQL(17),
 		lifecycleBackupRootProbeSQL,
 	}, bh.executedSQLs)
+}
+
+func TestAllowBackupWhileTenantLifecycleCatalogUpgradeIsPending(t *testing.T) {
+	bh := &backgroundExecTest{}
+	bh.init()
+	bh.sql2result[lifecycleBackupGateProbeSQL] = newMrsForPasswordOfUser(nil)
+	bh.sql2result[getAccountIdNamesSql] = newMrsForGetAllAccounts([][]interface{}{
+		{uint64(17), "account-17", "open", uint64(1), nil},
+	})
+	bh.sql2err[lifecycleBackupBindingProbeSQL(17)] = moerr.NewNoSuchTableNoCtx(
+		"mo_catalog",
+		"mo_lifecycle_bindings",
+	)
+	bh.sql2err[lifecycleBackupDatasetProbeSQL(17)] = moerr.NewNoSuchTableNoCtx(
+		"mo_catalog",
+		"mo_lifecycle_datasets",
+	)
+	bh.sql2result[lifecycleBackupRootProbeSQL] = newMrsForPasswordOfUser(nil)
+
+	require.NoError(t, rejectBackupWithLifecycleState(context.Background(), bh))
 }

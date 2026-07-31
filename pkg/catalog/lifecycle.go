@@ -18,6 +18,10 @@ package catalog
 // upgrade, and runtime adapters share one definition. Tenant upgrades create
 // all tables except CleanupRoots. CleanupRoots is created only for the system
 // account and survives tenant deletion long enough to reclaim external data.
+// Its physical Cluster Table account_id remains 0 solely so an older CN safely
+// filters the unknown table name during a rolling upgrade; owner_account_id is
+// the only Lifecycle ownership field. The restore-table account_id columns are
+// the equivalent old-CN DROP ACCOUNT compatibility sentinels and stay 0.
 const (
 	MoLifecycleBindingsDDL = `create table mo_catalog.mo_lifecycle_bindings (
 		binding_id binary(16) not null,
@@ -111,6 +115,7 @@ const (
 
 	MoLifecycleRestoreAttemptsDDL = `create table mo_catalog.mo_lifecycle_restore_attempts (
 		restore_id binary(16) not null,
+		account_id int unsigned not null default 0,
 		dataset_id binary(16) not null,
 		lease_id binary(16) not null,
 		deadline timestamp not null,
@@ -132,6 +137,7 @@ const (
 
 	MoLifecycleRestoreChunksDDL = `create table mo_catalog.mo_lifecycle_restore_chunks (
 		restore_id binary(16) not null,
+		account_id int unsigned not null default 0,
 		chunk_ordinal bigint unsigned not null,
 		file_ordinal int unsigned not null,
 		row_group_ordinal int unsigned not null,
@@ -143,7 +149,7 @@ const (
 		primary key (restore_id, chunk_ordinal)
 	)`
 
-	MoLifecycleCleanupRootsDDL = `create table mo_catalog.mo_lifecycle_cleanup_roots (
+	MoLifecycleCleanupRootsDDL = `create cluster table mo_catalog.mo_lifecycle_cleanup_roots (
 		root_id binary(16) not null,
 		attempt_id binary(16) not null,
 		mode varchar(24) not null,

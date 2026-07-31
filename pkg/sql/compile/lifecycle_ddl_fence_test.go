@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
@@ -62,6 +63,33 @@ func TestRejectBoundLifecycleDDLAllowsUnboundTable(t *testing.T) {
 			return executor.Result{}, nil
 		},
 	))
+}
+
+func TestRejectBoundLifecycleDDLAllowsTenantBeforeLifecycleCatalogUpgrade(t *testing.T) {
+	require.NoError(t, rejectBoundLifecycleDDL(
+		context.Background(),
+		17,
+		43,
+		"ALTER TABLE",
+		func(string, int32) (executor.Result, error) {
+			return executor.Result{}, moerr.NewNoSuchTableNoCtx(
+				"mo_catalog",
+				"mo_lifecycle_bindings",
+			)
+		},
+	))
+
+	wantErr := moerr.NewInternalErrorNoCtx("catalog read failed")
+	err := rejectBoundLifecycleDDL(
+		context.Background(),
+		17,
+		43,
+		"ALTER TABLE",
+		func(string, int32) (executor.Result, error) {
+			return executor.Result{}, wantErr
+		},
+	)
+	require.ErrorIs(t, err, wantErr)
 }
 
 func TestRejectBoundLifecycleDDLAllowsSystemAccountWithoutCatalogLookup(t *testing.T) {

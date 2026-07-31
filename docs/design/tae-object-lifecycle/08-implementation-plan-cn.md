@@ -25,7 +25,8 @@ pkg/taskservice
 ```
 
 DoD：百万Object分页不构造全表slice；普通查询/DML/Merge在未绑定路径无Lifecycle Catalog
-读，相关DDL至多一次索引化Binding lookup；分区表在任何副作用前被拒绝。
+读，相关DDL至多一次索引化Binding lookup；Coordinator每轮账户/Binding分页数有独立hard
+cap并从内存cursor续扫；分区表在任何副作用前被拒绝。
 
 ## 2. Gate B：Reader与Archive格式原型
 
@@ -159,6 +160,11 @@ Restore不增加tagged entry。
 9. 新集群bootstrap和存量集群upgrade都写入同一个Lifecycle Coordinator cron task；任务
    在release开关关闭时只收敛已有Cleanup Root、过期Restore隐藏表和终态元数据并检查开关，
    不执行Binding扫描、创建新Root或启动新Restore。
+10. Cleanup Root复用已有Cluster Table的`account_id=0`租户过滤，Restore Attempt/Chunk保留
+    同名兼容哨兵列，使旧CN在新Catalog出现后仍能安全执行`DROP ACCOUNT`；业务Owner仍只认
+    `owner_account_id`/tenant Catalog上下文。
+11. tenant异步upgrade尚未创建Lifecycle表时，普通管理DDL的Binding引用探测和DROP detach
+    仅忽略精确`ErrNoSuchTable`；Lifecycle命令和所有其他错误保持fail closed。
 
 若测试暴露普通Merge/事务/DDL通用Bug，记录公共Issue并复用公共修复，不在Lifecycle新增
 私有事务协议。
@@ -172,6 +178,8 @@ Restore不增加tagged entry。
 - 30天soak；
 - active coexistence；
 - Rewrite amplification/window bytes和Restore active staging bytes容量门禁；
+- 最大认证生产速率下，Cleanup/终态元数据消费率覆盖产生率且30天backlog无持续正斜率；
+  不满足时Stop Ship，调整有界批次或降低生产上限后重新认证；
 - Lifecycle不增加TN专用permit；认证若触发普通Merge公共资源缺陷，关联公共Issue或降低
   认证上限后重新测试；
 - 50→1000放量；

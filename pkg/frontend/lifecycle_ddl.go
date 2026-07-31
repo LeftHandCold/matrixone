@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -37,6 +38,11 @@ import (
 
 const lifecycleSchemaDigestVersion uint16 = 1
 const featureCodeLifecycle = "LIFECYCLE"
+
+// Purge eligibility is evaluated with time.Duration in the worker. Keep every
+// accepted interval inside that exact representation so a large SQL literal
+// can never wrap into an earlier cleanup time.
+const lifecycleMaxIntervalDays = uint32((1<<63 - 1) / int64(24*time.Hour))
 
 const (
 	lifecycleBindingStateActive = "ACTIVE"
@@ -645,6 +651,13 @@ func validateLifecyclePolicy(
 	if policy.ExpireAfterDays == 0 {
 		return nil, [32]byte{}, moerr.NewInvalidInput(ctx, "Lifecycle EXPIRE AFTER must be positive")
 	}
+	if policy.ExpireAfterDays > lifecycleMaxIntervalDays ||
+		policy.LateArrivalDays > lifecycleMaxIntervalDays-policy.ExpireAfterDays {
+		return nil, [32]byte{}, moerr.NewInvalidInput(
+			ctx,
+			"Lifecycle interval exceeds the supported range",
+		)
+	}
 	if policy.Action == tree.LifecycleActionArchive {
 		if !policy.HasStage || policy.Stage == "" {
 			return nil, [32]byte{}, moerr.NewInvalidInput(ctx, "Lifecycle ARCHIVE requires STAGE")
@@ -657,6 +670,12 @@ func validateLifecyclePolicy(
 		}
 		if policy.PurgeAfterDays <= policy.ExpireAfterDays {
 			return nil, [32]byte{}, moerr.NewInvalidInput(ctx, "Lifecycle PURGE ELIGIBLE AFTER must be greater than EXPIRE AFTER")
+		}
+		if policy.PurgeAfterDays > lifecycleMaxIntervalDays {
+			return nil, [32]byte{}, moerr.NewInvalidInput(
+				ctx,
+				"Lifecycle interval exceeds the supported range",
+			)
 		}
 	} else if policy.HasStage || policy.HasPurgeAfter {
 		return nil, [32]byte{}, moerr.NewInvalidInput(ctx, "Lifecycle DELETE does not accept STAGE or PURGE ELIGIBLE AFTER")

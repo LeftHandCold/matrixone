@@ -987,9 +987,10 @@ var (
 		catalog.MOPartitionTables:    {},
 		// Cleanup Roots are system-owned external-side-effect metadata. They
 		// intentionally survive tenant deletion so the Lifecycle sweeper can
-		// reclaim Archive/TAE staging asynchronously. Classifying this table as
-		// a Cluster Table would also make DROP ACCOUNT issue an invalid
-		// `where account_id = ...` delete against owner_account_id.
+		// reclaim Archive/TAE staging asynchronously. New CNs classify the name
+		// as system-only so DROP ACCOUNT does not treat owner_account_id as
+		// tenant storage. The physical Cluster type and account_id=0 keep Root
+		// rows invisible and immutable to tenants during old-CN rolling upgrades.
 		catalog.MO_LIFECYCLE_CLEANUP_ROOTS: {},
 	}
 	// predefined tables of the database mo_catalog in every account

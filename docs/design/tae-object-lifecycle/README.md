@@ -244,7 +244,10 @@ DDL fence 不进入查询、DML或Merge热路径。实现只作用于`SET LIFECY
 5. 已绑定表的TRUNCATE、ALTER、CREATE INDEX等不兼容DDL fail closed；DROP TABLE在同一
    `mo_tables`锁事务中删除Binding，DROP DATABASE在原数据库DDL事务中按database identity
    补删孤儿Binding；外部Payload按Cleanup Root异步回收；
-6. Finalizer仍校验Binding generation、physical table、schema和exact source identity。
+6. Finalizer仍校验Binding generation、physical table、schema和exact source identity；
+7. tenant异步upgrade期间，普通管理DDL仅把Lifecycle表的精确`ErrNoSuchTable`视为尚无
+   Binding；Lifecycle命令仍fail closed。Cleanup Root的物理`account_id=0`和Restore表的
+   同名哨兵列只兼容旧CN，不进入Lifecycle业务状态。
 
 这个barrier复用已有单行，不为未绑定表创建Guard/Candidate/其他Catalog行，也不进入
 普通表级DDL。feature关闭时跳过Binding/Restore调度和数据路径，但历史Cleanup Root仍由

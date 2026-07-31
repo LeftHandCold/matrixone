@@ -74,7 +74,10 @@ func rejectReferencedLifecycleStageMutation(
 	} {
 		background.ClearExecResultSet()
 		if err := background.Exec(ctx, sql); err != nil {
-			return err
+			if ignoreErr := ignoreMissingLifecycleCatalog(err); ignoreErr != nil {
+				return ignoreErr
+			}
+			continue
 		}
 		references, err := getResultSet(ctx, background)
 		if err != nil {

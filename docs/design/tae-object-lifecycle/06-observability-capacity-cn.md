@@ -12,6 +12,7 @@ scan-page-objects
 scan-page-meta-bytes
 scan-metadata-reads-per-page
 scan-metadata-read-bytes-per-page
+scan-binding-pages-per-run
 full-scan-interval
 candidate-count/bytes
 child-concurrency
@@ -47,6 +48,9 @@ terminal-metadata-retention
 ```
 
 配置关系必须启动时校验，不能自动放宽hard cap。
+Coordinator每轮最多读取4个Binding账户分页；每个分页最多覆盖64个account，因此即使大量
+tenant完全没有Binding，一次cron也至多执行256个tenant Binding探测，随后从现有内存cursor
+继续。这个上限只约束控制面扫描，不建立Account/Object Index或持久调度状态。
 Phase 1冻结`max-payload-files-per-dataset = max-chunks-per-dataset = 4096`；
 Writer在写第4097个Payload前返回`RESOURCE_BLOCKED`，Manifest parser和Restore再次校验。
 因为Phase 1每个Payload严格只有一个Row Group，这一个上限同时约束Payload文件、

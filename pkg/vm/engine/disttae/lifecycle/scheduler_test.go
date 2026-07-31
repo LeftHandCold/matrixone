@@ -37,6 +37,21 @@ type orderedBindingPager struct {
 	starts   []BindingCursor
 }
 
+type emptyProgressBindingPager struct {
+	calls  int
+	starts []BindingCursor
+}
+
+func (p *emptyProgressBindingPager) NextActiveBindings(
+	_ context.Context,
+	cursor BindingCursor,
+	_ int,
+) ([]Binding, BindingCursor, bool, error) {
+	p.calls++
+	p.starts = append(p.starts, cursor)
+	return nil, BindingCursor{AccountID: cursor.AccountID + 64}, false, nil
+}
+
 func (p *orderedBindingPager) NextActiveBindings(
 	_ context.Context,
 	cursor BindingCursor,
@@ -139,6 +154,7 @@ func TestCoordinatorOnlyRunsActiveBindingsWithHardConcurrency(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		Enabled:             true,
 		PageSize:            16,
+		MaxPagesPerRun:      16,
 		MaxBindingsPerRun:   16,
 		MaxClusterChildren:  2,
 		MaxAccountChildren:  1,
@@ -161,6 +177,7 @@ func TestCoordinatorCancellationStopsChildren(t *testing.T) {
 	coordinator := NewCoordinator(CoordinatorConfig{
 		Enabled:             true,
 		PageSize:            2,
+		MaxPagesPerRun:      2,
 		MaxBindingsPerRun:   2,
 		MaxClusterChildren:  1,
 		MaxAccountChildren:  1,
@@ -192,6 +209,7 @@ func TestCoordinatorBindingFailureDoesNotCancelIndependentBindings(t *testing.T)
 	coordinator := NewCoordinator(CoordinatorConfig{
 		Enabled:             true,
 		PageSize:            2,
+		MaxPagesPerRun:      2,
 		MaxBindingsPerRun:   2,
 		MaxClusterChildren:  1,
 		MaxAccountChildren:  1,
@@ -229,6 +247,7 @@ func TestCoordinatorContinuesBindingCursorAcrossRunsAndWrapsAtEnd(t *testing.T) 
 	coordinator := NewCoordinator(CoordinatorConfig{
 		Enabled:             true,
 		PageSize:            64,
+		MaxPagesPerRun:      16,
 		MaxBindingsPerRun:   1000,
 		MaxClusterChildren:  8,
 		MaxAccountChildren:  4,
@@ -253,12 +272,38 @@ func TestCoordinatorContinuesBindingCursorAcrossRunsAndWrapsAtEnd(t *testing.T) 
 	require.NotEqual(t, BindingCursor{}, pager.starts[len(pager.starts)-1])
 }
 
+func TestCoordinatorBoundsEmptyTenantPagesPerRun(t *testing.T) {
+	pager := &emptyProgressBindingPager{}
+	coordinator := NewCoordinator(CoordinatorConfig{
+		Enabled:             true,
+		PageSize:            64,
+		MaxPagesPerRun:      3,
+		MaxBindingsPerRun:   1000,
+		MaxClusterChildren:  8,
+		MaxAccountChildren:  4,
+		MaxDatabaseChildren: 2,
+		MaxTableChildren:    1,
+	}, pager, func(context.Context, Binding) error {
+		t.Fatal("empty tenant pages must not dispatch a child")
+		return nil
+	})
+
+	require.NoError(t, coordinator.Run(context.Background()))
+	require.Equal(t, 3, pager.calls)
+	require.Equal(t, BindingCursor{AccountID: 192}, coordinator.cursor)
+
+	require.NoError(t, coordinator.Run(context.Background()))
+	require.Equal(t, 6, pager.calls)
+	require.Equal(t, BindingCursor{AccountID: 384}, coordinator.cursor)
+}
+
 func TestCoordinatorConcurrentRunWaitIsCancellable(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	coordinator := NewCoordinator(CoordinatorConfig{
 		Enabled:             true,
 		PageSize:            1,
+		MaxPagesPerRun:      1,
 		MaxBindingsPerRun:   1,
 		MaxClusterChildren:  1,
 		MaxAccountChildren:  1,

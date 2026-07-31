@@ -80,8 +80,13 @@ type BindingPager interface {
 type BindingChild func(context.Context, Binding) error
 
 type CoordinatorConfig struct {
-	Enabled             bool
-	PageSize            int
+	Enabled  bool
+	PageSize int
+	// MaxPagesPerRun bounds account and Binding Catalog probes even when a
+	// cluster has many tenants with no Lifecycle Binding. The existing cursor
+	// resumes at the next tick; no persistent registry or Object index is
+	// needed.
+	MaxPagesPerRun      int
 	MaxBindingsPerRun   int
 	MaxClusterChildren  int
 	MaxAccountChildren  int
@@ -232,6 +237,7 @@ func (c *Coordinator) validate(ctx context.Context) error {
 		return moerr.NewInvalidInput(ctx, "Lifecycle coordinator dependencies are nil")
 	}
 	if c.config.PageSize <= 0 ||
+		c.config.MaxPagesPerRun <= 0 ||
 		c.config.MaxBindingsPerRun <= 0 ||
 		c.config.MaxClusterChildren <= 0 ||
 		c.config.MaxAccountChildren <= 0 ||
@@ -245,7 +251,8 @@ func (c *Coordinator) validate(ctx context.Context) error {
 func (c *Coordinator) loadBindings(ctx context.Context) ([]Binding, error) {
 	bindings := make([]Binding, 0, min(c.config.PageSize, c.config.MaxBindingsPerRun))
 	cursor := c.cursor
-	for len(bindings) < c.config.MaxBindingsPerRun {
+	for pageNumber := 0; pageNumber < c.config.MaxPagesPerRun &&
+		len(bindings) < c.config.MaxBindingsPerRun; pageNumber++ {
 		remaining := c.config.MaxBindingsPerRun - len(bindings)
 		limit := min(c.config.PageSize, remaining)
 		page, next, end, err := c.pager.NextActiveBindings(ctx, cursor, limit)

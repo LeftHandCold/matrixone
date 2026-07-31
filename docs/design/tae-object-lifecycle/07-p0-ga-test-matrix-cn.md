@@ -59,6 +59,11 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - 新CN→具备安全解析但不支持V1的TN：Batch解析前unsupported，无panic/mutation；
 - 未部署安全解析补丁的更老TN：发布控制面禁止开启retirement或路由V1；
 - 旧CN→新TN：普通请求正常；
+- 旧CN与新Catalog混部时，`DROP ACCOUNT`不会因Lifecycle新表缺少`account_id`失败，且tenant
+  读取system Cleanup Root只能得到空集；Root的`account_id=0`不得替代`owner_account_id`；
+- tenant异步upgrade尚未创建Lifecycle表时，普通ALTER/INDEX/TRUNCATE/DROP等管理DDL只把
+  精确`ErrNoSuchTable`视为“无Binding”，其他错误继续fail closed；SET/SHOW/RESTORE等
+  Lifecycle命令仍明确失败且不产生副作用；
 - unknown protocol version：fail closed；
 - workspace普通DML发生dump/compact/sort后，thin entry字节仍只追加一次；
 - 普通Catalog写缺失的control-only生产事务必须在CN拒绝；
@@ -273,6 +278,10 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 -强制full_scan_interval；
 - 百万Object不构造全表slice；
 - 持续Merge下没有永久饥饿；
+- 大量无Binding tenant时，一轮Coordinator最多消费配置的Binding分页数，cursor在下轮继续，
+  不能为了凑满`max-bindings-per-run`遍历全部account；
+- `expire + late arrival`和`purge`超过106751天时SET必须拒绝，边界值不能在worker的
+  `time.Duration`计算中溢出；
 - 1000 Binding公平性。
 
 ## 11. Cleanup
@@ -348,6 +357,8 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 
 - 30天soak；
 - 50→200→500→1000表；
+- 按认证Release Profile施加最大Root/Dataset/Receipt产生率，证明Cleanup和终态Compactor
+  消费率不低于产生率且backlog无持续正斜率；否则Stop Ship、提高有界批次或降低生产上限；
 - feature off/无Binding对照；
 - 所有P0证据包含commit SHA、配置、数据生成器、故障点和原始指标。
 
