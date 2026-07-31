@@ -121,8 +121,13 @@ Gate F不通过时关闭本路径，TTL Mixed统一Rewrite/Blocked，不阻塞�
 - Dataset `version` CAS和`stage_id`索引化引用；
 - Dataset lease + hidden CREATE + Attempt INSERT原子初始化事务；
 - Manifest schema建隐藏表；
+- frontend只对大小写不敏感的`prefix + 32位十六进制restore-id`精确形状拒绝用户访问及
+  CREATE/RENAME；同前缀其他用户表不受影响，内部SQLExecutor继续走普通表路径；该检查
+  不得查询Lifecycle Catalog或引入特殊relkind；
 - Manifest format parser/version fail-closed；
 - 串行chunk普通INSERT + Receipt + Attempt进度同事务；
+- Chunk canonical hash校验后，复用现有incrservice在同一普通事务内生成目标表fake PK，
+  再调用`Relation.Write`；不复制PreInsert或序列服务；
 - Receipt主键`(restore_id, chunk_ordinal)`及不同digest fail-closed；
 - AUTO_INCREMENT全局最大正值由Manifest保存并经full readback验证；
 - Receipt有序聚合hash/row验证；

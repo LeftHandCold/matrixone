@@ -317,6 +317,12 @@ last_error/updated_at       TEXT/TIMESTAMP
 `__mo_lifecycle_restore_<restore-id>`确定。`staging_table_id`只能参与Rename/DROP前的
 身份校验，禁止作为无名称校验的DROP目标。
 
+只有该前缀加32位十六进制restore ID的精确形状才是大小写不敏感的frontend保留命名空间：
+用户不能创建、改名或访问其中的表，同前缀但非该形状的历史用户表不受影响。
+Lifecycle内部SQLExecutor仍按普通表处理。隔离只依赖O(32)名称判断，不增加Catalog列、权限
+状态或特殊relkind。Manifest中的逻辑列不包含目标表由普通DDL创建的
+`__mo_fake_pk_col`；它由Chunk普通事务复用现有incrservice生成。
+
 Dataset lease CAS、隐藏表CREATE和本Attempt INSERT必须在同一个普通MO事务中提交。隐藏表
 不能先提交后再补Attempt；任一失败整体回滚，响应未知时通过Dataset lease、Attempt和精确
 隐藏身份对账。

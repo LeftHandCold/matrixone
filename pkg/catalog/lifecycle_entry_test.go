@@ -30,6 +30,21 @@ func TestLifecycleRestoreChunkCatalogHasNoRedundantAutoIncrementState(t *testing
 	)
 }
 
+func TestLifecycleRestoreStagingTableNameIsReservedCaseInsensitively(t *testing.T) {
+	require.True(t, IsLifecycleRestoreStagingTable(
+		"__mo_lifecycle_restore_0123456789abcdef0123456789abcdef",
+	))
+	require.True(t, IsLifecycleRestoreStagingTable(
+		"__MO_LIFECYCLE_RESTORE_0123456789ABCDEF0123456789ABCDEF",
+	))
+	require.False(t, IsLifecycleRestoreStagingTable("__mo_lifecycle_restore"))
+	require.False(t, IsLifecycleRestoreStagingTable("__mo_lifecycle_restore_user"))
+	require.False(t, IsLifecycleRestoreStagingTable(
+		"__mo_lifecycle_restore_0123456789abcdef0123456789abcdeg",
+	))
+	require.False(t, IsLifecycleRestoreStagingTable("user_restore_1"))
+}
+
 func TestParseEntryListRejectsUnknownEntryBeforeBatch(t *testing.T) {
 	require.NotPanics(t, func() {
 		_, remaining, err := ParseEntryList([]*api.Entry{{

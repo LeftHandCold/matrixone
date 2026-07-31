@@ -77,6 +77,18 @@ __mo_lifecycle_restore_<restore-id>
 创建在目标database，普通用户不可直接访问。使用Manifest schema descriptor创建；必须与
 Dataset lease和Restore Attempt INSERT处于第3节同一事务，不能先CREATE后补Attempt。
 
+只有精确匹配`__mo_lifecycle_restore_<32位十六进制restore-id>`的名称才属于大小写不敏感
+的保留staging命名空间。首个GA只增加一个O(32)名称检查：
+
+- frontend SQL不能CREATE/RENAME到该精确形状，也不能SELECT、INSERT、UPDATE、DELETE、
+  TRUNCATE、ALTER、DROP、DUMP TABLE或LOAD TABLE该形状的表；
+- SHOW和`information_schema.TABLES`不展示该精确形状；
+- Lifecycle内部SQLExecutor保持`IsFrontend=false`，继续使用普通CREATE/INSERT/RENAME/DROP；
+- 检查不读取Lifecycle Catalog，不增加权限表、relkind、Guard或新的状态机。
+
+普通用户历史上使用同一文字前缀但不符合上述精确形状的表不受影响。这项隔离只保护Restore
+自己新增的staging副作用；不改变普通用户表的事务、DDL或存储实现。
+
 descriptor中的`source_column_id`只用于lineage；普通DDL为目标列分配新Column ID。
 Restore校验ordinal/name/type/nullability/charset/collation/AUTO_INCREMENT等Phase 1结构，
 不要求目标Column ID等于源Column ID。
@@ -97,6 +109,15 @@ for each manifest file ordinal
        CAS next_chunk_ordinal
        UPDATE restored_rows
 ```
+
+Manifest只描述历史逻辑列，Phase 1也不恢复源PK/索引；普通`CREATE TABLE`因此为staging表
+创建MO现有的隐藏`__mo_fake_pk_col`。Chunk在canonical hash校验完成后，必须按目标
+`TableDef`顺序组装最终写Batch，并在同一个普通`TxnOperator`中调用现有
+`incrservice.InsertValues`生成该fake PK，再调用现有`Relation.Write`。归档中的用户列值
+（包括显式AUTO_INCREMENT值）保持不变；fake PK不进入Archive hash、Manifest或Receipt。
+`GetTableDef`附加的`row_id`只是读取伪列，必须从最终写Batch排除。
+目标表缺少预期fake PK、出现其他隐藏列或逻辑列布局漂移时fail closed。这里不复制
+PreInsert、不建立第二套序列服务，也不改变普通INSERT路径。
 
 首版单个Restore串行处理chunk。一个Chunk严格等于Manifest中的一个Parquet Row Group；
 按`(file_ordinal, row_group_ordinal)`升序展平后从0开始连续生成全局
@@ -338,6 +359,11 @@ Dataset控制逻辑可见性，Root控制物理删除：
 - 初始化事务在Dataset lease、CREATE hidden和Attempt INSERT前后逐点crash/response lost；
 - chunk同ordinal相同/不同digest并发、commit response lost和CN crash恢复；
 - Receipt有序聚合Hash与Manifest一致，缺失/重复ordinal必须失败；
+- frontend用户对staging的读写、DDL、DUMP/LOAD、按ID解析和保留名称CREATE/RENAME全部
+  被拒绝；内部
+  Restore初始化、Chunk导入、发布和清理不受影响；
+- 无源PK的Dataset恢复时，每个Chunk通过现有incrservice生成非NULL且唯一的目标fake PK；
+  Chunk事务rollback/response lost不得留下已提交数据却没有Receipt的分裂结果；
 - Restore在最终MO vectors上重算Hash；AUTO_INCREMENT最大正值readback一致，发布后下一值、
   各整数类型上限和overflow行为正确；
 - 最终发布事务在Attempt CAS、SetOffset、Rename、DONE和lease释放各点crash/response lost；

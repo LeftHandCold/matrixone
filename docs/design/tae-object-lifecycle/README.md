@@ -195,6 +195,13 @@ lease返回`RESTORE_IN_PROGRESS`，后台Purge延迟重试。进入`DELETE_PENDI
 单个普通INSERT事务恢复。隐藏表发布/清理都CAS同一Attempt；清理必须校验隐藏名称、
 database ID和table ID，禁止仅凭Rename后仍不变的table ID执行DROP。
 
+隐藏表使用大小写不敏感的精确保留形状
+`__mo_lifecycle_restore_<32位十六进制restore-id>`。frontend仅做O(32)名称检查，拒绝
+用户访问以及CREATE/RENAME到该命名空间；同前缀但非该形状的历史用户表不受影响。内部SQLExecutor继续复用普通
+CREATE/INSERT/RENAME/DROP，不查询Lifecycle Catalog、不引入新权限或表类型。Manifest不
+恢复源PK/索引，Chunk在逻辑内容Hash验证后复用现有`incrservice.InsertValues`生成目标普通
+表自带的fake PK，再由同一普通事务调用`Relation.Write`。
+
 Dataset lease、隐藏表CREATE和Restore Attempt INSERT必须在第一个普通事务中原子提交。
 AUTO_INCREMENT归档最大正值写入Manifest并经full readback验证；最终Rename/DONE事务先
 校验目标类型上限，再复用现有`incrservice.SetOffset(max, txnOp)`推进新表水位。

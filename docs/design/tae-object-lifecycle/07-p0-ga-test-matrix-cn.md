@@ -133,6 +133,13 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - cleanup unknown后分别覆盖`FAILED+hidden absent`、`nonterminal+hidden exact`、
   `DONE/target published`和矛盾组合；
 - DROP不等待lease或Provider，后台按相同CAS收敛。
+- frontend用户对精确canonical staging执行SELECT/INSERT/UPDATE/DELETE/TRUNCATE/ALTER/
+  DROP/RENAME、DUMP TABLE/LOAD TABLE和按ID解析均被拒绝，CREATE/RENAME到其大小写变体
+  也被拒绝；同前缀但非32位十六进制ID形状的升级前用户表继续可用；
+- 内部SQLExecutor仍能完成staging CREATE、Chunk写入、Rename发布和失败DROP，普通表解析
+  不访问Lifecycle Catalog；
+- 无源PK表Restore的每个Chunk都由现有incrservice生成非NULL、唯一fake PK；Chunk事务
+  rollback/response lost时数据、Receipt和进度仍一起提交或回滚。
 
 ### 6.3 Tombstone unknown fail-closed
 

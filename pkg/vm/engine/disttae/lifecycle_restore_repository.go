@@ -28,8 +28,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/incrservice"
+	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
 	metricv2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
@@ -316,7 +319,7 @@ func (repository SQLRestoreRepository) restoreAdmissionAccounts(
 from mo_catalog.mo_lifecycle_cleanup_roots r
 join mo_catalog.mo_account a on a.account_id=r.owner_account_id
 where r.state<>'CLEANED'
-order by r.owner_account_id limit %d`,
+order by 1 limit %d`,
 			lifecycleRestoreAdmissionAccountLimit+1,
 		),
 		executor.StatementOption{}.WithAccountID(catalog.System_Account),
@@ -608,9 +611,9 @@ func (repository SQLRestoreRepository) ImportChunk(
 			if batchErr != nil {
 				return batchErr
 			}
+			defer value.Clean(repository.MPool)
 			schemaDigest, digestErr := schema.Digest()
 			if digestErr != nil {
-				value.Clean(repository.MPool)
 				return digestErr
 			}
 			if verifyErr := lifecyclepkg.VerifyRestoreBatch(
@@ -621,11 +624,19 @@ func (repository SQLRestoreRepository) ImportChunk(
 				receipt.LogicalBytes,
 				receipt.CanonicalContentHash,
 			); verifyErr != nil {
-				value.Clean(repository.MPool)
 				return verifyErr
 			}
+			if prepareErr := prepareLifecycleRestoreWriteBatch(
+				ctx,
+				value,
+				relation.GetTableDef(ctx),
+				repository.AutoIncrement,
+				txn.Txn(),
+				repository.MPool,
+			); prepareErr != nil {
+				return prepareErr
+			}
 			writeErr := relation.Write(ctx, value)
-			value.Clean(repository.MPool)
 			if writeErr != nil {
 				return writeErr
 			}
@@ -680,6 +691,129 @@ and state='IMPORTING' and next_chunk_ordinal=%d and deadline>utc_timestamp()`,
 		executor.Options{}.WithAccountID(repository.AccountID),
 	)
 	return updated, err
+}
+
+// prepareLifecycleRestoreWriteBatch reuses MO's existing auto-increment
+// service to populate the fake primary key added by ordinary CREATE TABLE.
+// Archive values remain unchanged; only the target table's internal fake-PK
+// vector is added before Relation.Write.
+func prepareLifecycleRestoreWriteBatch(
+	ctx context.Context,
+	value *batch.Batch,
+	tableDef *plan.TableDef,
+	autoIncrement incrservice.AutoIncrementService,
+	txn client.TxnOperator,
+	mp *mpool.MPool,
+) error {
+	if value == nil || tableDef == nil || autoIncrement == nil || mp == nil {
+		return fmt.Errorf("Lifecycle Restore write preparation is incomplete")
+	}
+	if tableDef.Pkey == nil ||
+		tableDef.Pkey.PkeyColName != catalog.FakePrimaryKeyColName {
+		return fmt.Errorf("Lifecycle Restore staging table has no MO fake primary key")
+	}
+	if len(value.Attrs) != len(value.Vecs) {
+		return fmt.Errorf("Lifecycle Restore staging schema does not match Archive columns")
+	}
+	writableColumns := 0
+	rowIDSeen := false
+	for _, column := range tableDef.Cols {
+		if column.Name == catalog.Row_ID {
+			if rowIDSeen || !column.Hidden ||
+				types.T(column.Typ.Id) != types.T_Rowid {
+				return fmt.Errorf("Lifecycle Restore staging row ID definition is invalid")
+			}
+			rowIDSeen = true
+			continue
+		}
+		writableColumns++
+	}
+	if !rowIDSeen || writableColumns != len(value.Vecs)+1 {
+		return fmt.Errorf("Lifecycle Restore staging schema does not match Archive columns")
+	}
+
+	logical := make(map[string]int, len(value.Attrs))
+	for index, attribute := range value.Attrs {
+		key := strings.ToLower(attribute)
+		if _, exists := logical[key]; exists {
+			return fmt.Errorf("Lifecycle Restore Batch has duplicate column %s", attribute)
+		}
+		logical[key] = index
+	}
+	fullAttributes := make([]string, writableColumns)
+	fullVectors := make([]*vector.Vector, writableColumns)
+	fakeIndex := -1
+	writeIndex := 0
+	for _, column := range tableDef.Cols {
+		if column.Name == catalog.Row_ID {
+			continue
+		}
+		if column.Name == catalog.FakePrimaryKeyColName {
+			if fakeIndex != -1 || !column.Hidden || !column.Typ.AutoIncr ||
+				types.T(column.Typ.Id) != types.T_uint64 {
+				return fmt.Errorf("Lifecycle Restore fake primary key definition is invalid")
+			}
+			fakeIndex = writeIndex
+			writeIndex++
+			continue
+		}
+		if column.Hidden {
+			return fmt.Errorf(
+				"Lifecycle Restore staging table has unexpected hidden column %s",
+				column.Name,
+			)
+		}
+		logicalIndex, exists := logical[strings.ToLower(column.Name)]
+		if !exists || value.Vecs[logicalIndex] == nil {
+			return fmt.Errorf("Lifecycle Restore staging column %s is missing", column.Name)
+		}
+		actualType := value.Vecs[logicalIndex].GetType()
+		if !actualType.Eq(vector.ProtoTypeToType(column.Typ)) {
+			return fmt.Errorf("Lifecycle Restore staging column %s type changed", column.Name)
+		}
+		fullAttributes[writeIndex] = column.Name
+		fullVectors[writeIndex] = value.Vecs[logicalIndex]
+		writeIndex++
+	}
+	if fakeIndex == -1 {
+		return fmt.Errorf("Lifecycle Restore staging fake primary key is missing")
+	}
+
+	fakeVector := vector.NewVec(types.T_uint64.ToType())
+	rows := value.RowCount()
+	nulls := make([]bool, rows)
+	for index := range nulls {
+		nulls[index] = true
+	}
+	if err := vector.AppendFixedList(
+		fakeVector,
+		make([]uint64, rows),
+		nulls,
+		mp,
+	); err != nil {
+		fakeVector.Free(mp)
+		return err
+	}
+	fullAttributes[fakeIndex] = catalog.FakePrimaryKeyColName
+	fullVectors[fakeIndex] = fakeVector
+	value.Attrs = fullAttributes
+	value.Vecs = fullVectors
+
+	if _, err := autoIncrement.InsertValues(
+		ctx,
+		tableDef.TblId,
+		tableDef.AutoIncrEpoch,
+		txn,
+		value.Vecs,
+		rows,
+		int64(rows),
+	); err != nil {
+		return err
+	}
+	if fakeVector.Length() != rows || fakeVector.GetNulls().Any() {
+		return fmt.Errorf("Lifecycle Restore fake primary key generation is incomplete")
+	}
+	return nil
 }
 
 func (repository SQLRestoreRepository) ListChunkReceipts(

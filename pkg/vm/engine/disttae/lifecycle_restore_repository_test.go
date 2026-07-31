@@ -22,14 +22,100 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang/mock/gomock"
+	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	mock_incr "github.com/matrixorigin/matrixone/pkg/frontend/test/mock_incr"
+	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPrepareLifecycleRestoreWriteBatchGeneratesExistingFakePrimaryKey(t *testing.T) {
+	mp := mpool.MustNewZero()
+	value := batch.NewWithSize(1)
+	value.SetAttributes([]string{"payload"})
+	value.Vecs[0] = vector.NewVec(types.T_int64.ToType())
+	require.NoError(t, vector.AppendFixedList(
+		value.Vecs[0],
+		[]int64{11, 22},
+		[]bool{false, false},
+		mp,
+	))
+	value.SetRowCount(2)
+	defer value.Clean(mp)
+
+	tableDef := &plan.TableDef{
+		TblId:         88,
+		AutoIncrEpoch: 3,
+		Cols: []*plan.ColDef{
+			{Name: "payload", Typ: plan.Type{Id: int32(types.T_int64), Width: 64}},
+			{
+				Name:   catalog.FakePrimaryKeyColName,
+				Hidden: true,
+				Typ: plan.Type{
+					Id:       int32(types.T_uint64),
+					AutoIncr: true,
+				},
+			},
+			{
+				Name:   catalog.Row_ID,
+				Hidden: true,
+				Typ:    plan.Type{Id: int32(types.T_Rowid)},
+			},
+		},
+		Pkey: &plan.PrimaryKeyDef{
+			PkeyColName: catalog.FakePrimaryKeyColName,
+		},
+	}
+	controller := gomock.NewController(t)
+	increments := mock_incr.NewMockAutoIncrementService(controller)
+	increments.EXPECT().InsertValues(
+		gomock.Any(),
+		uint64(88),
+		uint32(3),
+		gomock.Nil(),
+		gomock.Any(),
+		2,
+		int64(2),
+	).DoAndReturn(func(
+		_ context.Context,
+		_ uint64,
+		_ uint32,
+		_ client.TxnOperator,
+		vecs []*vector.Vector,
+		rows int,
+		_ int64,
+	) (uint64, error) {
+		require.Len(t, vecs, 2)
+		require.Equal(t, rows, vecs[1].GetNulls().Count())
+		for row := 0; row < rows; row++ {
+			vector.SetFixedAtNoTypeCheck(vecs[1], row, uint64(row+1))
+		}
+		vecs[1].SetNulls(nil)
+		return uint64(rows), nil
+	})
+
+	err := prepareLifecycleRestoreWriteBatch(
+		context.Background(),
+		value,
+		tableDef,
+		increments,
+		nil,
+		mp,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"payload", catalog.FakePrimaryKeyColName}, value.Attrs)
+	require.NotContains(t, value.Attrs, catalog.Row_ID)
+	require.Equal(t, []int64{11, 22}, vector.MustFixedColWithTypeCheck[int64](value.Vecs[0]))
+	require.Equal(t, []uint64{1, 2}, vector.MustFixedColWithTypeCheck[uint64](value.Vecs[1]))
+}
 
 func TestSQLRestoreInitializeOwnsLeaseTableAndAttemptInOneTransaction(t *testing.T) {
 	mp := mpool.MustNewZero()

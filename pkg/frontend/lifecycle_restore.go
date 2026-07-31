@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/matrixorigin/matrixone/pkg/catalog"
 	moruntime "github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/incrservice"
@@ -74,6 +75,9 @@ func handleRestoreArchiveDataset(
 	if databaseName == "" || tableName == "" {
 		return fmt.Errorf("Lifecycle Restore target database and table are required")
 	}
+	if err := validateLifecycleRestoreTargetName(tableName); err != nil {
+		return err
+	}
 	databaseID, err := lifecycleDatabaseID(
 		ctx,
 		sqlExecutor,
@@ -117,7 +121,7 @@ func handleRestoreArchiveDataset(
 			LeaseID:           uuid.NewString(),
 			Deadline:          time.Now().Add(24 * time.Hour),
 			StagingDatabaseID: databaseID,
-			HiddenName: "__mo_lifecycle_restore_" +
+			HiddenName: catalog.LifecycleRestoreTableNamePrefix +
 				strings.ReplaceAll(restoreID, "-", ""),
 			TargetDatabaseID:   databaseID,
 			TargetDatabaseName: databaseName,
@@ -158,6 +162,16 @@ func handleRestoreArchiveDataset(
 		dataset,
 		restoreAttempt,
 	)
+}
+
+func validateLifecycleRestoreTargetName(tableName string) error {
+	if catalog.IsLifecycleRestoreStagingTable(tableName) {
+		return fmt.Errorf(
+			"Lifecycle Restore target cannot use the reserved canonical staging name %s",
+			tableName,
+		)
+	}
+	return nil
 }
 
 func lifecycleRestoreAlreadyPublished(resumed bool, state string) bool {

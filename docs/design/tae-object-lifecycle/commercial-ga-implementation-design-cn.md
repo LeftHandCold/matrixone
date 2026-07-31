@@ -585,6 +585,16 @@ CAS lease + CREATE hidden + INSERT IMPORTING Attempt in one ordinary transaction
      Attempt DONE + clear lease + increment Dataset.version
 ```
 
+隐藏表名固定为大小写不敏感的精确形状
+`__mo_lifecycle_restore_<32位十六进制restore-id>`。frontend只对该精确名称做O(32)检查并
+拒绝用户访问或CREATE/RENAME；同前缀但不符合该形状的历史用户表不受影响。Lifecycle内部
+SQLExecutor继续复用普通CREATE/INSERT/RENAME/DROP，不新增权限表、relkind或Catalog查询。
+
+Chunk先按Archive逻辑列验证canonical hash；随后在同一普通Chunk事务中复用现有
+`incrservice.InsertValues`生成目标表普通DDL自带的fake PK，再调用`Relation.Write`。
+`Row_ID`是读取伪列，不进入写Batch；fake PK也不进入Archive Manifest、Chunk Receipt或
+内容Hash，不建设Lifecycle专用序列系统。
+
 Chunk事务不更新Hash；最终发布事务验证Receipt严格覆盖
 `0..Manifest.total_chunk_count-1`，并一次性写入`verified_content_hash`。每个Chunk必须在
 转换成最终MO vectors后再用canonical encoder重算Hash，不能Hash Parquet中间表示后直接
