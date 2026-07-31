@@ -50,7 +50,12 @@ const (
 	lifecycleMaxCertifiedBlockReadBytes = 256 << 20
 	lifecycleWholeBatchMaxSources       = 64
 	lifecycleWholeBatchMaxSourceBytes   = 4 << 30
+	lifecycleMetadataCompactionInterval = 5 * time.Minute
 )
+
+func lifecycleMetadataCompactionDue(last, now time.Time) bool {
+	return last.IsZero() || !now.Before(last.Add(lifecycleMetadataCompactionInterval))
+}
 
 type lifecycleObjectPlanInput struct {
 	Source objectio.ObjectEntry
@@ -207,8 +212,7 @@ func LifecycleTaskExecutorFactory(
 			)
 		var metadataErr error
 		now := time.Now()
-		if lastMetadataCompaction.IsZero() ||
-			now.Sub(lastMetadataCompaction) >= 24*time.Hour {
+		if lifecycleMetadataCompactionDue(lastMetadataCompaction, now) {
 			metadataAccountCursor, _, metadataErr =
 				(lifecyclepkg.SQLMetadataCompactor{Executor: sqlExecutor}).
 					CompactPage(

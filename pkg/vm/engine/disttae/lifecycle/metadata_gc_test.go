@@ -35,9 +35,9 @@ func TestSQLMetadataCompactorUsesBoundedTerminalDeletes(t *testing.T) {
 				result:    lifecycleAccountResult(t, mp, 17),
 			},
 			{
-				contains: `select root_id from mo_catalog.mo_lifecycle_cleanup_roots
+				contains: `select concat(hex(root_id),hex(attempt_id)) from mo_catalog.mo_lifecycle_cleanup_roots
 where owner_account_id=17 and mode='TTL_REWRITE'
-and state='COMMIT_UNKNOWN' limit 1`,
+and state='COMMIT_UNKNOWN' order by root_id limit 4097`,
 				accountID: 0,
 				result:    executor.Result{},
 			},
@@ -95,6 +95,8 @@ func TestSQLMetadataCompactorRejectsUnboundedConfiguration(t *testing.T) {
 
 func TestSQLMetadataCompactorKeepsTTLReceiptsForUnknownRewrite(t *testing.T) {
 	mp := mpool.MustNewZero()
+	rootID := "00112233445566778899AABBCCDDEEFF"
+	attemptID := "FFEEDDCCBBAA99887766554433221100"
 	fake := &scriptedLifecycleSQLExecutor{
 		t: t,
 		steps: []lifecycleSQLStep{
@@ -104,11 +106,15 @@ func TestSQLMetadataCompactorKeepsTTLReceiptsForUnknownRewrite(t *testing.T) {
 				result:    lifecycleAccountResult(t, mp, 17),
 			},
 			{
-				contains: `select root_id from mo_catalog.mo_lifecycle_cleanup_roots
+				contains: `select concat(hex(root_id),hex(attempt_id)) from mo_catalog.mo_lifecycle_cleanup_roots
 where owner_account_id=17 and mode='TTL_REWRITE'
-and state='COMMIT_UNKNOWN' limit 1`,
+and state='COMMIT_UNKNOWN' order by root_id limit 4097`,
 				accountID: 0,
-				result:    lifecycleAccountResult(t, mp, 1),
+				result: lifecycleStringResult(
+					t,
+					mp,
+					rootID+attemptID,
+				),
 			},
 			{
 				contains:    "delete from mo_catalog.mo_lifecycle_restore_chunks",
@@ -123,10 +129,18 @@ and state='COMMIT_UNKNOWN' limit 1`,
 				result:      executor.Result{AffectedRows: 1},
 			},
 			{
-				contains:    "delete from mo_catalog.mo_lifecycle_datasets",
-				notContains: "mo_lifecycle_ttl_receipts",
-				accountID:   17,
-				result:      executor.Result{AffectedRows: 1},
+				contains: `delete from mo_catalog.mo_lifecycle_ttl_receipts
+where created_at<'2026-07-02 00:00:00'
+and (root_id is null or attempt_id is null or not (
+  (root_id=unhex('00112233445566778899aabbccddeeff') and attempt_id=unhex('ffeeddccbbaa99887766554433221100'))
+)) limit 64`,
+				accountID: 17,
+				result:    executor.Result{AffectedRows: 8},
+			},
+			{
+				contains:  "delete from mo_catalog.mo_lifecycle_datasets",
+				accountID: 17,
+				result:    executor.Result{AffectedRows: 1},
 			},
 			{
 				contains:  "delete from mo_catalog.mo_lifecycle_cleanup_roots",
@@ -155,7 +169,7 @@ func TestTerminalLifecycleMetadataDeletesKeepPurgedDatasetsLonger(t *testing.T) 
 		terminalCutoff,
 		datasetCutoff,
 		64,
-		true,
+		nil,
 	)
 
 	require.Len(t, deletes, 4)

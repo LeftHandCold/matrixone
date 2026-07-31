@@ -230,6 +230,19 @@ func TestLifecycleCoordinatorRunSlotDoesNotQueueDuplicateRun(t *testing.T) {
 	releaseSecond()
 }
 
+func TestLifecycleMetadataCompactionRunsOnBoundedMaintenanceCadence(t *testing.T) {
+	now := time.Date(2026, 8, 1, 0, 5, 0, 0, time.UTC)
+	require.True(t, lifecycleMetadataCompactionDue(time.Time{}, now))
+	require.False(t, lifecycleMetadataCompactionDue(
+		now.Add(-lifecycleMetadataCompactionInterval+time.Nanosecond),
+		now,
+	))
+	require.True(t, lifecycleMetadataCompactionDue(
+		now.Add(-lifecycleMetadataCompactionInterval),
+		now,
+	))
+}
+
 func TestLifecycleDisabledContinuesMaintenanceAndSkipsBindingScan(t *testing.T) {
 	fake := &disabledLifecycleSQLExecutor{
 		t:  t,

@@ -365,13 +365,15 @@ Manifest中的全局最大值，不在Receipt中再维护第二份逐Chunk最大
 
 | 记录 | 可删除条件 | 默认审计窗口 |
 |---|---|---|
-| TTL Receipt | Binding不存在或已超过审计窗口，且无unknown Root引用 | 30天 |
+| TTL Receipt | Binding不存在或已超过审计窗口，且没有`root_id + attempt_id`精确匹配的unknown Root引用 | 30天 |
 | PURGED Dataset | Root已CLEANED且无Restore Attempt | 90天 |
 | CLEANED Root | quiescence结束、无Dataset/Restore引用 | 30天 |
 | DONE/FAILED Restore Attempt | 无lease、隐藏表已处理 | 30天 |
 | Restore Chunk Receipt | Restore终态且审计窗口结束 | 30天 |
 
 保留窗口可配置但有全局rows/bytes hard cap。到达cap时暂停Lifecycle，不影响普通MO。
+回收按5分钟一个有界account page持续推进，而不是每天只回收一页；单个unknown Root只
+保留自己的Receipt，不能阻塞同账户其他Binding的终态回收。
 
 ## 12. DDL与依赖发布fence
 

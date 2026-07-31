@@ -16,12 +16,17 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
 )
+
+const maxUnknownTTLRewriteRoots = 4096
 
 // SQLMetadataCompactor bounds only terminal Lifecycle metadata. It is paged
 // by account and every DELETE has a row cap, so cleanup never becomes a
@@ -71,7 +76,7 @@ func (compactor SQLMetadataCompactor) CompactPage(
 	}
 	datasetCutoff := lifecycleSQLTime(now.Add(-datasetRetention))
 	for _, accountID := range accounts {
-		keepTTLReceipts, checkErr := compactor.hasUnknownTTLRewriteRoot(
+		protectedTTLAttempts, checkErr := compactor.unknownTTLRewriteAttempts(
 			ctx,
 			accountID,
 		)
@@ -82,7 +87,7 @@ func (compactor SQLMetadataCompactor) CompactPage(
 			terminalCutoff,
 			datasetCutoff,
 			maxRows,
-			!keepTTLReceipts,
+			protectedTTLAttempts,
 		) {
 			result, execErr := compactor.Executor.Exec(
 				ctx,
@@ -116,25 +121,58 @@ where state='CLEANED' and updated_at<%s limit %d`,
 	return nextAccountID, wrapped, nil
 }
 
-func (compactor SQLMetadataCompactor) hasUnknownTTLRewriteRoot(
+// unknownTTLRewriteAttempts returns the exact TTL Receipt owners which must
+// remain available while a final transaction is unresolved. Protecting the
+// entire tenant would let one long-lived unknown Root prevent unrelated
+// Receipts from ever reaching their retention endpoint.
+func (compactor SQLMetadataCompactor) unknownTTLRewriteAttempts(
 	ctx context.Context,
 	accountID uint32,
-) (bool, error) {
+) ([]string, error) {
 	result, err := compactor.Executor.Exec(
 		ctx,
 		fmt.Sprintf(
-			`select root_id from mo_catalog.mo_lifecycle_cleanup_roots
+			`select concat(hex(root_id),hex(attempt_id)) from mo_catalog.mo_lifecycle_cleanup_roots
 where owner_account_id=%d and mode='TTL_REWRITE'
-and state='COMMIT_UNKNOWN' limit 1`,
+and state='COMMIT_UNKNOWN' order by root_id limit %d`,
 			accountID,
+			maxUnknownTTLRewriteRoots+1,
 		),
 		executor.Options{}.WithAccountID(catalog.System_Account),
 	)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer result.Close()
-	return lifecycleResultHasRows(result), nil
+	protected := make([]string, 0)
+	var decodeErr error
+	result.ReadRows(func(rows int, columns []*vector.Vector) bool {
+		if len(columns) != 1 {
+			decodeErr = fmt.Errorf(
+				"Lifecycle unknown TTL Root query is invalid",
+			)
+			return false
+		}
+		for row := 0; row < rows; row++ {
+			identity := strings.ToLower(columns[0].GetStringAt(row))
+			decoded, decodeIdentityErr := hex.DecodeString(identity)
+			if decodeIdentityErr != nil || len(decoded) != 32 {
+				decodeErr = fmt.Errorf(
+					"Lifecycle unknown TTL Root identity is invalid",
+				)
+				return false
+			}
+			protected = append(protected, identity)
+			if len(protected) > maxUnknownTTLRewriteRoots {
+				decodeErr = fmt.Errorf(
+					"RESOURCE_BLOCKED: Lifecycle unknown TTL Root limit exceeded",
+				)
+				return false
+			}
+		}
+		return true
+	})
+	return protected, decodeErr
 }
 
 func (compactor SQLMetadataCompactor) listAccounts(
@@ -164,7 +202,7 @@ func terminalLifecycleMetadataDeletes(
 	terminalCutoff string,
 	datasetCutoff string,
 	limit int,
-	includeTTLReceipts bool,
+	protectedTTLAttempts []string,
 ) []string {
 	deletes := []string{
 		fmt.Sprintf(
@@ -187,14 +225,34 @@ and not exists (
 			limit,
 		),
 	}
-	if includeTTLReceipts {
-		deletes = append(deletes, fmt.Sprintf(
-			`delete from mo_catalog.mo_lifecycle_ttl_receipts
-where created_at<%s limit %d`,
-			terminalCutoff,
-			limit,
-		))
+	ttlDelete := fmt.Sprintf(
+		`delete from mo_catalog.mo_lifecycle_ttl_receipts
+where created_at<%s`,
+		terminalCutoff,
+	)
+	if len(protectedTTLAttempts) > 0 {
+		var protected strings.Builder
+		protected.WriteString(
+			"\nand (root_id is null or attempt_id is null or not (\n",
+		)
+		for index, identity := range protectedTTLAttempts {
+			if index > 0 {
+				protected.WriteString("  or ")
+			} else {
+				protected.WriteString("  ")
+			}
+			fmt.Fprintf(
+				&protected,
+				"(root_id=unhex('%s') and attempt_id=unhex('%s'))\n",
+				identity[:32],
+				identity[32:],
+			)
+		}
+		protected.WriteString("))")
+		ttlDelete += protected.String()
 	}
+	ttlDelete += fmt.Sprintf(" limit %d", limit)
+	deletes = append(deletes, ttlDelete)
 	return append(deletes,
 		fmt.Sprintf(
 			`delete from mo_catalog.mo_lifecycle_datasets
