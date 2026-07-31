@@ -30,42 +30,13 @@ func TestRewriteAdmissionAmplificationAndWindowBudgets(t *testing.T) {
 	})
 	require.NoError(t, err)
 	now := time.Unix(3600, 0)
-	require.Error(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:            1,
-		SourceBytes:          50,
-		RetiredPressureBytes: 10,
-		Now:                  now,
-	}))
-	require.NoError(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:            1,
-		SourceBytes:          60,
-		RetiredPressureBytes: 20,
-		Now:                  now,
-	}))
-	require.Error(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:            1,
-		SourceBytes:          60,
-		RetiredPressureBytes: 20,
-		Now:                  now,
-	}))
-	require.NoError(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:            2,
-		SourceBytes:          90,
-		RetiredPressureBytes: 30,
-		Now:                  now,
-	}))
-	require.Error(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:            3,
-		SourceBytes:          1,
-		RetiredPressureBytes: 1,
-		Now:                  now,
-	}))
-	require.NoError(t, admission.Admit(RewriteAdmissionRequest{
-		AccountID:            1,
-		SourceBytes:          100,
-		RetiredPressureBytes: 25,
-		Now:                  now.Add(time.Hour),
-	}))
+	require.ErrorContains(t, admission.CheckAmplification(50, 10), "rewrite amplification")
+	require.NoError(t, admission.CheckAmplification(60, 20))
+	require.NoError(t, admission.ReserveSource(1, 60, now))
+	require.ErrorContains(t, admission.ReserveSource(1, 60, now), "account Rewrite byte window exhausted")
+	require.NoError(t, admission.ReserveSource(2, 90, now))
+	require.ErrorContains(t, admission.ReserveSource(3, 1, now), "cluster Rewrite byte window exhausted")
+	require.NoError(t, admission.ReserveSource(1, 100, now.Add(time.Hour)))
 }
 
 func TestRewriteAdmissionReservesSourceBeforeClassification(t *testing.T) {
@@ -87,25 +58,4 @@ func TestRewriteAdmissionReservesSourceBeforeClassification(t *testing.T) {
 		"rewrite amplification",
 	)
 	require.NoError(t, admission.CheckAmplification(30, 20))
-}
-
-func TestRewriteAdmissionOwnerHandoffWaitsForNextFixedWindow(t *testing.T) {
-	admission, err := NewRewriteAdmission(RewriteReleaseProfile{
-		Window:                   time.Hour,
-		MaxAmplification:         4,
-		MaxSourceBytesPerAccount: 100,
-		MaxSourceBytesPerCluster: 150,
-	})
-	require.NoError(t, err)
-	now := time.Unix(3700, 0)
-	require.NoError(t, admission.HoldUntilNextWindow(now))
-	require.ErrorContains(t,
-		admission.ReserveSource(1, 10, now),
-		"owner handoff",
-	)
-	require.NoError(t, admission.ReserveSource(
-		1,
-		10,
-		now.Truncate(time.Hour).Add(time.Hour),
-	))
 }

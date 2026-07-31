@@ -217,7 +217,7 @@ pkg/vm/engine/disttae/types.go             nil-by-default control pointer
 
 - external booking path allocator和Owner；
 - Merge txn entry的`CreatedObjectOwnedByLifecycleRoot`可选模式，普通默认不变；
-- Tombstone visitor可配置起点/预算；
+- 复用普通Tombstone scanner，并仅用其可选`maxRows`做Lifecycle N+1行数准入；
 - thin entry dispatch；
 - unknown Entry安全解析。
 

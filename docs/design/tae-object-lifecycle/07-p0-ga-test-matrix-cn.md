@@ -217,12 +217,13 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - `rewrite_amplification`低于、等于、高于release profile边界；
 - 1% expired的最大Object连续多轮不会无限重写live data；
 - account/cluster固定窗口source bytes按开始读取的attempt计费，失败重试不返还；
-- Coordinator切换在当前窗口保守停止Rewrite，不能重置预算；
-- Restore按Dataset logical bytes执行account/cluster active staging准入；
-- 两个CN并发Restore初始化必须由现有feature row短锁串行；前一事务提交后，后一事务在同一
-  普通事务中看到新Attempt并重新计算容量，不能共同越过account/cluster hard cap；
+- Coordinator切换后Rewrite重新开始本地窗口计数；反复重启必须通过active-coexistence门禁，
+  不为跨重启精确预算增加持久协议或整日blackout；
+- Restore按Dataset logical bytes执行account精确准入，cluster总量作为认证/监控边界；
+- 同账户两个CN并发Restore初始化必须由现有account row lock串行；前一事务提交后，后一事务
+  看到新Attempt并重新计算容量，不能共同越过account hard cap；不同账户不能被全局锁串行；
 - 前一初始化事务abort时不留下reservation，response lost/late commit由普通事务结果和
-  Attempt身份对账；账户枚举、lock wait或30秒deadline超限必须在Dataset lease、隐藏表和
+  Attempt身份对账；账户锁、account统计或30秒deadline超限必须在Dataset lease、隐藏表和
   Attempt首次副作用前fail-closed；
 - cleanup backlog cap暂停Archive Whole/Rewrite和TTL Rewrite等所有Root creator；
 - `max-bound-tables`只作为认证集群上限，不生成分布式Slot。
@@ -255,7 +256,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - TTL E DELETE保守abort路径；
 - Whole Archive post-S DELETE abort；
 - phase 1/2错误不吞；
-- delta rows/bytes/blocks/deadline；
+- delta rows N+1提前停止、返回Batch bytes/blocks拒绝，以及公共scanner结构上限下的峰值；
 - Prepare后旧RowID DELETE冲突；
 - BigDelete guard与多个小事务累计路径。
 
@@ -281,14 +282,16 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - 一页0/1/max Object；
 - maxMetaBytes先命中；
 - Lifecycle列为sort key时不额外读metadata；
-- 非sort key只加载目标seqnum ZoneMap并受requests/bytes限制；
+- 非sort key复用FastLoadObjectMeta加载已有metadata extent，只取目标seqnum的Object级
+  ZoneMap，并受requests/bytes限制；
+- metadata预算只消费有序前缀，cursor不得越过未分类Object；
 - ZoneMap缺失/截断/seqnum变化进入Reader classify；
 - evaluation_time重试不漂移，UTC/DATE/DATETIME时区和DST golden test；
 - cursor stale重置；
 - merge新增Object排在cursor前；
 - end wrap；
-- 强制full_scan_interval，并覆盖超期reset的第一页未到End时下一tick继续第二页、不会重复
-  reset；
+- full_scan_interval只在无进行中cursor时启动新cycle，并覆盖cycle超期但第一页未到End时
+  下一tick继续第二页、不会反复reset；
 - 百万Object不构造全表slice；
 - 持续Merge下没有永久饥饿；
 - 大量无Binding tenant时，一轮Coordinator最多消费配置的Binding分页数，cursor在下轮继续，
@@ -334,8 +337,8 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - schema digest变化；
 - finalizer与DDL同时到达。
 - 首次SET与Snapshot/PITR/Publication/Clone/Branch创建同时到达；
-- 当前生产使用的悲观事务下`SET LIFECYCLE`的`mo_tables -> feature row`锁顺序，以及
-  普通表DDL不取得feature row；Phase 1不为未启用的乐观事务另建write barrier；
+- 当前生产悲观事务下`SET LIFECYCLE`的`mo_tables -> feature row`锁顺序，以及普通表DDL
+  不取得feature row；
 - feature关闭时只允许历史Cleanup Root的有界reconcile/sweep、过期Restore隐藏表清理和
   终态元数据压缩，不启动Binding调度、新Restore或数据路径；未绑定表的普通查询/DML/Merge
   不访问Lifecycle元数据，可能冲突的管理DDL仍只走一次有界控制面检查；

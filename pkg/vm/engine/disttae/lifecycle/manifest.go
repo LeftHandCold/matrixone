@@ -136,8 +136,6 @@ type archiveSchemaColumnV1Wire struct {
 	NotNull           bool   `json:"not_null"`
 	AutoIncrement     bool   `json:"auto_increment"`
 	DefaultExpression string `json:"default_expression,omitempty"`
-	Charset           string `json:"charset,omitempty"`
-	Collation         string `json:"collation,omitempty"`
 }
 
 type archiveFileV1Wire struct {
@@ -345,9 +343,7 @@ func validateArchiveSchemaShape(schema SchemaDescriptor) error {
 			return fmt.Errorf("Lifecycle archive schema column identity is invalid")
 		}
 		if !validArchiveManifestString(column.EnumValues, maxArchiveManifestString, false) ||
-			!validArchiveManifestString(column.DefaultExpression, maxArchiveManifestString, false) ||
-			!validArchiveManifestString(column.Charset, maxArchiveSQLNameBytes, false) ||
-			!validArchiveManifestString(column.Collation, maxArchiveSQLNameBytes, false) {
+			!validArchiveManifestString(column.DefaultExpression, maxArchiveManifestString, false) {
 			return fmt.Errorf("Lifecycle archive schema column metadata exceeds limit")
 		}
 		if !isPhase1ArchiveColumnSupported(
@@ -436,8 +432,6 @@ func archiveSchemaToV1Wire(schema SchemaDescriptor) archiveSchemaDescriptorV1Wir
 			NotNull:           column.NotNull,
 			AutoIncrement:     column.AutoIncrement,
 			DefaultExpression: column.DefaultExpression,
-			Charset:           column.Charset,
-			Collation:         column.Collation,
 		}
 	}
 	return wire
@@ -586,8 +580,6 @@ func archiveSchemaFromV1Wire(wire archiveSchemaDescriptorV1Wire) (SchemaDescript
 			NotNull:           wireColumn.NotNull,
 			AutoIncrement:     wireColumn.AutoIncrement,
 			DefaultExpression: wireColumn.DefaultExpression,
-			Charset:           wireColumn.Charset,
-			Collation:         wireColumn.Collation,
 		}
 	}
 	return schema, nil

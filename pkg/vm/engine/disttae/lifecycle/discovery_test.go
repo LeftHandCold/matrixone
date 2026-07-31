@@ -94,7 +94,7 @@ func TestDiscoverObjectPageCarriesBoundedCursor(t *testing.T) {
 	require.Equal(t, uint64(4096), source.calls[0].maxBytes)
 }
 
-func TestDiscoverObjectPageWrapAndFullScanReset(t *testing.T) {
+func TestDiscoverObjectPageCompletesOverdueInProgressCycle(t *testing.T) {
 	entry := lifecycleTestObjectEntry(t, 9)
 	oldLast := *entry.ObjectShortName()
 	now := time.Unix(2000, 0)
@@ -118,13 +118,14 @@ func TestDiscoverObjectPageWrapAndFullScanReset(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Nil(t, source.calls[0].after, "expired full-scan cursor must reset")
+	require.NotNil(t, source.calls[0].after)
+	require.Equal(t, oldLast, *source.calls[0].after)
 	require.True(t, page.EndOfCycle)
 	require.True(t, page.Next.Wrapped)
 	require.Equal(t, now, page.CompletedFullScanAt)
 }
 
-func TestDiscoverObjectPagePersistsResetAnchorOnlyOncePerCycle(t *testing.T) {
+func TestDiscoverObjectPageDoesNotResetInProgressCycleAfterInterval(t *testing.T) {
 	firstEntry := lifecycleTestObjectEntry(t, 10)
 	firstLast := *firstEntry.ObjectShortName()
 	secondEntry := lifecycleTestObjectEntry(t, 11)
@@ -140,6 +141,7 @@ func TestDiscoverObjectPagePersistsResetAnchorOnlyOncePerCycle(t *testing.T) {
 			Objects:        []objectio.ObjectEntry{secondEntry},
 			LastObjectName: &secondLast,
 		},
+		{End: true},
 		{End: true},
 	}}
 	request := DiscoveryRequest{
@@ -171,8 +173,19 @@ func TestDiscoverObjectPagePersistsResetAnchorOnlyOncePerCycle(t *testing.T) {
 	request.Cursor = second.Next
 	third, err := DiscoverObjectPage(context.Background(), source, request)
 	require.NoError(t, err)
-	require.Nil(t, source.calls[2].after)
-	require.Equal(t, request.Now, third.StartedFullScanAt)
+	require.NotNil(t, source.calls[2].after)
+	require.Equal(t, secondLast, *source.calls[2].after)
+	require.True(t, third.StartedFullScanAt.IsZero())
+	require.True(t, third.Next.Wrapped)
+	require.Equal(t, request.Now, third.CompletedFullScanAt)
+
+	request.Now = now.Add(2*time.Hour + time.Minute)
+	request.LastFullScanAt = third.CompletedFullScanAt
+	request.Cursor = third.Next
+	fourth, err := DiscoverObjectPage(context.Background(), source, request)
+	require.NoError(t, err)
+	require.Nil(t, source.calls[3].after)
+	require.Equal(t, request.Now, fourth.StartedFullScanAt)
 }
 
 func TestDiscoverObjectPageKeepsObjectNameHintAcrossSnapshots(t *testing.T) {

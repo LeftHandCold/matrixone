@@ -46,12 +46,13 @@ func ScanLifecycleObjects(
 - Snapshot stale时返回类型化错误并重开cycle；
 - cursor只作为hint，不参与正确性；
 - 完整cycle到末尾必须wrap；
-- `full_scan_interval`到期强制从头开始，防止持续Merge导致饥饿；
+- `full_scan_interval`只在没有进行中cursor时启动新cycle；已经向后推进的cycle必须先到达
+  表尾再wrap，禁止因interval到期反复回到表头而饿死尾部；
 - 每个Binding记录`last_full_scan_at`作为当前cycle的持久anchor：新Binding、自然wrap或
   interval reset的第一个成功page更新一次，真正到达末尾时再更新为完成时间；禁止只在
   到达末尾时更新，否则超期但第一页未到末尾时会在每个tick反复回到第一页；
-- 任何Object从进入到期区间到被再次观察的最大延迟不超过
-  `max(full_scan_interval, scheduler_backlog_slo)`，超限告警并停止扩大放量。
+- 完整cycle耗时和scheduler backlog分别监控；任一超过认证SLO即告警并停止扩大放量，
+  不能通过回退cursor伪造扫描周期达标。
 
 ## 3. Lifecycle列Metadata分类
 
@@ -63,10 +64,13 @@ Lifecycle列 == 当前物理sort key
   -> 直接使用ObjectStats.SortKeyZoneMap
 
 Lifecycle列 != sort key
-  -> 根据ObjectLocation有界range-read Object metadata/ZoneMap area
-  -> 只加载lifecycle column seqnum对应的Block ZoneMap
-  -> 聚合Object min/max
+  -> 根据ObjectLocation有界加载现有ObjectMeta extent
+  -> 从DataMeta中取得lifecycle column seqnum对应的Object级ZoneMap
 ```
+
+当前ObjectMeta是整体压缩的metadata extent，不能承诺只range-read单列ZoneMap；实现复用
+`FastLoadObjectMeta`及MO已有metadata cache，不新增Object Index或Lifecycle私有cache，也不读取
+数据行。
 
 Binding保存稳定Column ID；每个cycle在固定schema digest下解析为物理seqnum。映射失败或
 schema变化立即停止该page并重新规划。
@@ -80,8 +84,10 @@ provider metadata-read concurrency
 deadline/cache hit ratio
 ```
 
-任何上限命中都结束当前page并保存cursor，不退化为一次性全表I/O。ZoneMap area缺失、
-类型不匹配、min/max截断或校验失败时，标记`READER_CLASSIFY`，由Exact Reader读取。
+任何上限命中都只消费当前page的有序前缀并把cursor保存到最后一个已分类Object，不退化为
+一次性全表I/O，也不能跳过未分类尾部。ZoneMap未初始化、类型不匹配或min/max截断时，
+标记`READER_CLASSIFY`，由Exact Reader读取；ObjectMeta读取、解码或DataMeta校验失败时，
+当前page直接fail-closed并重试，不能把I/O/损坏错误误判成有效分类。
 
 对于Lifecycle列有可信ZoneMap的Object：
 
@@ -300,8 +306,6 @@ columns[] {
   width
   scale
   nullable
-  charset
-  collation
   auto_increment
 }
 schema_descriptor_digest
@@ -520,7 +524,7 @@ schema:
 
 schema.columns[]:
   ordinal, source_column_id, name, type_id, width, scale,
-  enum_values?, not_null, auto_increment, default_expression?, charset?, collation?
+  enum_values?, not_null, auto_increment, default_expression?
 
 files[]:
   file_ordinal, key, size, sha256, chunks

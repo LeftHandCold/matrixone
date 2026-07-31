@@ -93,7 +93,7 @@ func TombstoneRangeScanByObject(
 	mp *mpool.MPool,
 	vpool *containers.VectorPool,
 ) (bat *containers.Batch, err error) {
-	return tombstoneRangeScanByObject(
+	return TombstoneRangeScanByObjectWithMaxRows(
 		ctx,
 		tableEntry,
 		objectID,
@@ -102,6 +102,31 @@ func TombstoneRangeScanByObject(
 		mp,
 		vpool,
 		0,
+	)
+}
+
+// TombstoneRangeScanByObjectWithMaxRows reuses the ordinary Merge scanner but
+// stops after maxRows matching rows. A zero limit preserves the ordinary Merge
+// behavior. Lifecycle uses an N+1 probe to enforce its per-attempt row budget
+// without introducing a second tombstone reader.
+func TombstoneRangeScanByObjectWithMaxRows(
+	ctx context.Context,
+	tableEntry *catalog.TableEntry,
+	objectID objectio.ObjectId,
+	start, end types.TS,
+	mp *mpool.MPool,
+	vpool *containers.VectorPool,
+	maxRows uint64,
+) (bat *containers.Batch, err error) {
+	return tombstoneRangeScanByObject(
+		ctx,
+		tableEntry,
+		objectID,
+		start,
+		end,
+		mp,
+		vpool,
+		maxRows,
 	)
 }
 

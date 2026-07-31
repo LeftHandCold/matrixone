@@ -45,7 +45,11 @@ func genWriteReqs(
 	}
 	var tnID string
 	var tn metadata.TNService
-	entries := make([]*api.Entry, 0, len(writes)+1)
+	entryCapacity := len(writes)
+	if txnCommit.lifecycleCommitControl != nil {
+		entryCapacity++
+	}
+	entries := make([]*api.Entry, 0, entryCapacity)
 	if control := txnCommit.lifecycleCommitControl; control != nil {
 		tnID = control.TNStore.ServiceID
 		tn = control.TNStore

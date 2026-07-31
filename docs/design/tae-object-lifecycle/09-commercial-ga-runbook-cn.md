@@ -61,9 +61,12 @@ Provider审计日志证明；它不是Lifecycle在每次PUT中注入的请求hea
 - 立即停止新 Binding、Discovery和新Archive/TTL child；
 - 已经进入执行的child可能完成当前Archive/readback/final transaction。运维必须等待
   Lifecycle in-flight指标归零，并在整个drain与后续Backup窗口保持gate关闭；
-- 已存在的 Cleanup Root reconciliation、Provider cleanup、Restore 超时隐藏表清理和
-  终态元数据回收继续运行；
+- 已存在的 Cleanup Root reconciliation、Provider cleanup、Purge、Restore超时隐藏表清理和
+  终态元数据回收继续运行；新Restore与其他新工作一样停止；
 - 不删除 `COMMIT_UNKNOWN` Root，不猜测普通 MO 事务终态。
+
+`ALTER/DROP STAGE`和`REMOVE @stage/...`都是Stage控制面操作：当Stage仍被Binding或
+非`PURGED` Dataset引用时必须拒绝，避免绕过Cleanup Root直接删除已发布Payload。
 
 Phase 1物理Backup不复制Archive Payload。`enabled=true`期间`BACKUP`会显式拒绝；仅关闭
 release gate和等待在途child收敛仍不够，因为Binding、已发布Dataset与Payload继续存在。
@@ -96,8 +99,8 @@ Gate F 的 TTL small-Mixed `Relation.Delete` 是可关闭优化。未单独认�
 
 ## 4. 认证执行
 
-使用 [certification harness](../../../tools/lifecycle-certification/README.md)
-生成可重放 SQL、前后指标和机器可读 evidence。必须分别执行：
+真实集群认证沿用MO现有部署、BVT、监控和故障演练工具；本功能不在仓库内新增一套
+SQL集群测试框架。进入发布认证阶段后必须分别执行：
 
 - 常见单表 1 TiB；
 - 单表 10 TiB 认证边界；
@@ -105,7 +108,7 @@ Gate F 的 TTL small-Mixed `Relation.Delete` 是可关闭优化。未单独认�
 - 最大 Object、超大 varlen、高压缩率 Row Group；
 - 30 天真实 elapsed soak。
 
-`MO_LIFECYCLE_DRY_RUN=1` 只证明计划可生成，不是容量证据。30 天 soak 每日保留：
+预演只证明计划可生成，不是容量证据。30 天 soak 每日保留：
 
 - evidence JSON 和 SQL log；
 - `mo_lifecycle_*` 指标；

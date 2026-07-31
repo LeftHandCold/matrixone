@@ -50,6 +50,8 @@ type lifecycleCommitStoreProvider interface {
 	LifecycleCommitStore() (DNStore, error)
 }
 
+var _ lifecycleCommitStoreProvider = (*txnTableDelegate)(nil)
+
 // TxnLifecycleFinalCommitter uses one private ordinary MO transaction. The
 // only Lifecycle-specific operation is the thin retire control appended after
 // the Dataset and Binding CAS writes.
@@ -502,6 +504,10 @@ func (tbl *txnTable) LifecycleCommitStore() (DNStore, error) {
 		return DNStore{}, fmt.Errorf("Lifecycle table has no TN route")
 	}
 	return transaction.tnStores[0], nil
+}
+
+func (tbl *txnTableDelegate) LifecycleCommitStore() (DNStore, error) {
+	return tbl.origin.LifecycleCommitStore()
 }
 
 func lifecycleCatalogUUID(value string) (string, error) {

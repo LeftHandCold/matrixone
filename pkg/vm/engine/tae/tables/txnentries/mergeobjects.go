@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -448,7 +449,19 @@ func (entry *mergeObjectsEntry) transferObjectDeletes(
 		return
 	}
 	inst := time.Now()
-	bat, err := tables.TombstoneRangeScanByObject(
+	maxRows := uint64(0)
+	if entry.lifecycleRewrite {
+		if entry.deltaRows >= entry.maxDeltaRows {
+			return 0, 0, 0, moerr.NewInternalErrorNoCtx(
+				"Lifecycle Rewrite post-snapshot Tombstone budget exceeded",
+			)
+		}
+		remaining := entry.maxDeltaRows - entry.deltaRows
+		if remaining < math.MaxUint64 {
+			maxRows = remaining + 1
+		}
+	}
+	bat, err := tables.TombstoneRangeScanByObjectWithMaxRows(
 		ctx,
 		dropped.GetTable(),
 		*dropped.ID(),
@@ -456,6 +469,7 @@ func (entry *mergeObjectsEntry) transferObjectDeletes(
 		to,
 		common.MergeAllocator,
 		entry.rt.VectorPool.Small,
+		maxRows,
 	)
 	if err != nil {
 		return

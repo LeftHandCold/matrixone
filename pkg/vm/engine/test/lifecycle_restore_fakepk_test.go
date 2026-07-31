@@ -125,6 +125,15 @@ func TestLifecycleRestoreNoPKTableThroughCNToTN(t *testing.T) {
 		systemCtx,
 		sqlExecutor,
 		catalog.System_Account,
+		`insert into mo_catalog.mo_account(
+account_id,account_name,admin_name,status,created_time,comments,version,create_version)
+values(1,'lifecycle_restore_test','admin','open',utc_timestamp(),'test fixture',1,'test')`,
+	)
+	mustExecLifecycleRestoreSQL(
+		t,
+		systemCtx,
+		sqlExecutor,
+		catalog.System_Account,
 		frontend.MoCatalogMoISCPLogDDL,
 	)
 	mustExecLifecycleRestoreSQL(
@@ -259,7 +268,6 @@ utc_timestamp(),utc_timestamp())`,
 		MPool:                            mp,
 		AutoIncrement:                    autoIncrement,
 		MaxRestoreStagingBytesPerAccount: 2 * datasetLogicalCap,
-		MaxRestoreStagingBytesPerCluster: 4 * datasetLogicalCap,
 	}
 	attempt, err := repository.Initialize(
 		ctx,

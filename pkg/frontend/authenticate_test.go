@@ -12553,13 +12553,26 @@ func TestDoRemoveStageFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
 
 	rs := tree.NewRemoveStageFiles(false, "stage://mystage/a.txt")
-	err := doRemoveStageFiles(ctx, ses, rs)
+	err := doRemoveStageFilesWithLifecycleFence(
+		ctx,
+		ses,
+		rs,
+		func(stageName string, mutation func() error) error {
+			require.Equal(t, "mystage", stageName)
+			return mutation()
+		},
+	)
 	require.NoError(t, err)
 	_, err = os.Stat(filePath)
 	require.True(t, os.IsNotExist(err))
 
 	rs = tree.NewRemoveStageFiles(false, "file:///tmp/a.txt")
-	err = doRemoveStageFiles(ctx, ses, rs)
+	err = doRemoveStageFilesWithLifecycleFence(
+		ctx,
+		ses,
+		rs,
+		func(string, func() error) error { return nil },
+	)
 	require.Error(t, err)
 
 	tenant := &TenantInfo{
@@ -12572,7 +12585,12 @@ func TestDoRemoveStageFiles(t *testing.T) {
 	}
 	ses.SetTenantInfo(tenant)
 	rs = tree.NewRemoveStageFiles(false, "stage://mystage/a.txt")
-	err = doRemoveStageFiles(ctx, ses, rs)
+	err = doRemoveStageFilesWithLifecycleFence(
+		ctx,
+		ses,
+		rs,
+		func(string, func() error) error { return nil },
+	)
 	require.Error(t, err)
 }
 

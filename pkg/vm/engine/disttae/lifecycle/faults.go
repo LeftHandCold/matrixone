@@ -105,7 +105,7 @@ func (MOFaultInjector) Inject(
 type FaultAction func(context.Context, uint64) error
 
 // ProgrammableFaultInjector is shared by deterministic unit tests and
-// external chaos harnesses. It is scoped to Lifecycle and has no global
+// MO's existing fault/chaos plane. It is scoped to Lifecycle and has no global
 // failpoint registry or ordinary-MO hot-path check.
 type ProgrammableFaultInjector struct {
 	mu      sync.Mutex

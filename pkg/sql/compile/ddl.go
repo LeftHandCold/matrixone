@@ -203,6 +203,14 @@ func (s *Scope) DropDatabase(c *Compile) error {
 			return err
 		}
 		existingRelations = append(existingRelations, r)
+		// Restore staging names are reserved from frontend SQL. DROP DATABASE
+		// must nevertheless preserve ordinary owner-drop semantics; skip the
+		// nested frontend DROP TABLE and let the existing database delete own it,
+		// just as it already owns partition/index child relations.
+		if catalog.IsLifecycleRestoreStagingTable(r) {
+			ignoreTables = append(ignoreTables, r)
+			continue
+		}
 
 		if features.IsPartition(t.GetExtraInfo().FeatureFlag) ||
 			features.IsIndexTable(t.GetExtraInfo().FeatureFlag) {
@@ -4879,17 +4887,20 @@ func (s *Scope) CreatePitr(c *Compile) error {
 	if err != nil {
 		return err
 	}
-	if err = c.lockLifecycleDependencyPublication(); err != nil {
-		return err
-	}
 
 	// INTERNAL PITR creation bypasses the frontend path. Cross the same stable
-	// publication barrier as frontend snapshot/PITR creation before refreshing
-	// the target object ID, and retain the write until the PITR row commits.
+	// publication barriers, in the same global order as frontend Snapshot/PITR,
+	// before refreshing the target object ID. Retain both writes until the PITR
+	// row commits.
 	// This prevents COPY ALTER from swapping the table generation between
 	// planning and publication.
 	pitrObjectID, err := preparePitrPublication(
-		c.lockDataBranchLineageOwnerPublication,
+		func() error {
+			return lockPitrDependencyPublications(
+				c.lockDataBranchLineageOwnerPublication,
+				c.lockLifecycleDependencyPublication,
+			)
+		},
 		func() error {
 			txnMeta := c.proc.GetTxnOperator().Txn()
 			if shouldAdvanceAlterDataBranchLineageSnapshot(
@@ -5079,6 +5090,16 @@ func preparePitrPublication(
 		return 0, err
 	}
 	return resolveObjectID()
+}
+
+func lockPitrDependencyPublications(
+	lockSnapshot func() error,
+	lockLifecycle func() error,
+) error {
+	if err := lockSnapshot(); err != nil {
+		return err
+	}
+	return lockLifecycle()
 }
 
 func (c *Compile) resolveCurrentPitrObjectID(createPitr *plan.CreatePitr) (uint64, error) {

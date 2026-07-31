@@ -26,6 +26,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/features"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
@@ -71,6 +72,7 @@ func lifecycleTableDef(columnType types.T) *plan.TableDef {
 		DbId:      7,
 		Name:      "events",
 		DbName:    "db",
+		TableType: catalog.SystemOrdinaryRel,
 		Version:   3,
 		Cols: []*plan.ColDef{
 			{
@@ -104,6 +106,24 @@ func TestValidateLifecyclePolicy(t *testing.T) {
 			require.NotEqual(t, [32]byte{}, digest)
 		})
 	}
+}
+
+func TestValidateLifecyclePolicyAcceptsEngineNullabilityRepresentation(t *testing.T) {
+	def := lifecycleTableDef(types.T_timestamp)
+	// disttae reconstructs NOT NULL from Attribute.Default into the plan type;
+	// ColDef.NotNull is not populated on that read path.
+	def.Cols[1].NotNull = false
+	def.Cols[1].Typ.NotNullable = true
+	_, _, err := validateLifecyclePolicy(
+		context.Background(),
+		def,
+		tree.LifecyclePolicy{
+			Column:          "created_at",
+			ExpireAfterDays: 90,
+			Action:          tree.LifecycleActionDelete,
+		},
+	)
+	require.NoError(t, err)
 }
 
 func TestValidateLifecycleArchiveRequiresExplicitPurgeEligibility(t *testing.T) {
@@ -207,6 +227,25 @@ func TestValidateLifecyclePolicyRejectsUnsupportedTables(t *testing.T) {
 		name   string
 		mutate func(*plan.TableDef)
 	}{
+		{
+			name: "view",
+			mutate: func(def *plan.TableDef) {
+				def.TableType = catalog.SystemViewRel
+				def.ViewSql = &plan.ViewDef{}
+			},
+		},
+		{
+			name: "temporary table",
+			mutate: func(def *plan.TableDef) {
+				def.IsTemporary = true
+			},
+		},
+		{
+			name: "dynamic table",
+			mutate: func(def *plan.TableDef) {
+				def.IsDynamic = true
+			},
+		},
 		{
 			name: "nullable lifecycle column",
 			mutate: func(def *plan.TableDef) {
@@ -597,18 +636,25 @@ where rel_id=42 and reldatabase_id=7 for update`
 }
 
 func TestValidateLifecycleExistingDependenciesFailsClosed(t *testing.T) {
-	ctx := context.Background()
+	ctx := defines.AttachAccountId(context.Background(), 17)
 	definition := lifecycleTableDef(types.T_timestamp)
 	queries := []string{
 		`select snapshot_id from mo_catalog.mo_snapshots
-where (level in ('cluster','account')
+where ((level='account' and obj_id=17)
+or (level='database' and obj_id=7)
+or (level='table' and obj_id=42))
+limit 1`,
+		`select snapshot_id from mo_catalog.mo_snapshots
+where (level='cluster'
+or (level='account' and obj_id=17)
 or (level='database' and obj_id=7)
 or (level='table' and obj_id=42))
 limit 1`,
 		`select pitr_id from mo_catalog.mo_pitr
-where pitr_status=1 and (level in ('cluster','account')
+where pitr_status=1 and (level='cluster'
+or (account_id=17 and (level='account'
 or (level='database' and obj_id=7)
-or (level='table' and obj_id=42))
+or (level='table' and obj_id=42))))
 limit 1`,
 		`select task_id from mo_catalog.mo_cdc_watermark
 where account_id=17 and db_name='db' and table_name='events' limit 1`,
@@ -618,16 +664,17 @@ and (all_table=true or table_list='*' or find_in_set('events',table_list)>0)
 limit 1`,
 	}
 	for index, dependency := range []string{
-		"Snapshot", "PITR", "CDC", "Publication",
+		"Snapshot", "Snapshot", "PITR", "CDC", "Publication",
 	} {
-		background := &backgroundExecTest{}
-		background.init()
+		base := &backgroundExecTest{}
+		base.init()
+		background := &lifecycleDependencyContextExec{backgroundExecTest: base}
 		for queryIndex, query := range queries {
 			rows := [][]interface{}(nil)
 			if queryIndex == index {
 				rows = [][]interface{}{{"dependency"}}
 			}
-			background.sql2result[query] = newMrsForPasswordOfUser(rows)
+			base.sql2result[query] = newMrsForPasswordOfUser(rows)
 		}
 		err := validateLifecycleExistingDependencies(
 			ctx,
@@ -637,12 +684,15 @@ limit 1`,
 		)
 		require.ErrorContains(t, err, dependency)
 		require.Len(t, background.executedSQLs, index+1)
+		wantAccountIDs := []uint32{17, 0, 0, 0, 0}
+		require.Equal(t, wantAccountIDs[:index+1], background.accountIDs)
 	}
 
-	background := &backgroundExecTest{}
-	background.init()
+	base := &backgroundExecTest{}
+	base.init()
+	background := &lifecycleDependencyContextExec{backgroundExecTest: base}
 	for _, query := range queries {
-		background.sql2result[query] = newMrsForPasswordOfUser(nil)
+		base.sql2result[query] = newMrsForPasswordOfUser(nil)
 	}
 	require.NoError(t, validateLifecycleExistingDependencies(
 		ctx,
@@ -650,4 +700,19 @@ limit 1`,
 		17,
 		definition,
 	))
+	require.Equal(t, []uint32{17, 0, 0, 0, 0}, background.accountIDs)
+}
+
+type lifecycleDependencyContextExec struct {
+	*backgroundExecTest
+	accountIDs []uint32
+}
+
+func (e *lifecycleDependencyContextExec) Exec(ctx context.Context, sql string) error {
+	accountID, err := defines.GetAccountId(ctx)
+	if err != nil {
+		return err
+	}
+	e.accountIDs = append(e.accountIDs, accountID)
+	return e.backgroundExecTest.Exec(ctx, sql)
 }

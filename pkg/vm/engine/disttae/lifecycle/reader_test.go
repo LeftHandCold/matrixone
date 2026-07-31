@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -87,35 +86,6 @@ func TestAcquireProtectionRegistersBeforeStatAndFailsClosed(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.Equal(t, []string{"register", "stat", "release"}, client.calls)
-}
-
-func TestExactBlockReaderReleasesBorrowedBatchExactlyOnce(t *testing.T) {
-	blocks := []objectio.BlockInfo{{}, {}}
-	releases := make([]int, len(blocks))
-	next := 0
-	load := func(
-		context.Context,
-		objectio.BlockInfo,
-	) (*batch.Batch, *nulls.Bitmap, func(), error) {
-		index := next
-		next++
-		return batch.NewWithSize(0), nil, func() { releases[index]++ }, nil
-	}
-	seen := 0
-	err := ReadExactBlocks(
-		context.Background(),
-		blocks,
-		load,
-		func(_ *batch.Batch, _ *nulls.Bitmap) error {
-			seen++
-			if seen == 2 {
-				return errors.New("consumer failed")
-			}
-			return nil
-		},
-	)
-	require.Error(t, err)
-	require.Equal(t, []int{1, 1}, releases)
 }
 
 func TestObjectScanReportRequiresCompletePhysicalCoverageAndDEL(t *testing.T) {

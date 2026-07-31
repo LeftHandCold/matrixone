@@ -151,9 +151,6 @@ func LifecycleTaskExecutorFactory(
 			MaxSourceBytesPerCluster: 4 << 40,
 		},
 	)
-	if admissionErr == nil {
-		admissionErr = admission.HoldUntilNextWindow(time.Now())
-	}
 	cleanupReconcileCursor := ""
 	var metadataAccountCursor uint32
 	var restoreCleanupCursor lifecyclepkg.ExpiredRestoreCursor
@@ -338,12 +335,19 @@ func sweepLifecycleCleanupRoots(
 	}
 	var sweepErr error
 	for _, root := range temporary {
-		cleaned, cleanupErr := lifecyclepkg.CleanupPublishedTemporary(
-			ctx,
-			roots,
-			taeStore,
-			root,
-		)
+		cleaned, cleanupErr := func() (lifecyclepkg.CleanupRoot, error) {
+			rootCtx, cancelRoot := context.WithTimeout(
+				ctx,
+				lifecycleTemporaryCleanupTimeout,
+			)
+			defer cancelRoot()
+			return lifecyclepkg.CleanupPublishedTemporary(
+				rootCtx,
+				roots,
+				taeStore,
+				root,
+			)
+		}()
 		if cleanupErr != nil {
 			root.LastError = cleanupErr.Error()
 			_, updateErr := roots.UpdateCleanup(ctx, root, root.StateVersion)
@@ -568,7 +572,7 @@ func (runner *lifecycleBindingExecutor) run(
 	if err != nil {
 		return err
 	}
-	columnOrdinal, columnType, err := lifecycleColumn(
+	columnOrdinal, columnSeqnum, columnType, err := lifecycleColumn(
 		tableDef,
 		binding.LifecycleColumnID,
 	)
@@ -588,27 +592,59 @@ func (runner *lifecycleBindingExecutor) run(
 	}
 	snapshot := types.TimestampToTS(operator.SnapshotTS())
 	cursor := lifecycleDiscoveryCursor(binding)
-	page, err := table.LifecycleDiscoverObjectPage(
+	discoveryCtx, cancelDiscovery := context.WithTimeout(
 		accountCtx,
+		30*time.Second,
+	)
+	page, err := table.LifecycleDiscoverObjectPage(
+		discoveryCtx,
 		lifecycleDiscoveryRequest(binding, snapshot, evaluation, cursor),
 	)
+	if err != nil {
+		cancelDiscovery()
+		return err
+	}
+	planInputs, nextCursor, completedFullScanAt, err :=
+		classifyLifecycleDiscoveryPage(
+			discoveryCtx,
+			page,
+			table.LifecycleSortKeyOrdinal(),
+			columnOrdinal,
+			columnSeqnum,
+			columnType,
+			encodedCutoff,
+			lifecycleDiscoveryMetaBytes,
+			func(
+				loadCtx context.Context,
+				stats objectio.ObjectStats,
+				seqnum uint16,
+			) (objectio.ZoneMap, error) {
+				return loadLifecycleObjectColumnZoneMap(
+					loadCtx,
+					runner.taeFS,
+					stats,
+					seqnum,
+				)
+			},
+		)
+	cancelDiscovery()
 	if err != nil {
 		return err
 	}
 	fullScanAt := page.StartedFullScanAt
-	if !page.CompletedFullScanAt.IsZero() {
-		fullScanAt = page.CompletedFullScanAt
+	if !completedFullScanAt.IsZero() {
+		fullScanAt = completedFullScanAt
 	}
 	binding, err = runner.pager.SaveCursor(
 		accountCtx,
 		binding,
-		page.Next,
+		nextCursor,
 		fullScanAt,
 	)
 	if err != nil {
 		return err
 	}
-	if len(page.Candidates) == 0 {
+	if len(planInputs) == 0 {
 		return nil
 	}
 
@@ -651,24 +687,6 @@ func (runner *lifecycleBindingExecutor) run(
 			SQLExecutor: runner.sqlExecutor,
 		},
 		Faults: runner.faults,
-	}
-	planInputs := make([]lifecycleObjectPlanInput, 0, len(page.Candidates))
-	for _, candidate := range page.Candidates {
-		source := candidate.Source
-		whole, notYetExpired := lifecycleObjectExpirationByZoneMap(
-			source.ObjectStats,
-			table.LifecycleSortKeyOrdinal(),
-			columnOrdinal,
-			columnType,
-			encodedCutoff,
-		)
-		if notYetExpired {
-			continue
-		}
-		planInputs = append(planInputs, lifecycleObjectPlanInput{
-			Source: source,
-			Whole:  whole,
-		})
 	}
 	for _, objectPlan := range planLifecycleObjectTasks(planInputs) {
 		var maxCreated uint32
@@ -840,19 +858,25 @@ func tryAcquireLifecycleRewriteSlot(
 func lifecycleColumn(
 	table *plan.TableDef,
 	columnID uint64,
-) (int, types.T, error) {
+) (int, uint16, types.T, error) {
 	ordinal := 0
 	for _, column := range table.Cols {
 		if column == nil || column.Hidden {
 			continue
 		}
 		if column.ColId == columnID {
+			if column.Seqnum > math.MaxUint16 {
+				return 0, 0, 0, fmt.Errorf(
+					"Lifecycle column seqnum %d exceeds Object metadata encoding",
+					column.Seqnum,
+				)
+			}
 			oid := types.T(column.Typ.Id)
 			switch oid {
 			case types.T_date, types.T_datetime, types.T_timestamp:
-				return ordinal, oid, nil
+				return ordinal, uint16(column.Seqnum), oid, nil
 			default:
-				return 0, 0, fmt.Errorf(
+				return 0, 0, 0, fmt.Errorf(
 					"Lifecycle column type %s is no longer supported",
 					oid,
 				)
@@ -860,7 +884,7 @@ func lifecycleColumn(
 		}
 		ordinal++
 	}
-	return 0, 0, fmt.Errorf("Lifecycle column %d no longer exists", columnID)
+	return 0, 0, 0, fmt.Errorf("Lifecycle column %d no longer exists", columnID)
 }
 
 func lifecycleCutoff(
@@ -914,9 +938,8 @@ func lifecycleCutoff(
 	}
 }
 
-// lifecycleObjectExpirationByZoneMap returns whole=true only when the
-// lifecycle column is the physical sort key and max < cutoff. skip=true only
-// when min >= cutoff proves there is no expired row.
+// lifecycleObjectExpirationByZoneMap uses the ObjectStats fast path only when
+// the lifecycle column is the physical sort key.
 func lifecycleObjectExpirationByZoneMap(
 	stats objectio.ObjectStats,
 	sortKeyOrdinal int,
@@ -927,7 +950,21 @@ func lifecycleObjectExpirationByZoneMap(
 	if sortKeyOrdinal != columnOrdinal {
 		return false, false
 	}
-	zoneMap := stats.SortKeyZoneMap()
+	return lifecycleExpirationByZoneMap(
+		stats.SortKeyZoneMap(),
+		columnType,
+		cutoff,
+	)
+}
+
+// lifecycleExpirationByZoneMap returns whole=true only when max < cutoff.
+// skip=true only when min >= cutoff proves that no row is expired. Unknown or
+// legacy metadata deliberately falls back to the exact Reader classifier.
+func lifecycleExpirationByZoneMap(
+	zoneMap objectio.ZoneMap,
+	columnType types.T,
+	cutoff int64,
+) (whole bool, skip bool) {
 	if !zoneMap.IsInited() ||
 		zoneMap.GetType() != columnType ||
 		zoneMap.MaxTruncated() {
@@ -939,6 +976,152 @@ func lifecycleObjectExpirationByZoneMap(
 		return false, false
 	}
 	return maximum < cutoff, minimum >= cutoff
+}
+
+type lifecycleColumnZoneMapLoader func(
+	context.Context,
+	objectio.ObjectStats,
+	uint16,
+) (objectio.ZoneMap, error)
+
+// classifyLifecycleDiscoveryPage keeps arbitrary lifecycle columns on the
+// existing Object metadata path. It never creates an Object index or reads
+// data rows merely to decide Whole/Mixed/not-yet-expired. If the metadata
+// budget fills, only the ordered prefix is consumed and the cursor remains at
+// the last classified Object so the tail is not skipped.
+func classifyLifecycleDiscoveryPage(
+	ctx context.Context,
+	page lifecyclepkg.DiscoveryPage,
+	sortKeyOrdinal int,
+	columnOrdinal int,
+	columnSeqnum uint16,
+	columnType types.T,
+	cutoff int64,
+	maxMetaBytes uint64,
+	load lifecycleColumnZoneMapLoader,
+) (
+	[]lifecycleObjectPlanInput,
+	lifecyclepkg.DiscoveryCursor,
+	time.Time,
+	error,
+) {
+	if maxMetaBytes == 0 || page.MetaBytes > maxMetaBytes {
+		return nil, lifecyclepkg.DiscoveryCursor{}, time.Time{}, fmt.Errorf(
+			"RESOURCE_BLOCKED: Lifecycle discovery metadata budget is exhausted",
+		)
+	}
+	inputs := make(
+		[]lifecycleObjectPlanInput,
+		0,
+		len(page.Candidates),
+	)
+	consumed := len(page.Candidates)
+	usedMetaBytes := page.MetaBytes
+	if sortKeyOrdinal != columnOrdinal {
+		if load == nil {
+			return nil, lifecyclepkg.DiscoveryCursor{}, time.Time{}, fmt.Errorf(
+				"Lifecycle non-sort-key metadata loader is unavailable",
+			)
+		}
+		consumed = 0
+		for _, candidate := range page.Candidates {
+			if err := ctx.Err(); err != nil {
+				return nil, lifecyclepkg.DiscoveryCursor{}, time.Time{}, err
+			}
+			charge, err := lifecycleObjectMetaCharge(candidate.Source.ObjectStats)
+			if err != nil {
+				return nil, lifecyclepkg.DiscoveryCursor{}, time.Time{}, err
+			}
+			if charge > maxMetaBytes-usedMetaBytes {
+				if consumed == 0 {
+					return nil, lifecyclepkg.DiscoveryCursor{}, time.Time{}, fmt.Errorf(
+						"RESOURCE_BLOCKED: Lifecycle Object metadata exceeds the certified page budget",
+					)
+				}
+				break
+			}
+			zoneMap, err := load(
+				ctx,
+				candidate.Source.ObjectStats,
+				columnSeqnum,
+			)
+			if err != nil {
+				return nil, lifecyclepkg.DiscoveryCursor{}, time.Time{}, err
+			}
+			usedMetaBytes += charge
+			consumed++
+			whole, skip := lifecycleExpirationByZoneMap(
+				zoneMap,
+				columnType,
+				cutoff,
+			)
+			if !skip {
+				inputs = append(inputs, lifecycleObjectPlanInput{
+					Source: candidate.Source,
+					Whole:  whole,
+				})
+			}
+		}
+	} else {
+		for _, candidate := range page.Candidates {
+			whole, skip := lifecycleObjectExpirationByZoneMap(
+				candidate.Source.ObjectStats,
+				sortKeyOrdinal,
+				columnOrdinal,
+				columnType,
+				cutoff,
+			)
+			if !skip {
+				inputs = append(inputs, lifecycleObjectPlanInput{
+					Source: candidate.Source,
+					Whole:  whole,
+				})
+			}
+		}
+	}
+
+	next := page.Next
+	completedAt := page.CompletedFullScanAt
+	if consumed < len(page.Candidates) {
+		last := page.Candidates[consumed-1]
+		next = lifecyclepkg.DiscoveryCursor{
+			Snapshot:       last.Snapshot,
+			LastObjectName: *last.Source.ObjectShortName(),
+			HasLastObject:  true,
+		}
+		completedAt = time.Time{}
+	}
+	return inputs, next, completedAt, nil
+}
+
+func lifecycleObjectMetaCharge(stats objectio.ObjectStats) (uint64, error) {
+	extent := stats.Extent()
+	compressed := uint64(extent.Length())
+	decoded := uint64(extent.OriginSize())
+	if compressed == 0 || decoded == 0 || decoded > (math.MaxUint64-compressed)/2 {
+		return 0, fmt.Errorf(
+			"RESOURCE_BLOCKED: Lifecycle Object metadata size is not certified",
+		)
+	}
+	return compressed + 2*decoded, nil
+}
+
+func loadLifecycleObjectColumnZoneMap(
+	ctx context.Context,
+	fs fileservice.FileService,
+	stats objectio.ObjectStats,
+	seqnum uint16,
+) (objectio.ZoneMap, error) {
+	location := stats.ObjectLocation()
+	meta, err := objectio.FastLoadObjectMeta(ctx, &location, false, fs)
+	if err != nil {
+		return nil, err
+	}
+	data, ok := meta.DataMeta()
+	if !ok {
+		return nil, fmt.Errorf("Lifecycle source Object has no data metadata")
+	}
+	return data.MustGetColumn(seqnum).ZoneMap().Clone(), nil
 }
 
 func lifecycleTemporalValue(value any) (int64, bool) {

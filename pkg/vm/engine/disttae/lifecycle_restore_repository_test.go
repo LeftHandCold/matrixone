@@ -153,20 +153,16 @@ func TestSQLRestoreInitializeOwnsLeaseTableAndAttemptInOneTransaction(t *testing
 		})
 		switch len(statements) {
 		case 1:
-			return executor.Result{Mp: mp}, nil
+			return lifecycleRestoreUint64Rows(t, mp, 17), nil
 		case 2:
-			return lifecycleRestoreBoolResult(t, mp, true), nil
-		case 3:
 			return executor.Result{Mp: mp}, nil
-		case 4:
-			return lifecycleRestoreUint64Rows(t, mp, 17, 18), nil
-		case 5:
+		case 3:
 			return lifecycleRestoreUint64Rows(t, mp, 20), nil
-		case 6:
-			return lifecycleRestoreUint64Rows(t, mp, 30), nil
-		case 7, 8, 10:
+		case 4:
 			return executor.Result{AffectedRows: 1, Mp: mp}, nil
-		case 9:
+		case 5:
+			return executor.Result{AffectedRows: 1, Mp: mp}, nil
+		case 6:
 			value := executor.NewMemResult([]types.Type{types.T_uint64.ToType()}, mp)
 			value.NewBatch()
 			require.NoError(t, executor.AppendFixedRows(
@@ -175,6 +171,8 @@ func TestSQLRestoreInitializeOwnsLeaseTableAndAttemptInOneTransaction(t *testing
 				[]uint64{88},
 			))
 			return value.GetResult(), nil
+		case 7:
+			return executor.Result{AffectedRows: 1, Mp: mp}, nil
 		default:
 			t.Fatalf("unexpected SQL %s", sql)
 			return executor.Result{}, nil
@@ -187,7 +185,6 @@ func TestSQLRestoreInitializeOwnsLeaseTableAndAttemptInOneTransaction(t *testing
 		Engine:                           lifecycleRestoreEngineStub{},
 		MPool:                            mp,
 		MaxRestoreStagingBytesPerAccount: 100,
-		MaxRestoreStagingBytesPerCluster: 200,
 	}
 	attempt, err := repository.Initialize(
 		context.Background(),
@@ -212,100 +209,75 @@ func TestSQLRestoreInitializeOwnsLeaseTableAndAttemptInOneTransaction(t *testing
 	require.NoError(t, err)
 	require.Equal(t, uint64(88), attempt.StagingTableID)
 	require.Equal(t, "IMPORTING", attempt.State)
-	require.Contains(t, statements[0].sql, "update mo_catalog.mo_feature_registry")
+	require.Contains(t, statements[0].sql, "from mo_catalog.mo_account")
+	require.Contains(t, statements[0].sql, "for update")
 	require.Equal(t, uint32(0), statements[0].accountID)
-	require.Contains(t, statements[1].sql, "select enabled")
-	require.Equal(t, uint32(0), statements[1].accountID)
-	require.Contains(t, statements[3].sql, "mo_lifecycle_cleanup_roots")
-	require.Equal(t, uint32(0), statements[3].accountID)
-	require.Contains(t, statements[4].sql, "sum(d.logical_bytes)")
-	require.Equal(t, uint32(17), statements[4].accountID)
-	require.Contains(t, statements[5].sql, "sum(d.logical_bytes)")
-	require.Equal(t, uint32(18), statements[5].accountID)
-	require.Contains(t, statements[6].sql, "restore_lease_id")
-	require.Contains(t, statements[6].sql, "and restore_lease_id is null")
-	require.NotContains(t, statements[6].sql, "or restore_deadline")
-	require.Contains(t, statements[7].sql, "create table")
-	require.Contains(t, statements[9].sql, "insert into mo_catalog.mo_lifecycle_restore_attempts")
+	require.Contains(t, statements[2].sql, "sum(d.logical_bytes)")
+	require.Equal(t, uint32(17), statements[2].accountID)
+	require.Contains(t, statements[3].sql, "restore_lease_id")
+	require.Contains(t, statements[3].sql, "and restore_lease_id is null")
+	require.NotContains(t, statements[3].sql, "or restore_deadline")
+	require.Contains(t, statements[4].sql, "create table")
+	require.Contains(t, statements[6].sql, "insert into mo_catalog.mo_lifecycle_restore_attempts")
+	for _, statement := range statements {
+		require.NotContains(t, statement.sql, "mo_feature_registry")
+		require.NotContains(t, statement.sql, "mo_lifecycle_cleanup_roots")
+	}
 }
 
-func TestSQLRestoreInitializeFailsClosedWhenFeatureDisabled(t *testing.T) {
+func TestSQLRestoreInitializeFailsClosedWhenOwnerAccountIsMissing(t *testing.T) {
 	mp := mpool.MustNewZero()
-	calls := 0
 	sqlExecutor := &restoreTxnSQLExecutor{execute: func(
 		sql string,
 		option executor.StatementOption,
 	) (executor.Result, error) {
-		calls++
 		require.Equal(t, uint32(0), option.AccountID())
-		if calls == 1 {
-			require.Contains(t, strings.ToLower(sql), "update mo_catalog.mo_feature_registry")
-			return executor.Result{Mp: mp}, nil
-		}
-		require.Contains(t, strings.ToLower(sql), "select enabled")
-		return lifecycleRestoreBoolResult(t, mp, false), nil
+		require.Contains(t, strings.ToLower(sql), "from mo_catalog.mo_account")
+		return executor.Result{Mp: mp}, nil
 	}}
-	repository := lifecycleRestoreRepositoryForAdmissionTest(mp, sqlExecutor, 100, 200)
+	repository := lifecycleRestoreRepositoryForAdmissionTest(mp, sqlExecutor, 100)
 	_, err := repository.Initialize(
 		context.Background(),
 		lifecycleRestoreInitializeRequestForTest(10),
 	)
-	require.ErrorContains(t, err, "disabled by the cluster release gate")
-	require.Equal(t, 2, calls)
+	require.ErrorContains(t, err, "owner account lock row is missing")
 }
 
 func TestSQLRestoreInitializeEnforcesTransactionalStagingCaps(t *testing.T) {
 	tests := []struct {
 		name         string
-		active       []uint64
+		active       uint64
 		accountCap   uint64
-		clusterCap   uint64
 		errorMessage string
 	}{
 		{
 			name:         "account",
-			active:       []uint64{95, 0},
+			active:       95,
 			accountCap:   100,
-			clusterCap:   200,
 			errorMessage: "account Restore staging bytes exhausted",
 		},
 		{
-			name:         "cluster",
-			active:       []uint64{60, 35},
-			accountCap:   100,
-			clusterCap:   100,
-			errorMessage: "cluster Restore staging bytes exhausted",
-		},
-		{
 			name:         "overflow",
-			active:       []uint64{math.MaxUint64, 0},
+			active:       math.MaxUint64,
 			accountCap:   math.MaxUint64,
-			clusterCap:   math.MaxUint64,
 			errorMessage: "account Restore staging bytes exhausted",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			mp := mpool.MustNewZero()
-			usageCall := 0
 			sqlExecutor := &restoreTxnSQLExecutor{execute: func(
 				sql string,
 				_ executor.StatementOption,
 			) (executor.Result, error) {
 				lower := strings.ToLower(sql)
 				switch {
-				case strings.Contains(lower, "update mo_catalog.mo_feature_registry"):
-					return executor.Result{Mp: mp}, nil
-				case strings.Contains(lower, "select enabled"):
-					return lifecycleRestoreBoolResult(t, mp, true), nil
+				case strings.Contains(lower, "from mo_catalog.mo_account"):
+					return lifecycleRestoreUint64Rows(t, mp, 17), nil
 				case strings.Contains(lower, "where restore_id=unhex"):
 					return executor.Result{Mp: mp}, nil
-				case strings.Contains(lower, "mo_lifecycle_cleanup_roots"):
-					return lifecycleRestoreUint64Rows(t, mp, 17, 18), nil
 				case strings.Contains(lower, "sum(d.logical_bytes)"):
-					value := test.active[usageCall]
-					usageCall++
-					return lifecycleRestoreUint64Rows(t, mp, value), nil
+					return lifecycleRestoreUint64Rows(t, mp, test.active), nil
 				default:
 					t.Fatalf("admission rejection must precede mutation: %s", sql)
 					return executor.Result{}, nil
@@ -315,49 +287,14 @@ func TestSQLRestoreInitializeEnforcesTransactionalStagingCaps(t *testing.T) {
 				mp,
 				sqlExecutor,
 				test.accountCap,
-				test.clusterCap,
 			)
 			_, err := repository.Initialize(
 				context.Background(),
 				lifecycleRestoreInitializeRequestForTest(10),
 			)
 			require.ErrorContains(t, err, test.errorMessage)
-			require.Equal(t, 2, usageCall)
 		})
 	}
-}
-
-func TestSQLRestoreInitializeBoundsOwnerAccountScan(t *testing.T) {
-	mp := mpool.MustNewZero()
-	owners := make([]uint64, lifecycleRestoreAdmissionAccountLimit+1)
-	for index := range owners {
-		owners[index] = uint64(index + 1)
-	}
-	sqlExecutor := &restoreTxnSQLExecutor{execute: func(
-		sql string,
-		_ executor.StatementOption,
-	) (executor.Result, error) {
-		lower := strings.ToLower(sql)
-		switch {
-		case strings.Contains(lower, "update mo_catalog.mo_feature_registry"):
-			return executor.Result{Mp: mp}, nil
-		case strings.Contains(lower, "select enabled"):
-			return lifecycleRestoreBoolResult(t, mp, true), nil
-		case strings.Contains(lower, "where restore_id=unhex"):
-			return executor.Result{Mp: mp}, nil
-		case strings.Contains(lower, "mo_lifecycle_cleanup_roots"):
-			return lifecycleRestoreUint64Rows(t, mp, owners...), nil
-		default:
-			t.Fatalf("bounded account scan must reject before usage reads: %s", sql)
-			return executor.Result{}, nil
-		}
-	}}
-	repository := lifecycleRestoreRepositoryForAdmissionTest(mp, sqlExecutor, 100, 200)
-	_, err := repository.Initialize(
-		context.Background(),
-		lifecycleRestoreInitializeRequestForTest(10),
-	)
-	require.ErrorContains(t, err, "admission account scan exhausted")
 }
 
 func TestSQLRestorePurgeRequiresLeaseFullyReleased(t *testing.T) {
@@ -614,18 +551,6 @@ func (txn restoreTxnExecutor) Exec(
 
 func (restoreTxnExecutor) Txn() client.TxnOperator { return nil }
 
-func lifecycleRestoreBoolResult(
-	t *testing.T,
-	mp *mpool.MPool,
-	value bool,
-) executor.Result {
-	t.Helper()
-	result := executor.NewMemResult([]types.Type{types.T_bool.ToType()}, mp)
-	result.NewBatch()
-	require.NoError(t, executor.AppendFixedRows(result, 0, []bool{value}))
-	return result.GetResult()
-}
-
 func lifecycleRestoreUint64Rows(
 	t *testing.T,
 	mp *mpool.MPool,
@@ -644,7 +569,6 @@ func lifecycleRestoreRepositoryForAdmissionTest(
 	mp *mpool.MPool,
 	sqlExecutor executor.SQLExecutor,
 	accountCap uint64,
-	clusterCap uint64,
 ) SQLRestoreRepository {
 	return SQLRestoreRepository{
 		AccountID:                        17,
@@ -653,7 +577,6 @@ func lifecycleRestoreRepositoryForAdmissionTest(
 		Engine:                           lifecycleRestoreEngineStub{},
 		MPool:                            mp,
 		MaxRestoreStagingBytesPerAccount: accountCap,
-		MaxRestoreStagingBytesPerCluster: clusterCap,
 	}
 }
 

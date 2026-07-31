@@ -1013,6 +1013,36 @@ func TestPreparePitrPublicationSerializesCopyAlter(t *testing.T) {
 	}
 }
 
+func TestLockPitrDependencyPublicationsUsesGlobalOrder(t *testing.T) {
+	steps := make([]string, 0, 2)
+	require.NoError(t, lockPitrDependencyPublications(
+		func() error {
+			steps = append(steps, "snapshot")
+			return nil
+		},
+		func() error {
+			steps = append(steps, "lifecycle")
+			return nil
+		},
+	))
+	require.Equal(t, []string{"snapshot", "lifecycle"}, steps)
+
+	wantErr := moerr.NewInternalErrorNoCtx("snapshot lock failed")
+	steps = steps[:0]
+	err := lockPitrDependencyPublications(
+		func() error {
+			steps = append(steps, "snapshot")
+			return wantErr
+		},
+		func() error {
+			steps = append(steps, "lifecycle")
+			return nil
+		},
+	)
+	require.ErrorIs(t, err, wantErr)
+	require.Equal(t, []string{"snapshot"}, steps)
+}
+
 func TestResolveCurrentPitrObjectIDRefreshesPlannedTableID(t *testing.T) {
 	eng := newStubEngine()
 	db := newStubDatabase("db")

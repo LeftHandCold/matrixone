@@ -20,7 +20,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,7 +40,6 @@ import (
 )
 
 const (
-	lifecycleRestoreAdmissionAccountLimit    = 1024
 	lifecycleRestoreInitializeTimeout        = 30 * time.Second
 	lifecycleRestoreAdmissionLockWaitTimeout = 5 * time.Second
 )
@@ -66,7 +64,6 @@ type SQLRestoreRepository struct {
 	AutoIncrement                    incrservice.AutoIncrementService
 	Roots                            lifecyclepkg.CleanupRootRepository
 	MaxRestoreStagingBytesPerAccount uint64
-	MaxRestoreStagingBytesPerCluster uint64
 }
 
 func (repository SQLRestoreRepository) Initialize(
@@ -99,7 +96,7 @@ func (repository SQLRestoreRepository) Initialize(
 	err = repository.Executor.ExecTxn(
 		initializeCtx,
 		func(txn executor.TxnExecutor) error {
-			if lockErr := repository.lockRestoreAdmission(txn); lockErr != nil {
+			if lockErr := repository.lockRestoreAccount(txn); lockErr != nil {
 				return lockErr
 			}
 			existing, found, readErr := repository.getAttempt(
@@ -125,7 +122,7 @@ func (repository SQLRestoreRepository) Initialize(
 				attempt = existing
 				return nil
 			}
-			if admissionErr := repository.checkRestoreAdmission(
+			if admissionErr := repository.checkRestoreAccountAdmission(
 				txn,
 				request.Dataset.LogicalBytes,
 			); admissionErr != nil {
@@ -212,77 +209,49 @@ func (repository SQLRestoreRepository) validateRestoreAdmission(
 	requestedBytes uint64,
 ) error {
 	if requestedBytes == 0 ||
-		repository.MaxRestoreStagingBytesPerAccount == 0 ||
-		repository.MaxRestoreStagingBytesPerCluster == 0 ||
-		repository.MaxRestoreStagingBytesPerAccount >
-			repository.MaxRestoreStagingBytesPerCluster {
+		repository.MaxRestoreStagingBytesPerAccount == 0 {
 		return fmt.Errorf("Lifecycle Restore staging limits are invalid")
 	}
 	return nil
 }
 
-// lockRestoreAdmission reuses the existing Lifecycle feature row only as a
-// short initialization barrier. It serializes the derived capacity check and
-// Attempt creation across CNs without introducing a persistent reservation.
-// The no-op UPDATE is used solely to acquire the row lock; availability is
-// verified by the following read and never inferred from affected-row counts.
-func (repository SQLRestoreRepository) lockRestoreAdmission(
+// lockRestoreAccount serializes capacity checks only for the requesting
+// account. Cross-account Restore initialization remains independent; the
+// cluster byte limit is a certification/monitoring boundary rather than a
+// distributed transaction invariant, so Lifecycle needs no quota table or
+// cluster-wide feature-row lock.
+func (repository SQLRestoreRepository) lockRestoreAccount(
 	txn executor.TxnExecutor,
 ) error {
 	result, err := txn.Exec(
-		`update mo_catalog.mo_feature_registry
-set scope_spec=scope_spec,updated_at=updated_at
-where feature_code='LIFECYCLE'`,
-		executor.StatementOption{}.WithAccountID(catalog.System_Account),
-	)
-	if err != nil {
-		return err
-	}
-	result.Close()
-	result, err = txn.Exec(
-		`select enabled from mo_catalog.mo_feature_registry
-where feature_code='LIFECYCLE'`,
+		fmt.Sprintf(
+			`select cast(account_id as bigint unsigned) from mo_catalog.mo_account
+where account_id=%d for update`,
+			repository.AccountID,
+		),
 		executor.StatementOption{}.WithAccountID(catalog.System_Account),
 	)
 	if err != nil {
 		return err
 	}
 	defer result.Close()
-	enabled, err := decodeLifecycleRestoreFeatureEnabled(result)
+	accountID, err := decodeLifecycleRestoreUint64(result, "owner account lock")
 	if err != nil {
 		return err
 	}
-	if !enabled {
-		return fmt.Errorf("TAE object Lifecycle retirement is disabled by the cluster release gate")
+	if accountID != uint64(repository.AccountID) {
+		return fmt.Errorf("Lifecycle Restore owner account no longer exists")
 	}
 	return nil
 }
 
-func (repository SQLRestoreRepository) checkRestoreAdmission(
+func (repository SQLRestoreRepository) checkRestoreAccountAdmission(
 	txn executor.TxnExecutor,
 	requestedBytes uint64,
 ) error {
-	accounts, err := repository.restoreAdmissionAccounts(txn)
+	accountBytes, err := restoreActiveLogicalBytes(txn, repository.AccountID)
 	if err != nil {
 		return err
-	}
-	var clusterBytes uint64
-	var accountBytes uint64
-	for _, accountID := range accounts {
-		activeBytes, readErr := restoreActiveLogicalBytes(txn, accountID)
-		if readErr != nil {
-			return readErr
-		}
-		if clusterBytes > math.MaxUint64-activeBytes {
-			metricv2.LifecycleResourceRejectionCounter.WithLabelValues(
-				"restore_cluster_bytes",
-			).Inc()
-			return fmt.Errorf("RESOURCE_BLOCKED: cluster Restore staging overflow")
-		}
-		clusterBytes += activeBytes
-		if accountID == repository.AccountID {
-			accountBytes = activeBytes
-		}
 	}
 	if accountBytes > math.MaxUint64-requestedBytes ||
 		accountBytes+requestedBytes > repository.MaxRestoreStagingBytesPerAccount {
@@ -293,80 +262,7 @@ func (repository SQLRestoreRepository) checkRestoreAdmission(
 			"RESOURCE_BLOCKED: account Restore staging bytes exhausted",
 		)
 	}
-	if clusterBytes > math.MaxUint64-requestedBytes ||
-		clusterBytes+requestedBytes > repository.MaxRestoreStagingBytesPerCluster {
-		metricv2.LifecycleResourceRejectionCounter.WithLabelValues(
-			"restore_cluster_bytes",
-		).Inc()
-		return fmt.Errorf(
-			"RESOURCE_BLOCKED: cluster Restore staging bytes exhausted",
-		)
-	}
 	return nil
-}
-
-// restoreAdmissionAccounts derives the bounded set of tenants which can own
-// an active Restore. Every published Dataset has a system-owned Cleanup Root,
-// and an active Dataset lease prevents that Root from reaching CLEANED. The
-// current tenant is inserted explicitly so a catalog inconsistency can never
-// make its requested bytes disappear from the check.
-func (repository SQLRestoreRepository) restoreAdmissionAccounts(
-	txn executor.TxnExecutor,
-) ([]uint32, error) {
-	result, err := txn.Exec(
-		fmt.Sprintf(
-			`select distinct cast(r.owner_account_id as bigint unsigned)
-from mo_catalog.mo_lifecycle_cleanup_roots r
-join mo_catalog.mo_account a on a.account_id=r.owner_account_id
-where r.state<>'CLEANED'
-order by 1 limit %d`,
-			lifecycleRestoreAdmissionAccountLimit+1,
-		),
-		executor.StatementOption{}.WithAccountID(catalog.System_Account),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer result.Close()
-	accounts := map[uint32]struct{}{repository.AccountID: {}}
-	var decodeErr error
-	result.ReadRows(func(rows int, columns []*vector.Vector) bool {
-		if len(columns) != 1 {
-			decodeErr = fmt.Errorf(
-				"Lifecycle Restore owner account query is invalid",
-			)
-			return false
-		}
-		for row := 0; row < rows; row++ {
-			value := vector.GetFixedAtNoTypeCheck[uint64](columns[0], row)
-			if value == 0 || value > math.MaxUint32 {
-				decodeErr = fmt.Errorf(
-					"Lifecycle Restore owner account identity is invalid",
-				)
-				return false
-			}
-			accounts[uint32(value)] = struct{}{}
-			if len(accounts) > lifecycleRestoreAdmissionAccountLimit {
-				decodeErr = fmt.Errorf(
-					"RESOURCE_BLOCKED: Lifecycle Restore admission account scan exhausted",
-				)
-				return false
-			}
-		}
-		return true
-	})
-	if decodeErr != nil {
-		metricv2.LifecycleResourceRejectionCounter.WithLabelValues(
-			"restore_admission_accounts",
-		).Inc()
-		return nil, decodeErr
-	}
-	ordered := make([]uint32, 0, len(accounts))
-	for accountID := range accounts {
-		ordered = append(ordered, accountID)
-	}
-	slices.Sort(ordered)
-	return ordered, nil
 }
 
 func restoreActiveLogicalBytes(
@@ -385,30 +281,6 @@ where a.state in ('IMPORTING','PUBLISHING')`,
 	}
 	defer result.Close()
 	return decodeLifecycleRestoreUint64(result, "staging usage")
-}
-
-func decodeLifecycleRestoreFeatureEnabled(
-	result executor.Result,
-) (bool, error) {
-	var enabled bool
-	rowsRead := 0
-	var decodeErr error
-	result.ReadRows(func(rows int, columns []*vector.Vector) bool {
-		if len(columns) != 1 || rowsRead+rows != 1 {
-			decodeErr = fmt.Errorf("Lifecycle release gate row is invalid")
-			return false
-		}
-		enabled = vector.GetFixedAtNoTypeCheck[bool](columns[0], 0)
-		rowsRead += rows
-		return true
-	})
-	if decodeErr != nil {
-		return false, decodeErr
-	}
-	if rowsRead != 1 {
-		return false, fmt.Errorf("Lifecycle release gate row is missing")
-	}
-	return enabled, nil
 }
 
 func decodeLifecycleRestoreUint64(

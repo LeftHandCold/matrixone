@@ -30,37 +30,13 @@ type RewriteReleaseProfile struct {
 	MaxSourceBytesPerCluster uint64
 }
 
-type RewriteAdmissionRequest struct {
-	AccountID            uint32
-	SourceBytes          uint64
-	RetiredPressureBytes uint64
-	Now                  time.Time
-}
-
 type RewriteAdmission struct {
 	mu sync.Mutex
 
 	profile      RewriteReleaseProfile
 	windowStart  time.Time
-	notBefore    time.Time
 	clusterBytes uint64
 	accountBytes map[uint32]uint64
-}
-
-// HoldUntilNextWindow is the fail-closed owner-handoff rule for the
-// in-memory fixed-window budget. A fresh Coordinator cannot know how much the
-// previous owner already charged, so it leaves Whole retirement available but
-// delays Mixed Rewrite until the next deterministic window. No persistent
-// quota or cross-CN state is introduced.
-func (admission *RewriteAdmission) HoldUntilNextWindow(now time.Time) error {
-	if admission == nil || now.IsZero() {
-		return fmt.Errorf("Lifecycle Rewrite handoff time is incomplete")
-	}
-	admission.mu.Lock()
-	defer admission.mu.Unlock()
-	admission.notBefore = now.Truncate(admission.profile.Window).
-		Add(admission.profile.Window)
-	return nil
 }
 
 func NewRewriteAdmission(profile RewriteReleaseProfile) (*RewriteAdmission, error) {
@@ -74,28 +50,6 @@ func NewRewriteAdmission(profile RewriteReleaseProfile) (*RewriteAdmission, erro
 		profile:      profile,
 		accountBytes: make(map[uint32]uint64),
 	}, nil
-}
-
-// Admit is the combined helper for callers that already classified a source.
-// The production Lifecycle processor uses ReserveSource before reading and
-// CheckAmplification after classification.
-func (admission *RewriteAdmission) Admit(request RewriteAdmissionRequest) error {
-	if request.Now.IsZero() ||
-		request.SourceBytes == 0 ||
-		request.RetiredPressureBytes == 0 {
-		return fmt.Errorf("MIXED_LAYOUT_BLOCKED: Rewrite accounting is incomplete")
-	}
-	if err := admission.CheckAmplification(
-		request.SourceBytes,
-		request.RetiredPressureBytes,
-	); err != nil {
-		return err
-	}
-	return admission.ReserveSource(
-		request.AccountID,
-		request.SourceBytes,
-		request.Now,
-	)
 }
 
 func (admission *RewriteAdmission) CheckAmplification(
@@ -135,14 +89,6 @@ func (admission *RewriteAdmission) ReserveSource(
 	}
 	admission.mu.Lock()
 	defer admission.mu.Unlock()
-	if now.Before(admission.notBefore) {
-		metricv2.LifecycleResourceRejectionCounter.WithLabelValues(
-			"rewrite_owner_handoff",
-		).Inc()
-		return fmt.Errorf(
-			"RESOURCE_BLOCKED: Rewrite waits for the next fixed window after owner handoff",
-		)
-	}
 	window := now.Truncate(admission.profile.Window)
 	if admission.windowStart.IsZero() || !window.Equal(admission.windowStart) {
 		admission.windowStart = window

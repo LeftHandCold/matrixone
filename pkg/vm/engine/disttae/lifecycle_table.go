@@ -43,6 +43,62 @@ type LifecycleTable interface {
 	LifecycleSortKeyOrdinal() int
 }
 
+var (
+	_ LifecycleTable = (*txnTable)(nil)
+	_ LifecycleTable = (*txnTableDelegate)(nil)
+)
+
+// txnDatabase returns a txnTableDelegate to engine callers. Keep the
+// Lifecycle capability on that existing relation handle and delegate only to
+// the canonical txnTable; this does not add another reader or Merge path.
+func (tbl *txnTableDelegate) LifecycleReadObject(
+	ctx context.Context,
+	snapshot types.TS,
+	source objectio.ObjectStats,
+	maxCertifiedBlockReadBytes uint64,
+	consume lifecyclepkg.ExactBlockConsumer,
+) (lifecyclepkg.ObjectScanReport, error) {
+	return tbl.origin.LifecycleReadObject(
+		ctx,
+		snapshot,
+		source,
+		maxCertifiedBlockReadBytes,
+		consume,
+	)
+}
+
+func (tbl *txnTableDelegate) LifecycleRewriteObject(
+	ctx context.Context,
+	options LifecycleRewriteOptions,
+) (LifecycleRewriteResult, error) {
+	return tbl.origin.LifecycleRewriteObject(ctx, options)
+}
+
+func (tbl *txnTableDelegate) LifecycleSortKeyOrdinal() int {
+	return tbl.origin.LifecycleSortKeyOrdinal()
+}
+
+func (tbl *txnTableDelegate) LifecycleDiscoverObjectPage(
+	ctx context.Context,
+	request lifecyclepkg.DiscoveryRequest,
+) (lifecyclepkg.DiscoveryPage, error) {
+	return tbl.origin.LifecycleDiscoverObjectPage(ctx, request)
+}
+
+func (tbl *txnTableDelegate) LifecycleSelectProtectionSet(
+	ctx context.Context,
+	snapshot types.TS,
+	dataSources []objectio.ObjectEntry,
+	limits logtailreplay.LifecycleTombstoneSelectionLimits,
+) (lifecyclepkg.ProtectionSet, error) {
+	return tbl.origin.LifecycleSelectProtectionSet(
+		ctx,
+		snapshot,
+		dataSources,
+		limits,
+	)
+}
+
 func (tbl *txnTable) LifecycleSortKeyOrdinal() int {
 	ordinal, _ := tbl.getSortKeyPosAndSortKeyIsPK()
 	return ordinal

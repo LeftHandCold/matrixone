@@ -22,6 +22,7 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/common/pubsub"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 )
@@ -104,17 +105,7 @@ func rejectLifecyclePublicationScope(
 	databaseID uint64,
 	tableNames tree.TableNames,
 ) error {
-	if len(tableNames) == 0 {
-		return rejectLifecycleBindingInScope(
-			ctx,
-			background,
-			accountID,
-			databaseID,
-			0,
-			"CREATE PUBLICATION",
-		)
-	}
-	quoted := make([]string, 0, len(tableNames))
+	names := make([]string, 0, len(tableNames))
 	for _, tableName := range tableNames {
 		if tableName == nil {
 			return moerr.NewInvalidInput(
@@ -122,9 +113,47 @@ func rejectLifecyclePublicationScope(
 				"CREATE PUBLICATION contains an empty table identity",
 			)
 		}
+		names = append(names, tableName.ObjectName.String())
+	}
+	return rejectLifecyclePublicationTableNames(
+		ctx,
+		background,
+		accountID,
+		databaseID,
+		names,
+		"CREATE PUBLICATION",
+	)
+}
+
+func rejectLifecyclePublicationTableNames(
+	ctx context.Context,
+	background BackgroundExec,
+	accountID uint32,
+	databaseID uint64,
+	tableNames []string,
+	operation string,
+) error {
+	if len(tableNames) == 0 {
+		return rejectLifecycleBindingInScope(
+			ctx,
+			background,
+			accountID,
+			databaseID,
+			0,
+			operation,
+		)
+	}
+	quoted := make([]string, 0, len(tableNames))
+	for _, tableName := range tableNames {
+		if tableName == "" {
+			return moerr.NewInvalidInput(
+				ctx,
+				operation+" contains an empty table identity",
+			)
+		}
 		quoted = append(
 			quoted,
-			quoteSQLStringLiteral(tableName.ObjectName.String()),
+			quoteSQLStringLiteral(tableName),
 		)
 	}
 	accountCtx := defines.AttachAccountId(ctx, accountID)
@@ -145,12 +174,62 @@ and t.relname in (%s) limit 1`,
 		return err
 	}
 	if execResultArrayHasData(results) {
-		return moerr.NewNotSupported(
+		return moerr.NewNotSupportedf(
 			ctx,
-			"CREATE PUBLICATION while a selected table has a Lifecycle binding",
+			"%s while a selected table has a Lifecycle binding",
+			operation,
 		)
 	}
 	return nil
+}
+
+func rejectLifecycleStoredPublicationScope(
+	ctx context.Context,
+	background BackgroundExec,
+	accountID uint32,
+	databaseID uint64,
+	tables string,
+	operation string,
+) error {
+	var tableNames []string
+	if tables != "" && tables != pubsub.TableAll {
+		tableNames = strings.Split(tables, pubsub.Sep)
+	}
+	return rejectLifecyclePublicationTableNames(
+		ctx,
+		background,
+		accountID,
+		databaseID,
+		tableNames,
+		operation,
+	)
+}
+
+// fenceLifecycleAlterPublicationScope keeps account/comment-only ALTERs off
+// the Lifecycle barrier. A source database/table change crosses the same
+// management-path barrier as CREATE PUBLICATION and validates the final scope.
+func fenceLifecycleAlterPublicationScope(
+	ctx context.Context,
+	background BackgroundExec,
+	scopeChanged bool,
+	accountID uint32,
+	databaseID uint64,
+	tables string,
+) error {
+	if !scopeChanged {
+		return nil
+	}
+	if err := lockLifecycleDependencyPublication(ctx, background); err != nil {
+		return err
+	}
+	return rejectLifecycleStoredPublicationScope(
+		ctx,
+		background,
+		accountID,
+		databaseID,
+		tables,
+		"ALTER PUBLICATION",
+	)
 }
 
 func rejectLifecycleBindingByName(

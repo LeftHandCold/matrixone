@@ -54,6 +54,63 @@ func TestLifecycleCloneDependencyFenceLocksSourceBeforePublication(t *testing.T)
 	require.Equal(t, []string{"source", "publication", "binding"}, steps)
 }
 
+func TestLifecycleAlterPublicationScopeFenceIsNarrowAndOrdered(t *testing.T) {
+	ctx := defines.AttachAccountId(context.Background(), 17)
+	lockSQL := "update mo_catalog.mo_feature_registry set scope_spec = scope_spec, updated_at = updated_at where feature_code = 'LIFECYCLE'"
+	probeSQL := `select b.binding_id from mo_catalog.mo_lifecycle_bindings b
+join mo_catalog.mo_tables t on t.rel_id=b.logical_table_id
+where b.state in ('ACTIVE','PAUSED','BLOCKED') and b.database_id=7
+and t.relname in ('t1','t2') limit 1`
+
+	bh := &backgroundExecTest{}
+	bh.init()
+	bh.sql2result[probeSQL] = newMrsForPasswordOfUser(nil)
+	require.NoError(t, fenceLifecycleAlterPublicationScope(
+		ctx,
+		bh,
+		true,
+		17,
+		7,
+		"t1,t2",
+	))
+	require.Equal(t, []string{lockSQL, probeSQL}, bh.executedSQLs)
+
+	bh = &backgroundExecTest{}
+	bh.init()
+	require.NoError(t, fenceLifecycleAlterPublicationScope(
+		ctx,
+		bh,
+		false,
+		17,
+		7,
+		"t1,t2",
+	))
+	require.Empty(t, bh.executedSQLs)
+}
+
+func TestLifecycleAlterPublicationScopeFenceRejectsFinalBoundScope(t *testing.T) {
+	ctx := defines.AttachAccountId(context.Background(), 17)
+	probeSQL := `select b.binding_id from mo_catalog.mo_lifecycle_bindings b
+join mo_catalog.mo_tables t on t.rel_id=b.logical_table_id
+where b.state in ('ACTIVE','PAUSED','BLOCKED') and b.database_id=7
+and t.relname in ('t2') limit 1`
+	bh := &backgroundExecTest{}
+	bh.init()
+	bh.sql2result[probeSQL] = newMrsForPasswordOfUser(
+		[][]interface{}{{"binding"}},
+	)
+
+	err := fenceLifecycleAlterPublicationScope(
+		ctx,
+		bh,
+		true,
+		17,
+		7,
+		"t2",
+	)
+	require.ErrorContains(t, err, "ALTER PUBLICATION")
+}
+
 func TestLifecycleBindingScopeProbeSQL(t *testing.T) {
 	require.Equal(t,
 		"select binding_id from mo_catalog.mo_lifecycle_bindings where state in ('ACTIVE','PAUSED','BLOCKED') limit 1",

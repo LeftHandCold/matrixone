@@ -80,6 +80,64 @@ func TestRestoreCoordinatorImportsStableChunksAndPublishes(t *testing.T) {
 	require.Len(t, repository.rows, int(manifest.RowCount))
 }
 
+func TestRestoreDeadlineCoversManifestRead(t *testing.T) {
+	deadline := time.Now().Add(time.Minute).Round(0)
+	store := &restoreDeadlineStore{err: errors.New("stop after deadline capture")}
+	coordinator := RestoreCoordinator{
+		Store:      store,
+		Repository: newMemoryRestoreRepository(),
+		Config: RestoreConfig{
+			MaxChunkRows:         10,
+			MaxChunkLogicalBytes: 1 << 20,
+			Deadline:             time.Hour,
+		},
+	}
+	err := coordinator.Restore(
+		context.Background(),
+		RestoreDataset{
+			DatasetID:   "dataset-deadline",
+			ManifestKey: "manifest-deadline",
+			State:       "PUBLISHED",
+		},
+		RestoreAttempt{
+			RestoreID:  "restore-deadline",
+			HiddenName: "__mo_lifecycle_restore_deadline",
+			TargetName: "restored_deadline",
+			Deadline:   deadline,
+		},
+	)
+	require.ErrorIs(t, err, store.err)
+	require.True(t, deadline.Equal(store.deadline))
+}
+
+type restoreDeadlineStore struct {
+	deadline time.Time
+	err      error
+}
+
+func (*restoreDeadlineStore) Put(context.Context, string, []byte) error {
+	return nil
+}
+
+func (store *restoreDeadlineStore) Get(ctx context.Context, _ string) ([]byte, error) {
+	store.deadline, _ = ctx.Deadline()
+	return nil, store.err
+}
+
+func (store *restoreDeadlineStore) Stat(ctx context.Context, _ string) (int64, error) {
+	store.deadline, _ = ctx.Deadline()
+	return 0, store.err
+}
+
+func (store *restoreDeadlineStore) GetExact(
+	ctx context.Context,
+	_ string,
+	_ int64,
+) ([]byte, error) {
+	store.deadline, _ = ctx.Deadline()
+	return nil, store.err
+}
+
 func TestRestoreChunkOrdinalRejectsDifferentDigest(t *testing.T) {
 	repository := newMemoryRestoreRepository()
 	attempt := RestoreAttempt{

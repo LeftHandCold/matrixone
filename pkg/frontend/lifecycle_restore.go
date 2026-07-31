@@ -34,7 +34,6 @@ import (
 
 const (
 	lifecycleMaxRestoreStagingBytesPerAccount = uint64(12) << 40
-	lifecycleMaxRestoreStagingBytesPerCluster = uint64(24) << 40
 	lifecycleArchiveCloseTimeout              = 30 * time.Second
 )
 
@@ -100,7 +99,6 @@ func handleRestoreArchiveDataset(
 			Executor: sqlExecutor,
 		},
 		MaxRestoreStagingBytesPerAccount: lifecycleMaxRestoreStagingBytesPerAccount,
-		MaxRestoreStagingBytesPerCluster: lifecycleMaxRestoreStagingBytesPerCluster,
 	}
 	restoreAttempt, resumed, err := repository.FindResumable(
 		ctx,
@@ -196,11 +194,6 @@ func handlePurgeArchiveDataset(
 ) error {
 	if statement == nil {
 		return fmt.Errorf("Lifecycle Purge input is required")
-	}
-	background := ses.GetBackgroundExec(ctx)
-	defer background.Close()
-	if err := ensureLifecycleFeatureEnabled(ctx, ses, background); err != nil {
-		return err
 	}
 	sqlExecutor, err := lifecycleSQLExecutor(ses.GetService())
 	if err != nil {

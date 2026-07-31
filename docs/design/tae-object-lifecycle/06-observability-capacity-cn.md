@@ -47,7 +47,9 @@ max-active-restore-staging-bytes-per-cluster
 terminal-metadata-retention
 ```
 
-配置关系必须启动时校验，不能自动放宽hard cap。
+配置关系必须启动时校验，不能自动放宽。`max-delta-rows`使用公共scanner的N+1模式在
+收集过程中停止；`max-delta-bytes`在公共Merge scanner返回单source Batch后校验，是防御性
+拒绝线而非新的私有内存管理器，其峰值必须连同MO公共scanner的结构上限纳入认证。
 Coordinator每轮最多读取4个Binding账户分页；每个分页最多覆盖64个account，因此即使大量
 tenant完全没有Binding，一次cron也至多执行256个tenant Binding探测，随后从现有内存cursor
 继续。这个上限只约束控制面扫描，不建立Account/Object Index或持久调度状态。
@@ -182,14 +184,14 @@ pause new discovery
 pause new archive
 pause retirement
 pause restore
-pause purge
+continue purge and cleanup
 ```
 
 这里的`pause retirement`指不再启动新的child；已经进入执行的child可能完成当前Archive、
 readback或final transaction。Kill switch不强制清理FINALIZING/COMMIT_UNKNOWN，也不取消
 已进入普通事务Prepare的操作。需要Backup时必须保持gate关闭并等待in-flight指标归零。
 Export-only只用于测试/认证Writer与Provider，不作为Phase 1生产模式。关闭retirement release
-后不创建新Root或执行Provider PUT，只继续收敛已有Root和终态元数据。
+后不创建新Root或执行Provider PUT，只继续Purge、收敛已有Root和终态元数据。
 
 ## 7. 普通MO隔离
 
@@ -280,10 +282,11 @@ amplification在单源分类完成后检查，超限时不进入final transactio
 任务进入`MIXED_LAYOUT_BLOCKED`或等待更多行到期。
 
 这三个计数器是现有单active Coordinator拥有的内存固定窗口预算，不是Catalog Slot或数据
-正确性协议。Coordinator切换时，新owner在当前窗口剩余时间内把cluster Rewrite预算视为
-已耗尽，到下一个固定窗口再重新开放；宁可短暂停止Rewrite，也不通过failover绕过hard cap。
+正确性协议。Coordinator切换后由新owner重新开始本地窗口计数，不为跨重启精确配额引入
+持久状态或整日blackout；因此它是运行期限流和认证边界，不是跨owner的强事务不变量。
 账户bucket只为本窗口实际出现的绑定账户创建，窗口切换时整体回收，条目数受
-`max-bound-tables`约束。Whole退休和普通Merge不访问这些计数器。
+`max-bound-tables`约束。Whole退休和普通Merge不访问这些计数器；反复重启下的资源表现由
+active-coexistence和故障注入门禁验证，不能因此修改普通Merge。
 
 ### 9.2 Restore staging
 
@@ -300,27 +303,21 @@ sum(Dataset.logical_bytes for active IMPORTING/PUBLISHING attempts in cluster)
 ```
 
 RESTORE不转发给TaskService Coordinator，也不创建持久Slot或CN本地reservation。05中的
-初始化普通事务在任何Dataset lease、隐藏表或Attempt副作用之前，短暂更新并锁定现有
-`mo_feature_registry('LIFECYCLE')`行；随后在同一`TxnExecutor`中完成以下动作：
+初始化普通事务在任何Dataset lease、隐藏表或Attempt副作用之前，只锁当前账户现有的
+`mo_account`行，再统计当前账户`IMPORTING/PUBLISHING` Attempt对应的
+`Dataset.logical_bytes`。账户cap因此是精确的同事务准入；不同账户不互相串行，也不访问
+Lifecycle feature row或枚举全体tenant。通过后才在同一普通事务执行Dataset lease CAS、
+创建隐藏表和插入Attempt。
 
-1. 读取release gate，缺失或关闭时fail-closed；
-2. 从system-owned、尚未`CLEANED`的Cleanup Root中有界枚举可能拥有活动Restore的账户，
-   并显式加入当前账户；
-3. 切换statement account context，读取每个账户`IMPORTING/PUBLISHING` Attempt对应的
-   `Dataset.logical_bytes`，完成账户和全集群overflow/hard-cap检查；
-4. 通过后才执行Dataset lease CAS、创建隐藏表和插入Attempt，并与准入检查一起提交。
+全集群cap是发布认证、监控和Stop-Ship边界，不宣称为跨账户事务强不变量；不为精确cluster
+quota增加Slot表或全局锁。初始化事务绝对deadline为30秒、账户行lock wait上限为5秒；
+查询失败、账户消失、溢出或账户cap耗尽都在首次副作用前fail closed。事务提交后由Attempt
+计入下一次本账户核算，事务失败不留下reservation，响应丢失继续由普通MO事务结果和05中的
+Attempt身份对账处理。Chunk导入、发布和普通查询、DML、Merge均不访问账户锁。
 
-枚举账户数hard cap为1024，初始化事务绝对deadline为30秒，feature-row lock wait上限为5秒；
-查询失败、身份异常、溢出或达到任一上限都在首次副作用前返回`RESOURCE_BLOCKED`或明确错误。
-所有CN的Restore初始化都锁同一现有feature row，因此“检查容量”和“创建持久Attempt”串行；
-事务提交后由Attempt计入下一次核算，事务失败则不留下reservation，响应丢失继续由普通MO事务
-结果和05中的Attempt身份对账处理。锁只覆盖短初始化事务，Chunk导入、发布和普通查询、DML、
-Merge均不访问该行。
-
-活动账户集合依赖既有所有权不变量：每个可Restore Dataset都有未`CLEANED`的system-owned Root，
-有效Restore lease阻止其Purge/Cleanup；当前账户仍显式加入以保证自身用量不会因元数据异常漏算。
 `DONE`后表已转交用户Catalog，不再计入Lifecycle staging；`FAILED`只有在隐藏表确认DROP后才释放
-核算值。实际TAE物理bytes仍作为观测指标，若持续高于logical bytes认证系数则Gate I Stop Ship
+核算值。实际TAE物理bytes与全集群logical bytes作为观测指标，若持续高于认证系数或cluster
+配置边界则Gate I Stop Ship
 并降低上限。
 
 ### 9.3 Cleanup backlog与Binding容量

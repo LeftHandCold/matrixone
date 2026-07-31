@@ -56,7 +56,14 @@ func DiscoverObjectPage(
 
 	cursor := request.Cursor
 	reset := cursor.Wrapped
-	if request.FullScanInterval > 0 &&
+	// Never reset a cycle which has already made forward progress. A large
+	// table can legitimately need longer than FullScanInterval to reach its
+	// tail; restarting it here would repeatedly revisit the prefix and starve
+	// every Object after the persisted cursor. The interval starts a new cycle
+	// only when there is no in-progress position to preserve. Capacity
+	// certification, rather than cursor regression, enforces the full-scan SLO.
+	if !cursor.HasLastObject &&
+		request.FullScanInterval > 0 &&
 		!request.LastFullScanAt.IsZero() &&
 		!request.Now.Before(request.LastFullScanAt.Add(request.FullScanInterval)) {
 		reset = true

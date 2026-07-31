@@ -327,30 +327,18 @@ Whole只需要回答“是否存在post-S DELETE”：复用现有Tombstone选�
 `maxRows=1`，发现第一行立即abort，不物化完整Tombstone Batch。普通Merge继续使用
 `maxRows=0`的原有完整扫描语义。
 
-Rewrite visitor按单source处理，有rows/bytes/blocks和内部deadline。超限进入
-`CONFLICT_BLOCKED`或`RESOURCE_BLOCKED`。
+Rewrite继续复用普通Merge的`TombstoneRangeScanByObject`选择和读取逻辑，不实现第二套
+visitor。Lifecycle以“剩余rows + 1”调用同一scanner，使`max_delta_rows`在完整Object Batch
+物化前即可fail closed；返回Batch后再累计实际allocated bytes和distinct blocks，超限则整
+事务abort。普通Merge仍传`maxRows=0`，语义不变。
 
-建议抽取Lifecycle专用有界接口，不改变普通Merge默认扫描：
-
-```go
-type TombstoneDeltaBudget struct {
-    MaxRows   uint64
-    MaxBytes  uint64
-    MaxBlocks uint32
-    Deadline  time.Time
-}
-
-VisitLifecycleTombstoneDelta(
-    sourceObject types.Objectid,
-    from, to types.TS,
-    budget TombstoneDeltaBudget,
-    visit func(rowid types.Rowid, pk []byte) error,
-) error
-```
-
-实现按单Tombstone Object/Batch及时release，累计预算包含变长PK。`PrepareCommit`没有调用方
-context时使用entry中的absolute deadline，而不是`context.Background()`无限等待。现有
-BigDelete hint命中时可直接abort；测试大量不超过hint阈值的小事务累计路径。
+底层公共scanner仍可能先读取一个合法Tombstone Block，并且
+`WaitTombstoneObjectCommitted`没有context参数；Lifecycle不为此复制私有scanner或事务等待
+机制。`max_delta_bytes`是对返回Batch的防御性拒绝线，峰值还受MO现有单Object/Block/PK
+结构上限约束。GA必须用最大Object、变长PK和多个低于BigDelete阈值的小事务做
+active-coexistence认证；若公共Merge路径仍不满足资源目标，则降低认证上限或依赖公共
+MO问题#26377的后续修复，不能在Lifecycle内另建Merge实现。entry的absolute deadline覆盖
+可取消的I/O和后续处理，但不宣称能取消上述公共等待。
 
 ## 10. 普通DELETE与Prepare后事务
 

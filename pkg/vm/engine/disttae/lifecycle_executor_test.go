@@ -86,6 +86,172 @@ func TestLifecycleObjectExpirationUsesOnlyLifecycleSortKeyProof(t *testing.T) {
 	require.False(t, skip)
 }
 
+func TestClassifyLifecycleDiscoveryPageLoadsNonSortKeyZoneMap(t *testing.T) {
+	source := lifecyclePlanTestSourceWithMeta(t, 128<<20, 32, 64)
+	snapshot := types.BuildTS(100, 1)
+	next := lifecyclepkg.DiscoveryCursor{Snapshot: snapshot, Wrapped: true}
+	completedAt := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	page := lifecyclepkg.DiscoveryPage{
+		Candidates: []lifecyclepkg.Candidate{{
+			Snapshot: snapshot,
+			Source:   source,
+		}},
+		Next:                next,
+		MetaBytes:           64,
+		CompletedFullScanAt: completedAt,
+	}
+	zoneMap := index.NewZM(types.T_timestamp, 0)
+	zoneMap.Update(types.Timestamp(100))
+	zoneMap.Update(types.Timestamp(200))
+	loads := 0
+
+	inputs, gotNext, gotCompletedAt, err := classifyLifecycleDiscoveryPage(
+		context.Background(),
+		page,
+		0,
+		1,
+		7,
+		types.T_timestamp,
+		201,
+		1024,
+		func(
+			_ context.Context,
+			_ objectio.ObjectStats,
+			seqnum uint16,
+		) (objectio.ZoneMap, error) {
+			loads++
+			require.Equal(t, uint16(7), seqnum)
+			return zoneMap, nil
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, loads)
+	require.Len(t, inputs, 1)
+	require.True(t, inputs[0].Whole)
+	require.Equal(t, next, gotNext)
+	require.Equal(t, completedAt, gotCompletedAt)
+}
+
+func TestClassifyLifecycleDiscoveryPageStopsAtMetadataBudgetPrefix(t *testing.T) {
+	first := lifecyclePlanTestSourceWithMeta(t, 128<<20, 10, 20)
+	second := lifecyclePlanTestSourceWithMeta(t, 128<<20, 10, 20)
+	snapshot := types.BuildTS(100, 1)
+	page := lifecyclepkg.DiscoveryPage{
+		Candidates: []lifecyclepkg.Candidate{
+			{Snapshot: snapshot, Source: first},
+			{Snapshot: snapshot, Source: second},
+		},
+		Next: lifecyclepkg.DiscoveryCursor{
+			Snapshot:      snapshot,
+			Wrapped:       true,
+			HasLastObject: false,
+		},
+		MetaBytes:           50,
+		CompletedFullScanAt: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC),
+	}
+	zoneMap := index.NewZM(types.T_timestamp, 0)
+	zoneMap.Update(types.Timestamp(100))
+	loads := 0
+
+	inputs, next, completedAt, err := classifyLifecycleDiscoveryPage(
+		context.Background(),
+		page,
+		0,
+		1,
+		7,
+		types.T_timestamp,
+		200,
+		100,
+		func(
+			context.Context,
+			objectio.ObjectStats,
+			uint16,
+		) (objectio.ZoneMap, error) {
+			loads++
+			return zoneMap, nil
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, loads)
+	require.Len(t, inputs, 1)
+	require.True(t, next.HasLastObject)
+	require.Equal(t, *first.ObjectShortName(), next.LastObjectName)
+	require.True(t, completedAt.IsZero())
+}
+
+func TestClassifyLifecycleDiscoveryPageRejectsOversizeMetadataBeforeLoad(t *testing.T) {
+	source := lifecyclePlanTestSourceWithMeta(t, 128<<20, 32, 64)
+	loads := 0
+
+	_, _, _, err := classifyLifecycleDiscoveryPage(
+		context.Background(),
+		lifecyclepkg.DiscoveryPage{
+			Candidates: []lifecyclepkg.Candidate{{Source: source}},
+			MetaBytes:  1,
+		},
+		0,
+		1,
+		7,
+		types.T_timestamp,
+		200,
+		100,
+		func(
+			context.Context,
+			objectio.ObjectStats,
+			uint16,
+		) (objectio.ZoneMap, error) {
+			loads++
+			return nil, nil
+		},
+	)
+	require.ErrorContains(t, err, "RESOURCE_BLOCKED")
+	require.Zero(t, loads)
+}
+
+func TestClassifyLifecycleDiscoveryPageSortKeyDoesNotLoadMetadata(t *testing.T) {
+	source := lifecyclePlanTestSourceWithMeta(t, 128<<20, 32, 64)
+	zoneMap := index.NewZM(types.T_timestamp, 0)
+	zoneMap.Update(types.Timestamp(100))
+	require.NoError(t, objectio.SetObjectStatsSortKeyZoneMap(
+		&source.ObjectStats,
+		zoneMap,
+	))
+	snapshot := types.BuildTS(100, 1)
+	next := lifecyclepkg.DiscoveryCursor{Snapshot: snapshot, Wrapped: true}
+	loads := 0
+
+	inputs, gotNext, _, err := classifyLifecycleDiscoveryPage(
+		context.Background(),
+		lifecyclepkg.DiscoveryPage{
+			Candidates: []lifecyclepkg.Candidate{{
+				Snapshot: snapshot,
+				Source:   source,
+			}},
+			Next:      next,
+			MetaBytes: 1,
+		},
+		0,
+		0,
+		7,
+		types.T_timestamp,
+		200,
+		100,
+		func(
+			context.Context,
+			objectio.ObjectStats,
+			uint16,
+		) (objectio.ZoneMap, error) {
+			loads++
+			return nil, nil
+		},
+	)
+	require.NoError(t, err)
+	require.Zero(t, loads)
+	require.Len(t, inputs, 1)
+	require.True(t, inputs[0].Whole)
+	require.Equal(t, next, gotNext)
+}
+
 func TestLifecycleDiscoveryCursorTreatsCorruptionAsResettableHint(t *testing.T) {
 	snapshot := types.BuildTS(123, 4)
 	name := objectio.BuildObjectName(objectio.NewSegmentid(), 7).Short()
@@ -234,6 +400,21 @@ func lifecyclePlanTestSource(t *testing.T, sourceBytes uint32) objectio.ObjectEn
 	)
 	require.NoError(t, objectio.SetObjectStatsOriginSize(stats, sourceBytes))
 	return objectio.ObjectEntry{ObjectStats: *stats}
+}
+
+func lifecyclePlanTestSourceWithMeta(
+	t *testing.T,
+	sourceBytes uint32,
+	metaBytes uint32,
+	metaLogicalBytes uint32,
+) objectio.ObjectEntry {
+	t.Helper()
+	source := lifecyclePlanTestSource(t, sourceBytes)
+	require.NoError(t, objectio.SetObjectStatsExtent(
+		&source.ObjectStats,
+		objectio.NewExtent(0, 0, metaBytes, metaLogicalBytes),
+	))
+	return source
 }
 
 func TestLifecycleCoordinatorRunSlotDoesNotQueueDuplicateRun(t *testing.T) {

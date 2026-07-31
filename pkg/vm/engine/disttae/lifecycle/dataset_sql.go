@@ -31,51 +31,6 @@ type SQLDatasetReader struct {
 	Executor executor.SQLExecutor
 }
 
-func (reader SQLDatasetReader) ActiveRestoreLogicalBytes(
-	ctx context.Context,
-	accountID uint32,
-) (uint64, error) {
-	if reader.Executor == nil || accountID == 0 {
-		return 0, fmt.Errorf("Lifecycle Restore usage reader is incomplete")
-	}
-	result, err := reader.Executor.Exec(
-		ctx,
-		`select cast(coalesce(sum(d.logical_bytes),0) as bigint unsigned)
-from mo_catalog.mo_lifecycle_restore_attempts a
-join mo_catalog.mo_lifecycle_datasets d on d.dataset_id=a.dataset_id
-where a.state in ('IMPORTING','PUBLISHING')`,
-		executor.Options{}.WithAccountID(accountID),
-	)
-	if err != nil {
-		return 0, err
-	}
-	defer result.Close()
-	var value uint64
-	rowsRead := 0
-	var decodeErr error
-	result.ReadRows(func(rows int, columns []*vector.Vector) bool {
-		if len(columns) != 1 || rowsRead+rows != 1 {
-			decodeErr = fmt.Errorf(
-				"Lifecycle Restore staging usage query is invalid",
-			)
-			return false
-		}
-		value, decodeErr = lifecycleUint64At(columns[0], 0)
-		rowsRead += rows
-		return decodeErr == nil
-	})
-	if decodeErr != nil {
-		return 0, decodeErr
-	}
-	if rowsRead != 1 {
-		return 0, fmt.Errorf(
-			"Lifecycle Restore staging usage query returned %d rows",
-			rowsRead,
-		)
-	}
-	return value, nil
-}
-
 func (reader SQLDatasetReader) GetRestoreDataset(
 	ctx context.Context,
 	accountID uint32,

@@ -572,6 +572,16 @@ func doAlterPublication(ctx context.Context, ses *Session, ap *tree.AlterPublica
 			return
 		}
 	}
+	if err = fenceLifecycleAlterPublicationScope(
+		ctx,
+		bh,
+		ap.DbName != "" || len(ap.Table) > 0,
+		accountId,
+		dbId,
+		tablesStr,
+	); err != nil {
+		return
+	}
 
 	if sql, err = getSqlForUpdatePubInfo(ctx, string(ap.Name), accountNamesStr, comment, dbName, dbId, tablesStr, false); err != nil {
 		return

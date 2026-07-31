@@ -173,6 +173,9 @@ Root不需要逐资源子状态，只保存`temporary_cleanup_done`：
 - `TTL_REWRITE`在matching TTL Receipt证明提交后，TAE接管live Object，Root进入
   `DELETE_PENDING`，只清理booking和未被TAE接管的临时namespace。
 
+`PUBLISHED` Root的booking/live staging临时清理和普通Sweep一样使用每Root固定timeout；
+单个FileService List/Delete不能占住整个Coordinator调度轮次。
+
 Dataset CAS `PUBLISHED -> DELETE_PENDING`后，控制面把对应Root推进
 `PUBLISHED -> DELETE_PENDING`。两步不要求跨账户2PC：
 

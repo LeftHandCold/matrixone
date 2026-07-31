@@ -152,6 +152,15 @@ func (coordinator RestoreCoordinator) Restore(
 		attempt.TargetName == "" {
 		return fmt.Errorf("Lifecycle Restore input is incomplete")
 	}
+	if attempt.Deadline.IsZero() {
+		attempt.Deadline = time.Now().Add(coordinator.Config.Deadline)
+	}
+	restoreCtx, cancelRestore := context.WithDeadline(ctx, attempt.Deadline)
+	defer cancelRestore()
+	ctx = restoreCtx
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	manifest, err := ReadArchiveManifest(ctx, coordinator.Store, dataset.ManifestKey)
 	if err != nil {
 		return err
@@ -168,9 +177,6 @@ func (coordinator RestoreCoordinator) Restore(
 	)
 	if err != nil {
 		return err
-	}
-	if attempt.Deadline.IsZero() {
-		attempt.Deadline = time.Now().Add(coordinator.Config.Deadline)
 	}
 	attempt.DatasetID = dataset.DatasetID
 	faults := coordinator.Faults

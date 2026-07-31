@@ -216,6 +216,12 @@ func Test_doAlterPublication(t *testing.T) {
 		return []interface{}{er}
 	}
 
+	mockedEmptyLifecycleBindingResults := func(ctrl *gomock.Controller) []interface{} {
+		er := mock_frontend.NewMockExecResult(ctrl)
+		er.EXPECT().GetRowCount().Return(uint64(0)).AnyTimes()
+		return []interface{}{er}
+	}
+
 	mockedSubInfoResults := func(ctrl *gomock.Controller) []interface{} {
 		er := mock_frontend.NewMockExecResult(ctrl)
 		er.EXPECT().GetRowCount().Return(uint64(1)).AnyTimes()
@@ -281,6 +287,8 @@ func Test_doAlterPublication(t *testing.T) {
 		// show tables
 		bh.EXPECT().Exec(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 		bh.EXPECT().GetExecResultSet().Return(mockedTblResults(ctrl))
+		// ALTER PUBLICATION final-scope Lifecycle probe
+		bh.EXPECT().GetExecResultSet().Return(mockedEmptyLifecycleBindingResults(ctrl))
 		// getSubInfosFromPub
 		bh.EXPECT().Exec(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 		bh.EXPECT().GetExecResultSet().Return(mockedSubInfoResults(ctrl))

@@ -44,9 +44,11 @@ where stage_id=%d and state<>'PURGED' limit 1`,
 	)
 }
 
-// rejectReferencedLifecycleStageMutation runs only in ALTER/DROP STAGE. SET
-// LIFECYCLE locks the same mo_stages row before it creates a Binding, closing
-// the first-use race without adding a Feature Guard or touching ordinary SQL.
+// rejectReferencedLifecycleStageMutation runs only in ALTER/DROP STAGE and
+// REMOVE @stage. Its caller keeps the transaction and mo_stages row lock until
+// the catalog mutation or external REMOVE completes. SET LIFECYCLE locks the
+// same row before creating a Binding, closing the first-use race without a
+// Feature Guard or changes to ordinary queries, DML, or Merge.
 func rejectReferencedLifecycleStageMutation(
 	ctx context.Context,
 	background BackgroundExec,

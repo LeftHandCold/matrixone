@@ -48,8 +48,6 @@ type SchemaColumn struct {
 	NotNull           bool   `json:"not_null"`
 	AutoIncrement     bool   `json:"auto_increment"`
 	DefaultExpression string `json:"default_expression,omitempty"`
-	Charset           string `json:"charset,omitempty"`
-	Collation         string `json:"collation,omitempty"`
 }
 
 func BuildSchemaDescriptor(
@@ -88,6 +86,13 @@ func BuildSchemaDescriptor(
 			return SchemaDescriptor{}, [32]byte{}, moerr.NewNotSupportedf(
 				ctx,
 				"Lifecycle archive generated column %s",
+				column.Name,
+			)
+		}
+		if column.OnUpdate != nil {
+			return SchemaDescriptor{}, [32]byte{}, moerr.NewNotSupportedf(
+				ctx,
+				"Lifecycle archive ON UPDATE column %s",
 				column.Name,
 			)
 		}

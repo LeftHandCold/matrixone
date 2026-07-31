@@ -23,6 +23,7 @@ import (
 	"io"
 	"math"
 	"math/bits"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -4084,6 +4085,38 @@ func doDropStage(ctx context.Context, ses *Session, ds *tree.DropStage) (err err
 }
 
 func doRemoveStageFiles(ctx context.Context, ses *Session, rs *tree.RemoveStageFiles) error {
+	return doRemoveStageFilesWithLifecycleFence(
+		ctx,
+		ses,
+		rs,
+		func(stageName string, mutation func() error) (err error) {
+			background := ses.GetBackgroundExec(ctx)
+			defer background.Close()
+			if err = background.Exec(ctx, "begin;"); err != nil {
+				return err
+			}
+			defer func() {
+				err = finishTxn(ctx, background, err)
+			}()
+			if err = rejectReferencedLifecycleStageMutation(
+				ctx,
+				background,
+				stageName,
+			); err != nil {
+				return err
+			}
+			err = mutation()
+			return err
+		},
+	)
+}
+
+func doRemoveStageFilesWithLifecycleFence(
+	ctx context.Context,
+	ses *Session,
+	rs *tree.RemoveStageFiles,
+	withLifecycleFence func(string, func() error) error,
+) error {
 	if err := doCheckRole(ctx, ses); err != nil {
 		return err
 	}
@@ -4091,9 +4124,29 @@ func doRemoveStageFiles(ctx context.Context, ses *Session, rs *tree.RemoveStageF
 	if !strings.HasPrefix(rs.Path, stage.STAGE_PROTOCOL+"://") {
 		return moerr.NewBadConfig(ctx, "URL protocol only supports stage://")
 	}
-
-	_, err := stageutil.DeleteStageFiles(ctx, ses.proc, rs.Path, rs.IfExists)
-	return err
+	stageURL, err := url.Parse(rs.Path)
+	if err != nil {
+		return err
+	}
+	stageName, _, _, err := stage.ParseStageUrl(stageURL)
+	if err != nil {
+		return err
+	}
+	// REMOVE is a rare Stage control operation. Reject it while the Stage owns
+	// Lifecycle payloads; otherwise a wildcard REMOVE can bypass DROP/ALTER
+	// STAGE fencing and make a published Dataset unrestorable.
+	if withLifecycleFence == nil {
+		return moerr.NewInternalError(ctx, "Lifecycle Stage reference check is unavailable")
+	}
+	return withLifecycleFence(stageName, func() error {
+		_, deleteErr := stageutil.DeleteStageFiles(
+			ctx,
+			ses.proc,
+			rs.Path,
+			rs.IfExists,
+		)
+		return deleteErr
+	})
 }
 
 type dropAccount struct {

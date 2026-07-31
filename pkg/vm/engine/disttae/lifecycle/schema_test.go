@@ -83,6 +83,20 @@ func TestBuildSchemaDescriptorRejectsUnsupportedColumn(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestBuildSchemaDescriptorRejectsOnUpdateColumn(t *testing.T) {
+	table := &plan.TableDef{
+		Name: "on_update",
+		Cols: []*plan.ColDef{{
+			ColId:    1,
+			Name:     "updated_at",
+			Typ:      plan.Type{Id: int32(types.T_timestamp)},
+			OnUpdate: &plan.OnUpdate{OriginString: "current_timestamp"},
+		}},
+	}
+	_, _, err := BuildSchemaDescriptor(context.Background(), table)
+	require.ErrorContains(t, err, "ON UPDATE")
+}
+
 func TestBuildSchemaDescriptorRejectsEncodedSQLTypes(t *testing.T) {
 	for _, test := range []struct {
 		name string

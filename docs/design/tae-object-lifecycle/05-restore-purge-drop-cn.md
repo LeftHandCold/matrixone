@@ -58,10 +58,11 @@ INSERT Restore Attempt(
 Attempt Owner的隐藏表。提交响应未知时按Dataset lease、Attempt和精确隐藏表身份做普通
 Catalog对账；禁止重新创建第二张隐藏表。
 
-每次GET前检查Attempt固定deadline；每个Chunk普通事务必须CAS同一`IMPORTING` Attempt的
-lease ID、deadline和`next_chunk_ordinal`。最终发布事务再CAS Dataset仍为`PUBLISHED`且
-lease匹配。首版不续租，不在每次Provider GET前增加一次Dataset Catalog查询；固定deadline
-到期后停止新GET/INSERT。
+Attempt固定deadline在Restore入口转换成同一个`context deadline`，覆盖Manifest GET、每个
+Payload GET、Chunk INSERT和最终Publish；每个Chunk普通事务还必须CAS同一`IMPORTING`
+Attempt的lease ID、deadline和`next_chunk_ordinal`。最终发布事务再CAS Dataset仍为
+`PUBLISHED`且lease匹配。首版不续租，不在每次Provider GET前增加一次Dataset Catalog查询；
+deadline到期后当前I/O/事务应由现有context取消并停止新GET/INSERT。
 
 Restore lease获取与Purge CAS同一条Dataset行；两者只能一个成功。Purge不会先改变state或
 `access_generation`再允许旧Restore继续读取。
@@ -90,7 +91,7 @@ Dataset lease和Restore Attempt INSERT处于第3节同一事务，不能先CREAT
 自己新增的staging副作用；不改变普通用户表的事务、DDL或存储实现。
 
 descriptor中的`source_column_id`只用于lineage；普通DDL为目标列分配新Column ID。
-Restore校验ordinal/name/type/nullability/charset/collation/AUTO_INCREMENT等Phase 1结构，
+Restore校验ordinal/name/type/nullability/AUTO_INCREMENT等Phase 1结构，
 不要求目标Column ID等于源Column ID。
 
 ## 5. 分块写入

@@ -209,11 +209,6 @@ func (lease *ProtectionLease) Release(ctx context.Context) error {
 	return nil
 }
 
-type ExactBlockLoader func(
-	ctx context.Context,
-	block objectio.BlockInfo,
-) (*batch.Batch, *nulls.Bitmap, func(), error)
-
 type ExactBlockConsumer func(*batch.Batch, *nulls.Bitmap) error
 
 // ObjectScanReport is an in-memory proof that one Lifecycle attempt consumed
@@ -383,38 +378,4 @@ func lifecycleBitmapRowCount(rowCount int, bitmap *nulls.Nulls) (uint64, error) 
 		}
 	}
 	return uint64(bitmap.Count()), nil
-}
-
-// ReadExactBlocks serially consumes complete physical Blocks in caller-provided
-// Object/block order. A borrowed Batch is released exactly once before the
-// next Block is loaded, including callback and cancellation failures.
-func ReadExactBlocks(
-	ctx context.Context,
-	blocks []objectio.BlockInfo,
-	load ExactBlockLoader,
-	consume ExactBlockConsumer,
-) error {
-	if load == nil || consume == nil {
-		return moerr.NewInvalidInput(ctx, "Lifecycle exact reader callbacks are required")
-	}
-	for _, block := range blocks {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		value, deletes, release, err := load(ctx, block)
-		if err != nil {
-			return err
-		}
-		if release == nil {
-			return moerr.NewInternalError(ctx, "Lifecycle exact reader returned no release callback")
-		}
-		err = func() error {
-			defer release()
-			return consume(value, deletes)
-		}()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }

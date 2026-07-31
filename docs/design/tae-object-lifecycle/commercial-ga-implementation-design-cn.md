@@ -278,7 +278,8 @@ cursor只是进度hint：
 - 一个cycle固定Metadata snapshot；
 - snapshot已stale或Merge改变Object集合时，重新开始当前cycle；
 - 到末尾后必须wrap，避免新Object或排序在cursor之前的Object永久漏扫；
-- `full_scan_interval`到期必须强制从头开启新cycle；
+- `full_scan_interval`只在没有进行中cursor时开启新cycle；已有进度必须先扫描到表尾再wrap，
+  禁止大表反复回到前缀而饿死尾部；
 - `last_full_scan_at`超过SLO必须告警并停止继续放量；
 - Candidate和cursor丢失可重建；
 - final transaction始终以实时Metadata和exact source CAS为准。
@@ -297,8 +298,10 @@ metadata缺失/不可信         -> Reader classification
 ```
 
 `PartitionState`只负责有界列出当前Object。若Lifecycle列是sort key，可直接用
-`ObjectStats.SortKeyZoneMap()`；否则按ObjectLocation有界range-read metadata ZoneMap area，
-只加载该Column ID对应的物理seqnum，不读取数据行。metadata requests/bytes也受page硬上限。
+`ObjectStats.SortKeyZoneMap()`；否则按ObjectLocation有界加载现有ObjectMeta extent，并从
+DataMeta取得该Column ID对应物理seqnum的Object级ZoneMap，不读取数据行。实现复用MO已有
+metadata cache，不新增Object Index或Lifecycle私有cache；metadata requests/bytes也受page
+硬上限，达到上限时只消费有序前缀并保持cursor不跳过尾部。
 
 final transaction从不信任cursor或Candidate。
 
@@ -369,7 +372,7 @@ Parquet/ZSTD文件保存size、SHA-256、ordinal、row count和必要min/max。M
 完整版本化逻辑schema descriptor、descriptor digest、canonical encoder version、content
 hash和总行数。Manifest顶层包含`manifest_format_version=1`，Reader必须先按它选择parser，
 未知版本fail closed。descriptor至少能重建稳定列顺序、列名、源Column ID、MO类型、
-width/scale、nullability、charset/collation和AUTO_INCREMENT属性；Manifest还保存每个
+width/scale、nullability和AUTO_INCREMENT属性；Manifest还保存每个
 AUTO_INCREMENT列在归档数据中的最大正值并由full readback复核。Phase 1不恢复PK、索引、FK、
 CDC、Publication、默认表达式、权限或策略。
 
@@ -648,10 +651,12 @@ Scheduler/CN并发、单源Rewrite、entry解码前硬上限和active-coexistenc
 私有状态机掩盖。
 
 Mixed Rewrite受`live_logical_bytes/expired_logical_bytes`上限和账户/集群固定窗口source
-bytes预算约束；该Rewrite预算由现有Lifecycle Coordinator管理，Coordinator切换时保守关闭
-到下一窗口。Restore按Dataset logical bytes限制账户/集群active staging总量，并在已有
-feature-row短临界区内用同一普通初始化事务统计Attempt/Dataset、检查容量和创建Attempt；
-不增加Catalog Slot、CN本地reservation或TaskService转发。
+bytes预算约束；该Rewrite预算由现有Lifecycle Coordinator在内存中管理，owner切换后重新
+计数，不增加持久配额协议，也不因CN重启把Mixed Rewrite关闭到下一自然日。Restore按
+Dataset logical bytes以现有account row lock精确限制本账户active staging；全集群总量只做
+认证、监控和Stop-Ship边界，不用全局feature-row串行不同tenant。初始化仍在同一普通事务
+统计本账户Attempt/Dataset、检查容量并创建Attempt，不增加Catalog Slot、CN本地reservation
+或TaskService转发。
 
 ## 19. P0测试
 

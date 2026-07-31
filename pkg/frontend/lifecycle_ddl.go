@@ -37,7 +37,6 @@ import (
 	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
 )
 
-const lifecycleSchemaDigestVersion uint16 = 1
 const featureCodeLifecycle = "LIFECYCLE"
 
 // Purge eligibility is evaluated with time.Duration in the worker. Keep every
@@ -125,17 +124,6 @@ func handleAlterTableLifecycle(ctx context.Context, ses *Session, alter *tree.Al
 			return err
 		}
 	}
-	var archiveStageCertifications []lifecycleArchiveStageCertification
-	if option.Operation == tree.LifecycleOperationSet &&
-		option.Policy.Action == tree.LifecycleActionArchive {
-		archiveStageCertifications, err = loadLifecycleArchiveStageCertifications(
-			ctx,
-			background,
-		)
-		if err != nil {
-			return err
-		}
-	}
 	if err = background.Exec(ctx, "begin;"); err != nil {
 		return err
 	}
@@ -205,6 +193,14 @@ func handleAlterTableLifecycle(ctx context.Context, ses *Session, alter *tree.Al
 
 		var stageIdentity *lifecycleStageIdentity
 		if option.Policy.Action == tree.LifecycleActionArchive {
+			// Read the deployment certification while holding the same feature-row
+			// barrier used to publish the Binding. A pre-transaction snapshot can be
+			// revoked or replaced before this transaction commits.
+			archiveStageCertifications, certificationErr :=
+				loadLifecycleArchiveStageCertifications(ctx, background)
+			if certificationErr != nil {
+				return rollback(certificationErr)
+			}
 			stageIdentity, validateErr = loadLifecycleStageIdentity(
 				ctx,
 				background,
@@ -294,35 +290,59 @@ func validateLifecycleExistingDependencies(
 			"Lifecycle dependency validation is incomplete",
 		)
 	}
+	tenantCtx := defines.AttachAccountId(ctx, accountID)
+	systemCtx := defines.AttachAccountId(ctx, sysAccountID)
 	queries := []struct {
+		ctx  context.Context
 		name string
 		sql  string
 	}{
 		{
+			ctx:  tenantCtx,
 			name: "Snapshot/Clone/Branch",
 			sql: fmt.Sprintf(
 				`select snapshot_id from mo_catalog.mo_snapshots
-where (level in ('cluster','account')
+where ((level='account' and obj_id=%d)
 or (level='database' and obj_id=%d)
 or (level='table' and obj_id=%d))
 limit 1`,
+				accountID,
 				tableDef.DbId,
 				tableDef.TblId,
 			),
 		},
 		{
+			ctx:  systemCtx,
+			name: "Snapshot/Clone/Branch",
+			sql: fmt.Sprintf(
+				`select snapshot_id from mo_catalog.mo_snapshots
+where (level='cluster'
+or (level='account' and obj_id=%d)
+or (level='database' and obj_id=%d)
+or (level='table' and obj_id=%d))
+limit 1`,
+				accountID,
+				tableDef.DbId,
+				tableDef.TblId,
+			),
+		},
+		{
+			ctx:  systemCtx,
 			name: "PITR",
 			sql: fmt.Sprintf(
 				`select pitr_id from mo_catalog.mo_pitr
-where pitr_status=1 and (level in ('cluster','account')
+where pitr_status=1 and (level='cluster'
+or (account_id=%d and (level='account'
 or (level='database' and obj_id=%d)
-or (level='table' and obj_id=%d))
+or (level='table' and obj_id=%d))))
 limit 1`,
+				accountID,
 				tableDef.DbId,
 				tableDef.TblId,
 			),
 		},
 		{
+			ctx:  systemCtx,
 			name: "CDC",
 			sql: fmt.Sprintf(
 				`select task_id from mo_catalog.mo_cdc_watermark
@@ -333,6 +353,7 @@ where account_id=%d and db_name=%s and table_name=%s limit 1`,
 			),
 		},
 		{
+			ctx:  systemCtx,
 			name: "Publication",
 			sql: fmt.Sprintf(
 				`select pub_name from mo_catalog.mo_pubs
@@ -347,10 +368,10 @@ limit 1`,
 	}
 	for _, query := range queries {
 		background.ClearExecResultSet()
-		if err := background.Exec(ctx, query.sql); err != nil {
+		if err := background.Exec(query.ctx, query.sql); err != nil {
 			return err
 		}
-		results, err := getResultSet(ctx, background)
+		results, err := getResultSet(query.ctx, background)
 		if err != nil {
 			return err
 		}
@@ -624,6 +645,15 @@ func validateLifecyclePolicy(
 	if tableDef == nil {
 		return nil, [32]byte{}, moerr.NewNoSuchTable(ctx, "", "")
 	}
+	if tableDef.TableType != catalog.SystemOrdinaryRel ||
+		tableDef.IsTemporary ||
+		tableDef.ViewSql != nil ||
+		tableDef.IsDynamic {
+		return nil, [32]byte{}, moerr.NewNotSupported(
+			ctx,
+			"Lifecycle requires an ordinary persistent base table",
+		)
+	}
 	if tableDef.Hidden {
 		return nil, [32]byte{}, moerr.NewNotSupported(ctx, "Lifecycle on hidden tables")
 	}
@@ -694,7 +724,7 @@ func validateLifecyclePolicy(
 	if lifecycleColumn == nil {
 		return nil, [32]byte{}, moerr.NewInvalidInputf(ctx, "Lifecycle column %q does not exist", policy.Column)
 	}
-	if !lifecycleColumn.NotNull || !lifecycleColumn.Typ.NotNullable {
+	if !lifecycleColumn.NotNull && !lifecycleColumn.Typ.NotNullable {
 		return nil, [32]byte{}, moerr.NewInvalidInputf(ctx, "Lifecycle column %q must be NOT NULL", policy.Column)
 	}
 	switch types.T(lifecycleColumn.Typ.Id) {
@@ -857,20 +887,6 @@ func buildLifecycleBindingDeleteSQL(accountID uint32, physicalTableID uint64) st
 func writeLifecycleString(buf *bytes.Buffer, value string) {
 	writeLifecycleUint32(buf, uint32(len(value)))
 	buf.WriteString(value)
-}
-
-func writeLifecycleBool(buf *bytes.Buffer, value bool) {
-	if value {
-		buf.WriteByte(1)
-	} else {
-		buf.WriteByte(0)
-	}
-}
-
-func writeLifecycleUint16(buf *bytes.Buffer, value uint16) {
-	var encoded [2]byte
-	binary.BigEndian.PutUint16(encoded[:], value)
-	buf.Write(encoded[:])
 }
 
 func writeLifecycleUint32(buf *bytes.Buffer, value uint32) {

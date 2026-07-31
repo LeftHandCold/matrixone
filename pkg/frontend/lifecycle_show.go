@@ -91,7 +91,7 @@ from mo_catalog.mo_lifecycle_bindings where account_id = %d and physical_table_i
 		}
 		query = fmt.Sprintf(
 			`select hex(dataset_id),state,row_count,logical_bytes,cast(purge_eligible_at as varchar),manifest_key
-from mo_catalog.mo_lifecycle_datasets where account_id = %d and logical_table_id = %d order by created_at desc`,
+from mo_catalog.mo_lifecycle_datasets where account_id = %d and logical_table_id = %d order by created_at desc limit 1000`,
 			accountID,
 			logicalTableID,
 		)
@@ -100,7 +100,7 @@ from mo_catalog.mo_lifecycle_datasets where account_id = %d and logical_table_id
 	case tree.ShowLifecycleJobs:
 		query = fmt.Sprintf(
 			`select hex(root_id),mode,state,cast(cleanup_after as varchar),last_error
-from mo_catalog.mo_lifecycle_cleanup_roots where owner_account_id = %d order by updated_at desc`,
+from mo_catalog.mo_lifecycle_cleanup_roots where owner_account_id = %d order by updated_at desc limit 1000`,
 			accountID,
 		)
 		columns = lifecycleJobShowColumns
