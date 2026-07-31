@@ -143,6 +143,7 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	observeLifecycleFullScanAge(bindings, time.Now())
 	if len(bindings) == 0 {
 		return nil
 	}
@@ -199,6 +200,9 @@ func (c *Coordinator) Run(ctx context.Context) error {
 				}
 			}
 			mode := lifecycleMetricMode(binding.Action)
+			activeJobs := metricv2.LifecycleActiveJobGauge.WithLabelValues(mode)
+			activeJobs.Inc()
+			defer activeJobs.Dec()
 			if childErr := c.child(runCtx, binding); childErr != nil {
 				metricv2.LifecycleJobCounter.WithLabelValues(mode, "error").Inc()
 				errs <- childErr
@@ -221,6 +225,21 @@ func (c *Coordinator) Run(ctx context.Context) error {
 		result = errors.Join(result, childErr)
 	}
 	return result
+}
+
+func observeLifecycleFullScanAge(bindings []Binding, now time.Time) {
+	var maximum time.Duration
+	for _, binding := range bindings {
+		lastFullScan := binding.LastFullScanAt
+		if lastFullScan.IsZero() {
+			lastFullScan = time.Unix(0, 0)
+		}
+		age := now.Sub(lastFullScan)
+		if age > maximum {
+			maximum = age
+		}
+	}
+	metricv2.LifecycleFullScanAgeGauge.Set(maximum.Seconds())
 }
 
 func lifecycleMetricMode(action string) string {

@@ -8,7 +8,7 @@
   Cleanup Root）；
 - table-level Binding SQL；
 - logical partition table/physical child fail-closed admission；
-- Active Binding registry；
+- 现有Binding Catalog的有界游标分页；
 - bounded `ScanLifecycleObjects`；
 - cursor wrap/full scan；
 - Dry-run和资源限额。
@@ -215,8 +215,8 @@ pkg/vm/engine/disttae/types.go             nil-by-default control pointer
 
 允许对现有Merge抽取/参数化的窄修改：
 
-- external booking path allocator和Owner；
-- Merge txn entry的`CreatedObjectOwnedByLifecycleRoot`可选模式，普通默认不变；
+- external booking的包内path allocator和失败时保留Root-owned文件选项；
+- Merge txn entry的包内`lifecycleRewrite`模式，普通默认不变；
 - 复用普通Tombstone scanner，并仅用其可选`maxRows`做Lifecycle N+1行数准入；
 - thin entry dispatch；
 - unknown Entry安全解析。
@@ -248,7 +248,8 @@ Lifecycle不私下复制公共修复：
 - [#26376](https://github.com/matrixorigin/matrixone/issues/26376) 的Merge slab OOM panic必须在
   Commercial GA基线中由普通Merge公共实现修复；Lifecycle不增加私有recover吞掉panic；
 - [#26377](https://github.com/matrixorigin/matrixone/issues/26377) 的普通Merge Prepare预算不作为
-  Lifecycle阻塞项，因为Lifecycle使用自己的有界delta visitor；
+  Lifecycle阻塞项；Lifecycle只复用公共Tombstone scanner的可选`maxRows`做N+1行数准入，
+  不建设私有delta visitor；
 - [#26445](https://github.com/matrixorigin/matrixone/issues/26445) 的普通Merge注册前清理可独立
   修复；Lifecycle builder按03的Owner合同自行关闭本路径，不改变普通Merge默认。
 

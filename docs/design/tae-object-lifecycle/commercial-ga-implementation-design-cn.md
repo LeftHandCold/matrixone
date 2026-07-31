@@ -145,6 +145,7 @@ worker_lease_deadline
 archive_namespace_identity / credential_handle
 archive_prefix / manifest_key / manifest_digest
 tae_namespace_identity / segment_id / booking_prefix / ordinal_upper_bound
+reserved_cleanup_bytes
 source_set_digest
 final_txn_id nullable
 state
@@ -232,7 +233,7 @@ Archive Stage还必须来自部署管理的Lifecycle认证记录/allowlist，并
 
 ## 5. Discovery与调度
 
-Scheduler维护内存中的Active Binding registry，只扫描显式Binding。每次读取一页当前
+Scheduler只对现有Binding Catalog做内存游标分页，只扫描显式Binding。每次读取一页当前
 TAE Metadata，Candidate有数量/bytes/TTL上限，crash后允许重扫。
 
 这里删除的是“把每个Object再复制到Lifecycle Catalog”的持久Object Index，不是删除
@@ -489,8 +490,8 @@ retirement上线采用两步发布：
 1. 先把unknown Entry/version在Batch解析前fail closed的安全解析部署到全部TN；此阶段
    production release保持关闭，不创建新Root或Provider PUT，Export-only仅用于隔离的
    测试/认证；
-2. 再发布会产生V1 entry的CN；全部CN/TN完成升级后才打开
-   `lifecycle-retirement-enabled`。
+2. 再发布会产生V1 entry的CN；全部CN/TN完成升级后才打开现有
+   `mo_feature_registry.enabled` release gate。
 
 具备安全解析但不支持V1的TN必须返回typed unsupported且没有TAE mutation；更老TN不在
 retirement兼容集合内，发布控制面禁止路由。不为此建设HAKeeper capability协议。降级前
@@ -650,8 +651,9 @@ Scheduler/CN并发、单源Rewrite、entry解码前硬上限和active-coexistenc
 认证负载触发公共Merge资源缺陷时，记录/修复公共MO Issue或降低认证上限，不能用Lifecycle
 私有状态机掩盖。
 
-Mixed Rewrite受`live_logical_bytes/expired_logical_bytes`上限和账户/集群固定窗口source
-bytes预算约束；该Rewrite预算由现有Lifecycle Coordinator在内存中管理，owner切换后重新
+Mixed Rewrite受按到期行比例估算的source/expired pressure上限和账户/集群固定窗口source
+bytes预算约束；该估算不宣称是精确logical-byte放大率，固定窗口是绝对保险丝。Rewrite
+预算由现有Lifecycle Coordinator在内存中管理，owner切换后重新
 计数，不增加持久配额协议，也不因CN重启把Mixed Rewrite关闭到下一自然日。Restore按
 Dataset logical bytes以现有account row lock精确限制本账户active staging；全集群总量只做
 认证、监控和Stop-Ship边界，不用全局feature-row串行不同tenant。初始化仍在同一普通事务

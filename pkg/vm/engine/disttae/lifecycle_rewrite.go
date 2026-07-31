@@ -25,6 +25,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/api"
+	metricv2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 	taeoptions "github.com/matrixorigin/matrixone/pkg/vm/engine/tae/options"
@@ -89,6 +90,20 @@ func lifecycleEstimatedExpiredPressureBytes(
 		(sourceBytes*report.ExpiredRows+visibleRows-1)/visibleRows,
 		uint64(1),
 	), nil
+}
+
+func lifecycleObserveRewritePressure(sourceBytes, expiredBytes uint64) {
+	metricv2.LifecycleBytesCounter.WithLabelValues(
+		"rewrite_source_pressure",
+	).Add(float64(sourceBytes))
+	metricv2.LifecycleBytesCounter.WithLabelValues(
+		"rewrite_estimated_expired_pressure",
+	).Add(float64(expiredBytes))
+	if sourceBytes > expiredBytes {
+		metricv2.LifecycleBytesCounter.WithLabelValues(
+			"rewrite_estimated_live_pressure",
+		).Add(float64(sourceBytes - expiredBytes))
+	}
 }
 
 func validateLifecycleRewriteOwnership(

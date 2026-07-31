@@ -219,6 +219,9 @@ Restore按descriptor的结构投影创建新表，不新增第二个持久restor
 验证失败时Dataset尚未发布，Restore错误写Restore Attempt；已经PUBLISHED的Dataset保持
 可Restore或Purge。
 
+后台终态回收使用`(state, updated_at, dataset_id)`索引；Purge资格、按表查询和Stage引用
+继续使用各自索引，禁止用定时全表扫描代替。
+
 `version`从1开始，Dataset状态、Restore lease和Purge的每次条件更新都必须同时比较旧值并
 递增；`access_generation`只表达Payload访问代际，不能代替通用行版本。
 
@@ -287,6 +290,12 @@ Whole TTL和TTL小Mixed不为事务终态额外创建Root，避免把Root变成T
 唯一键：`(root_id)`；另建`UNIQUE(attempt_id)`。所有CAS包含`root_id + attempt_id +
 state + state_version`，防止把其他attempt推进。
 
+Root只增加与实际后台查询一致的轻量索引：
+`(state, cleanup_after, root_id)`用于待清理工作，
+`(state, temporary_cleanup_done, updated_at, root_id)`用于发布后临时文件清理，
+`(state, updated_at, root_id)`用于终态元数据回收。它们只作用于新增Lifecycle表，不进入
+普通表DML、查询或Merge路径。
+
 ## 9. Restore元数据
 
 逻辑表名：
@@ -305,6 +314,7 @@ dataset_id                 BINARY(16)
 lease_id/deadline          BINARY(16)/TIMESTAMP
 staging_database_id        UINT64
 staging_table_id           UINT64
+hidden_name                TEXT
 target_database_id         UINT64
 target_name                TEXT
 state                      ENUM(IMPORTING, PUBLISHING, DONE, FAILED)
@@ -369,11 +379,11 @@ Manifest中的全局最大值，不在Receipt中再维护第二份逐Chunk最大
 
 | 表 | 必需索引 | 用途 |
 |---|---|---|
-| Binding | `(account_id, physical_table_id)` unique；`(state, updated_at)` | DDL准入和Scheduler分页 |
-| Dataset | `(root_id, attempt_id)` unique；`(account_id, logical_table_id, state)`；`(state, purge_eligible_at)`；`(stage_id, state)` | SHOW、对账、Stage引用和Purge |
+| Binding | `(account_id, physical_table_id)` unique；`(state, binding_id)` | DDL准入和Scheduler游标分页 |
+| Dataset | `(root_id, attempt_id)` unique；`(account_id, logical_table_id, state)`；`(state, purge_eligible_at)`；`(state, updated_at, dataset_id)`；`(stage_id, state)` | SHOW、对账、Stage引用、Purge和终态回收 |
 | TTL Receipt | `(binding_id, source_set_digest)`；`(root_id, attempt_id)`；`(created_at)` | unknown/Root对账和审计GC |
-| Root | `(state, cleanup_after, root_id)`；`(owner_account_id, logical_table_id)` | system Reconcile/Sweeper |
-| Restore Attempt | `(dataset_id, state)`；`(state, deadline)` | lease恢复和超时清理 |
+| Root | `(state, cleanup_after, root_id)`；`(state, temporary_cleanup_done, updated_at, root_id)`；`(state, updated_at, root_id)`；`(owner_account_id, logical_table_id)` | system Reconcile/Sweeper和终态回收 |
+| Restore Attempt | `(dataset_id, state)`；`(state, deadline)`；`(state, updated_at, restore_id)` | lease恢复、超时清理和终态回收 |
 
 所有后台扫描都使用索引游标和rows/bytes page cap，不允许周期性无条件全表物化。
 

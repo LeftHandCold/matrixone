@@ -49,7 +49,7 @@ const (
 		updated_at timestamp not null,
 		primary key (binding_id),
 		unique key uk_lifecycle_binding_table (account_id, physical_table_id),
-		key idx_lifecycle_binding_schedule (state, updated_at)
+		key idx_lifecycle_binding_schedule (state, binding_id)
 	)`
 
 	MoLifecycleDatasetsDDL = `create table mo_catalog.mo_lifecycle_datasets (
@@ -88,6 +88,7 @@ const (
 		unique key uk_lifecycle_dataset_attempt (root_id, attempt_id),
 		key idx_lifecycle_dataset_table (account_id, logical_table_id, state),
 		key idx_lifecycle_dataset_purge (state, purge_eligible_at),
+		key idx_lifecycle_dataset_terminal (state, updated_at, dataset_id),
 		key idx_lifecycle_dataset_stage (stage_id, state)
 	)`
 
@@ -132,7 +133,8 @@ const (
 		updated_at timestamp not null,
 		primary key (restore_id),
 		key idx_lifecycle_restore_dataset (dataset_id, state),
-		key idx_lifecycle_restore_deadline (state, deadline)
+		key idx_lifecycle_restore_deadline (state, deadline),
+		key idx_lifecycle_restore_terminal (state, updated_at, restore_id)
 	)`
 
 	MoLifecycleRestoreChunksDDL = `create table mo_catalog.mo_lifecycle_restore_chunks (
@@ -182,6 +184,9 @@ const (
 		primary key (root_id),
 		unique key uk_lifecycle_cleanup_attempt (attempt_id),
 		key idx_lifecycle_cleanup_work (state, cleanup_after, root_id),
+		key idx_lifecycle_cleanup_temporary
+			(state, temporary_cleanup_done, updated_at, root_id),
+		key idx_lifecycle_cleanup_terminal (state, updated_at, root_id),
 		key idx_lifecycle_cleanup_owner (owner_account_id, logical_table_id)
 	)`
 )

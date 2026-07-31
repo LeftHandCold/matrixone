@@ -254,18 +254,21 @@ Reader callback首版串行。Batch借用和release exactly once；callback返�
 
 Archive只编码E；TTL丢弃E；`DoMergeAndWrite`只输出L并生成TransferTable。
 
-分类完成后计算：
+分类完成后使用已有`ObjectStats`和`ScanReport`做保守估算：
 
 ```text
-rewrite_amplification =
-  live_logical_bytes / max(expired_logical_bytes, 1)
+source_pressure_bytes = max(ObjectStats.OriginSize, ObjectStats.Size, 1)
+estimated_expired_pressure_bytes =
+  ceil(source_pressure_bytes * expired_rows / max(expired_rows + live_rows, 1))
+estimated_rewrite_pressure_amplification =
+  source_pressure_bytes / max(estimated_expired_pressure_bytes, 1)
 ```
 
-`live_logical_bytes`和`expired_logical_bytes`都使用canonical逻辑字节口径，不能混用Parquet
-压缩bytes或Object物理size。超过release profile的`max-rewrite-amplification`时，不进入
+该值是按行比例估算的Rewrite pressure，不宣称是精确逻辑字节放大率；它避免为准入再增加
+逐行字节统计或第二套状态。超过release profile的`max-rewrite-amplification`时，不进入
 final transaction，返回`MIXED_LAYOUT_BLOCKED`；Archive/Rewrite已经产生的Root staging
-按Cleanup协议异步回收。该限制防止Lifecycle列与Object布局严重不相关时每天重写几乎全部
-live data。
+按Cleanup协议异步回收。账户/集群固定窗口的source pressure bytes仍是绝对保险丝，避免
+宽窄行严重偏斜时单靠估算误放行后持续重写活动数据。
 
 每个Mixed source在Reader启动前还按exact ObjectStats size向Scheduler记账，受账户/集群
 固定窗口的rewrite source bytes预算约束；已经开始读取的source无论成功、blocked或abort

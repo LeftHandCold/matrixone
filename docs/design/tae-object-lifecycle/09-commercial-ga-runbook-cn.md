@@ -67,6 +67,8 @@ Provider审计日志证明；它不是Lifecycle在每次PUT中注入的请求hea
 
 `ALTER/DROP STAGE`和`REMOVE @stage/...`都是Stage控制面操作：当Stage仍被Binding或
 非`PURGED` Dataset引用时必须拒绝，避免绕过Cleanup Root直接删除已发布Payload。
+`REMOVE`会在Provider删除期间持有该Stage行锁，可能串行同一Stage的管理操作；这不进入
+普通DML/查询/Merge热路径，Provider deadline沿用现有Stage操作合同。
 
 Phase 1物理Backup不复制Archive Payload。`enabled=true`期间`BACKUP`会显式拒绝；仅关闭
 release gate和等待在途child收敛仍不够，因为Binding、已发布Dataset与Payload继续存在。
@@ -117,12 +119,9 @@ SQL集群测试框架。进入发布认证阶段后必须分别执行：
 - Provider request、429、multipart、LIST/Delete 和存储账单；
 - 未绑定业务基线与 active coexistence 对照。
 
-正式容量执行必须设置`MO_LIFECYCLE_WAIT_SECONDS`并以
-`retirement_completed=true`、`remaining_active_rows=0`作为本轮完成证据；超时的
-evidence保留但判定失败。部署级CN/TN/Provider故障通过
-`MO_LIFECYCLE_FAULT_HOOK`在`after-load`、`after-bind`和`before-verify`阶段执行，
-hook输出与SQL、指标一起归档。没有fault hook或等价平台混沌记录，不能勾选restart和
-response-lost门禁。
+容量执行、完成判定和超时继续使用MO现有BVT/部署平台的等待、SQL断言和证据格式，不定义
+Lifecycle专用环境变量。CN/TN/Provider故障使用现有MO fault/chaos控制面，输出与SQL、指标
+一起归档；没有对应平台混沌记录，不能勾选restart和response-lost门禁。
 
 Lifecycle production Task直接复用MO已有`pkg/util/fault`控制面，不建设第二套注入服务。
 稳定fault point名称统一为：
@@ -134,9 +133,9 @@ tae-object-lifecycle/<point>
 其中`<point>`包括`after-root-register`、`after-protection`、
 `before-source-read`、Payload/Manifest PUT与readback前后、Rewrite staging前后、
 final commit前后、Cleanup LIST/Delete前后，以及Restore initialize/chunk/publish前后。
-默认未启用MO fault injection时只是一次立即返回的公共Trigger检查；认证环境可使用公共
-fault action的ECHO/RETURN、SLEEP/WAIT或PANIC，再由
-`MO_LIFECYCLE_FAULT_HOOK`负责启用、观察和撤销，禁止在共享生产集群遗留fault point。
+默认未启用MO fault injection时只是一次立即返回的公共Trigger检查；认证环境使用公共
+fault action的ECHO/RETURN、SLEEP/WAIT或PANIC，并由现有平台负责启用、观察和撤销，禁止
+在共享生产集群遗留fault point。
 
 ## 5. 告警与处置
 

@@ -206,6 +206,8 @@ or (state='PUBLISHED' and temporary_cleanup_done=false)`,
 	if err != nil {
 		return err
 	}
+	metricv2.LifecycleActiveCleanupRootGauge.Set(float64(activeRoots))
+	metricv2.LifecycleReservedCleanupBytesGauge.Set(float64(reservedBytes))
 	if activeRoots >= uint64(maxActiveRoots) ||
 		reservedBytes >= maxReservedBytes ||
 		requestedBytes > maxReservedBytes-reservedBytes {

@@ -24,6 +24,7 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	metricv2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 )
 
 const frozenArchiveTargetVersion uint16 = 1
@@ -185,7 +186,14 @@ func (store FileServiceArchiveStore) Put(
 			Data:   value,
 		}},
 	})
+	if err == nil {
+		metricv2.LifecycleBytesCounter.WithLabelValues(
+			"provider_write",
+		).Add(float64(len(value)))
+		return nil
+	}
 	if !moerr.IsMoErrCode(err, moerr.ErrFileAlreadyExists) {
+		lifecycleProviderError("write")
 		return err
 	}
 	existingSize, statErr := store.Stat(ctx, key)
@@ -221,6 +229,7 @@ func (store FileServiceArchiveStore) Stat(
 	}
 	entry, err := store.FileService.StatFile(ctx, key)
 	if err != nil {
+		lifecycleProviderError("stat")
 		return 0, err
 	}
 	if entry == nil || entry.IsDir || entry.Size < 0 {
@@ -270,10 +279,15 @@ func (store FileServiceArchiveStore) read(
 	}
 	if err := store.FileService.Read(ctx, &vector); err != nil {
 		vector.ReleaseReadResultOnError()
+		lifecycleProviderError("read")
 		return nil, err
 	}
 	defer vector.Release()
-	return append([]byte(nil), vector.Entries[0].Data...), nil
+	value := append([]byte(nil), vector.Entries[0].Data...)
+	metricv2.LifecycleBytesCounter.WithLabelValues(
+		"provider_read",
+	).Add(float64(len(value)))
+	return value, nil
 }
 
 func (store FileServiceArchiveStore) List(
@@ -294,6 +308,7 @@ func (store FileServiceArchiveStore) List(
 		directories = directories[:len(directories)-1]
 		for entry, err := range store.FileService.List(ctx, directory) {
 			if err != nil {
+				lifecycleProviderError("list")
 				return nil, err
 			}
 			fullPath := path.Join(directory, entry.Name)
@@ -321,5 +336,12 @@ func (store FileServiceArchiveStore) Delete(
 	if moerr.IsMoErrCode(err, moerr.ErrFileNotFound) {
 		return nil
 	}
+	if err != nil {
+		lifecycleProviderError("delete")
+	}
 	return err
+}
+
+func lifecycleProviderError(operation string) {
+	metricv2.LifecycleProviderErrorCounter.WithLabelValues(operation).Inc()
 }

@@ -233,7 +233,8 @@ PAUSED/BLOCKED并需要UNSET或DROP收敛，因此不为“feature off”另建C
 Reader内存、Provider I/O、staging bytes、external booking、Tombstone delta、Root unknown、
 cleanup backlog、Restore staging、Job和Rewrite并发都有硬上限。Mixed Rewrite还受live/
 expired写放大和账户/集群固定窗口source bytes预算限制；Restore按Dataset logical bytes
-限制账户/集群active staging总量。达到上限只暂停Lifecycle。首个GA通过Scheduler/CN并发、
+事务化限制账户active staging，全集群总量只作为监控/Stop-Ship阈值。达到上限只暂停
+Lifecycle。首个GA通过Scheduler/CN并发、
 单请求硬上限和active-coexistence门禁约束资源，不增加TN Lifecycle专用permit或比普通
 Merge更强的资源协议。
 
@@ -262,6 +263,11 @@ DDL fence 不进入查询、DML或Merge热路径。实现只作用于`SET LIFECY
 普通表级DDL。feature关闭时跳过Binding/Restore调度和数据路径，但历史Cleanup Root仍由
 Coordinator有界reconcile/sweep，避免关闭开关造成外部对象泄漏；仅scope级依赖发布和
 `SET LIFECYCLE`使用屏障，普通查询、DML、Merge、checkpoint、GC和logtail永远不访问它。
+
+接受的控制面代价仅限少量管理操作：新增FK为关闭父表首次Binding竞态会锁父表
+`mo_tables`行；Clone/Branch等scope发布在其后台事务期间持有feature-row barrier；
+`REMOVE @stage/...`在Provider删除期间持有对应Stage行锁。它们可能串行同一资源上的管理
+操作，但不进入普通查询、DML或Merge，也不扩展成所有表DDL的全局锁。
 
 ## 6. 最小权威数据
 

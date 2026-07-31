@@ -80,6 +80,48 @@ var (
 		},
 		[]string{"resource"},
 	)
+	LifecycleActiveJobGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "mo",
+			Subsystem: "lifecycle",
+			Name:      "active_jobs",
+			Help:      "Currently running Lifecycle child jobs by bounded mode.",
+		},
+		[]string{"mode"},
+	)
+	LifecycleFullScanAgeGauge = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "mo",
+			Subsystem: "lifecycle",
+			Name:      "observed_full_scan_age_seconds",
+			Help:      "Maximum full-scan age observed in the current bounded scheduling page.",
+		},
+	)
+	LifecycleActiveCleanupRootGauge = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "mo",
+			Subsystem: "lifecycle",
+			Name:      "active_cleanup_roots",
+			Help:      "Latest active Cleanup Root count observed by admission.",
+		},
+	)
+	LifecycleReservedCleanupBytesGauge = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "mo",
+			Subsystem: "lifecycle",
+			Name:      "reserved_cleanup_bytes",
+			Help:      "Latest Cleanup Root reserved-byte total observed by admission.",
+		},
+	)
+	LifecycleProviderErrorCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "mo",
+			Subsystem: "lifecycle",
+			Name:      "provider_errors_total",
+			Help:      "Lifecycle Archive provider errors by bounded operation.",
+		},
+		[]string{"operation"},
+	)
 )
 
 func initLifecycleMetrics() {
@@ -90,4 +132,9 @@ func initLifecycleMetrics() {
 	registry.MustRegister(LifecycleFinalTxnCounter)
 	registry.MustRegister(LifecycleRestoreCounter)
 	registry.MustRegister(LifecycleResourceRejectionCounter)
+	registry.MustRegister(LifecycleActiveJobGauge)
+	registry.MustRegister(LifecycleFullScanAgeGauge)
+	registry.MustRegister(LifecycleActiveCleanupRootGauge)
+	registry.MustRegister(LifecycleReservedCleanupBytesGauge)
+	registry.MustRegister(LifecycleProviderErrorCounter)
 }

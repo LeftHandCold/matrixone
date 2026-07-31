@@ -446,6 +446,7 @@ func (processor *LifecycleProcessor) ProcessArchiveObject(
 		if estimateErr != nil {
 			return processor.abandon(ctx, root, estimateErr)
 		}
+		lifecycleObserveRewritePressure(sourceBytes, retiredBytes)
 		if err := processor.RewriteAdmission.CheckAmplification(
 			sourceBytes,
 			retiredBytes,

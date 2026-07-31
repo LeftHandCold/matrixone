@@ -30,6 +30,25 @@ func TestLifecycleRestoreChunkCatalogHasNoRedundantAutoIncrementState(t *testing
 	)
 }
 
+func TestLifecycleTerminalCleanupQueriesHaveCatalogIndexes(t *testing.T) {
+	bindingDDL := strings.ToLower(MoLifecycleBindingsDDL)
+	datasetDDL := strings.ToLower(MoLifecycleDatasetsDDL)
+	restoreDDL := strings.ToLower(MoLifecycleRestoreAttemptsDDL)
+	rootDDL := strings.ToLower(MoLifecycleCleanupRootsDDL)
+	require.Contains(t, bindingDDL,
+		"idx_lifecycle_binding_schedule (state, binding_id)")
+	require.Contains(t, datasetDDL,
+		"idx_lifecycle_dataset_terminal (state, updated_at, dataset_id)")
+	require.Contains(t, restoreDDL,
+		"idx_lifecycle_restore_terminal (state, updated_at, restore_id)")
+	require.Contains(t, rootDDL,
+		"idx_lifecycle_cleanup_temporary")
+	require.Contains(t, rootDDL,
+		"(state, temporary_cleanup_done, updated_at, root_id)")
+	require.Contains(t, rootDDL,
+		"idx_lifecycle_cleanup_terminal (state, updated_at, root_id)")
+}
+
 func TestLifecycleRestoreStagingTableNameIsReservedCaseInsensitively(t *testing.T) {
 	require.True(t, IsLifecycleRestoreStagingTable(
 		"__mo_lifecycle_restore_0123456789abcdef0123456789abcdef",

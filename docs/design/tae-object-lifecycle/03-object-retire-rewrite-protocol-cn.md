@@ -66,13 +66,13 @@ segment/range内创建对象；超过upper bound立即失败，不在写后扩�
 `writeTransferInfoToS3`内部生成随机临时文件名且成功后才返回位置，不满足Root
 write-ahead所有权。
 
-新增Lifecycle-only选项，不改变普通Merge默认行为：
+新增包内Lifecycle-only选项，不改变普通Merge默认行为；实现接口冻结为现有窄结构：
 
 ```go
-type TransferBookingWriteOptions struct {
-    ForceExternal bool
-    PathAllocator func(pageOrdinal uint32) (string, error)
-    Owner         TransferBookingOwner // MergeTxn or LifecycleRoot
+type lifecycleTransferBookingWriteOptions struct {
+    forceExternal                bool
+    preservePhysicalFilesOnError bool
+    pathAllocator                func(pageOrdinal uint32) (string, error)
 }
 ```
 
@@ -94,19 +94,10 @@ Object ordinal唯一且小于`ordinal_upper_bound`；每个实际booking locatio
 
 普通Merge传nil options，行为和临时文件命名完全不变。
 
-Created Object物理Owner也使用默认不变的窄选项：
-
-```go
-type CreatedObjectPhysicalOwner uint8
-
-const (
-    CreatedObjectOwnedByTxnEntry CreatedObjectPhysicalOwner = iota // 普通Merge
-    CreatedObjectOwnedByLifecycleRoot                              // Lifecycle
-)
-```
-
-Lifecycle txn entry rollback只撤销Catalog/runtime，不直接Delete Root-scoped live文件；Root在
-事务明确abort后清理。普通Merge保持现有`PrepareRollback`物理删除行为。
+Lifecycle entry使用已有`mergeObjectsEntry`上的包内`lifecycleRewrite`模式表达物理Owner：
+rollback只撤销Catalog/runtime，不直接Delete Root-scoped live/booking文件；Root在事务明确
+abort后清理。普通Merge不设置该模式，继续保持现有`PrepareRollback`物理删除行为。不新增
+公共Owner enum或第二套Merge entry。
 
 ## 4. Finalizer
 

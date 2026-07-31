@@ -2,11 +2,12 @@
 
 ## 1. 配置
 
-发布配置必须有明确默认值和hard cap：
+首个GA唯一运行时release gate是`mo_feature_registry.enabled`；`scope_spec`只保存认证过的
+`archive_stages`。下面其余数值是代码中的Release Profile认证常量或运维Stop-Ship阈值，
+不是首版租户SQL/runtime knob，也不为它们新建配置状态机：
 
 ```text
-lifecycle-enabled
-lifecycle-retirement-enabled          # 全量升级后才开启
+mo_feature_registry.enabled           # 全量升级后才由运维打开
 max-bound-tables
 scan-page-objects
 scan-page-meta-bytes
@@ -43,11 +44,11 @@ archive-payload-bytes-per-account
 restore-concurrency/deadline
 restore-attempt/chunk-receipt-count
 max-active-restore-staging-bytes-per-account
-max-active-restore-staging-bytes-per-cluster
+observed-restore-staging-bytes-per-cluster-stop-threshold
 terminal-metadata-retention
 ```
 
-配置关系必须启动时校验，不能自动放宽。`max-delta-rows`使用公共scanner的N+1模式在
+Release Profile关系由构造/启动校验和测试冻结，不能自动放宽。`max-delta-rows`使用公共scanner的N+1模式在
 收集过程中停止；`max-delta-bytes`在公共Merge scanner返回单source Batch后校验，是防御性
 拒绝线而非新的私有内存管理器，其峰值必须连同MO公共scanner的结构上限纳入认证。
 Coordinator每轮最多读取4个Binding账户分页；每个分页最多覆盖64个account，因此即使大量
@@ -89,37 +90,33 @@ Purge/retention收敛。
 
 ## 2. Metrics
 
-低基数标签仅使用account bucket、mode、state、reason，不使用table/object/root ID。
+首个GA只实现能从现有执行点直接、无额外状态取得的低基数指标，不再建设第二套监控状态机。
+标签只使用mode/result/operation/resource，不使用account/table/object/root ID：
 
 ```text
-lifecycle_bindings
-lifecycle_scan_pages_total
-lifecycle_scan_objects_total
-lifecycle_scan_metadata_reads/bytes
-lifecycle_scan_metadata_cache_hits
-lifecycle_full_scan_age_seconds
-lifecycle_candidates{mode}
-lifecycle_jobs{state,reason}
-lifecycle_reader_bytes
-lifecycle_archive_put/readback_bytes
-lifecycle_archive_verify_failures
-lifecycle_rewrite_source/live/expired_bytes
-lifecycle_rewrite_amplification
-lifecycle_rewrite_window_source_bytes{scope}
-lifecycle_final_txn{result}
-lifecycle_post_snapshot_delta_rows
-lifecycle_roots{state}
-lifecycle_root_bytes{state}
-lifecycle_cleanup_backlog_bytes
-lifecycle_restore{state}
-lifecycle_restore_bytes
-lifecycle_restore_staging_bytes{scope}
-lifecycle_restore_chunk_rows/logical_bytes
-lifecycle_provider_errors{operation,reason}
-lifecycle_resource_rejections{resource}
+mo_lifecycle_jobs_total{mode,result}
+mo_lifecycle_active_jobs{mode}
+mo_lifecycle_observed_full_scan_age_seconds
+mo_lifecycle_objects_total{operation}
+mo_lifecycle_bytes_total{operation}
+  # provider_write/provider_read
+  # rewrite_source_pressure/rewrite_estimated_expired_pressure/
+  # rewrite_estimated_live_pressure/retired_source
+mo_lifecycle_root_transitions_total{from,to}
+mo_lifecycle_final_transactions_total{mode,result}
+mo_lifecycle_restore_total{operation,result}
+mo_lifecycle_resource_rejections_total{resource}
+mo_lifecycle_provider_errors_total{operation}
+mo_lifecycle_active_cleanup_roots
+mo_lifecycle_reserved_cleanup_bytes
 ```
 
-`lifecycle_resource_rejections`只统计Scheduler/CN/Reader/Provider/entry-hard-limit拒绝，不表示
+`observed_full_scan_age_seconds`是当前有界调度页中观察到的最大值；未完成过full scan的Binding
+按Unix epoch计算，因而会立即触发超龄告警。Root/Dataset/Restore backlog、最老工作age和
+Restore staging logical bytes直接使用01中已有索引做有界运维查询；普通DML/查询P99、
+CN/TN内存、Merge/GC/logtail backlog复用MO现有指标，不复制Lifecycle版本。
+
+`resource_rejections_total`只统计Scheduler/CN/Reader/Provider/entry-hard-limit拒绝，不表示
 存在TN Lifecycle专用permit或`RESOURCE_BUSY` final retry。
 
 ## 3. SHOW
@@ -234,13 +231,16 @@ Merge/GC backlog持续增长
 SHOW/metrics至少区分：
 
 ```text
-retired_active_logical_bytes
+retired_source_pressure_bytes
 archive_payload_physical_bytes
-archive_put/get/list/delete_requests
-restore_read/egress_bytes
-rewrite_source/live/expired_bytes
+provider_read/write_bytes
+rewrite_source/estimated_expired_pressure_bytes
 cleanup_orphan_bytes
 ```
+
+`retired_source_pressure_bytes`与Rewrite使用`max(ObjectStats.OriginSize, ObjectStats.Size, 1)`
+口径，不宣称是精确canonical logical bytes。Provider请求数、Restore egress和账单继续读取
+现有Provider/FileService监控，不在Lifecycle内复制请求计数状态。
 
 成本报告计算：
 
@@ -266,7 +266,7 @@ Archive成本 =
 Mixed Rewrite受三个独立条件约束：
 
 ```text
-live_logical_bytes / max(expired_logical_bytes, 1)
+source_pressure_bytes / max(estimated_expired_pressure_bytes, 1)
   <= max-rewrite-amplification
 
 sum(exact source ObjectStats size for one account in current fixed window)
@@ -278,6 +278,8 @@ sum(exact source ObjectStats size for cluster in current fixed window)
 
 source bytes在Reader启动前由现有Lifecycle Coordinator按exact ObjectStats size预占并立即
 计费；attempt后续成功、blocked或abort都不返还，因为普通MO已经承担了读取/Rewrite压力。
+`estimated_expired_pressure_bytes`按到期行比例估算，不是精确logical bytes；固定窗口的
+source pressure bytes hard cap负责覆盖宽窄行偏斜，不为精确放大率增加逐行统计状态。
 amplification在单源分类完成后检查，超限时不进入final transaction，Root staging异步清理，
 任务进入`MIXED_LAYOUT_BLOCKED`或等待更多行到期。
 
@@ -296,10 +298,6 @@ Restore启动准入使用`Dataset.logical_bytes`作为保守核算值：
 sum(Dataset.logical_bytes for active IMPORTING/PUBLISHING attempts in account)
   + requested Dataset.logical_bytes
   <= max-active-restore-staging-bytes-per-account
-
-sum(Dataset.logical_bytes for active IMPORTING/PUBLISHING attempts in cluster)
-  + requested Dataset.logical_bytes
-  <= max-active-restore-staging-bytes-per-cluster
 ```
 
 RESTORE不转发给TaskService Coordinator，也不创建持久Slot或CN本地reservation。05中的
@@ -309,7 +307,7 @@ RESTORE不转发给TaskService Coordinator，也不创建持久Slot或CN本地re
 Lifecycle feature row或枚举全体tenant。通过后才在同一普通事务执行Dataset lease CAS、
 创建隐藏表和插入Attempt。
 
-全集群cap是发布认证、监控和Stop-Ship边界，不宣称为跨账户事务强不变量；不为精确cluster
+全集群staging bytes只有发布认证、监控和Stop-Ship阈值，不是启动准入配置或跨账户事务强不变量；不为精确cluster
 quota增加Slot表或全局锁。初始化事务绝对deadline为30秒、账户行lock wait上限为5秒；
 查询失败、账户消失、溢出或账户cap耗尽都在首次副作用前fail closed。事务提交后由Attempt
 计入下一次本账户核算，事务失败不留下reservation，响应丢失继续由普通MO事务结果和05中的
