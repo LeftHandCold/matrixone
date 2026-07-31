@@ -314,9 +314,9 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - 首次SET与Snapshot/PITR/Publication/Clone/Branch创建同时到达；
 - pessimistic/optimistic事务下`SET LIFECYCLE`的`mo_tables -> feature row`锁顺序，以及
   普通表DDL不取得feature row；
-- feature关闭时只允许历史Cleanup Root的有界reconcile/sweep，不启动Binding、Restore或
-  数据路径；未绑定表的普通查询/DML/Merge不访问Lifecycle元数据，可能冲突的管理DDL仍只走
-  一次有界控制面检查；
+- feature关闭时只允许历史Cleanup Root的有界reconcile/sweep、过期Restore隐藏表清理和
+  终态元数据压缩，不启动Binding调度、新Restore或数据路径；未绑定表的普通查询/DML/Merge
+  不访问Lifecycle元数据，可能冲突的管理DDL仍只走一次有界控制面检查；
 - 重复Coordinator tick不排队；Root放弃、Rollback、Close和临时清理在父context取消后仍
   使用独立固定deadline终止；
 - 新CN→旧TN、旧CN→新TN、滚动升级、关闭retirement后降级。

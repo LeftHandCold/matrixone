@@ -157,7 +157,8 @@ Restore不增加tagged entry。
 7. 未绑定表不创建Guard或其他Lifecycle元数据，普通查询/DML/Merge不访问barrier；
 8. finalizer/DDL、SET/dependency create及滚动升级竞态测试通过。
 9. 新集群bootstrap和存量集群upgrade都写入同一个Lifecycle Coordinator cron task；任务
-   在release开关关闭时只收敛已有Cleanup Root并检查开关，不执行Binding扫描或创建新Root。
+   在release开关关闭时只收敛已有Cleanup Root、过期Restore隐藏表和终态元数据并检查开关，
+   不执行Binding扫描、创建新Root或启动新Restore。
 
 若测试暴露普通Merge/事务/DDL通用Bug，记录公共Issue并复用公共修复，不在Lifecycle新增
 私有事务协议。

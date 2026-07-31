@@ -199,7 +199,8 @@ feature off：
 - 普通查询、DML、Merge、checkpoint、GC和logtail无Lifecycle Catalog访问；
 - 表级管理DDL仍执行一次索引化Binding检查，但不取得集群级feature-row写锁；
 - Snapshot/PITR/Publication等scope级发布才使用既有feature-row barrier；
-- 普通Merge默认参数和代码路径不变；
+- 普通Merge语义、默认参数、候选、排序、writer、WAL和GC不变；每个Block只增加一次
+  `lifecycleReadBudget == nil`快速分支，feature-off开销由Gate I对照基准验证；
 - unknown Entry安全解析只增加可测的常数分支。
 
 TaskService声明Coordinator并发1；runner handoff若仍产生重复tick，本地只允许一个run占有

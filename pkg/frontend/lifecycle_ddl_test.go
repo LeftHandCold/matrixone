@@ -27,7 +27,40 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
+	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
 )
+
+func TestLifecycleStageIdentityDigestMatchesWorkerFormat(t *testing.T) {
+	frontendIdentity := lifecycleStageIdentity{
+		ID:               12,
+		URL:              "s3://archive-bucket/tenant-prefix",
+		Provider:         "aws",
+		Endpoint:         "https://s3.example.com",
+		Region:           "me-central-1",
+		Bucket:           "archive-bucket",
+		Prefix:           "tenant-prefix",
+		StorageClass:     "STANDARD",
+		Encryption:       "kms/archive-key",
+		CredentialHandle: "deployment-role/archive",
+	}
+	workerIdentity := lifecyclepkg.ArchiveStageIdentity{
+		StageID:            frontendIdentity.ID,
+		CanonicalURL:       frontendIdentity.URL,
+		Provider:           frontendIdentity.Provider,
+		CanonicalEndpoint:  frontendIdentity.Endpoint,
+		Region:             frontendIdentity.Region,
+		BucketOrContainer:  frontendIdentity.Bucket,
+		ImmutablePrefix:    frontendIdentity.Prefix,
+		StorageClass:       frontendIdentity.StorageClass,
+		EncryptionIdentity: frontendIdentity.Encryption,
+		CredentialHandle:   frontendIdentity.CredentialHandle,
+	}
+	require.Equal(
+		t,
+		lifecyclepkg.ArchiveStageIdentityDigest(workerIdentity),
+		lifecycleStageIdentityDigest(frontendIdentity),
+	)
+}
 
 func lifecycleTableDef(columnType types.T) *plan.TableDef {
 	return &plan.TableDef{
