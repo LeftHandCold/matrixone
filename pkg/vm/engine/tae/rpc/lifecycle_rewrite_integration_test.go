@@ -15,23 +15,29 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	objectioio "github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/api"
 	txnpb "github.com/matrixorigin/matrixone/pkg/pb/txn"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/checkpoint"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/testutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/handle"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/logtail"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/mergesort"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils/config"
@@ -383,6 +389,48 @@ func lifecycleRPCObjectStatsVisible(
 	return visible
 }
 
+func requireLifecycleRPCRootFiles(
+	t *testing.T,
+	ctx context.Context,
+	h *mockHandle,
+	rewrite lifecycleRPCRewriteFixture,
+) {
+	t.Helper()
+	_, err := h.db.Runtime.Fs.StatFile(
+		ctx,
+		rewrite.created.ObjectName().String(),
+	)
+	require.NoError(t, err, "TAE rollback must not delete Root-owned live staging")
+	bookingPath := rewrite.control.TransferBookingLocations[len(rewrite.control.TransferBookingLocations)-1]
+	_, err = h.db.Runtime.Fs.StatFile(ctx, bookingPath)
+	require.NoError(t, err, "TAE rollback must not delete Root-owned booking")
+}
+
+func installLifecycleRPCFault(
+	t *testing.T,
+	ctx context.Context,
+	point string,
+	message string,
+) {
+	t.Helper()
+	require.True(t, fault.Enable())
+	require.NoError(t, fault.AddFaultPoint(
+		ctx,
+		point,
+		":::",
+		"echo",
+		0,
+		message,
+		false,
+	))
+	t.Cleanup(func() {
+		removed, err := fault.RemoveFaultPoint(ctx, point)
+		require.NoError(t, err)
+		require.True(t, removed)
+		require.True(t, fault.Disable())
+	})
+}
+
 func TestLifecycleRewriteTransfersLiveDeleteAndSurvivesReplay(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()
@@ -441,6 +489,88 @@ func TestLifecycleRewriteTransfersLiveDeleteAndSurvivesReplay(t *testing.T) {
 	))
 	requireLifecycleRPCRows(t, ctx, h, table, 4)
 	require.Equal(t, []int16{6, 7, 8, 9}, lifecycleRPCPrimaryKeys(t, ctx, h, table))
+
+	// Lifecycle only records the source retirement.  The old source file is
+	// still present after commit/replay and must be reclaimed by the ordinary
+	// checkpoint/TAE GC path, while the created live Object remains intact.
+	_, err = h.db.Runtime.Fs.StatFile(ctx, table.source.ObjectName().String())
+	require.NoError(t, err)
+	_, err = h.db.Runtime.Fs.StatFile(ctx, rewrite.created.ObjectName().String())
+	require.NoError(t, err)
+	require.False(t, h.db.DiskCleaner.GetCleaner().GetSyncProtectionManager().IsProtected(
+		table.source.ObjectName().String(),
+	))
+
+	checkpointCtx, cancel := context.WithTimeout(ctx, testutil.TestCheckpointTimeout)
+	defer cancel()
+	target := h.db.TxnMgr.Now()
+	require.NoError(t, h.db.ForceCheckpoint(checkpointCtx, target))
+	incremental := h.db.BGCheckpointRunner.MaxIncrementalCheckpoint()
+	require.NotNil(t, incremental)
+	incrementalEnd := incremental.GetEnd()
+	require.True(t, incrementalEnd.GE(&target))
+	checkpointReader := logtail.NewCKPReader(
+		incremental.GetVersion(),
+		incremental.GetLocation(),
+		common.DefaultAllocator,
+		h.db.Runtime.Fs,
+	)
+	require.NoError(t, checkpointReader.ReadMeta(checkpointCtx))
+	sourceCheckpointed := false
+	sourceDeleteTS := types.TS{}
+	require.NoError(t, checkpointReader.ForEachRow(
+		checkpointCtx,
+		func(
+			_ uint32,
+			_, tableID uint64,
+			_ int8,
+			stats objectio.ObjectStats,
+			_, deleteTS types.TS,
+			_ types.Rowid,
+		) error {
+			if tableID == table.tableID &&
+				stats.ObjectName().String() == table.source.ObjectName().String() {
+				sourceCheckpointed = true
+				sourceDeleteTS = deleteTS
+			}
+			return nil
+		},
+	))
+	require.True(t, sourceCheckpointed)
+	require.False(t, sourceDeleteTS.IsEmpty())
+	require.True(t, sourceDeleteTS.LT(&incrementalEnd))
+	allowAll := func(*checkpoint.CheckpointEntry) bool { return true }
+	require.NoError(t, h.db.DiskCleaner.GetCleaner().Process(checkpointCtx, allowAll))
+	require.NotNil(t, h.db.DiskCleaner.GetCleaner().GetScanWaterMark())
+	_, err = h.db.Runtime.Fs.StatFile(ctx, table.source.ObjectName().String())
+	require.NoError(t, err)
+
+	// Production's ordinary Catalog-GC cron first removes the retired Catalog
+	// node after its retention watermark.  Advance that same public step
+	// synchronously here (without a sleep); the following checkpoint then makes
+	// the source absent from the global live-object set used by physical GC.
+	h.db.Catalog.GCByTS(checkpointCtx, incrementalEnd)
+	gcTarget := h.db.TxnMgr.Now()
+	require.NoError(t, h.db.ForceCheckpoint(checkpointCtx, gcTarget))
+	gcIncremental := h.db.BGCheckpointRunner.MaxIncrementalCheckpoint()
+	require.NotNil(t, gcIncremental)
+	gcIncrementalEnd := gcIncremental.GetEnd()
+	require.True(t, gcIncrementalEnd.GE(&gcTarget))
+	require.NoError(t, h.db.DiskCleaner.GetCleaner().Process(checkpointCtx, allowAll))
+	require.NoError(t, h.db.ForceGlobalCheckpoint(
+		checkpointCtx,
+		gcIncrementalEnd,
+		0,
+	))
+	require.NoError(t, h.db.DiskCleaner.GetCleaner().Process(checkpointCtx, allowAll))
+	_, err = h.db.Runtime.Fs.StatFile(ctx, table.source.ObjectName().String())
+	require.True(t, moerr.IsMoErrCode(err, moerr.ErrFileNotFound), err)
+	_, err = h.db.Runtime.Fs.StatFile(ctx, rewrite.created.ObjectName().String())
+	require.NoError(t, err)
+	require.False(t, lifecycleRPCObjectVisible(t, ctx, h.db, table))
+	require.True(t, lifecycleRPCObjectStatsVisible(t, ctx, h, table, rewrite.created))
+	requireLifecycleRPCRows(t, ctx, h, table, 4)
+	require.Equal(t, []int16{6, 7, 8, 9}, lifecycleRPCPrimaryKeys(t, ctx, h, table))
 }
 
 func TestLifecycleRewriteNoTransferDeleteAborts(t *testing.T) {
@@ -470,7 +600,8 @@ func TestLifecycleRewriteNoTransferDeleteAborts(t *testing.T) {
 	finalTxn.SetSyncProtectionJobID(jobID)
 	require.NoError(t, h.HandleLifecycleCommit(ctx, finalTxn, rewrite.control))
 	deleteLifecycleRPCSourceRow(t, ctx, h, table, 0)
-	require.Error(t, finalTxn.Commit(ctx))
+	err = finalTxn.Commit(ctx)
+	require.True(t, moerr.IsMoErrCode(err, moerr.ErrTxnWWConflict), err)
 
 	require.True(t, lifecycleRPCObjectVisible(t, ctx, h.db, table))
 	require.False(t, lifecycleRPCObjectStatsVisible(
@@ -480,13 +611,188 @@ func TestLifecycleRewriteNoTransferDeleteAborts(t *testing.T) {
 		table,
 		rewrite.created,
 	))
-	_, err = h.db.Runtime.Fs.StatFile(
-		ctx,
-		rewrite.created.ObjectName().String(),
-	)
-	require.NoError(t, err, "TAE rollback must not delete Root-owned live staging")
-	bookingPath := rewrite.control.TransferBookingLocations[len(rewrite.control.TransferBookingLocations)-1]
-	_, err = h.db.Runtime.Fs.StatFile(ctx, bookingPath)
-	require.NoError(t, err, "TAE rollback must not delete Root-owned booking")
+	requireLifecycleRPCRootFiles(t, ctx, h, rewrite)
 	requireLifecycleRPCRows(t, ctx, h, table, 9)
+}
+
+func TestLifecycleRewritePreRegistrationTransferFaultCleansRuntimeOnly(
+	t *testing.T,
+) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+	opts := config.WithLongScanAndCKPOpts(nil)
+	h := mockTAEHandle(ctx, t, opts)
+	t.Cleanup(func() { opts.Fs.Close(ctx) })
+	t.Cleanup(func() { _ = h.HandleClose(ctx) })
+
+	table := newLifecycleRPCTable(t, ctx, h)
+	sourceSnapshot := h.db.TxnMgr.Now()
+	jobID := "lifecycle-rewrite-pre-registration-fault"
+	registerLifecycleRPCProtection(t, h, jobID, table.source)
+	rewrite := newLifecycleRPCRewriteFixture(t, ctx, h, table, sourceSnapshot)
+	deleteLifecycleRPCSourceRow(t, ctx, h, table, 1)
+	installLifecycleRPCFault(
+		t,
+		ctx,
+		objectio.FJ_TransferErrorAfterTransfer,
+		"injected Lifecycle phase-1 transfer failure",
+	)
+
+	finalTxn, err := h.db.StartTxn(nil)
+	require.NoError(t, err)
+	finalTxn.SetSyncProtectionJobID(jobID)
+	require.ErrorContains(
+		t,
+		h.HandleLifecycleCommit(ctx, finalTxn, rewrite.control),
+		"injected Lifecycle phase-1 transfer failure",
+	)
+	require.NoError(t, finalTxn.Rollback(ctx))
+
+	createdBlock := objectio.NewBlockidWithObjectID(
+		rewrite.created.ObjectName().ObjectId(),
+		0,
+	)
+	require.Nil(t, h.db.Runtime.TransferDelsMap.GetDelsForBlk(createdBlock))
+	require.True(t, lifecycleRPCObjectVisible(t, ctx, h.db, table))
+	require.False(t, lifecycleRPCObjectStatsVisible(t, ctx, h, table, rewrite.created))
+	requireLifecycleRPCRootFiles(t, ctx, h, rewrite)
+	requireLifecycleRPCRows(t, ctx, h, table, 9)
+}
+
+func TestLifecycleRewriteRegisteredTransferFaultRollsBackCatalogOnly(
+	t *testing.T,
+) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+	opts := config.WithLongScanAndCKPOpts(nil)
+	h := mockTAEHandle(ctx, t, opts)
+	t.Cleanup(func() { opts.Fs.Close(ctx) })
+	t.Cleanup(func() { _ = h.HandleClose(ctx) })
+
+	table := newLifecycleRPCTable(t, ctx, h)
+	sourceSnapshot := h.db.TxnMgr.Now()
+	jobID := "lifecycle-rewrite-registered-fault"
+	registerLifecycleRPCProtection(t, h, jobID, table.source)
+	rewrite := newLifecycleRPCRewriteFixture(t, ctx, h, table, sourceSnapshot)
+	finalTxn, err := h.db.StartTxn(nil)
+	require.NoError(t, err)
+	finalTxn.SetSyncProtectionJobID(jobID)
+	require.NoError(t, h.HandleLifecycleCommit(ctx, finalTxn, rewrite.control))
+	deleteLifecycleRPCSourceRow(t, ctx, h, table, 1)
+	installLifecycleRPCFault(
+		t,
+		ctx,
+		objectio.FJ_TransferErrorAfterTransfer,
+		"injected Lifecycle phase-2 transfer failure",
+	)
+
+	require.ErrorContains(
+		t,
+		finalTxn.Commit(ctx),
+		"injected Lifecycle phase-2 transfer failure",
+	)
+	createdBlock := objectio.NewBlockidWithObjectID(
+		rewrite.created.ObjectName().ObjectId(),
+		0,
+	)
+	require.Nil(t, h.db.Runtime.TransferDelsMap.GetDelsForBlk(createdBlock))
+	require.True(t, lifecycleRPCObjectVisible(t, ctx, h.db, table))
+	require.False(t, lifecycleRPCObjectStatsVisible(t, ctx, h, table, rewrite.created))
+	requireLifecycleRPCRootFiles(t, ctx, h, rewrite)
+	requireLifecycleRPCRows(t, ctx, h, table, 9)
+}
+
+func TestLifecycleRewriteNeedRetryRebuildsFromImmutableBooking(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+	opts := config.WithLongScanAndCKPOpts(nil)
+	h := mockTAEHandle(ctx, t, opts)
+	t.Cleanup(func() { opts.Fs.Close(ctx) })
+	t.Cleanup(func() {
+		if h.Handle != nil {
+			_ = h.HandleClose(ctx)
+		}
+	})
+
+	table := newLifecycleRPCTable(t, ctx, h)
+	sourceSnapshot := h.db.TxnMgr.Now()
+	jobID := "lifecycle-rewrite-need-retry"
+	registerLifecycleRPCProtection(t, h, jobID, table.source)
+	rewrite := newLifecycleRPCRewriteFixture(t, ctx, h, table, sourceSnapshot)
+	deletedPrimaryKey := deleteLifecycleRPCSourceRow(t, ctx, h, table, 1)
+	require.Equal(t, int16(5), deletedPrimaryKey)
+
+	request := lifecycleRewriteCommitRequest(t, rewrite.control, jobID)
+	originalPayload := bytes.Clone(request.Payload[0].CNRequest.Payload)
+	meta := mock1PCTxn(h.db)
+	generationOne, err := h.db.GetOrCreateTxnWithMeta(
+		nil,
+		meta.GetID(),
+		types.TimestampToTS(meta.GetSnapshotTS()),
+	)
+	require.NoError(t, err)
+	prepareCount := 0
+	generationOne.SetPrepareCommitFn(func(txn txnif.AsyncTxn) error {
+		prepareCount++
+		if err := txn.GetStore().PrepareCommit(); err != nil {
+			return err
+		}
+		return txnif.ErrTxnNeedRetry
+	})
+
+	_, err = h.HandleCommit(ctx, meta, nil, request)
+	require.NoError(t, err)
+	require.Equal(t, 1, prepareCount)
+	require.Equal(t, txnif.TxnStateRollbacked, generationOne.GetTxnState(true))
+	require.True(t, bytes.Equal(originalPayload, request.Payload[0].CNRequest.Payload))
+	require.False(t, lifecycleRPCObjectVisible(t, ctx, h.db, table))
+	require.True(t, lifecycleRPCObjectStatsVisible(t, ctx, h, table, rewrite.created))
+	requireLifecycleRPCRootFiles(t, ctx, h, rewrite)
+	requireLifecycleRPCRows(t, ctx, h, table, 4)
+	require.Equal(t, []int16{6, 7, 8, 9}, lifecycleRPCPrimaryKeys(t, ctx, h, table))
+
+	directory := h.db.Dir
+	require.NoError(t, h.HandleClose(ctx))
+	h.Handle = nil
+	reopened, err := db.Open(ctx, directory, opts)
+	require.NoError(t, err)
+	h.Handle = &Handle{db: reopened}
+	require.False(t, lifecycleRPCObjectVisible(t, ctx, h.db, table))
+	require.True(t, lifecycleRPCObjectStatsVisible(t, ctx, h, table, rewrite.created))
+	requireLifecycleRPCRows(t, ctx, h, table, 4)
+	require.Equal(t, []int16{6, 7, 8, 9}, lifecycleRPCPrimaryKeys(t, ctx, h, table))
+}
+
+func TestLifecycleRewriteRestartLosesProtectionAndFailsClosed(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+	opts := config.WithLongScanAndCKPOpts(nil)
+	h := mockTAEHandle(ctx, t, opts)
+	t.Cleanup(func() { opts.Fs.Close(ctx) })
+	t.Cleanup(func() {
+		if h.Handle != nil {
+			_ = h.HandleClose(ctx)
+		}
+	})
+
+	table := newLifecycleRPCTable(t, ctx, h)
+	sourceSnapshot := h.db.TxnMgr.Now()
+	jobID := "lifecycle-rewrite-protection-restart"
+	registerLifecycleRPCProtection(t, h, jobID, table.source)
+	rewrite := newLifecycleRPCRewriteFixture(t, ctx, h, table, sourceSnapshot)
+
+	directory := h.db.Dir
+	require.NoError(t, h.HandleClose(ctx))
+	h.Handle = nil
+	reopened, err := db.Open(ctx, directory, opts)
+	require.NoError(t, err)
+	h.Handle = &Handle{db: reopened}
+
+	request := lifecycleRewriteCommitRequest(t, rewrite.control, jobID)
+	_, err = h.HandleCommit(ctx, mock1PCTxn(h.db), nil, request)
+	require.True(t, moerr.IsMoErrCode(err, moerr.ErrSyncProtectionNotFound), err)
+	require.True(t, lifecycleRPCObjectVisible(t, ctx, h.db, table))
+	require.False(t, lifecycleRPCObjectStatsVisible(t, ctx, h, table, rewrite.created))
+	requireLifecycleRPCRootFiles(t, ctx, h, rewrite)
+	requireLifecycleRPCRows(t, ctx, h, table, 10)
 }
