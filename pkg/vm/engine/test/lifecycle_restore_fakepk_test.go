@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,13 +191,23 @@ values('LIFECYCLE','test','{"allowed_scope":[]}',true)`,
 		SourceTableVersion: 1,
 		SourceDatabaseName: "source_db",
 		SourceTableName:    "events",
-		Columns: []lifecyclepkg.SchemaColumn{{
-			Ordinal:        0,
-			SourceColumnID: 1,
-			Name:           "payload",
-			TypeID:         int32(types.T_int64),
-			NotNull:        true,
-		}},
+		Columns: []lifecyclepkg.SchemaColumn{
+			{
+				Ordinal:        0,
+				SourceColumnID: 1,
+				Name:           "id",
+				TypeID:         int32(types.T_uint64),
+				NotNull:        true,
+				AutoIncrement:  true,
+			},
+			{
+				Ordinal:        1,
+				SourceColumnID: 2,
+				Name:           "payload",
+				TypeID:         int32(types.T_int64),
+				NotNull:        true,
+			},
+		},
 	}
 	schemaDigest, err := schema.Digest()
 	require.NoError(t, err)
@@ -355,18 +366,103 @@ where restore_id=unhex('%s')`,
 	require.Equal(t, uint64(0), rolledBackAttempt.NextChunkOrdinal)
 	require.Equal(t, uint64(0), rolledBackAttempt.RestoredRows)
 
-	for ordinal, values := range [][]int64{{11, 22}, {33, 44}} {
-		rows, receipt := lifecycleRestoreTestChunk(
-			t,
-			ctx,
-			schema,
-			restoreID,
-			uint64(ordinal),
-			values,
-		)
-		attempt, err = repository.ImportChunk(ctx, attempt, receipt, schema, rows)
-		require.NoError(t, err)
+	importConcurrently := func(
+		current lifecyclepkg.RestoreAttempt,
+		rowSets [][][]lifecyclepkg.CanonicalCell,
+		receiptSets []lifecyclepkg.RestoreChunkReceipt,
+	) []error {
+		require.Len(t, rowSets, len(receiptSets))
+		start := make(chan struct{})
+		errors := make([]error, len(receiptSets))
+		var workers sync.WaitGroup
+		workers.Add(len(receiptSets))
+		for index := range receiptSets {
+			go func(index int) {
+				defer workers.Done()
+				<-start
+				_, errors[index] = repository.ImportChunk(
+					ctx,
+					current,
+					receiptSets[index],
+					schema,
+					rowSets[index],
+				)
+			}(index)
+		}
+		close(start)
+		workers.Wait()
+		return errors
 	}
+
+	rows0, receipt0 := lifecycleRestoreTestChunk(
+		t,
+		ctx,
+		schema,
+		restoreID,
+		0,
+		[]int64{11, 22},
+	)
+	rows0Duplicate, receipt0Duplicate := lifecycleRestoreTestChunk(
+		t,
+		ctx,
+		schema,
+		restoreID,
+		0,
+		[]int64{11, 22},
+	)
+	sameDigestErrors := importConcurrently(
+		attempt,
+		[][][]lifecyclepkg.CanonicalCell{rows0, rows0Duplicate},
+		[]lifecyclepkg.RestoreChunkReceipt{receipt0, receipt0Duplicate},
+	)
+	require.True(t, sameDigestErrors[0] == nil || sameDigestErrors[1] == nil)
+	attempt, err = repository.GetAttempt(ctx, restoreID)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), attempt.NextChunkOrdinal)
+	require.Equal(t, uint64(2), attempt.RestoredRows)
+	attempt, err = repository.ImportChunk(ctx, attempt, receipt0, schema, rows0)
+	require.NoError(t, err, "same digest retry must converge idempotently")
+
+	rows1, receipt1 := lifecycleRestoreTestChunk(
+		t,
+		ctx,
+		schema,
+		restoreID,
+		1,
+		[]int64{33, 44},
+	)
+	rows1Competing, receipt1Competing := lifecycleRestoreTestChunk(
+		t,
+		ctx,
+		schema,
+		restoreID,
+		1,
+		[]int64{33, 44},
+	)
+	receipt1Competing.ChunkDigest = sha256.Sum256([]byte("competing chunk digest"))
+	differentDigestErrors := importConcurrently(
+		attempt,
+		[][][]lifecyclepkg.CanonicalCell{rows1, rows1Competing},
+		[]lifecyclepkg.RestoreChunkReceipt{receipt1, receipt1Competing},
+	)
+	require.True(t, differentDigestErrors[0] == nil || differentDigestErrors[1] == nil)
+	attempt, err = repository.GetAttempt(ctx, restoreID)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), attempt.NextChunkOrdinal)
+	require.Equal(t, uint64(4), attempt.RestoredRows)
+	winningReceipts, err := repository.ListChunkReceipts(ctx, restoreID)
+	require.NoError(t, err)
+	require.Len(t, winningReceipts, 2)
+	var losingReceipt lifecyclepkg.RestoreChunkReceipt
+	if winningReceipts[1].ChunkDigest == receipt1.ChunkDigest {
+		losingReceipt = receipt1Competing
+	} else {
+		require.Equal(t, receipt1Competing.ChunkDigest, winningReceipts[1].ChunkDigest)
+		losingReceipt = receipt1
+	}
+	_, err = repository.ImportChunk(ctx, attempt, losingReceipt, schema, rows1)
+	require.ErrorContains(t, err, "Chunk digest corruption")
+
 	require.Equal(t, uint64(2), attempt.NextChunkOrdinal)
 	require.Equal(t, uint64(4), attempt.RestoredRows)
 	receipts, err := repository.ListChunkReceipts(ctx, restoreID)
@@ -382,10 +478,20 @@ where restore_id=unhex('%s')`,
 		hiddenName,
 	)
 	require.Equal(t, []int64{11, 22, 33, 44}, hiddenRows.payloads)
+	require.Equal(t, []uint64{11, 22, 33, 44}, hiddenRows.autoIDs)
 	require.Len(t, hiddenRows.fakePKs, 4)
 	assertLifecycleRestoreFakePKs(t, hiddenRows.fakePKs)
 
-	require.NoError(t, repository.Publish(ctx, attempt, verifiedHash, schema, nil))
+	require.NoError(t, repository.Publish(
+		ctx,
+		attempt,
+		verifiedHash,
+		schema,
+		[]lifecyclepkg.AutoIncrementMax{{
+			ColumnOrdinal: 0,
+			Value:         "44",
+		}},
+	))
 	publishedRows := queryLifecycleRestoreRows(
 		t,
 		ctx,
@@ -422,6 +528,7 @@ where restore_id=unhex('%s')`,
 		targetName,
 	)
 	require.Equal(t, []int64{11, 22, 33, 44, 55}, afterInsert.payloads)
+	require.Equal(t, []uint64{11, 22, 33, 44, 45}, afterInsert.autoIDs)
 	assertLifecycleRestoreFakePKs(t, afterInsert.fakePKs)
 	require.NotContains(t, previousFakePKs, afterInsert.fakePKs[len(afterInsert.fakePKs)-1])
 	leaseCount := queryLifecycleRestoreUint64(
@@ -436,6 +543,158 @@ where dataset_id=unhex('%s') and restore_lease_id is null`,
 		),
 	)
 	require.Equal(t, uint64(1), leaseCount)
+
+	// Exercise the real Publish/CleanupHidden race through ordinary MO
+	// transactions.  Whichever transaction wins owns the only legal terminal
+	// state; the loser must not rename or drop across that state transition.
+	const (
+		raceRestoreID = "77777777-7777-7777-7777-777777777777"
+		raceLeaseID   = "88888888-8888-8888-8888-888888888888"
+		raceHidden    = catalog.LifecycleRestoreTableNamePrefix + "99999999999999999999999999999999"
+		raceTarget    = "restored_events_race"
+	)
+	datasetVersion := queryLifecycleRestoreUint64(
+		t,
+		ctx,
+		sqlExecutor,
+		accountID,
+		fmt.Sprintf(
+			`select version from mo_catalog.mo_lifecycle_datasets
+where dataset_id=unhex('%s')`,
+			lifecycleRestoreTestUUIDHex(datasetID),
+		),
+	)
+	raceHiddenCreateSQL, err := schema.BuildRestoreCreateTableSQL(
+		ctx,
+		databaseName,
+		raceHidden,
+	)
+	require.NoError(t, err)
+	raceAttempt, err := repository.Initialize(
+		ctx,
+		lifecyclepkg.RestoreInitializeRequest{
+			Dataset: lifecyclepkg.RestoreDataset{
+				DatasetID:    datasetID,
+				AccountID:    accountID,
+				ContentHash:  verifiedHash,
+				RowCount:     4,
+				LogicalBytes: datasetLogicalCap,
+				Version:      datasetVersion,
+				State:        "PUBLISHED",
+			},
+			Attempt: lifecyclepkg.RestoreAttempt{
+				RestoreID:          raceRestoreID,
+				DatasetID:          datasetID,
+				LeaseID:            raceLeaseID,
+				Deadline:           time.Now().UTC().Add(time.Minute).Truncate(time.Microsecond),
+				StagingDatabaseID:  databaseID,
+				HiddenName:         raceHidden,
+				TargetDatabaseID:   databaseID,
+				TargetDatabaseName: databaseName,
+				TargetName:         raceTarget,
+			},
+			HiddenCreateSQL: raceHiddenCreateSQL,
+		},
+	)
+	require.NoError(t, err)
+	for ordinal, values := range [][]int64{{11, 22}, {33, 44}} {
+		rows, receipt := lifecycleRestoreTestChunk(
+			t,
+			ctx,
+			schema,
+			raceRestoreID,
+			uint64(ordinal),
+			values,
+		)
+		raceAttempt, err = repository.ImportChunk(
+			ctx,
+			raceAttempt,
+			receipt,
+			schema,
+			rows,
+		)
+		require.NoError(t, err)
+	}
+
+	startRace := make(chan struct{})
+	var raceWorkers sync.WaitGroup
+	raceWorkers.Add(2)
+	var publishErr error
+	var cleanupErr error
+	go func() {
+		defer raceWorkers.Done()
+		<-startRace
+		publishErr = repository.Publish(
+			ctx,
+			raceAttempt,
+			verifiedHash,
+			schema,
+			[]lifecyclepkg.AutoIncrementMax{{
+				ColumnOrdinal: 0,
+				Value:         "44",
+			}},
+		)
+	}()
+	go func() {
+		defer raceWorkers.Done()
+		<-startRace
+		cleanupErr = repository.CleanupHidden(ctx, raceRestoreID)
+	}()
+	close(startRace)
+	raceWorkers.Wait()
+
+	raceCurrent, err := repository.GetAttempt(ctx, raceRestoreID)
+	require.NoError(t, err)
+	hiddenCount := queryLifecycleRestoreUint64(
+		t,
+		ctx,
+		sqlExecutor,
+		accountID,
+		fmt.Sprintf(
+			`select cast(count(*) as bigint unsigned) from mo_catalog.mo_tables
+where reldatabase_id=%d and relname='%s'`,
+			databaseID,
+			raceHidden,
+		),
+	)
+	require.Zero(t, hiddenCount)
+	targetCount := queryLifecycleRestoreUint64(
+		t,
+		ctx,
+		sqlExecutor,
+		accountID,
+		fmt.Sprintf(
+			`select cast(count(*) as bigint unsigned) from mo_catalog.mo_tables
+where reldatabase_id=%d and relname='%s'`,
+			databaseID,
+			raceTarget,
+		),
+	)
+	switch raceCurrent.State {
+	case "DONE":
+		require.NoError(t, publishErr)
+		require.Equal(t, uint64(1), targetCount)
+		require.NoError(t, repository.CleanupHidden(ctx, raceRestoreID))
+		require.Equal(t, []int64{11, 22, 33, 44}, queryLifecycleRestoreRows(
+			t,
+			ctx,
+			sqlExecutor,
+			accountID,
+			databaseName,
+			raceTarget,
+		).payloads)
+	case "FAILED":
+		require.NoError(t, cleanupErr)
+		require.Error(t, publishErr)
+		require.Zero(t, targetCount)
+	default:
+		t.Fatalf(
+			"Publish/CleanupHidden race did not converge: state=%s publish=%v cleanup=%v",
+			raceCurrent.State,
+			publishErr,
+			cleanupErr,
+		)
+	}
 }
 
 func mustExecLifecycleRestoreSQL(
@@ -491,6 +750,7 @@ func queryLifecycleRestoreUint64(
 
 type lifecycleRestoreTestRows struct {
 	payloads []int64
+	autoIDs  []uint64
 	fakePKs  []uint64
 }
 
@@ -506,7 +766,7 @@ func queryLifecycleRestoreRows(
 	result, err := sqlExecutor.Exec(
 		ctx,
 		fmt.Sprintf(
-			"select payload,%s from `%s`.`%s` order by payload",
+			"select id,payload,%s from `%s`.`%s` order by payload",
 			catalog.FakePrimaryKeyColName,
 			databaseName,
 			tableName,
@@ -519,17 +779,22 @@ func queryLifecycleRestoreRows(
 	defer result.Close()
 	var values lifecycleRestoreTestRows
 	result.ReadRows(func(rows int, columns []*vector.Vector) bool {
-		require.Len(t, columns, 2)
+		require.Len(t, columns, 3)
 		for row := 0; row < rows; row++ {
 			require.False(t, columns[0].GetNulls().Contains(uint64(row)))
 			require.False(t, columns[1].GetNulls().Contains(uint64(row)))
+			require.False(t, columns[2].GetNulls().Contains(uint64(row)))
+			values.autoIDs = append(
+				values.autoIDs,
+				vector.GetFixedAtNoTypeCheck[uint64](columns[0], row),
+			)
 			values.payloads = append(
 				values.payloads,
-				vector.GetFixedAtNoTypeCheck[int64](columns[0], row),
+				vector.GetFixedAtNoTypeCheck[int64](columns[1], row),
 			)
 			values.fakePKs = append(
 				values.fakePKs,
-				vector.GetFixedAtNoTypeCheck[uint64](columns[1], row),
+				vector.GetFixedAtNoTypeCheck[uint64](columns[2], row),
 			)
 		}
 		return true
@@ -562,10 +827,16 @@ func lifecycleRestoreTestChunk(
 	encoder := lifecyclepkg.NewCanonicalValueEncoder(schemaDigest)
 	rows := make([][]lifecyclepkg.CanonicalCell, len(values))
 	for index, value := range values {
-		rows[index] = []lifecyclepkg.CanonicalCell{{
-			Type:  types.T_int64.ToType(),
-			Value: value,
-		}}
+		rows[index] = []lifecyclepkg.CanonicalCell{
+			{
+				Type:  types.T_uint64.ToType(),
+				Value: uint64(value),
+			},
+			{
+				Type:  types.T_int64.ToType(),
+				Value: value,
+			},
+		}
 		require.NoError(t, encoder.WriteRow(ctx, rows[index]))
 	}
 	contentHash := encoder.Sum()

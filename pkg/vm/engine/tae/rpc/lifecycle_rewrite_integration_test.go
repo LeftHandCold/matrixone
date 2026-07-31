@@ -615,6 +615,104 @@ func TestLifecycleRewriteNoTransferDeleteAborts(t *testing.T) {
 	requireLifecycleRPCRows(t, ctx, h, table, 9)
 }
 
+func TestLifecycleRewritePostSnapshotDeleteBudgetAborts(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		configure     func(*api.LifecycleCommitEntry)
+		beforeBlocks  []uint16
+		afterBlocks   []uint16
+		errorContains string
+	}{
+		{
+			name: "rows accumulate across phase one and phase two",
+			configure: func(control *api.LifecycleCommitEntry) {
+				control.MaxDeltaRows = 1
+			},
+			beforeBlocks:  []uint16{1},
+			afterBlocks:   []uint16{1},
+			errorContains: "post-snapshot Tombstone budget exceeded",
+		},
+		{
+			name: "bytes",
+			configure: func(control *api.LifecycleCommitEntry) {
+				control.MaxDeltaBytes = 1
+			},
+			afterBlocks:   []uint16{1},
+			errorContains: "post-snapshot Tombstone budget exceeded",
+		},
+		{
+			name: "distinct blocks accumulate across phases",
+			configure: func(control *api.LifecycleCommitEntry) {
+				control.MaxDeltaBlocks = 1
+			},
+			beforeBlocks:  []uint16{1},
+			afterBlocks:   []uint16{0},
+			errorContains: "post-snapshot block budget exceeded",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			defer testutils.AfterTest(t)()
+			ctx := context.Background()
+			opts := config.WithLongScanAndCKPOpts(nil)
+			h := mockTAEHandle(ctx, t, opts)
+			t.Cleanup(func() { opts.Fs.Close(ctx) })
+			t.Cleanup(func() { _ = h.HandleClose(ctx) })
+
+			table := newLifecycleRPCTable(t, ctx, h)
+			sourceSnapshot := h.db.TxnMgr.Now()
+			jobID := "lifecycle-rewrite-delta-budget-" + test.name
+			registerLifecycleRPCProtection(t, h, jobID, table.source)
+			rewrite := newLifecycleRPCRewriteFixture(
+				t,
+				ctx,
+				h,
+				table,
+				sourceSnapshot,
+			)
+			test.configure(rewrite.control)
+			for _, block := range test.beforeBlocks {
+				deleteLifecycleRPCSourceRow(t, ctx, h, table, block)
+			}
+
+			finalTxn, err := h.db.StartTxn(nil)
+			require.NoError(t, err)
+			finalTxn.SetSyncProtectionJobID(jobID)
+			require.NoError(t, h.HandleLifecycleCommit(
+				ctx,
+				finalTxn,
+				rewrite.control,
+			))
+			for _, block := range test.afterBlocks {
+				deleteLifecycleRPCSourceRow(t, ctx, h, table, block)
+			}
+			err = finalTxn.Commit(ctx)
+			require.ErrorContains(t, err, test.errorContains)
+
+			require.True(t, lifecycleRPCObjectVisible(t, ctx, h.db, table))
+			require.False(t, lifecycleRPCObjectStatsVisible(
+				t,
+				ctx,
+				h,
+				table,
+				rewrite.created,
+			))
+			createdBlock := objectio.NewBlockidWithObjectID(
+				rewrite.created.ObjectName().ObjectId(),
+				0,
+			)
+			require.Nil(t, h.db.Runtime.TransferDelsMap.GetDelsForBlk(createdBlock))
+			requireLifecycleRPCRootFiles(t, ctx, h, rewrite)
+			requireLifecycleRPCRows(
+				t,
+				ctx,
+				h,
+				table,
+				10-len(test.beforeBlocks)-len(test.afterBlocks),
+			)
+		})
+	}
+}
+
 func TestLifecycleRewritePreRegistrationTransferFaultCleansRuntimeOnly(
 	t *testing.T,
 ) {
