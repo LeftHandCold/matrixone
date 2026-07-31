@@ -156,6 +156,7 @@ func handleRestoreArchiveDataset(
 			MaxChunkLogicalBytes: 64 << 20,
 			Deadline:             24 * time.Hour,
 		},
+		Faults: lifecyclepkg.MOFaultInjector{},
 	}
 	return coordinator.Restore(
 		ctx,

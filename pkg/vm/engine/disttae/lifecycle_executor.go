@@ -50,6 +50,7 @@ const (
 	lifecycleMaxCertifiedBlockReadBytes = 256 << 20
 	lifecycleWholeBatchMaxSources       = 64
 	lifecycleWholeBatchMaxSourceBytes   = 4 << 30
+	lifecycleFullScanInterval           = 24 * time.Hour
 	lifecycleMetadataCompactionInterval = 5 * time.Minute
 )
 
@@ -589,21 +590,21 @@ func (runner *lifecycleBindingExecutor) run(
 	cursor := lifecycleDiscoveryCursor(binding)
 	page, err := table.LifecycleDiscoverObjectPage(
 		accountCtx,
-		lifecyclepkg.DiscoveryRequest{
-			Snapshot: snapshot,
-			Now:      evaluation,
-			Cursor:   cursor,
-			Limits: lifecyclepkg.DiscoveryLimits{
-				MaxObjects:   lifecycleDiscoveryPageObjects,
-				MaxMetaBytes: lifecycleDiscoveryMetaBytes,
-				MaxDuration:  30 * time.Second,
-			},
-		},
+		lifecycleDiscoveryRequest(binding, snapshot, evaluation, cursor),
 	)
 	if err != nil {
 		return err
 	}
-	binding, err = runner.pager.SaveCursor(accountCtx, binding, page.Next)
+	fullScanAt := page.StartedFullScanAt
+	if !page.CompletedFullScanAt.IsZero() {
+		fullScanAt = page.CompletedFullScanAt
+	}
+	binding, err = runner.pager.SaveCursor(
+		accountCtx,
+		binding,
+		page.Next,
+		fullScanAt,
+	)
 	if err != nil {
 		return err
 	}
@@ -967,6 +968,26 @@ func lifecycleDiscoveryCursor(
 		cursor.HasLastObject = true
 	}
 	return cursor
+}
+
+func lifecycleDiscoveryRequest(
+	binding lifecyclepkg.Binding,
+	snapshot types.TS,
+	now time.Time,
+	cursor lifecyclepkg.DiscoveryCursor,
+) lifecyclepkg.DiscoveryRequest {
+	return lifecyclepkg.DiscoveryRequest{
+		Snapshot:         snapshot,
+		Now:              now,
+		Cursor:           cursor,
+		LastFullScanAt:   binding.LastFullScanAt,
+		FullScanInterval: lifecycleFullScanInterval,
+		Limits: lifecyclepkg.DiscoveryLimits{
+			MaxObjects:   lifecycleDiscoveryPageObjects,
+			MaxMetaBytes: lifecycleDiscoveryMetaBytes,
+			MaxDuration:  30 * time.Second,
+		},
+	}
 }
 
 func lifecycleSchemaDigestString(value [sha256.Size]byte) string {

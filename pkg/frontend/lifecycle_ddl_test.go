@@ -27,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+	"github.com/matrixorigin/matrixone/pkg/sql/features"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
 )
@@ -220,9 +221,21 @@ func TestValidateLifecyclePolicyRejectsUnsupportedTables(t *testing.T) {
 			},
 		},
 		{
-			name: "partition table",
+			name: "logical partition descriptor",
 			mutate: func(def *plan.TableDef) {
 				def.Partition = &plan.Partition{PartitionDefs: []*plan.PartitionDef{{}}}
+			},
+		},
+		{
+			name: "logical partition feature",
+			mutate: func(def *plan.TableDef) {
+				def.FeatureFlag |= features.Partitioned
+			},
+		},
+		{
+			name: "physical partition child feature",
+			mutate: func(def *plan.TableDef) {
+				def.FeatureFlag |= features.Partition
 			},
 		},
 		{
@@ -355,6 +368,8 @@ func TestBuildLifecycleBindingUpsertSQL(t *testing.T) {
 	require.Contains(t, sql, "730")
 	require.Contains(t, sql, "binding_generation = binding_generation + 1")
 	require.Contains(t, sql, "version = version + 1")
+	require.Contains(t, sql, "scan_snapshot_ts = NULL")
+	require.Contains(t, sql, "last_full_scan_at = NULL")
 	require.NotContains(t, strings.ToLower(sql), "credential")
 }
 

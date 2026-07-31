@@ -323,7 +323,11 @@ CollectDeletesTo   = prepare_ts
 - Phase 1首版可统一对NoTransfer abort，换取更少分支；
 - nil map、越界、decoder错误：abort。
 
-visitor按单source处理，有rows/bytes/blocks和内部deadline。超限进入
+Whole只需要回答“是否存在post-S DELETE”：复用现有Tombstone选择和读取路径，固定
+`maxRows=1`，发现第一行立即abort，不物化完整Tombstone Batch。普通Merge继续使用
+`maxRows=0`的原有完整扫描语义。
+
+Rewrite visitor按单source处理，有rows/bytes/blocks和内部deadline。超限进入
 `CONFLICT_BLOCKED`或`RESOURCE_BLOCKED`。
 
 建议抽取Lifecycle专用有界接口，不改变普通Merge默认扫描：

@@ -18,6 +18,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -61,6 +62,11 @@ func TestSQLBindingPagerReadsOnlyExplicitTenantBindings(t *testing.T) {
 	require.Equal(t, strings.Repeat("b2", 32), bindings[0].StageIdentityDigest)
 	require.Equal(t, "ARCHIVE", bindings[0].Action)
 	require.Equal(t, uint32(90), bindings[0].ExpireAfterDays)
+	require.Equal(
+		t,
+		time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
+		bindings[0].LastFullScanAt,
+	)
 	require.Equal(t, BindingCursor{AccountID: 18}, next)
 	require.Equal(t, 2, fake.offset)
 }
@@ -93,9 +99,42 @@ func TestSQLBindingPagerPersistsOnlyHintWithVersionCAS(t *testing.T) {
 			LastObjectName: name,
 			HasLastObject:  true,
 		},
+		time.Date(2026, 7, 31, 12, 30, 0, 0, time.UTC),
 	)
 	require.NoError(t, err)
 	require.Equal(t, uint64(12), updated.Version)
+	require.Equal(
+		t,
+		time.Date(2026, 7, 31, 12, 30, 0, 0, time.UTC),
+		updated.LastFullScanAt,
+	)
+}
+
+func TestSQLBindingPagerLeavesFullScanAnchorUnchangedBetweenPages(t *testing.T) {
+	mp := mpool.MustNewZero()
+	fake := &scriptedLifecycleSQLExecutor{
+		t: t,
+		steps: []lifecycleSQLStep{{
+			contains:    "set scan_snapshot_ts=unhex",
+			notContains: "last_full_scan_at",
+			accountID:   17,
+			result:      executor.Result{AffectedRows: 1, Mp: mp},
+		}},
+	}
+	anchor := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	updated, err := (SQLBindingPager{Executor: fake}).SaveCursor(
+		context.Background(),
+		Binding{
+			ID:             "00112233445566778899aabbccddeeff",
+			AccountID:      17,
+			Version:        11,
+			LastFullScanAt: anchor,
+		},
+		DiscoveryCursor{Snapshot: types.BuildTS(123, 7)},
+		time.Time{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, anchor, updated.LastFullScanAt)
 }
 
 type lifecycleSQLStep struct {
@@ -157,7 +196,7 @@ func lifecycleAccountResult(
 
 func lifecycleBindingResult(t *testing.T, mp *mpool.MPool) executor.Result {
 	t.Helper()
-	value := batch.NewWithSize(19)
+	value := batch.NewWithSize(20)
 	stringColumns := map[int]string{
 		0:  "00112233445566778899AABBCCDDEEFF",
 		5:  strings.Repeat("A1", 32),
@@ -177,6 +216,16 @@ func lifecycleBindingResult(t *testing.T, mp *mpool.MPool) executor.Result {
 		case column == 16:
 			value.Vecs[column] = vector.NewVec(types.T_bool.ToType())
 			require.NoError(t, vector.AppendFixed(value.Vecs[column], false, false, mp))
+		case column == 19:
+			value.Vecs[column] = vector.NewVec(types.T_timestamp.ToType())
+			require.NoError(t, vector.AppendFixed(
+				value.Vecs[column],
+				types.UnixNanoToTimestamp(
+					time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC).UnixNano(),
+				),
+				false,
+				mp,
+			))
 		case stringColumns[column] != "":
 			value.Vecs[column] = vector.NewVec(types.T_varchar.ToType())
 			require.NoError(t, vector.AppendBytes(

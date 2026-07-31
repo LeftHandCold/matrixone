@@ -177,7 +177,8 @@ Restore不增加tagged entry。
 ## 9. Gate I：认证与发布
 
 - P0矩阵；
-- 复用MO公共fault injection控制面暴露`tae-object-lifecycle/<point>`稳定故障点，默认关闭；
+- 后台Task和前端`RESTORE ARCHIVE`都复用MO公共fault injection控制面暴露
+  `tae-object-lifecycle/<point>`稳定故障点，默认关闭；
 - provider认证；
 - 1/10 TiB；
 - 30天soak；

@@ -124,6 +124,57 @@ func TestDiscoverObjectPageWrapAndFullScanReset(t *testing.T) {
 	require.Equal(t, now, page.CompletedFullScanAt)
 }
 
+func TestDiscoverObjectPagePersistsResetAnchorOnlyOncePerCycle(t *testing.T) {
+	firstEntry := lifecycleTestObjectEntry(t, 10)
+	firstLast := *firstEntry.ObjectShortName()
+	secondEntry := lifecycleTestObjectEntry(t, 11)
+	secondLast := *secondEntry.ObjectShortName()
+	now := time.Unix(3000, 0)
+	interval := time.Hour
+	source := &fakeObjectPageSource{pages: []logtailreplay.VisibleDataObjectPage{
+		{
+			Objects:        []objectio.ObjectEntry{firstEntry},
+			LastObjectName: &firstLast,
+		},
+		{
+			Objects:        []objectio.ObjectEntry{secondEntry},
+			LastObjectName: &secondLast,
+		},
+		{End: true},
+	}}
+	request := DiscoveryRequest{
+		Snapshot:         types.BuildTS(300, 0),
+		Now:              now,
+		LastFullScanAt:   now.Add(-2 * interval),
+		FullScanInterval: interval,
+		Limits: DiscoveryLimits{
+			MaxObjects:   8,
+			MaxMetaBytes: 4096,
+			MaxDuration:  time.Second,
+		},
+	}
+	first, err := DiscoverObjectPage(context.Background(), source, request)
+	require.NoError(t, err)
+	require.Nil(t, source.calls[0].after)
+	require.Equal(t, now, first.StartedFullScanAt)
+
+	request.Now = now.Add(30 * time.Minute)
+	request.LastFullScanAt = first.StartedFullScanAt
+	request.Cursor = first.Next
+	second, err := DiscoverObjectPage(context.Background(), source, request)
+	require.NoError(t, err)
+	require.NotNil(t, source.calls[1].after)
+	require.Equal(t, firstLast, *source.calls[1].after)
+	require.True(t, second.StartedFullScanAt.IsZero())
+
+	request.Now = now.Add(2 * time.Hour)
+	request.Cursor = second.Next
+	third, err := DiscoverObjectPage(context.Background(), source, request)
+	require.NoError(t, err)
+	require.Nil(t, source.calls[2].after)
+	require.Equal(t, request.Now, third.StartedFullScanAt)
+}
+
 func TestDiscoverObjectPageKeepsObjectNameHintAcrossSnapshots(t *testing.T) {
 	entry := lifecycleTestObjectEntry(t, 3)
 	last := *entry.ObjectShortName()

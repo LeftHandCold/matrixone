@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -42,6 +43,7 @@ func (pager SQLBindingPager) SaveCursor(
 	ctx context.Context,
 	binding Binding,
 	cursor DiscoveryCursor,
+	fullScanAt time.Time,
 ) (Binding, error) {
 	if pager.Executor == nil ||
 		len(binding.ID) != 32 ||
@@ -60,16 +62,21 @@ func (pager SQLBindingPager) SaveCursor(
 			hex.EncodeToString(cursor.LastObjectName[:]),
 		)
 	}
+	fullScanUpdate := ""
+	if !fullScanAt.IsZero() {
+		fullScanUpdate = ",last_full_scan_at=utc_timestamp()"
+	}
 	result, err := pager.Executor.Exec(
 		ctx,
 		fmt.Sprintf(
 			`update mo_catalog.mo_lifecycle_bindings
 set scan_snapshot_ts=unhex('%s'),scan_last_object_name=%s,
-scan_wrapped=%t,version=version+1,updated_at=utc_timestamp()
+scan_wrapped=%t%s,version=version+1,updated_at=utc_timestamp()
 where binding_id=unhex('%s') and state='ACTIVE' and version=%d`,
 			hex.EncodeToString(cursor.Snapshot[:]),
 			lastObject,
 			cursor.Wrapped,
+			fullScanUpdate,
 			binding.ID,
 			binding.Version,
 		),
@@ -90,6 +97,9 @@ where binding_id=unhex('%s') and state='ACTIVE' and version=%d`,
 		)
 	}
 	binding.ScanWrapped = cursor.Wrapped
+	if !fullScanAt.IsZero() {
+		binding.LastFullScanAt = fullScanAt.UTC().Truncate(time.Microsecond)
+	}
 	binding.Version++
 	return binding, nil
 }
@@ -188,7 +198,7 @@ coalesce(stage_id,0),coalesce(purge_after_days,0),
 coalesce(hex(stage_identity_digest),''),coalesce(hex(scan_snapshot_ts),''),
 coalesce(hex(scan_last_object_name),''),
 scan_wrapped,state
- ,version
+ ,version,last_full_scan_at
 from mo_catalog.mo_lifecycle_bindings
 where state = 'ACTIVE'%s
 order by binding_id limit %d`,
@@ -238,7 +248,7 @@ func decodeLifecycleBindings(
 	bindings := make([]Binding, 0)
 	var decodeErr error
 	result.ReadRows(func(rows int, columns []*vector.Vector) bool {
-		if len(columns) != 19 {
+		if len(columns) != 20 {
 			decodeErr = fmt.Errorf("Lifecycle Binding query returned %d columns", len(columns))
 			return false
 		}
@@ -273,6 +283,15 @@ func decodeLifecycleBindings(
 				ScanWrapped:           vector.GetFixedAtNoTypeCheck[bool](columns[16], row),
 				State:                 columns[17].GetStringAt(row),
 				Version:               numbers[9],
+			}
+			if !columns[19].GetNulls().Contains(uint64(row)) {
+				lastFullScanAt := vector.GetFixedAtNoTypeCheck[types.Timestamp](
+					columns[19],
+					row,
+				)
+				binding.LastFullScanAt = lastFullScanAt.
+					ToDatetime(time.UTC).
+					ConvertToGoTime(time.UTC)
 			}
 			if len(binding.ID) != 32 ||
 				len(binding.SchemaDigest) != 64 ||

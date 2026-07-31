@@ -742,7 +742,7 @@ func (entry *mergeObjectsEntry) validateLifecycleWholePostSnapshotDeletes() erro
 		return nil
 	}
 	for _, dropped := range entry.droppedObjs {
-		bat, err := tables.TombstoneRangeScanByObject(
+		hasPostSnapshotDelete, err := tables.HasTombstoneInRangeByObject(
 			ctx,
 			dropped.GetTable(),
 			*dropped.ID(),
@@ -754,11 +754,6 @@ func (entry *mergeObjectsEntry) validateLifecycleWholePostSnapshotDeletes() erro
 		if err != nil {
 			return err
 		}
-		if bat == nil {
-			continue
-		}
-		hasPostSnapshotDelete := bat.Length() > 0
-		bat.Close()
 		if hasPostSnapshotDelete {
 			return moerr.NewTxnWWConflictNoCtx(
 				entry.relation.ID(),

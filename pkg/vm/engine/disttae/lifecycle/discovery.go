@@ -61,6 +61,7 @@ func DiscoverObjectPage(
 		!request.Now.Before(request.LastFullScanAt.Add(request.FullScanInterval)) {
 		reset = true
 	}
+	startCycle := request.LastFullScanAt.IsZero() || reset
 	if reset {
 		cursor = DiscoveryCursor{}
 	}
@@ -95,6 +96,12 @@ func DiscoverObjectPage(
 		},
 		EndOfCycle: rawPage.End,
 		MetaBytes:  rawPage.MetaBytes,
+	}
+	if startCycle {
+		// Persist the cycle anchor after the first successful page. Without this
+		// one-shot update, an overdue scan whose first page is not End would
+		// reset to the same first page on every scheduler tick.
+		page.StartedFullScanAt = request.Now
 	}
 	for _, object := range rawPage.Objects {
 		if object.GetAppendable() || !object.Visible(request.Snapshot) {

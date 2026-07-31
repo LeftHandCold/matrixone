@@ -105,6 +105,26 @@ func TestLifecycleDiscoveryCursorTreatsCorruptionAsResettableHint(t *testing.T) 
 	require.False(t, cursor.HasLastObject)
 }
 
+func TestLifecycleDiscoveryRequestCarriesFullScanFairness(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	lastFullScan := now.Add(-time.Hour)
+	snapshot := types.BuildTS(123, 4)
+	cursor := lifecyclepkg.DiscoveryCursor{Snapshot: types.BuildTS(100, 1)}
+	request := lifecycleDiscoveryRequest(
+		lifecyclepkg.Binding{LastFullScanAt: lastFullScan},
+		snapshot,
+		now,
+		cursor,
+	)
+	require.Equal(t, snapshot, request.Snapshot)
+	require.Equal(t, now, request.Now)
+	require.Equal(t, cursor, request.Cursor)
+	require.Equal(t, lastFullScan, request.LastFullScanAt)
+	require.Equal(t, 24*time.Hour, request.FullScanInterval)
+	require.Equal(t, lifecycleDiscoveryPageObjects, request.Limits.MaxObjects)
+	require.Equal(t, uint64(lifecycleDiscoveryMetaBytes), request.Limits.MaxMetaBytes)
+}
+
 func TestLifecycleRewriteSlotBoundsLocalRewriteConcurrency(t *testing.T) {
 	slots := make(chan struct{}, 1)
 	releaseFirst, err := tryAcquireLifecycleRewriteSlot(

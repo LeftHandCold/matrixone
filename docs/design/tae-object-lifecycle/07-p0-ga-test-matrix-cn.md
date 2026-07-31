@@ -282,7 +282,8 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - cursor stale重置；
 - merge新增Object排在cursor前；
 - end wrap；
--强制full_scan_interval；
+- 强制full_scan_interval，并覆盖超期reset的第一页未到End时下一tick继续第二页、不会重复
+  reset；
 - 百万Object不构造全表slice；
 - 持续Merge下没有永久饥饿；
 - 大量无Binding tenant时，一轮Coordinator最多消费配置的Binding分页数，cursor在下轮继续，

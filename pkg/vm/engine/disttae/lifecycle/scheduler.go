@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/pb/task"
@@ -61,6 +62,7 @@ type Binding struct {
 	ScanSnapshotHex       string
 	ScanLastObjectNameHex string
 	ScanWrapped           bool
+	LastFullScanAt        time.Time
 	State                 string
 }
 

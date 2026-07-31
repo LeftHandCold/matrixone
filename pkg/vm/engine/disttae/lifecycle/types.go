@@ -54,5 +54,6 @@ type DiscoveryPage struct {
 	Next                DiscoveryCursor
 	EndOfCycle          bool
 	MetaBytes           uint64
+	StartedFullScanAt   time.Time
 	CompletedFullScanAt time.Time
 }

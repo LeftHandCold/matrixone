@@ -117,6 +117,29 @@ func TestPrepareLifecycleRestoreWriteBatchGeneratesExistingFakePrimaryKey(t *tes
 	require.Equal(t, []uint64{1, 2}, vector.MustFixedColWithTypeCheck[uint64](value.Vecs[1]))
 }
 
+func TestLifecycleRestoreAutoIncrementOffsetValidatesColumnTypeLimit(t *testing.T) {
+	schema := lifecyclepkg.SchemaDescriptor{Columns: []lifecyclepkg.SchemaColumn{{
+		Name:          "id",
+		TypeID:        int32(types.T_uint8),
+		AutoIncrement: true,
+	}}}
+	name, offset, err := lifecycleRestoreAutoIncrementOffset(
+		context.Background(),
+		schema,
+		lifecyclepkg.AutoIncrementMax{ColumnOrdinal: 0, Value: "255"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "id", name)
+	require.Equal(t, uint64(255), offset)
+
+	_, _, err = lifecycleRestoreAutoIncrementOffset(
+		context.Background(),
+		schema,
+		lifecyclepkg.AutoIncrementMax{ColumnOrdinal: 0, Value: "256"},
+	)
+	require.Error(t, err)
+}
+
 func TestSQLRestoreInitializeOwnsLeaseTableAndAttemptInOneTransaction(t *testing.T) {
 	mp := mpool.MustNewZero()
 	var statements []restoreSQLCall

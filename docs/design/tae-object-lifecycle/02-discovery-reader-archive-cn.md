@@ -47,7 +47,9 @@ func ScanLifecycleObjects(
 - cursor只作为hint，不参与正确性；
 - 完整cycle到末尾必须wrap；
 - `full_scan_interval`到期强制从头开始，防止持续Merge导致饥饿；
-- 每个Binding记录`last_full_scan_at`；
+- 每个Binding记录`last_full_scan_at`作为当前cycle的持久anchor：新Binding、自然wrap或
+  interval reset的第一个成功page更新一次，真正到达末尾时再更新为完成时间；禁止只在
+  到达末尾时更新，否则超期但第一页未到末尾时会在每个tick反复回到第一页；
 - 任何Object从进入到期区间到被再次观察的最大延迟不超过
   `max(full_scan_interval, scheduler_backlog_slo)`，超限告警并停止扩大放量。
 

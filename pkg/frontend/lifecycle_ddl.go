@@ -31,6 +31,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+	"github.com/matrixorigin/matrixone/pkg/sql/features"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/stage"
 	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
@@ -639,7 +640,9 @@ func validateLifecyclePolicy(
 			"Lifecycle on publication subscription tables",
 		)
 	}
-	if tableDef.Partition != nil && len(tableDef.Partition.PartitionDefs) > 0 {
+	if features.IsPartitioned(tableDef.FeatureFlag) ||
+		features.IsPartition(tableDef.FeatureFlag) ||
+		(tableDef.Partition != nil && len(tableDef.Partition.PartitionDefs) > 0) {
 		return nil, [32]byte{}, moerr.NewNotSupported(ctx, "Lifecycle on partition tables")
 	}
 	if len(tableDef.Indexes) != 0 {
@@ -809,6 +812,10 @@ stage_id = values(stage_id),
 stage_identity_digest = values(stage_identity_digest),
 purge_after_days = values(purge_after_days),
 state = 'ACTIVE',
+scan_snapshot_ts = NULL,
+scan_last_object_name = NULL,
+scan_wrapped = false,
+last_full_scan_at = NULL,
 binding_generation = binding_generation + 1,
 version = version + 1,
 updated_at = utc_timestamp`,
