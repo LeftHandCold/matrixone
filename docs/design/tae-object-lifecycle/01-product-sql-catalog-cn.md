@@ -64,8 +64,10 @@ PURGE ARCHIVE DATASET '<dataset-id>';
 - Archive完成前源数据继续可见；
 - Archive成功后普通SELECT不再看到已退休行；
 - `PURGE ELIGIBLE AFTER`按Lifecycle列的行龄计算，必须大于`EXPIRE AFTER`；
-- 一个Dataset的`purge_eligible_at = max(lifecycle_value) + purge_interval`，保证其中最年轻
-  的归档行也达到保留期限；
+- 首个GA不为计算精确最早时间增加逐行min/max协议；使用保守边界
+  `purge_eligible_at = effective_cutoff + purge_interval`。因为Dataset内每个归档行的
+  Lifecycle值都不晚于cutoff，这保证最年轻归档行也达到保留期限，只可能比
+  `max(lifecycle_value) + purge_interval`更晚Purge，绝不会提前删除；
 - `purge_eligible_at`表示最早允许Purge，不表示到点同步删除，显式PURGE也不能提前绕过；
 - policy变化不追溯修改已发布Dataset。
 
@@ -108,6 +110,11 @@ Tenant表由普通事务读写，但只允许Lifecycle内部adapter写，tenant�
 Cleanup Root必须由system account持有，使账户删除后仍可清理。
 Root表不是按`owner_account_id`自动级联删除的tenant Cluster Table；该字段只是业务Owner，
 `DROP ACCOUNT`后Root仍由system Reconciler读取和清理。
+
+部署必须同时覆盖两条建表路径：已存在tenant由版本upgrade创建五张tenant表；当前版本
+新建tenant由标准`createSqls`创建相同五张表。五张tenant表登记为普通predefined tenant
+Catalog表，Cleanup Root单独登记为system-account table，二者都不得被误分类为共享
+Cluster Table。
 
 ## 5. Binding
 
@@ -289,7 +296,7 @@ staging_database_id        UINT64
 staging_table_id           UINT64
 target_database_id         UINT64
 target_name                TEXT
-state                      ENUM(RUNNING, VERIFYING, PUBLISHING, DONE, ABORTED)
+state                      ENUM(IMPORTING, PUBLISHING, DONE, FAILED)
 next_chunk_ordinal         UINT64
 restored_rows              UINT64
 verified_content_hash      BINARY(32) NULL
@@ -304,14 +311,17 @@ Dataset lease CAS、隐藏表CREATE和本Attempt INSERT必须在同一个普通M
 不能先提交后再补Attempt；任一失败整体回滚，响应未知时通过Dataset lease、Attempt和精确
 隐藏身份对账。
 
-Attempt只使用现有五个状态：
+Attempt只使用四个状态：
 
 ```text
-RUNNING -> VERIFYING -> PUBLISHING -> DONE
-RUNNING/VERIFYING/PUBLISHING -> ABORTED
+IMPORTING -> DONE
+IMPORTING -> FAILED
 ```
 
-`DONE/ABORTED`是终态。发布和清理都必须条件更新同一Attempt行，不能只读取状态后执行DDL。
+`PUBLISHING`不是一个单独提交、可长期停留的业务阶段。它只允许在最终普通发布事务内部作为
+CAS中间值出现；同一事务继续完成`SetOffset`、Rename、`DONE`和Dataset lease释放。事务
+回滚后外部仍看到`IMPORTING`，事务提交后外部看到`DONE`。`DONE/FAILED`是终态。发布和
+清理都必须条件更新同一Attempt行，不能只读取状态后执行DDL。
 
 Chunk Receipt：
 
@@ -323,7 +333,6 @@ chunk_digest               BINARY(32)
 row_count                  UINT64
 logical_bytes              UINT64
 canonical_content_hash     BINARY(32)
-auto_increment_maxima_blob BLOB
 created_at                 TIMESTAMP
 PRIMARY KEY (restore_id, chunk_ordinal)
 ```
@@ -332,10 +341,9 @@ PRIMARY KEY (restore_id, chunk_ordinal)
 `restored_rows`在同一普通事务提交；`chunk_digest`不是主键的一部分。相同ordinal的不同
 digest是corruption，相同digest按Receipt幂等成功。`verified_content_hash`不在Chunk事务中
 更新，只在全部Receipt通过最终校验并发布新表的普通事务中一次性写入。
-`auto_increment_maxima_blob`使用Manifest列ordinal顺序和固定版本编码本Chunk各
-AUTO_INCREMENT列的`has_positive_value/max_positive_value_uint64`；大小受schema列数和
-Chunk hard cap约束。接管者按ordinal聚合全部Receipt得到Dataset最大正值，不依赖进程内
-状态或重扫隐藏表。
+AUTO_INCREMENT最大正值保存在Manifest，并由Archive full readback从最终MO逻辑值复核；
+Restore每个Chunk又在最终MO vectors上验证Manifest冻结的内容Hash，因此最终发布直接使用
+Manifest中的全局最大值，不在Receipt中再维护第二份逐Chunk最大值。
 
 ## 10. Catalog索引与访问路径
 
@@ -360,20 +368,30 @@ Chunk hard cap约束。接管者按ordinal聚合全部Receipt得到Dataset最大
 | TTL Receipt | Binding不存在或已超过审计窗口，且无unknown Root引用 | 30天 |
 | PURGED Dataset | Root已CLEANED且无Restore Attempt | 90天 |
 | CLEANED Root | quiescence结束、无Dataset/Restore引用 | 30天 |
-| DONE/ABORTED Restore Attempt | 无lease、隐藏表已处理 | 30天 |
+| DONE/FAILED Restore Attempt | 无lease、隐藏表已处理 | 30天 |
 | Restore Chunk Receipt | Restore终态且审计窗口结束 | 30天 |
 
 保留窗口可配置但有全局rows/bytes hard cap。到达cap时暂停Lifecycle，不影响普通MO。
 
-## 12. DDL fence
+## 12. DDL与依赖发布fence
 
-DDL fence放在最后Gate。最终必须证明真实互斥，不能只“重新读取”：
+Lifecycle采用薄的管理路径fence，不建设Feature Guard表：
 
-- 复用现有`mo_tables`逻辑行锁；或
-- Binding write CAS与不兼容DDL更新同一Binding行。
+- 表DDL和`SET LIFECYCLE`复用现有`mo_tables`逻辑行锁；只有`SET LIFECYCLE`随后更新
+  system account中已存在的`mo_feature_registry(feature_code='LIFECYCLE')`行作为与
+  scope级依赖发布之间的write barrier；
+- Snapshot/PITR/Publication/Clone/Branch创建跨同一write barrier，然后按目标scope索引化
+  查询Binding；
+- 该行只承担管理操作发布顺序，不保存per-table owner、attempt或dependency集合；
+- CDC创建依赖PITR，因而复用PITR gate；物理Backup不是Archive-aware，Lifecycle
+  retirement release gate开启期间全局fail closed，关闭并drain后才允许执行。DR恢复仍
+  必须显式声明Archive不可用，不能静默生成缺失历史的数据副本；
+- Finalizer仍使用Binding generation/physical table/schema与exact source Object检查决定
+  是否退休，不把feature row当作数据正确性Owner。
 
-测试前不冻结二选一。若普通MO并发路径本身有Bug，公共修复后Lifecycle复用；不建立
-Feature Guard或active-attempt状态。
+`SET LIFECYCLE`固定采用`mo_tables -> feature row`锁顺序，避免首次Binding的空查询竞态和
+锁顺序反转。普通表DDL只取得已有`mo_tables`锁并执行索引化Binding lookup；普通查询、
+DML、Merge不访问feature row，未绑定表不创建任何Lifecycle Guard元数据。
 
 Phase 1产品行为采用fail-closed：
 
@@ -382,8 +400,9 @@ Phase 1产品行为采用fail-closed：
 - UNSET/PAUSE/RESUME和Policy更新允许，但必须推进Binding generation；
 - 绑定期间TRUNCATE、ALTER COPY、Lifecycle列变更、其他schema变更和新增不支持依赖拒绝；
 - 用户需要这些DDL时先UNSET，待在途Root收敛后执行，再按新physical/schema重新SET；
-- 未绑定表的DDL只经过一个按`(account_id, physical_table_id)`的Binding存在性查询，不创建
-  Guard或其他Catalog行。
+- 未绑定表的不兼容DDL只复用现有`mo_tables`锁并执行按`(account_id,
+  physical_table_id)`的Binding存在性查询，不跨feature-row barrier，也不创建Guard或其他
+  Catalog行。
 
 ## 13. 用户可见错误
 

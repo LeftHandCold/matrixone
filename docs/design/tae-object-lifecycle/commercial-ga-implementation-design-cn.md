@@ -47,8 +47,10 @@ Archive不参与原表在线查询；Restore始终创建新表。
 Clone/Branch和插件组合。Phase 1还拒绝逻辑分区表、物理Partition child，以及未经部署认证
 或启用对象Versioning的Archive Stage。
 
-普通查询、DML和Merge在未绑定路径不读取Lifecycle Catalog。feature开启时，可能冲突的DDL
-允许执行一次索引化Binding存在性查询；feature关闭时该查询也不执行。
+普通查询、DML和Merge在未绑定路径不读取Lifecycle Catalog。可能冲突的表级管理DDL只复用
+已有`mo_tables`锁并执行一次索引化Binding存在性查询，不跨feature-row barrier；release
+gate关闭后仍可能有待UNSET/清理的Binding，因此不增加CN本地开关缓存来省掉这条低频
+控制面路径。
 
 ## 3. 最小Catalog
 
@@ -191,14 +193,13 @@ file_ordinal / row_group_ordinal
 row_count
 logical_bytes
 canonical_content_hash
-auto_increment_maxima_blob
 ```
 
 首版单个Restore串行推进。数据INSERT、Receipt和Attempt进度在同一普通事务提交；同ordinal
 相同digest幂等，不同digest是corruption。最终Hash按Receipt ordinal使用02的固定聚合公式
-重建，`verified_content_hash`只在最终发布事务中一次性写入。每个Receipt同时保存本Chunk
-按Manifest列ordinal编码的AUTO_INCREMENT最大正值；接管者聚合后与Manifest全局最大正值比较，
-不依赖进程内状态或重扫隐藏表。
+重建，`verified_content_hash`只在最终发布事务中一次性写入。AUTO_INCREMENT全局最大正值
+只保存在经过Archive full readback验证的Manifest中；每个Restore Chunk又验证最终MO
+vectors的canonical hash，不在Receipt中维护第二套max聚合。
 
 ## 4. Stage合同
 
@@ -323,9 +324,9 @@ Reader输入和对应exact identities；SyncProtection保护同一集合。只�
 
 1. 注册现有GC `SyncProtection`；
 2. 注册成功后重新Stat并验证全部文件identity；
-3. Reader期间周期续租；
+3. Reader、Provider、Rewrite和finalization共享创建时冻结的绝对deadline，首期不续长attempt；
 4. final Prepare携带并验证job ID；
-5. 续租失败、TN重启或保护丢失时fail closed；
+5. deadline到期、TN重启或保护丢失时fail closed；
 6. 不在原staging上恢复attempt；
 7. 不再读取source后释放；`COMMIT_UNKNOWN`不无限续租。
 
@@ -410,7 +411,7 @@ Whole Archive完成readback后，Whole TTL完成复核后，Finalizer创建短�
 
 ```text
 insert Dataset or TTL Receipt
-append thin LifecycleRetireEntry
+append thin LifecycleCommitEntry
 commit immediately
 ```
 
@@ -451,15 +452,16 @@ V1字段：
 
 ```text
 protocol_version / mode
-binding_id / binding_generation
-logical_table_id / physical_table_id / schema_digest / lifecycle_column_id
+root_id / attempt_id
+dataset_id XOR receipt_id
+database_id / logical_table_id / physical_table_id
+binding_generation / schema_digest
 source_snapshot_ts
-data source ObjectStats bytes/digest list
+data source complete ObjectStats bytes
 source_set_digest
 created ObjectStats list（Rewrite）
-existing external booking locations/digest（Rewrite）
-root_id / attempt_id / manifest_digest
-delta limits / absolute prepare deadline
+external booking locations / transfer mapping digest（Rewrite）
+delta limits / final prepare deadline / merge level
 ```
 
 SyncProtection job ID复用现有`PrecommitWriteCmd.SyncProtectionJobId`，不在thin entry重复。
@@ -468,7 +470,7 @@ Object只属于CN/SyncProtection protection set，TN不得把它加入SoftDelete
 
 Archive事务必须包含Dataset普通写，TTL事务必须包含TTL Receipt普通写。Finalizer私有持有
 TxnOperator；workspace仅增加一个普通事务恒为nil、不会参与dump/compact/sort的
-`lifecycleRetireEntry`可选指针。`genWriteReqs`在普通entries后追加它，Finalizer随后立即
+`lifecycleCommitControl`可选指针。`genWriteReqs`在普通entries后追加它，Finalizer随后立即
 Commit。不增加公共Transaction状态机、Pair Token、Terminal Journal或Restore entry。
 
 TN在任何mutation前验证entry结构、物理table/schema、限额、protection和exact source；
@@ -531,21 +533,24 @@ EOB或Drop Intent不能单独触发Root清理。任一`COMMIT_UNKNOWN` Root暂�
 retirement，不为精确overlap建设Object列表；达到数量/bytes上限暂停Lifecycle并告警。
 长期未知由运维处理。
 
-## 15. DDL fence：最后实现Gate
+## 15. 管理路径依赖与DDL fence
 
-本合同保留，但不阻塞前述Reader、Export、Whole/Mixed P0：
+最终实现采用已有Catalog行组成的薄fence：
 
-1. 先复现普通Merge与DROP/TRUNCATE/ALTER并发；
-2. 若发现用户可见通用错误，单独提MO Issue并修公共路径；
-3. 再测试Lifecycle按旧schema归档、finalization期间DDL的真实结果；
-4. 只有Lifecycle语义仍有缺口时，为绑定表实现薄fence：
-   - Finalizer获取现有`mo_tables`逻辑行锁；
-   - 重新读取Binding generation、physical table、schema digest和Lifecycle列；
-   - 不兼容DDL对已绑定表拒绝，或在同一锁内更新/删除Binding；
-5. 不新增Feature Guard、active-attempt字段或分布式DDL状态机。
+1. `SET LIFECYCLE`和表DDL复用`mo_tables`行锁；
+2. 只有`SET LIFECYCLE`在持有表锁后更新一次system account的`LIFECYCLE` feature row，
+   形成与scope级依赖发布之间的write barrier；普通表DDL只做索引化Binding lookup；
+3. Snapshot/PITR/Publication/Clone/Branch创建先跨feature-row barrier，再查询目标scope
+   Binding；CDC复用PITR准入；Lifecycle retirement gate开启时物理Backup全局fail closed；
+4. 绑定表的不兼容DDL直接拒绝，DROP在同一barrier下删除Binding；
+5. Finalizer重新校验Binding generation、physical table、schema digest、Lifecycle列和exact
+   source Object；
+6. 未绑定表不创建Feature Guard、active-attempt或dependency行，普通查询/DML/Merge不访问
+   该barrier。
 
-同表Scheduler默认finalization并发1。若最终采用Binding write CAS，它只串行短final
-transaction；上传、readback和Rewrite不持有该行。
+`SET LIFECYCLE`锁顺序固定为`mo_tables -> feature row`；只需要全局scope的管理操作仅取得
+feature row，普通表DDL不取得feature row。
+若测试暴露普通MO通用事务/DDL缺陷，走公共Issue，不为Lifecycle增加分布式状态机。
 
 ## 16. TTL小Mixed
 
@@ -562,14 +567,14 @@ Dataset一次最多一个Restore lease。初始化先使用一个普通事务原
 hidden table CREATE和Restore Attempt INSERT，禁止隐藏表先于Attempt Owner提交：
 
 ```text
-CAS lease + CREATE hidden + INSERT RUNNING Attempt in one ordinary transaction
+CAS lease + CREATE hidden + INSERT IMPORTING Attempt in one ordinary transaction
 -> read/verify Manifest and files
 -> serial chunked normal INSERT + Receipt/Attempt progress in the same transaction
 -> rebuild ordered content hash from Chunk Receipts
 -> verify schema/rows/content hash
 -> ordinary transaction:
      CAS matching unexpired Dataset lease
-     CAS Attempt PUBLISHING/lease/chunk progress/rows/verified hash
+     CAS Attempt IMPORTING -> PUBLISHING/lease/chunk progress/rows/verified hash
      verify exact hidden-name + database ID + table ID
      ValidateAutoColumnOffset + SetOffset(archived positive max, same TxnOperator)
        for AUTO_INCREMENT columns
@@ -583,17 +588,20 @@ Chunk事务不更新Hash；最终发布事务验证Receipt严格覆盖
 转换成最终MO vectors后再用canonical encoder重算Hash，不能Hash Parquet中间表示后直接
 INSERT。`SetOffset`参数是已恢复最大值本身；类型上限保持allocator耗尽语义，不做`max+1`。
 
-`PUBLISHING` owner丢失时按一致性Catalog身份对账：target名称映射到同一table ID则停止
+`PUBLISHING`只允许作为上述最终普通事务内部的CAS中间值，不单独提交；事务回滚后仍是
+`IMPORTING`，提交后直接是`DONE`。owner丢失或响应未知时按一致性Catalog身份对账：
+target名称映射到同一table ID则停止
 清理；hidden名称仍精确映射且target不映射时，允许清理事务与迟到发布事务通过普通WW
 conflict决胜；两个身份均不匹配或矛盾时fail closed。失败清理使用一个短普通事务CAS非DONE
 Attempt，并确认Catalog中当前名称仍是
 `__mo_lifecycle_restore_<restore-id>`且database/table ID完全匹配，再按隐藏名DROP。禁止
 仅凭`staging_table_id`删除；CAS或身份校验失败先重读Attempt，`DONE`或目标名已映射到相同
 table ID时立即停止。cleanup `ErrTxnUnknown`时不盲目重试DROP，重新做身份对账。
-重读到`ABORTED + hidden absent + target不映射该ID`可确认清理已提交；非终态且hidden精确
+重读到`FAILED + hidden absent + target不映射该ID`可确认清理已提交；非终态且hidden精确
 存在才允许重新发起完整清理事务，其余矛盾组合fail closed。
 
-每次GET/chunk前验证lease。Purge只有在Dataset没有有效lease时才能CAS到
+每次GET前检查Attempt固定deadline，每个Chunk事务CAS Attempt lease/deadline/ordinal，
+最终发布再CAS Dataset lease。Purge只有在Dataset没有有效lease时才能CAS到
 `DELETE_PENDING`并递增access generation；显式Purge遇有效lease返回
 `RESTORE_IN_PROGRESS`，后台Purge延迟重试。进入`DELETE_PENDING`后不存在允许继续读取的
 旧Restore。Restore发布和Purge写同一Dataset行，任何竞态只能一方提交。Sweeper异步删除，
@@ -644,13 +652,14 @@ bytes预算约束；Restore按Dataset logical bytes限制账户/集群active sta
 6. 最大Object、oversize Block、Rewrite amplification/window bytes和Restore staging拒绝；
 7. Restore原子初始化、中断、同ordinal相同/不同digest、chunk重放和Purge active-lease拒绝；
 8. S前/S后DELETE、NoTransfer、Whole Archive并发DELETE；
-9. SyncProtection续租失败和TN重启；
+9. attempt deadline到期、SyncProtection丢失和TN重启；
 10. 相同/重叠/不相交source的并发final transaction；
 11. final response lost、matching Dataset优先和EOB不误清理；
 12. 普通Merge抢先、CN/TN crash、WAL replay和GC；
 13. DDL fence最后Gate的DROP/TRUNCATE/ALTER/UNSET竞态；
 14. AUTO_INCREMENT最大正值readback、发布SetOffset、类型上限和overflow；
-15. PUBLISHING后final txn创建前crash、发布/清理竞争和cleanup unknown；
+15. final txn内部Attempt CAS/SetOffset/Rename/DONE/lease释放各点crash、发布/清理竞争和
+    cleanup unknown；
 16. feature off和无Binding的普通MO回归。
 
 ## 20. 实施顺序与代码边界
@@ -682,8 +691,8 @@ pkg/taskservice                       Scheduler
 
 - 单元、故障和并发测试通过；
 - 明确资源Owner、deadline和hard cap；
-- feature off无Lifecycle Catalog访问；未绑定表的普通查询/DML/Merge零访问，相关DDL至多
-  一次索引化Binding lookup；
+- feature off不启动Lifecycle调度或数据路径；未绑定表的普通查询/DML/Merge零访问，相关
+  表级管理DDL只复用`mo_tables`锁并执行一次索引化Binding lookup；
 - `git diff --check`和Markdown检查通过；
 - 设计与实现没有恢复本README已删除的协议；
 - Gate H之前退休能力仅在受控无不兼容DDL环境验证，不能宣布GA。

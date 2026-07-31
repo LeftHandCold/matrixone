@@ -293,6 +293,9 @@ func doCreateSnapshot(ctx context.Context, ses *Session, stmt *tree.CreateSnapSh
 	if err = lockDataBranchLineageOwnerPublication(ctx, bh); err != nil {
 		return err
 	}
+	if err = lockLifecycleDependencyPublication(ctx, bh); err != nil {
+		return err
+	}
 
 	// 3.1 generate snapshot id
 	newUUid, err := uuid.NewV7()
@@ -511,6 +514,24 @@ func doCreateSnapshot(ctx context.Context, ses *Session, stmt *tree.CreateSnapSh
 		if err != nil {
 			return err
 		}
+	}
+
+	scopeAccountID := tenantInfo.GetTenantID()
+	if contextualAccountID, accountErr := defines.GetAccountId(ctx); accountErr == nil {
+		scopeAccountID = contextualAccountID
+	}
+	if snapshotLevel == tree.SNAPSHOTLEVELACCOUNT {
+		scopeAccountID = uint32(objId)
+	}
+	if err = rejectLifecycleHistoricalOwnerScope(
+		ctx,
+		bh,
+		snapshotLevel.String(),
+		scopeAccountID,
+		objId,
+		"CREATE SNAPSHOT",
+	); err != nil {
+		return err
 	}
 
 	getLogger(ses.GetService()).Debug("create pitr", zap.String("sql", sql))

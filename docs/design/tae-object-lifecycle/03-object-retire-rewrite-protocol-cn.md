@@ -30,6 +30,12 @@ wall time
 
 共同决定，不把“64”冻结为永久常量。
 
+首个发布的保守Release Profile为：单个Whole child最多64个Data Object、累计source
+origin bytes最多4 GiB，任一先到即切分；Mixed始终严格单源。Scheduler只在同一有界
+Metadata page内合并连续Whole候选，因此一次child只创建一个Dataset/Root并执行一次完整
+source-set exact CAS。4 GiB/64是可经认证下调的初始上限，不是持久格式合同；Manifest
+chunk数、Tombstone protection、wire bytes和30分钟attempt deadline仍可更早阻止该批次。
+
 ### Mixed
 
 严格单source Object。`DoMergeAndWrite`是以下内容的唯一producer：
@@ -74,6 +80,13 @@ Lifecycle要求：
 - rollback只清理runtime资源，不删除Root-owned文件；
 - 明确abort后由Root Sweeper删除。
 
+`DoMergeAndWrite`返回后、Root进入`VERIFIED`前，Lifecycle必须按已持久化Root再次验证
+实际输出所有权：每个`CreatedObjectStats.ObjectName.SegmentId`等于Root预分配segment，
+Object ordinal唯一且小于`ordinal_upper_bound`；每个实际booking location都位于Root的
+`booking_prefix`之下且至少存在一个external booking。任一不匹配立即失败并由该Root
+异步清理，禁止把越界文件带入final transaction。这个校验只约束Lifecycle writer输出，
+不改变普通Merge的路径或文件命名。
+
 普通Merge传nil options，行为和临时文件命名完全不变。
 
 Created Object物理Owner也使用默认不变的窄选项：
@@ -97,12 +110,12 @@ Finalizer私有创建普通`TxnOperator`：
 ```text
 Archive:
   insert Dataset
-  append thin LifecycleRetireEntry
+  append thin LifecycleCommitEntry
   Commit immediately
 
 TTL:
   insert TTL Receipt
-  append thin LifecycleRetireEntry
+  append thin LifecycleCommitEntry
   Commit immediately
 ```
 
@@ -114,7 +127,7 @@ CN提交链只增加一个薄的可选字段：
 ```go
 // ordinary transaction: always nil
 // Lifecycle Finalizer: set once, then Commit immediately
-lifecycleRetireEntry *api.Entry
+lifecycleCommitControl *LifecycleCommitControl
 ```
 
 它不放入`txn.writes`，不参与workspace dump/compact/sort。`genWriteReqs`先生成普通
@@ -125,7 +138,7 @@ Dataset/TTL Receipt entries，再在编码`PrecommitWriteCmd`前追加该entry�
 该字段只提供包内setter，整个TxnOperator由Finalizer私有持有，因此不增加公共
 OPEN/SEALED/POISONED状态机。rollback/commit终态随workspace释放指针。
 
-## 5. Thin LifecycleRetireEntry
+## 5. Thin LifecycleCommitEntry
 
 tag进入可被现有commit request重放的`PrecommitWriteCmd.EntryList`，但不能伪装成空Batch
 普通DML。V1冻结：
@@ -134,10 +147,10 @@ tag进入可被现有commit request重放的`PrecommitWriteCmd.EntryList`，但�
 message Entry {
   enum EntryType {
     // existing 0..6 unchanged
-    LifecycleRetire = 7;
+    LifecycleCommit = 7;
   }
   // existing fields 1..10 unchanged
-  LifecycleRetireEntry lifecycle_retire = 11;
+  LifecycleCommitEntry lifecycle_commit = 11;
 }
 ```
 
@@ -145,37 +158,36 @@ message Entry {
 `ProtoBatchToBatch`。payload字段：
 
 ```proto
-message LifecycleDataSourceObject {
-  bytes object_stats = 1;
-  bytes object_stats_sha256 = 2;
-  reserved 3;
-}
-
-message LifecycleRetireEntry {
+message LifecycleCommitEntry {
   uint32 protocol_version = 1;
-  uint32 mode = 2;
-  bytes binding_id = 3;
-  uint64 binding_generation = 4;
-  uint64 logical_table_id = 5;
-  uint64 physical_table_id = 6;
-  bytes schema_digest = 7;
-  uint64 lifecycle_column_id = 8;
-  timestamp.Timestamp source_snapshot_ts = 9;
-  repeated LifecycleDataSourceObject data_sources = 10;
-  bytes source_set_digest = 11;
-  repeated bytes created_object_stats = 12;
-  repeated string existing_booking_locations = 13;
-  bytes transfer_mapping_digest = 14;
-  bytes root_id = 15;
-  bytes attempt_id = 16;
-  bytes manifest_digest = 17;
-  int64 absolute_prepare_deadline_unix_nano = 18;
+  RetireMode retire_mode = 2;
+  string root_id = 3;
+  string attempt_id = 4;
+  string dataset_id = 5;
+  string receipt_id = 6;
+  uint64 database_id = 7;
+  uint64 logical_table_id = 8;
+  uint64 physical_table_id = 9;
+  uint64 binding_generation = 10;
+  bytes schema_digest = 11;
+  timestamp.Timestamp source_snapshot_ts = 12;
+  bytes source_set_digest = 13;
+  repeated bytes data_source_object_stats = 14;
+  repeated bytes created_object_stats = 15;
+  repeated string transfer_booking_locations = 16;
+  bytes transfer_mapping_digest = 17;
+  int64 final_prepare_deadline_unix_nano = 18;
   uint64 max_delta_rows = 19;
   uint64 max_delta_bytes = 20;
   uint32 max_delta_blocks = 21;
   int32 merge_level = 22;
 }
 ```
+
+Archive entry必须且只能携带`dataset_id`，TTL entry必须且只能携带`receipt_id`。Archive和
+所有Rewrite必须携带`root_id`；TTL Whole没有外部副作用，可以不创建Root。
+`binding_id`、Lifecycle column和Manifest digest由同一普通事务中的Binding CAS、
+Dataset/Receipt及Cleanup Root负责，不在TN退休entry中复制。
 
 V1不包含D/E业务值、SourceLayoutProof、destination bitmap或第二份mapping。
 SyncProtection job ID复用现有`PrecommitWriteCmd.SyncProtectionJobId`，不在entry内重复。
@@ -184,16 +196,17 @@ Digest统一使用SHA-256和固定domain separator：
 
 ```text
 source_set_digest =
-  SHA256("MO-LIFECYCLE-SOURCE-v1" ||
-         uint64_be(physical_table_id) ||
-         uint32_be(data_source_count) ||
-         对data_sources按Object ID排序后逐项编码(
-           uint32_be(object_stats_length) || complete ObjectStats bytes))
+  SHA256("matrixone/lifecycle/data-sources/v1" ||
+         对data_source_object_stats按Object ID排序后
+         逐项拼接complete fixed-length ObjectStats bytes)
 
 transfer_mapping_digest =
   SHA256("MO-LIFECYCLE-TRANSFER-v1" ||
-         created_object_stats按DoMergeAndWrite输出顺序 ||
-         decoded TransferTable按source block ordinal/source row offset的逻辑mapping)
+         uint32_be(created_object_count) ||
+         created_object_stats按DoMergeAndWrite输出顺序逐项编码(
+           uint32_be(length) || bytes) ||
+         uint32_be(source_block_count) ||
+         decoded TransferTable按source block ordinal/source row offset逐项编码)
 ```
 
 TN使用现有booking codec解码后重算`transfer_mapping_digest`。该digest防传输损坏或错配，
@@ -204,8 +217,8 @@ TN使用现有booking codec解码后重算`transfer_mapping_digest`。该digest�
 编码器不能产生该字段。Snapshot Reader
 使用的Tombstone Object只存在于CN选择结果和`SyncProtectionJobId`对应的protection set，
 不进入entry、`source_set_digest`或任何Drop集合。`protection_set_digest`只参与
-SyncProtection job identity，不扩展为TN业务字段。上述整数固定big-endian，数组长度和每项
-长度必须参与digest，禁止直接无framing拼接变长bytes。
+SyncProtection job identity，不扩展为TN业务字段。Transfer digest中的整数固定big-endian，
+所有变长数组和bytes必须带长度framing；source digest只拼接固定长度的完整ObjectStats。
 
 ## 6. 旧TN与滚动升级P0
 
@@ -214,7 +227,7 @@ SyncProtection job identity，不扩展为TN业务字段。上述整数固定big
 ```text
 inspect EntryType/protocol version
 -> known normal Entry: existing path
--> known LifecycleRetire: Lifecycle handler
+-> known LifecycleCommit: Lifecycle handler
 -> unknown EntryType/version: typed unsupported error
 -> only after dispatch may parse Batch
 ```
@@ -224,7 +237,7 @@ inspect EntryType/protocol version
 - 未完成全量升级时retirement默认关闭；
 - Export-only可先开启；
 - 第一阶段先把“未知Entry在Batch解析前返回unsupported”补丁部署到全部TN；
-- 第二阶段才允许能够生成`LifecycleRetire=7`的新CN上线；
+- 第二阶段才允许能够生成`LifecycleCommit=7`的新CN上线；
 - 新CN→已具备安全解析但不支持V1的TN，在任何Batch解析/mutation前失败；
 - 没有安全解析补丁的更老TN不在retirement滚动兼容集合中，发布控制面禁止路由；
 - 旧CN不会产生Lifecycle entry；

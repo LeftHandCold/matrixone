@@ -256,6 +256,22 @@ func (s *Scope) DropDatabase(c *Compile) error {
 		}
 	}
 
+	// DROP TABLE normally removes each Binding while walking the database.
+	// Delete by database identity as a final, same-transaction backstop for
+	// already-missing relations and interrupted historical metadata. Provider
+	// cleanup remains asynchronous through the system-owned Cleanup Root. The
+	// plan ID is authoritative; old callers and mocks may omit it, in which
+	// case this optional backstop must not change ordinary DROP semantics.
+	databaseID := s.Plan.GetDdl().GetDropDatabase().GetDatabaseId()
+	if databaseID != 0 {
+		if err = c.detachLifecycleBindingsForDatabaseDrop(
+			accountId,
+			databaseID,
+		); err != nil {
+			return err
+		}
+	}
+
 	err = c.e.Delete(c.proc.Ctx, dbName, c.proc.GetTxnOperator())
 	if err != nil {
 		return err
@@ -694,6 +710,9 @@ func (s *Scope) AlterTableInplace(c *Compile) error {
 		if retryErr != nil {
 			return retryErr
 		}
+	}
+	if err = c.rejectBoundLifecycleDDL(tblId, "ALTER TABLE"); err != nil {
+		return err
 	}
 
 	var hasUpdateConstraints bool
@@ -2450,6 +2469,12 @@ func (s *Scope) CreateIndex(c *Compile) error {
 	if err != nil {
 		return err
 	}
+	if err := c.rejectBoundLifecycleDDL(
+		r.GetTableID(c.proc.Ctx),
+		"CREATE INDEX",
+	); err != nil {
+		return err
+	}
 
 	ps := c.proc.GetPartitionService()
 	if !ps.Enabled() ||
@@ -3176,6 +3201,9 @@ func (s *Scope) TruncateTable(c *Compile) error {
 			return err
 		}
 	}
+	if err := c.rejectBoundLifecycleDDL(oldID, "TRUNCATE TABLE"); err != nil {
+		return err
+	}
 
 	// delete from tables => truncate, need keep increment value
 	// Get logicalId from tableDef and pass it when creating the new table
@@ -3441,6 +3469,11 @@ func (s *Scope) dropTableSingle(c *Compile, qry *plan.DropTable) error {
 			err = e
 		}
 		if err != nil {
+			return err
+		}
+	}
+	if !isTemp && !isView && !isSource {
+		if err := c.detachLifecycleBindingForDrop(tblID); err != nil {
 			return err
 		}
 	}
@@ -4826,6 +4859,9 @@ func (s *Scope) CreatePitr(c *Compile) error {
 	if err != nil {
 		return err
 	}
+	if err = c.lockLifecycleDependencyPublication(); err != nil {
+		return err
+	}
 
 	// INTERNAL PITR creation bypasses the frontend path. Cross the same stable
 	// publication barrier as frontend snapshot/PITR creation before refreshing
@@ -4849,6 +4885,9 @@ func (s *Scope) CreatePitr(c *Compile) error {
 		},
 	)
 	if err != nil {
+		return err
+	}
+	if err = c.rejectLifecyclePitrBindings(createPitr, pitrObjectID); err != nil {
 		return err
 	}
 

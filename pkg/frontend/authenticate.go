@@ -957,56 +957,67 @@ var (
 		catalog.MO_PITR:              {},
 		catalog.MOPartitionMetadata:  {},
 		catalog.MOPartitionTables:    {},
+		// Cleanup Roots are system-owned external-side-effect metadata. They
+		// intentionally survive tenant deletion so the Lifecycle sweeper can
+		// reclaim Archive/TAE staging asynchronously. Classifying this table as
+		// a Cluster Table would also make DROP ACCOUNT issue an invalid
+		// `where account_id = ...` delete against owner_account_id.
+		catalog.MO_LIFECYCLE_CLEANUP_ROOTS: {},
 	}
 	// predefined tables of the database mo_catalog in every account
 	predefinedTables = map[string]int8{
-		"mo_database":                   0,
-		"mo_tables":                     0,
-		"mo_columns":                    0,
-		"mo_account":                    0,
-		"mo_user":                       0,
-		"mo_role":                       0,
-		"mo_user_grant":                 0,
-		"mo_role_grant":                 0,
-		"mo_role_privs":                 0,
-		"mo_user_defined_function":      0,
-		"mo_stored_procedure":           0,
-		"mo_mysql_compatibility_mode":   0,
-		catalog.MOAutoIncrTable:         0,
-		"mo_indexes":                    0,
-		"mo_table_partitions":           0,
-		"mo_pubs":                       0,
-		"mo_stages":                     0,
-		"mo_sessions":                   0,
-		"mo_configurations":             0,
-		"mo_locks":                      0,
-		"mo_variables":                  0,
-		"mo_transactions":               0,
-		"mo_cache":                      0,
-		"mo_foreign_keys":               0,
-		"mo_snapshots":                  0,
-		"mo_subs":                       0,
-		"mo_shards":                     0,
-		"mo_shards_metadata":            0,
-		"mo_cdc_task":                   0,
-		"mo_cdc_watermark":              0,
-		catalog.MO_TABLE_STATS:          0,
-		catalog.MO_ACCOUNT_LOCK:         0,
-		catalog.MO_MERGE_SETTINGS:       0,
-		catalog.MO_ISCP_LOG:             0,
-		catalog.MO_INDEX_UPDATE:         0,
-		catalog.MO_BRANCH_METADATA:      0,
-		catalog.MO_FEATURE_LIMIT:        0,
-		catalog.MO_FEATURE_REGISTRY:     0,
-		catalog.MO_ROLE_RULE:            0,
-		icebergsql.TableCatalogs:        0,
-		icebergsql.TablePrincipalMap:    0,
-		icebergsql.TableResidencyPolicy: 0,
-		icebergsql.TableTables:          0,
-		icebergsql.TableRefs:            0,
-		icebergsql.TablePublishJobs:     0,
-		icebergsql.TableOrphanFiles:     0,
-		icebergsql.TableMaintenanceJobs: 0,
+		"mo_database":                         0,
+		"mo_tables":                           0,
+		"mo_columns":                          0,
+		"mo_account":                          0,
+		"mo_user":                             0,
+		"mo_role":                             0,
+		"mo_user_grant":                       0,
+		"mo_role_grant":                       0,
+		"mo_role_privs":                       0,
+		"mo_user_defined_function":            0,
+		"mo_stored_procedure":                 0,
+		"mo_mysql_compatibility_mode":         0,
+		catalog.MOAutoIncrTable:               0,
+		"mo_indexes":                          0,
+		"mo_table_partitions":                 0,
+		"mo_pubs":                             0,
+		"mo_stages":                           0,
+		"mo_sessions":                         0,
+		"mo_configurations":                   0,
+		"mo_locks":                            0,
+		"mo_variables":                        0,
+		"mo_transactions":                     0,
+		"mo_cache":                            0,
+		"mo_foreign_keys":                     0,
+		"mo_snapshots":                        0,
+		"mo_subs":                             0,
+		"mo_shards":                           0,
+		"mo_shards_metadata":                  0,
+		"mo_cdc_task":                         0,
+		"mo_cdc_watermark":                    0,
+		catalog.MO_TABLE_STATS:                0,
+		catalog.MO_ACCOUNT_LOCK:               0,
+		catalog.MO_MERGE_SETTINGS:             0,
+		catalog.MO_ISCP_LOG:                   0,
+		catalog.MO_INDEX_UPDATE:               0,
+		catalog.MO_BRANCH_METADATA:            0,
+		catalog.MO_FEATURE_LIMIT:              0,
+		catalog.MO_FEATURE_REGISTRY:           0,
+		catalog.MO_ROLE_RULE:                  0,
+		catalog.MO_LIFECYCLE_BINDINGS:         0,
+		catalog.MO_LIFECYCLE_DATASETS:         0,
+		catalog.MO_LIFECYCLE_TTL_RECEIPTS:     0,
+		catalog.MO_LIFECYCLE_RESTORE_ATTEMPTS: 0,
+		catalog.MO_LIFECYCLE_RESTORE_CHUNKS:   0,
+		icebergsql.TableCatalogs:              0,
+		icebergsql.TablePrincipalMap:          0,
+		icebergsql.TableResidencyPolicy:       0,
+		icebergsql.TableTables:                0,
+		icebergsql.TableRefs:                  0,
+		icebergsql.TablePublishJobs:           0,
+		icebergsql.TableOrphanFiles:           0,
+		icebergsql.TableMaintenanceJobs:       0,
 	}
 	createDbInformationSchemaSql = "create database information_schema;"
 	createAutoTableSql           = MoCatalogMoAutoIncrTableDDL
@@ -1057,6 +1068,11 @@ var (
 		MoCatalogFeatureRegistryDDL,
 		MoCatalogFeatureRegistryInitData,
 		MoCatalogMoRoleRuleDDL,
+		catalog.MoLifecycleBindingsDDL,
+		catalog.MoLifecycleDatasetsDDL,
+		catalog.MoLifecycleTTLReceiptsDDL,
+		catalog.MoLifecycleRestoreAttemptsDDL,
+		catalog.MoLifecycleRestoreChunksDDL,
 		icebergsql.CatalogsDDL,
 		icebergsql.PrincipalMapDDL,
 		icebergsql.ResidencyPolicyDDL,
@@ -3935,6 +3951,17 @@ func doAlterStage(ctx context.Context, ses *Session, as *tree.AlterStage) (err e
 			return err
 		}
 	} else {
+		if as.UrlOption.Exist ||
+			as.CredentialsOption.Exist ||
+			as.StatusOption.Exist {
+			if err = rejectReferencedLifecycleStageMutation(
+				ctx,
+				bh,
+				string(as.Name),
+			); err != nil {
+				return err
+			}
+		}
 		if as.UrlOption.Exist {
 			if !(strings.HasPrefix(as.UrlOption.Url, stage.STAGE_PROTOCOL+"://") ||
 				strings.HasPrefix(as.UrlOption.Url, stage.S3_PROTOCOL+"://") ||
@@ -4011,6 +4038,13 @@ func doDropStage(ctx context.Context, ses *Session, ds *tree.DropStage) (err err
 			return err
 		}
 	} else {
+		if err = rejectReferencedLifecycleStageMutation(
+			ctx,
+			bh,
+			string(ds.Name),
+		); err != nil {
+			return err
+		}
 		sql = getSqlForDropStage(string(ds.Name))
 		err = bh.Exec(ctx, sql)
 		if err != nil {
@@ -6373,6 +6407,17 @@ func determinePrivilegeSetOfStatement(stmt tree.Statement) *privilege {
 			clusterTableOperation = clusterTableCreate
 		}
 		dbName = string(st.Table.SchemaName)
+	case *tree.RestoreArchiveDataset:
+		objType = objectTypeDatabase
+		typs = append(typs, PrivilegeTypeCreateTable, PrivilegeTypeDatabaseAll, PrivilegeTypeDatabaseOwnership)
+		needMatchedRole = true
+		writeDatabaseAndTableDirectly = true
+		appendWriteTableNameDatabaseName(st.Target)
+		if st.Target != nil {
+			dbName = string(st.Target.SchemaName)
+		}
+	case *tree.PurgeArchiveDataset:
+		typs = append(typs, PrivilegeTypeAccountAll)
 	case *tree.CreateView:
 		objType = objectTypeDatabase
 		typs = append(typs, PrivilegeTypeCreateView, PrivilegeTypeDatabaseAll, PrivilegeTypeDatabaseOwnership)
@@ -6609,6 +6654,7 @@ func determinePrivilegeSetOfStatement(stmt tree.Statement) *privilege {
 		*tree.PauseDaemonTask, *tree.CancelDaemonTask, *tree.ResumeDaemonTask, *tree.ShowRecoveryWindow,
 		*tree.ShowSQLTasks, *tree.ShowSQLTaskRuns,
 		*tree.ShowRules, *tree.CheckTableStmt, *tree.ShowProfileStmt,
+		*tree.ShowLifecycle,
 		*tree.AnalyzeStmt:
 		objType = objectTypeNone
 		kind = privilegeKindNone

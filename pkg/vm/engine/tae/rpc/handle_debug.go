@@ -1110,6 +1110,16 @@ func marshalTransferMaps(
 	sid string,
 	fs fileservice.FileService,
 ) (api.TransferMaps, error) {
+	return marshalTransferMapsWithOptions(ctx, req, sid, fs, true)
+}
+
+func marshalTransferMapsWithOptions(
+	ctx context.Context,
+	req *api.MergeCommitEntry,
+	sid string,
+	fs fileservice.FileService,
+	deleteAfterRead bool,
+) (api.TransferMaps, error) {
 	if len(req.BookingLoc) > 0 {
 		// load transfer info from s3
 		if req.Booking != nil {
@@ -1150,6 +1160,15 @@ func marshalTransferMaps(
 					destObj := vector.GetFixedAtNoTypeCheck[uint8](bat.Vecs[2], i)
 					destBlk := vector.GetFixedAtNoTypeCheck[uint16](bat.Vecs[3], i)
 					destRow := vector.GetFixedAtNoTypeCheck[uint32](bat.Vecs[4], i)
+					if srcBlk < 0 ||
+						int(srcBlk) >= len(booking) ||
+						int(srcRow) >= len(booking[srcBlk]) {
+						releases()
+						return nil, moerr.NewInvalidInput(
+							ctx,
+							"transfer booking contains an out-of-range source position",
+						)
+					}
 
 					booking[srcBlk][srcRow] = api.TransferDestPos{
 						ObjIdx: destObj,
@@ -1159,7 +1178,9 @@ func marshalTransferMaps(
 				}
 			}
 			releases()
-			_ = fs.Delete(ctx, filepath)
+			if deleteAfterRead {
+				_ = fs.Delete(ctx, filepath)
+			}
 		}
 		return booking, nil
 	} else if req.Booking != nil {

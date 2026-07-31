@@ -11482,6 +11482,13 @@ func (bt *backgroundExecTest) GetExecResultSet() []interface{} {
 		strings.HasPrefix(bt.currentSql, "select granted_id,with_grant_option from mo_catalog.mo_role_grant where grantee_id = ") {
 		return []interface{}{newMrsForInheritedRoleIdOfRoleId([][]interface{}{})}
 	}
+	if _, ok := bt.sql2result[bt.currentSql]; !ok &&
+		(strings.HasPrefix(bt.currentSql, "select binding_id from mo_catalog.mo_lifecycle_bindings") ||
+			strings.HasPrefix(bt.currentSql, "select b.binding_id from mo_catalog.mo_lifecycle_bindings") ||
+			strings.HasPrefix(bt.currentSql, "select stage_id from mo_catalog.mo_stages where stage_name=") ||
+			bt.currentSql == getAccountIdNamesSql) {
+		return []interface{}{newMrsForPasswordOfUser([][]interface{}{})}
+	}
 	return []interface{}{bt.sql2result[bt.currentSql]}
 }
 
@@ -16620,6 +16627,59 @@ func Test_determinePrivilegeSetOfStatement_CreateTableAsSelect(t *testing.T) {
 	require.True(t, seen[PrivilegeTypeDatabaseOwnership])
 	require.False(t, seen[PrivilegeTypeSelect])
 	require.False(t, seen[PrivilegeTypeInsert])
+}
+
+func TestDeterminePrivilegeSetOfStatementLifecycleRestoreAndPurge(t *testing.T) {
+	target := tree.NewTableName(
+		tree.Identifier("restored_orders"),
+		tree.ObjectNamePrefix{
+			SchemaName:     tree.Identifier("archive_restore"),
+			ExplicitSchema: true,
+		},
+		nil,
+	)
+	restorePrivilege := determinePrivilegeSetOfStatement(
+		&tree.RestoreArchiveDataset{
+			DatasetID: "dataset-1",
+			Target:    target,
+		},
+	)
+	require.Equal(t, objectTypeDatabase, restorePrivilege.objectType())
+	require.True(t, restorePrivilege.writeDatabaseAndTableDirectly)
+	require.Equal(t, []string{"archive_restore"}, restorePrivilege.writeDatabaseTargets)
+	require.Equal(t, "archive_restore", restorePrivilege.entries[0].databaseName)
+
+	seenRestore := make(map[PrivilegeType]bool)
+	for _, entry := range restorePrivilege.entries {
+		seenRestore[entry.privilegeId] = true
+	}
+	require.True(t, seenRestore[PrivilegeTypeCreateTable])
+	require.True(t, seenRestore[PrivilegeTypeDatabaseAll])
+	require.True(t, seenRestore[PrivilegeTypeDatabaseOwnership])
+
+	purgePrivilege := determinePrivilegeSetOfStatement(
+		&tree.PurgeArchiveDataset{DatasetID: "dataset-1"},
+	)
+	require.Equal(t, objectTypeAccount, purgePrivilege.objectType())
+	require.Len(t, purgePrivilege.entries, 1)
+	require.Equal(
+		t,
+		PrivilegeTypeAccountAll,
+		purgePrivilege.entries[0].privilegeId,
+	)
+}
+
+func TestLifecycleCleanupRootsIsSystemAccountTable(t *testing.T) {
+	require.Contains(t, sysAccountTables, catalog.MO_LIFECYCLE_CLEANUP_ROOTS)
+	require.False(t, isClusterTable(catalog.MO_CATALOG, catalog.MO_LIFECYCLE_CLEANUP_ROOTS))
+}
+
+func TestLifecycleTenantCatalogTablesArePredefined(t *testing.T) {
+	for _, definition := range catalog.LifecycleTenantTableDefinitions {
+		require.Contains(t, predefinedTables, definition.Name)
+		require.False(t, isClusterTable(catalog.MO_CATALOG, definition.Name))
+		require.Contains(t, createSqls, definition.DDL)
+	}
 }
 
 func TestCopyTablePrivileges(t *testing.T) {

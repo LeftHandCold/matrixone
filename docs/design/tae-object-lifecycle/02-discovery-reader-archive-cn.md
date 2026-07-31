@@ -146,11 +146,15 @@ Child冻结`source_snapshot_ts=S`。`source_set`只包含将被退休的Data Obj
 ```text
 visible data source objects
 -> SelectLifecycleSnapshotTombstones一次性选择S时可能相关的Tombstone Objects
--> 同一选择结果同时交给Snapshot Reader和SyncProtection
+-> 选择结果作为既有Snapshot Reader可能消费的物理Tombstone保守超集交给SyncProtection
 -> 固定ObjectStats/name/digest
 -> source_set_digest只覆盖Data
 -> protection_set_digest覆盖Data + Tombstone
 ```
+
+Snapshot Reader继续复用同一`PartitionState`和MO现有可见性逻辑，包括内存Tombstone；
+Lifecycle不再实现第二套Reader输入注入。Protection Selector只负责保护Reader可能读取的
+物理Tombstone文件，允许假阳性，不允许假阴性。
 
 两组身份不得在后续wire中重新合并：
 
@@ -159,7 +163,8 @@ visible data source objects
 - TN finalizer只能对`data_sources[]`执行`SoftDeleteObject(..., false)`；
 - Tombstone Object绝不进入Lifecycle retire entry或source Drop集合。
 
-禁止Protection Selector和Snapshot Reader分别维护两套Tombstone筛选规则。建议接口：
+Protection Selector必须是现有Snapshot Reader物理输入的保守超集，不能维护一个更窄的
+Lifecycle可见性规则。建议接口：
 
 ```go
 func SelectLifecycleSnapshotTombstones(
@@ -178,7 +183,7 @@ func SelectLifecycleSnapshotTombstones(
 
 新Tombstone在S之后出现，不属于S时Reader输入，由final Prepare的post-S visitor处理。
 
-protection文件数、编码Bloom Filter bytes和续租数量受Lifecycle独立上限；Bloom Filter
+protection文件数和编码Bloom Filter bytes受Lifecycle独立上限；Bloom Filter
 false positive只会多保护文件，不影响正确性。达到上限就缩小Whole batch，Mixed单源仍
 超限则`RESOURCE_BLOCKED`。
 
@@ -187,12 +192,16 @@ false positive只会多保护文件，不影响正确性。达到上限就缩小
 1. 注册现有GC SyncProtection；
 2. 注册成功后重新Stat全部exact文件；
 3. 验证文件名、ObjectStats和source set digest；
-4. 读取期间续租；
+4. 首期不续长attempt，Reader context与Protection使用同一个冻结绝对deadline；
 5. final Prepare再次验证job ID；
-6. 续租失败、TN重启或保护丢失立即停止attempt；
+6. deadline到期、TN重启或保护丢失立即停止attempt；
 7. 不复用原staging恢复attempt；
 8. Reader/final不再使用source后释放；
-9. COMMIT_UNKNOWN不无限续租。
+9. COMMIT_UNKNOWN不保留或延长源Object protection。
+
+释放调用必须脱离已经取消的worker context，但使用Lifecycle本地的短硬超时；不得用无
+deadline的后台context等待GC owner。释放失败只记录并由现有SyncProtection TTL收敛，
+不能延长attempt或阻塞普通MO。
 
 `SyncProtectionJobID`由`attempt_id + protection_set_digest`确定性生成，同一attempt不得换用
 另一个有效job ID。它仍是当前进程内可失效租约，不变成持久GC引用。
@@ -256,19 +265,22 @@ live data。
 
 ## 8. 读取前内存准入
 
-根据Object metadata/column extents和实际schema参数估算：
+在`BlockDataReadNoCopy`之前重新读取Block metadata/column extents，并按实际schema参数
+估算。首个认证实现冻结为：
 
 ```text
-source vectors
-+ merge output buffer
-+ parquet encoder buffer
-+ transfer slab allocator capacity
-+ checksum/readback buffer
-+ safety margin
+estimated_peak_bytes =
+  2 * source_block_logical_bytes
+  + 64 MiB Archive chunk/encoder budget
+  + 16 MiB transfer slab budget
+  + 16 MiB safety margin
 ```
 
 估算未知、溢出或超过`max_certified_block_read_bytes`时，在读取前返回
-`RESOURCE_BLOCKED`。3 GiB Object只有在由多个认证Block组成时承诺streaming。
+`RESOURCE_BLOCKED`。默认`max_certified_block_read_bytes=256 MiB`，因此在该保守公式下
+单Block source logical bytes最多80 MiB。3 GiB Object只有在由多个认证Block组成时承诺
+streaming。这个额外metadata读取和预算只在Lifecycle Rewrite Host非nil时执行；普通Merge
+保持原路径，不增加读取或准入。
 
 ## 9. Schema Descriptor
 
@@ -326,21 +338,24 @@ Publication、插件、权限和源表默认表达式。`auto_increment`属性�
 整数类型上限，则保持allocator耗尽/后续INSERT返回out-of-range，禁止执行`max+1`造成
 overflow。没有正值（仅NULL、0或负值）时不调用`SetOffset`，沿用新表初始offset。
 
-Parquet物理映射由一个版本化registry集中实现，Archive Writer和Restore Reader必须引用
-同一registry，禁止各自维护switch：
+Parquet物理映射是一个版本化合同。Archive Writer和Restore Reader实现必须位于同一
+Lifecycle package，并由双向golden test证明一致；不能在不同模块各自演化不兼容映射。
+Phase 1优先采用确定、无损、容易跨版本恢复的物理表示：
 
 | MO类型族 | Parquet物理/逻辑类型 |
 |---|---|
 | BOOL | BOOLEAN |
 | 有符号/无符号整数 | INT32/INT64 + signedness logical annotation |
 | FLOAT/DOUBLE | FLOAT/DOUBLE |
-| DECIMAL | FIXED_LEN_BYTE_ARRAY + DECIMAL(precision, scale) |
-| DATE | INT32 + DATE |
-| TIME/DATETIME/TIMESTAMP | INT64 +对应MICROS annotation，MO语义由descriptor补充 |
-| CHAR/VARCHAR/TEXT/JSON/UUID/ENUM | BYTE_ARRAY；文本类使用UTF8，精确MO类型保存在descriptor |
+| DECIMAL | UTF8规范字符串；precision/scale保存在descriptor |
+| DATE/TIME/DATETIME/TIMESTAMP | UTF8规范字符串；scale/时区语义保存在descriptor |
+| CHAR/VARCHAR/TEXT/JSON/UUID | UTF8规范字符串；精确MO类型保存在descriptor |
+| ENUM | UINT32；枚举值语义保存在descriptor |
 | BINARY/VARBINARY/BLOB | BYTE_ARRAY |
 
-不在registry和golden test矩阵中的类型，Bind或Archive开始前fail closed，不能退化为字符串。
+不在合同和golden test矩阵中的类型，Bind或Archive开始前fail closed。这里的字符串映射是
+Phase 1显式、版本化的持久格式，不是遇到未知类型时的隐式降级；Manifest descriptor和
+canonical hash仍保存、验证精确MO类型语义。
 
 ## 10. Canonical逻辑编码
 
@@ -390,30 +405,50 @@ chunk_digest
 
 ```text
 canonical_content_hash =
-  SHA256("mo-lifecycle-chunk-content/v1" || ordered canonical row bytes)
+  SHA256(
+    0xD1
+    || uint16_be(canonical_encoder_version=1)
+    || schema_digest[32]
+    || ordered canonical row bytes)
 
 chunk_digest =
-  SHA256("mo-lifecycle-chunk/v1"
-         || chunk_ordinal || file_ordinal || row_group_ordinal
-         || row_count || logical_bytes || canonical_content_hash)
+  ArchiveAggregateHash(
+    schema_digest = 32 bytes zero,
+    chunks = [this chunk])
 
 Manifest.dataset_content_hash =
-  SHA256("mo-lifecycle-dataset-content/v1"
-         || ordered framing(
-              chunk_ordinal,
-              row_count,
-              canonical_content_hash))
+  ArchiveAggregateHash(
+    schema_digest,
+    ordered chunks)
+
+ArchiveAggregateHash(schema_digest, chunks) =
+  SHA256(
+    "matrixone/lifecycle/archive-dataset/v1"
+    || uint16_be(hash_formula_version=1)
+    || schema_digest[32]
+    || uint64_be(len(chunks))
+    || for each chunk in ordinal order:
+         uint64_be(chunk_ordinal)
+         || uint64_be(row_count)
+         || uint64_be(logical_bytes)
+         || canonical_content_hash[32])
 
 Dataset.content_hash = Manifest.dataset_content_hash
 ```
 
-所有整数使用canonical big-endian定长编码，字节串带长度framing。Archive Writer和Provider
-full readback使用同一公式；Restore可在CN crash后按`chunk_ordinal`读取Receipt重建最终
-`Manifest.dataset_content_hash`，不持久化SHA内部状态，也不重新扫描隐藏表或全部Payload。
-`hash_formula_version=1`对应以上domain separator和聚合字段；unknown版本Restore必须
-fail closed。
+canonical row bytes严格按第10节的row/column/type/null/value-length framing；所有整数使用
+big-endian定长编码。Phase 1固定`file_ordinal == chunk_ordinal`且
+`row_group_ordinal == 0`，这两个字段由Manifest shape单独验证，不重复进入派生
+`chunk_digest`。Archive Writer和Provider full readback使用同一公式；Restore可在CN crash
+后按`chunk_ordinal`读取Receipt重建最终`Manifest.dataset_content_hash`，不持久化SHA内部
+状态，也不重新扫描隐藏表或全部Payload。`hash_formula_version=1`对应以上domain separator
+和聚合字段；unknown版本Restore必须fail closed。
 
 ## 11. Parquet与Manifest
+
+首个GA的Dataset Purge时间不要求Writer维护逐行Lifecycle min/max；Finalizer使用冻结的
+`effective_cutoff + purge_interval`作为保守`purge_eligible_at`。它可能延后回收，但不会
+早于对象内最年轻归档行的保留期限，也不增加新的聚合状态。
 
 Parquet使用ZSTD。每个文件记录：
 
@@ -430,7 +465,6 @@ row_groups[] {
   row_count
   logical_bytes
   canonical_content_hash
-  chunk_digest
 }
 min/max（可选）
 ```
@@ -454,6 +488,10 @@ Writer按`target_payload_file_bytes`流式切分，不按“每天一个文件�
 bytes上限约束。每个Row Group对应一个Restore chunk，并受`max_chunks_per_dataset`硬上限；
 Writer在产生超限Manifest前必须缩小source batch或返回`RESOURCE_BLOCKED`。Phase 1不做
 Archive compaction；需要合并文件时作为独立优化设计。
+
+Phase 1两个上限统一冻结为4096，因为一个Payload严格只有一个Row Group。Writer必须在
+第4097个Payload PUT之前拒绝，Manifest parser与Restore还要重复校验；不能等全部Payload
+写完后才发现Manifest超限。
 
 每个Row Group还必须同时满足：
 

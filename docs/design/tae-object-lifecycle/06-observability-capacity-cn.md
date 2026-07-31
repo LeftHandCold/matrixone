@@ -35,25 +35,47 @@ max-delta-rows/bytes/blocks
 max-source-conflicts-per-child
 max-conflict-wall-time
 root-unknown-count/bytes
-cleanup-backlog-count/bytes
+max-active-cleanup-roots
+cleanup-backlog-bytes-observed
 published-dataset-count/metadata-bytes
 archive-payload-bytes-per-account
 restore-concurrency/deadline
 restore-attempt/chunk-receipt-count
 max-active-restore-staging-bytes-per-account
-max-active-restore-staging-bytes-per-cluster
+max-active-restore-staging-bytes-per-coordinator
 terminal-metadata-retention
 ```
 
 配置关系必须启动时校验，不能自动放宽hard cap。
+Phase 1冻结`max-payload-files-per-dataset = max-chunks-per-dataset = 4096`；
+Writer在写第4097个Payload前返回`RESOURCE_BLOCKED`，Manifest parser和Restore再次校验。
+因为Phase 1每个Payload严格只有一个Row Group，这一个上限同时约束Payload文件、
+Manifest集合、Chunk Receipt和Restore聚合内存；后续若支持一个文件多个Row Group，再拆成
+两个独立配置。
 `max-restore-chunk-rows`和`max-restore-chunk-logical-bytes`必须由普通INSERT事务的内存、
 wire/WAL和时长认证结果反推，并受release profile hard cap约束；用户不能把它们调高到
 未经认证的范围。
+
+`max-certified-block-read-bytes`默认256 MiB。Lifecycle Rewrite在读取Block前按02中的
+保守公式`2 * source logical bytes + 96 MiB`准入；未知、溢出或超过上限时返回
+`RESOURCE_BLOCKED`。该检查不进入普通Merge路径。
+
+`rewrite-concurrency`首个GA在每个Lifecycle coordinator CN上固定为1。它是Task executor
+中的本地、fail-fast semaphore：只包围Mixed Rewrite build/finalize，不进入TN、普通Merge
+或普通事务；并发已满时在Root和外部副作用创建前返回`RESOURCE_BLOCKED`，由后续metadata
+扫描重试。认证后最多放宽到4，不能由租户SQL修改。
 
 运行时配置可以调低Writer目标，但已有Dataset所需值超过当前配置时，Restore返回
 `RESOURCE_BLOCKED`并报告所需rows/logical bytes，不能标记corruption。运维可在release
 hard cap内恢复配置。同一Manifest reader/version的后续兼容release不得降低其已认证Restore
 hard cap；不满足该条件的降级必须在仍有对应Dataset时拒绝。
+
+`max-active-cleanup-roots`只统计`REGISTERED/UPLOADING/VERIFIED/FINALIZING/
+COMMIT_UNKNOWN/DELETE_PENDING/DELETING`，以及尚未清完booking/live staging的
+`PUBLISHED` Root。已经健康发布且`temporary_cleanup_done=true`的Archive Root是长期
+Dataset物理Owner元数据，不算异常backlog；否则4096上限会让10 TiB表在约8万Object中的
+前4096个后永久停摆。健康PUBLISHED Root数量/metadata bytes单独监控，并由Dataset
+Purge/retention收敛。
 
 ## 2. Metrics
 
@@ -162,17 +184,24 @@ Kill switch不强制清理FINALIZING/COMMIT_UNKNOWN，也不取消已进入普�
 
 feature off：
 
-- 无Lifecycle对象分配；
-- 无Catalog查询；
-- 无Scheduler任务；
-- 无Provider I/O；
+- 不创建新的Lifecycle attempt、Dataset、Restore或staging；
+- Coordinator cron仍只为历史Cleanup Root执行有界reconcile/sweep，避免关闭开关后遗留外部
+  对象永久泄漏；Binding调度、租户Restore扫描和元数据压缩均跳过；
+- 除上述历史Root清理外无新的Provider PUT/readback；
+- 普通查询、DML、Merge、checkpoint、GC和logtail无Lifecycle Catalog访问；
+- 表级管理DDL仍执行一次索引化Binding检查，但不取得集群级feature-row写锁；
+- Snapshot/PITR/Publication等scope级发布才使用既有feature-row barrier；
 - 普通Merge默认参数和代码路径不变；
 - unknown Entry安全解析只增加可测的常数分支。
+
+TaskService声明Coordinator并发1；runner handoff若仍产生重复tick，本地只允许一个run占有
+游标，重复tick直接跳过而不排队，不让取消后的任务等待另一轮长扫描。
 
 feature开启但目标表无Binding：
 
 - 普通查询、DML和Merge仍为零Lifecycle Catalog访问；
 - 可能冲突的DDL至多执行一次按`(account_id, physical_table_id)`的索引化Binding lookup；
+- 表级DDL与`SET LIFECYCLE`复用既有`mo_tables`行锁，不被其他账户DDL全局串行；
 - 不创建Binding、Guard、Candidate、Root或其他Lifecycle元数据。
 
 Active coexistence必须测DML、查询、Merge、checkpoint、GC、logtail吞吐和P99。阈值在Gate I
@@ -248,18 +277,20 @@ amplification在单源分类完成后检查，超限时不进入final transactio
 Restore启动准入使用`Dataset.logical_bytes`作为保守核算值：
 
 ```text
-sum(Dataset.logical_bytes for active RUNNING/VERIFYING/PUBLISHING attempts in account)
+sum(Dataset.logical_bytes for active IMPORTING/PUBLISHING attempts in account)
   + requested Dataset.logical_bytes
   <= max-active-restore-staging-bytes-per-account
 
-cluster对应总和
-  <= max-active-restore-staging-bytes-per-cluster
+当前Coordinator内尚未转交给持久Attempt的reservation总和
+  <= max-active-restore-staging-bytes-per-coordinator
 ```
 
 RESTORE命令由现有Lifecycle Coordinator完成准入后才执行05中的初始化普通事务。Coordinator
-重启时从现有Restore Attempt和Dataset索引按page rows/bytes cap分页重建计数；每轮有deadline，
-失败后有界退避并保持暂停新Restore。这个计数不预分配持久Slot，不进入普通DML路径。Attempt
-`DONE`后表已转交用户Catalog，不再计入Lifecycle staging；`ABORTED`只有在隐藏表确认DROP后
+从现有Restore Attempt和Dataset索引按page rows/bytes cap计算租户持久active usage；每轮有
+deadline，失败后有界退避并保持暂停新Restore。当前Coordinator另以进程内reservation关闭
+初始化事务尚未落Catalog时的并发窗口。这个计数不预分配持久Slot，不提供跨Coordinator的
+分布式精确总量，也不进入普通DML路径。Attempt
+`DONE`后表已转交用户Catalog，不再计入Lifecycle staging；`FAILED`只有在隐藏表确认DROP后
 才释放核算值。实际TAE物理bytes仍作为观测指标，若持续高于logical bytes认证系数则Gate I
 Stop Ship并降低上限。
 
@@ -270,9 +301,17 @@ reservation，实际已提交的初始化由active Attempt重建，实际未提�
 
 ### 9.3 Cleanup backlog与Binding容量
 
-`cleanup-backlog-count/bytes`到达hard cap后，暂停所有会创建Root的新任务，包括Archive
-Whole、Archive Rewrite和TTL Rewrite；Whole TTL和已关闭的TTL small Mixed没有Root副作用，
-可按独立事务预算决定是否继续。已有Sweeper和COMMIT_UNKNOWN对账继续运行。
+创建Root前由system-owned Root仓库统计未进入`CLEANED`的active Root；
+`max-active-cleanup-roots`发布默认值为4096，到达hard cap后暂停所有会创建Root的新任务，
+包括Archive Whole、Archive Rewrite和TTL Rewrite。Payload/booking/staging bytes由单Root
+认证上限乘以active Root cap形成保守增长上界，并继续作为观测与Stop Ship指标，不建设
+逐对象明细表或分布式bytes Slot。Whole TTL和已关闭的TTL small Mixed没有Root副作用，可按
+独立事务预算决定是否继续。已有Sweeper和COMMIT_UNKNOWN对账继续运行。
+
+Whole调度不能退化成“一Object一Dataset/Root”。首个Release Profile在同一Metadata page
+内按最多64个source且累计origin bytes最多4 GiB聚合，一个batch只产生一个Dataset/Root/
+final transaction；Mixed仍单源。Object数、source bytes、Manifest chunk数、protection集合、
+wire bytes或wall time任一达到上限都提前切分或`RESOURCE_BLOCKED`。
 
 `max-bound-tables`是发布认证的全集群配置上限，允许另设每账户配额；它不是预分配Slot或
 跨租户事务不变量。超过认证值拒绝新Binding或停止扩大放量，不能恢复Cluster Activation

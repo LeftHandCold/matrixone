@@ -48,7 +48,7 @@ CAS Dataset:
 -> version = version + 1
 CREATE hidden staging table from Manifest descriptor
 INSERT Restore Attempt(
-  state = RUNNING,
+  state = IMPORTING,
   exact staging_database_id/hidden_name/staging_table_id,
   target identity, lease/deadline)
 -> commit
@@ -58,14 +58,10 @@ INSERT Restore Attempt(
 Attempt Owner的隐藏表。提交响应未知时按Dataset lease、Attempt和精确隐藏表身份做普通
 Catalog对账；禁止重新创建第二张隐藏表。
 
-每次GET和每个chunk前验证：
-
-- Dataset仍PUBLISHED；
-- lease ID匹配；
-- 当前时间小于固定restore_deadline；
-- access_generation未变化。
-
-worker可续租心跳，但不能超过创建时冻结的absolute deadline。
+每次GET前检查Attempt固定deadline；每个Chunk普通事务必须CAS同一`IMPORTING` Attempt的
+lease ID、deadline和`next_chunk_ordinal`。最终发布事务再CAS Dataset仍为`PUBLISHED`且
+lease匹配。首版不续租，不在每次Provider GET前增加一次Dataset Catalog查询；固定deadline
+到期后停止新GET/INSERT。
 
 Restore lease获取与Purge CAS同一条Dataset行；两者只能一个成功。Purge不会先改变state或
 `access_generation`再允许旧Restore继续读取。
@@ -97,7 +93,7 @@ for each manifest file ordinal
   -> verify row_count/logical_bytes/canonical chunk hash/digest
   -> one normal transaction:
        INSERT data into staging
-       INSERT chunk Receipt（含本Chunk AUTO_INCREMENT最大正值）
+       INSERT chunk Receipt
        CAS next_chunk_ordinal
        UPDATE restored_rows
 ```
@@ -107,8 +103,6 @@ for each manifest file ordinal
 `chunk_ordinal`。Restore直接消费Manifest中的边界，不得按`chunk-bytes`、INSERT Batch
 大小或worker版本重新切分、合并。Receipt主键是`(restore_id, chunk_ordinal)`；
 `chunk_digest`、`row_count`、`logical_bytes`和`canonical_content_hash`是普通列。
-Receipt还保存版本化、按Manifest列ordinal编码的本Chunk
-`auto_increment_maxima_blob`；同ordinal幂等比较必须同时比较该字段。
 
 Manifest中每个Chunk必须满足`max-restore-chunk-rows`和
 `max-restore-chunk-logical-bytes`。Restore在GET/解码前先验证声明值，在解码后重新计算
@@ -127,9 +121,6 @@ Restore不使用tagged entry，完全复用普通INSERT事务。
 
 ## 6. 内容验证和发布
 
-全部Chunk提交后，worker先在lease有效且进度匹配时把Attempt从`RUNNING` CAS到
-`VERIFYING`；接管者看到同一lease的`VERIFYING`可以重新从Receipt执行本节验证。
-
 全部chunk完成后：
 
 - Manifest descriptor digest完整，目标表结构投影与descriptor一致；
@@ -140,25 +131,18 @@ Restore不使用tagged entry，完全复用普通INSERT事务。
   `0..total_chunk_count-1`，且无缺失或重复；
 - 每个Receipt的row count、logical bytes、chunk digest和canonical content hash与Manifest
   对应Row Group完全一致；
-- 按`chunk_ordinal`聚合Receipt中的每Chunk AUTO_INCREMENT最大正值，结果与Manifest全局
-  最大正值完全一致；
 - 重建Hash等于Manifest中的`dataset_content_hash`，`hash_formula_version`受支持；
 - lease仍有效。
 
 不持久化SHA-256内部状态，不重新扫描隐藏表，也不为最终Hash重新读取全部Payload。
 Receipt按主键分页顺序流式聚合，不一次性物化全部记录；Manifest和Receipt chunk数都必须
-小于等于`max_chunks_per_dataset`。
+小于等于`max_chunks_per_dataset`。AUTO_INCREMENT最大正值来自已经过Archive full
+readback验证的Manifest；所有Restore Chunk又逐个验证最终MO vectors的canonical hash，
+不在Receipt中维护第二套max聚合协议。
 
 最后使用一个普通事务：
 
 ```text
-前置短CAS：
-  Restore Attempt VERIFYING -> PUBLISHING
-  lease_id匹配且未过期
-  next_chunk_ordinal == Manifest.total_chunk_count
-  restored_rows == Manifest.row_count
-  verified_content_hash IS NULL
-
 最终发布事务：
 CAS Dataset:
   state == PUBLISHED
@@ -166,11 +150,12 @@ CAS Dataset:
   restore_deadline > transaction time
   access_generation/version unchanged
 CAS Restore Attempt:
-  state == PUBLISHING
+  state == IMPORTING
   lease_id/deadline仍匹配
   next_chunk_ordinal == Manifest.total_chunk_count
   restored_rows == Manifest.row_count
   verified_content_hash IS NULL
+-> 同一事务内临时置为PUBLISHING
 确认Catalog中的(staging_database_id, hidden_name, staging_table_id)完全匹配
 -> 按hidden_name原子改名/发布，table_id保持不变
 -> 对每个有值的AUTO_INCREMENT列调用现有
@@ -183,6 +168,10 @@ CAS Restore Attempt:
 -> Dataset.version = version + 1
 -> commit
 ```
+
+`PUBLISHING`不允许在一个独立前置事务中提交。它只是上述最终事务内部的CAS中间值：
+rollback后外部仍为`IMPORTING`，commit后外部直接看到`DONE`。因此不存在
+“PUBLISHING已经提交但final transaction尚未创建”的额外恢复状态。
 
 `verified_content_hash`此前必须为NULL，只在该最终普通事务中一次性写入；Chunk事务不得把
 普通SHA-256 digest当作可续算内部状态增量更新。
@@ -208,8 +197,15 @@ identity对账，不建设Lifecycle终态协议。
 - 明确abort且仍持有自己的lease：CAS清除lease；CAS失败说明Purge/其他终态已推进，只能按
   本节身份事务清理自己的隐藏表，不覆盖新状态。
 
-`PUBLISHING`表示“final publish可能尚未创建，也可能已经执行”。owner丢失后不要求存在
-`publish_txn_id`，而是在一个普通一致性事务中按Catalog身份收敛：
+SQL级重试在分配新`restore_id`前同时查找两种精确身份：
+
+- 有效`IMPORTING` Attempt且hidden名称仍映射`staging_table_id`：继续原Attempt；
+- `DONE` Attempt且target名称仍映射同一`staging_table_id`：把前一次发布视为幂等成功。
+
+若用户已经DROP该恢复目标，旧`DONE`记录不再匹配物理身份，允许以后以同名发起新的Restore。
+因此发布响应丢失不会重复导入，也不会让历史DONE记录永久占住表名。
+
+owner丢失或发布响应未知后，在一个普通一致性事务中按Catalog身份收敛：
 
 ```text
 (target_database_id, target_name) -> staging_table_id
@@ -232,9 +228,9 @@ AND target_name不映射到该table_id
 ```text
 CAS Restore Attempt:
   restore_id/lease_id匹配
-  state IN (RUNNING, VERIFYING, PUBLISHING)
+  state IN (IMPORTING, PUBLISHING)
   state != DONE
--> state = ABORTED
+-> state = FAILED
 
 同一事务的一致性Catalog读取：
   (target_database_id, target_name)不得映射到staging_table_id
@@ -247,16 +243,16 @@ CAS Restore Attempt:
 `hidden_name`固定为`__mo_lifecycle_restore_<restore-id>`，由Attempt的`restore_id`确定。若
 Attempt CAS失败，清理者必须重新读取：看到`DONE`或目标名称已映射到同一
 `staging_table_id`立即停止；隐藏名称、database ID或table ID任一不匹配时fail closed并
-告警，不得删除任何表。DROP失败则整个普通事务回滚，Attempt不能单独变成`ABORTED`。
+告警，不得删除任何表。DROP失败则整个普通事务回滚，Attempt不能单独变成`FAILED`。
 清理事务自身返回`ErrTxnUnknown`时保持Attempt，不得再次盲目DROP；接管者重新执行本节
 一致性身份对账：
 
-- `Attempt=ABORTED`、target不映射该ID且hidden已不存在：清理事务已经可见，收敛成功；
+- `Attempt=FAILED`、target不映射该ID且hidden已不存在：清理事务已经可见，收敛成功；
 - Attempt仍非终态且hidden精确存在：可以重新发起完整CAS+identity DROP事务；
 - `Attempt=DONE`或target映射该ID：发布成功方向，禁止清理；
 - 其余组合：fail closed并告警。
 
-worker不能在unknown后单独把Attempt改成ABORTED。CAS、身份读取和DROP必须在同一事务，禁止
+worker不能在unknown后单独把Attempt改成FAILED。CAS、身份读取和DROP必须在同一事务，禁止
 使用事务外预读结果执行删除。
 
 发布事务与清理事务都写同一Attempt行，并对同一Catalog table entry执行Rename或DROP；
@@ -304,6 +300,9 @@ DROP TABLE/DATABASE/ACCOUNT沿用普通MO业务语义：
 - 不建设owner tombstone；
 - 不保留Legal Hold/WORM；
 - Cleanup Reconciler通过Binding/Dataset/Root owner查询发现孤儿。
+- DROP TABLE在既有表DDL事务中删除对应Binding；DROP DATABASE在既有数据库DDL事务中按
+  `(account_id, database_id)`补删Binding，覆盖已缺失Relation留下的孤儿元数据。两条路径
+  都不访问Provider；Dataset/Payload仍由system Root异步收敛。
 
 竞态：
 
@@ -337,7 +336,7 @@ Dataset控制逻辑可见性，Root控制物理删除：
 - Receipt有序聚合Hash与Manifest一致，缺失/重复ordinal必须失败；
 - Restore在最终MO vectors上重算Hash；AUTO_INCREMENT最大正值readback一致，发布后下一值、
   各整数类型上限和overflow行为正确；
-- `VERIFYING -> PUBLISHING`后、final txn创建前crash；隐藏身份清理与迟到发布竞争；
+- 最终发布事务在Attempt CAS、SetOffset、Rename、DONE和lease释放各点crash/response lost；
 - target映射到staging table ID、两个身份均不匹配和cleanup `ErrTxnUnknown`均fail closed；
 - Purge与GET/chunk/publish逐点竞态；
 - 显式Purge遇有效lease返回`RESTORE_IN_PROGRESS`，后台Purge不等待并延迟重试；

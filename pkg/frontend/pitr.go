@@ -288,6 +288,8 @@ func doCreatePitr(ctx context.Context, ses *Session, stmt *tree.CreatePitr) (err
 		isDup          bool
 		erArray        []ExecResult
 		newUUid        uuid.UUID
+		scopeAccountID uint32
+		scopeObjectID  uint64
 	)
 
 	bh := ses.GetBackgroundExec(ctx)
@@ -311,6 +313,9 @@ func doCreatePitr(ctx context.Context, ses *Session, stmt *tree.CreatePitr) (err
 	// COPY ALTER crosses the same barrier before probing historical owners, so
 	// an empty probe cannot race a PITR whose create time was already chosen.
 	if err = lockDataBranchLineageOwnerPublication(ctx, bh); err != nil {
+		return err
+	}
+	if err = lockLifecycleDependencyPublication(ctx, bh); err != nil {
 		return err
 	}
 
@@ -434,6 +439,7 @@ func doCreatePitr(ctx context.Context, ses *Session, stmt *tree.CreatePitr) (err
 			if rntErr != nil {
 				return rntErr
 			}
+			scopeAccountID = uint32(accountId)
 
 			isDup, err = checkPitrDup(ctx, bh, currentAccount, uint64(createAcc), stmt)
 			if err != nil {
@@ -462,6 +468,7 @@ func doCreatePitr(ctx context.Context, ses *Session, stmt *tree.CreatePitr) (err
 			}
 		} else {
 			// create pitr for current account
+			scopeAccountID = createAcc
 			isDup, err = checkPitrDup(ctx, bh, currentAccount, uint64(createAcc), stmt)
 			if err != nil {
 				return err
@@ -528,6 +535,8 @@ func doCreatePitr(ctx context.Context, ses *Session, stmt *tree.CreatePitr) (err
 		if err != nil {
 			return err
 		}
+		scopeAccountID = createAcc
+		scopeObjectID = dbId
 
 		isDup, err = checkPitrDup(ctx, bh, currentAccount, uint64(createAcc), stmt)
 		if err != nil {
@@ -597,6 +606,8 @@ func doCreatePitr(ctx context.Context, ses *Session, stmt *tree.CreatePitr) (err
 		if err != nil {
 			return err
 		}
+		scopeAccountID = createAcc
+		scopeObjectID = tblId
 
 		isDup, err = checkPitrDup(ctx, bh, currentAccount, uint64(createAcc), stmt)
 		if err != nil {
@@ -624,6 +635,17 @@ func doCreatePitr(ctx context.Context, ses *Session, stmt *tree.CreatePitr) (err
 		if err != nil {
 			return err
 		}
+	}
+
+	if err = rejectLifecycleHistoricalOwnerScope(
+		ctx,
+		bh,
+		pitrLevel.String(),
+		scopeAccountID,
+		scopeObjectID,
+		"CREATE PITR",
+	); err != nil {
+		return err
 	}
 
 	// execute sql

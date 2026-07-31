@@ -4,7 +4,8 @@
 
 交付：
 
-- Lifecycle Catalog upgrade；
+- Lifecycle Catalog bootstrap/upgrade（覆盖已有tenant、当前版本新tenant和system-owned
+  Cleanup Root）；
 - table-level Binding SQL；
 - logical partition table/physical child fail-closed admission；
 - Active Binding registry；
@@ -68,11 +69,13 @@ P0-1/P0-2通过后才能冻结。
 交付：
 
 - unknown Entry在Batch前fail closed；
-- `api.Entry.EntryType=7`、payload field=11的`LifecycleRetireEntry` protobuf和dispatch；
-- disttae workspace的nil-by-default `lifecycleRetireEntry`和`genWriteReqs`追加点；
+- `api.Entry.EntryType=7`、payload field=11的`LifecycleCommitEntry` protobuf和dispatch；
+- disttae workspace的nil-by-default `lifecycleCommitControl`和`genWriteReqs`追加点；
 - 复用`PrecommitWriteCmd.SyncProtectionJobId`，不复制第二个protection字段；
 - Finalizer普通事务；
 - Whole exact source CAS；
+- Whole候选按有界Release Profile批处理（初始64 source/4 GiB，任一先到切分），一批一个
+  Dataset/Root/final transaction；
 - retire entry只携带Data Object，SoftDelete固定`is_tombstone=false`；
 - Dataset/TTL Receipt同事务；
 - rolling upgrade开关；
@@ -120,37 +123,48 @@ Gate F不通过时关闭本路径，TTL Mixed统一Rewrite/Blocked，不阻塞�
 - Manifest format parser/version fail-closed；
 - 串行chunk普通INSERT + Receipt + Attempt进度同事务；
 - Receipt主键`(restore_id, chunk_ordinal)`及不同digest fail-closed；
-- Receipt版本化AUTO_INCREMENT chunk maxima和接管聚合；
+- AUTO_INCREMENT全局最大正值由Manifest保存并经full readback验证；
 - Receipt有序聚合hash/row验证；
 - Chunk事务不更新Hash，最终发布事务一次性写`verified_content_hash`；
-- DDL发布前CAS Attempt状态/lease/进度和隐藏表精确身份；
+- 最终普通事务内CAS `IMPORTING -> PUBLISHING`、lease/进度和隐藏表精确身份；
 - 最终MO vectors canonical hash复核；
 - AUTO_INCREMENT最大正值/目标类型上限复核和同一事务`SetOffset(max)`；
 - DDL发布、Attempt DONE、`verified_content_hash`、SetOffset和Dataset lease清除同一普通事务；
 - 失败清理CAS非DONE Attempt并按隐藏名+database/table ID校验后DROP；
-- PUBLISHING owner丢失后的target/hidden身份对账和cleanup unknown规则；
+- 发布响应未知后的target/hidden身份对账和cleanup unknown规则；
+- SQL重试按`DONE + target名称/物理table ID`识别已发布结果；目标DROP后旧DONE不阻止重建；
 - 发布、deadline cleanup、旧worker和commit response lost并发矩阵；
 - active lease下Purge返回/延迟，lease结束后触发Root；
 - DROP异步清理。
 
 Restore不增加tagged entry。
 
-## 8. Gate H：DDL fence（最后）
+## 8. Gate H：管理路径依赖/DDL fence与升级兼容
 
-顺序：
+交付：
 
-1. 普通Merge/DDL基线测试；
-2. Lifecycle finalizer/DDL测试；
-3. 通用Bug则提Issue并修公共路径；
-4. Lifecycle独有缺口选择`mo_tables`锁或Binding write CAS；
-5. 绑定表按01的Phase 1矩阵fail closed，未绑定表不创建额外元数据；
-6. 所有竞态测试通过。
+1. unknown Lifecycle Entry在Batch解析和TAE mutation前fail closed；
+2. retirement默认关闭，完成CN/TN滚动升级准入后才能开启；
+3. `SET LIFECYCLE`采用`mo_tables -> LIFECYCLE feature row`锁顺序，普通表DDL只复用
+   `mo_tables`锁和索引化Binding lookup；
+4. Snapshot/PITR/Publication/Clone/Branch创建跨同一feature-row barrier并按scope探测
+   Binding，关闭首次Binding空集合竞态；
+5. CDC复用PITR gate；物理Backup在Lifecycle retirement release gate开启期间全局
+   fail closed，其他未实现的历史复制能力显式拒绝；
+6. 绑定表按01的Phase 1矩阵fail closed；DROP TABLE移除目标Binding，DROP DATABASE按
+   database identity补删孤儿Binding，二者都由Cleanup异步收敛外部Payload；
+7. 未绑定表不创建Guard或其他Lifecycle元数据，普通查询/DML/Merge不访问barrier；
+8. finalizer/DDL、SET/dependency create及滚动升级竞态测试通过。
+9. 新集群bootstrap和存量集群upgrade都写入同一个Lifecycle Coordinator cron task；任务
+   在release开关关闭时只收敛已有Cleanup Root并检查开关，不执行Binding扫描或创建新Root。
 
-Gate H前只允许受控无不兼容DDL的退休验证。
+若测试暴露普通Merge/事务/DDL通用Bug，记录公共Issue并复用公共修复，不在Lifecycle新增
+私有事务协议。
 
 ## 9. Gate I：认证与发布
 
 - P0矩阵；
+- 复用MO公共fault injection控制面暴露`tae-object-lifecycle/<point>`稳定故障点，默认关闭；
 - provider认证；
 - 1/10 TiB；
 - 30天soak；

@@ -197,6 +197,15 @@ const (
 
 	MO_CCPR_TABLES = "mo_ccpr_tables"
 	MO_CCPR_DBS    = "mo_ccpr_dbs"
+
+	// Lifecycle Phase 1 metadata. These are new control-plane tables; the
+	// existing mo_tables, mo_columns, and mo_stages layouts remain unchanged.
+	MO_LIFECYCLE_BINDINGS         = "mo_lifecycle_bindings"
+	MO_LIFECYCLE_DATASETS         = "mo_lifecycle_datasets"
+	MO_LIFECYCLE_TTL_RECEIPTS     = "mo_lifecycle_ttl_receipts"
+	MO_LIFECYCLE_CLEANUP_ROOTS    = "mo_lifecycle_cleanup_roots"
+	MO_LIFECYCLE_RESTORE_ATTEMPTS = "mo_lifecycle_restore_attempts"
+	MO_LIFECYCLE_RESTORE_CHUNKS   = "mo_lifecycle_restore_chunks"
 )
 
 func IsSystemTable(id uint64) bool {

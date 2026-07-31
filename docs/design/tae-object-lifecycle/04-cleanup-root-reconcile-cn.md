@@ -84,6 +84,17 @@ upper bound；不适用于当前mode的namespace字段为NULL：
 | ARCHIVE_REWRITE | 必须 | 必须 |
 | TTL_REWRITE | 不需要 | 必须 |
 
+Root写入时校验namespace还不够。Sweeper在任何`LIST`/`DELETE`之前必须重新校验从Catalog
+读回的Root：prefix包含精确`root_id/attempt_id`，mode与Archive/TAE namespace组合一致，
+完成temporary cleanup的Root不再携带segment/booking所有权。持久行缺失、损坏或越界时
+fail closed并告警，绝不能把Catalog损坏扩大成跨prefix删除。
+
+Root的`mode`描述本attempt已经创建过的物理namespace和清理责任，不等同于最终thin
+entry的`retire_mode`。例如Archive或TTL Mixed Rewrite分类后发现`live_rows=0`时，thin
+entry可以按Whole退休源Object，但Root仍分别保持`ARCHIVE_REWRITE`或`TTL_REWRITE`：
+该attempt已经预留过TAE segment/booking namespace，必须按Rewrite规则收敛临时对象，
+不能改写为无Root的直接Whole路径。
+
 单个文件key可在Manifest中枚举；Manifest尚未生成时prefix LIST兜底。
 
 ## 4. 不可变写入
@@ -115,9 +126,14 @@ Root `VERIFIED -> FINALIZING`使用
 - PUBLISHED：Archive由Dataset/Purge事件驱动，TTL Rewrite可接管临时资源清理；
 - DELETE_PENDING/DELETING：Sweeper lease可接管，Delete幂等。
 
-所有worker在Provider/Rewrite操作间续约`worker_lease_deadline`，单次I/O不得超过发布配置的
-最大I/O deadline。lease过期后只有状态允许的清理动作可以接管，不能继续Upload或Final。
-进入DELETE_PENDING后仍要等待最大I/O deadline并执行迟到PUT quiescence协议。
+首期不延长attempt：`worker_lease_deadline`、SyncProtection `valid_ts`和
+`final_prepare_deadline`使用同一个创建时冻结的绝对deadline，整个Reader、Provider、
+Rewrite和finalization context都受它约束。任一步到期都停止当前attempt，不在原Root上续跑。
+deadline过期后只有状态允许的清理动作可以接管，不能继续Upload或Final。进入
+DELETE_PENDING后仍要等待最大I/O deadline并执行迟到PUT quiescence协议。具体实现中，
+`cleanup_after=max(root创建时间+cleanup_grace, worker_lease_deadline)`；因此即使
+attempt在Root创建后立即失败，Sweeper也不会在该attempt仍可能完成Provider/FileService
+副作用的绝对deadline之前开始清理。
 
 ## 6. 提交结果解释顺序
 
@@ -132,7 +148,13 @@ Root `VERIFIED -> FINALIZING`使用
    -> COMMIT_UNKNOWN
 ```
 
-不能仅凭source已Drop推断成功，也不能仅凭EOB推断失败。
+不能仅凭source已Drop推断成功，也不能仅凭EOB、owner DROP或worker deadline推断失败。
+在普通MO没有权威事务终态查询时，即使owner已经不存在也必须继续保持`COMMIT_UNKNOWN`；
+UNKNOWN硬上限暂停新的Lifecycle工作，不能以删除可能已经交给TAE的live Object来换取自动收敛。
+
+Lifecycle自己发起的Root状态放弃、临时文件清理、FileService Close和事务Rollback都使用
+`WithoutCancel(parent)+固定timeout`。这样客户端或任务context取消后仍有一次有界收尾机会，
+但不会产生后台无限等待。
 
 ## 7. PUBLISHED到Purge
 
@@ -201,8 +223,9 @@ Provider权限、credential或网络错误：
 - 指数退避但有最大间隔；
 - 记录last_error和失败次数；
 - credential handle可重新解析轮换凭据；
-- backlog rows/bytes达到hard cap暂停所有会创建Root的新任务，包括Archive Whole/Rewrite和
-  TTL Rewrite；不把已有Root/Sweeper停掉；
+- 未进入`CLEANED`的active Root数量达到发布hard cap时，暂停所有会创建Root的新任务，包括
+  Archive Whole/Rewrite和TTL Rewrite；bytes由单Root认证上限乘以Root数量形成保守上界并
+  持续观测，不增加逐对象或分布式bytes Slot；不把已有Root/Sweeper停掉；
 - 不阻塞普通DROP和普通MO。
 
 ## 11. 元数据GC

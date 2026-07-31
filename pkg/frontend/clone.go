@@ -713,6 +713,19 @@ func handleCloneTable(
 		err = moerr.NewInternalErrorNoCtxf("only sys can clone table to another account")
 		return
 	}
+	if err = lockLifecycleDependencyPublication(reqCtx, bh); err != nil {
+		return
+	}
+	if err = rejectLifecycleBindingByName(
+		reqCtx,
+		bh,
+		fromAccountId,
+		stmt.SrcTable.SchemaName.String(),
+		stmt.SrcTable.ObjectName.String(),
+		"CLONE TABLE",
+	); err != nil {
+		return
+	}
 	if err = lockNamedDataBranchCloneSnapshot(
 		defines.AttachAccountId(reqCtx, fromAccountId), bh, snapshot,
 	); err != nil {
@@ -877,6 +890,19 @@ func handleCloneDatabaseWithSource(
 	fromAccountID := source.opAccountId
 	if source.snapshot != nil && source.snapshot.Tenant != nil {
 		fromAccountID = source.snapshot.Tenant.TenantID
+	}
+	if err = lockLifecycleDependencyPublication(reqCtx, bh); err != nil {
+		return
+	}
+	if err = rejectLifecycleBindingByName(
+		reqCtx,
+		bh,
+		fromAccountID,
+		source.srcResolveDBName,
+		"",
+		"CLONE DATABASE",
+	); err != nil {
+		return
 	}
 	if err = lockNamedDataBranchCloneSnapshot(
 		defines.AttachAccountId(reqCtx, fromAccountID), bh, source.snapshot,

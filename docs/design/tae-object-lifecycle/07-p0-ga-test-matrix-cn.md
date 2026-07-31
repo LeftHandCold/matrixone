@@ -17,6 +17,10 @@ Lifecycle自身P0。全部通过前不能宣布协议完成或Commercial GA。
 - live Object commit后只归TAE。
 - Archive Rewrite提交后只清booking、保留Payload；
 - TTL Rewrite提交后清booking但不删除TAE已接管live Object。
+- Archive/TTL Rewrite退化为Whole retire时，commit entry不携带created Object/booking，
+  但Root mode仍为`ARCHIVE_REWRITE`/`TTL_REWRITE`并清理本attempt预留过的TAE namespace；
+- Archive和TTL都覆盖protection后、source read前、final commit前和final commit后的确定性
+  故障点；pre-commit故障不能退休source，post-commit故障不能把已发布Owner转入清理。
 
 故障点覆盖每个Root状态进入前后。
 
@@ -103,19 +107,21 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - lease终止或deadline后，Purge才能进入`DELETE_PENDING`；
 - 一旦进入`DELETE_PENDING`，旧worker的GET/chunk必须失败，且不存在“旧lease继续读”；
 - Restore最终DDL事务和Purge同时到达，验证双方CAS同一Dataset行且只能一方提交；
-- Restore发布事务必须校验Attempt PUBLISHING、lease、Chunk/row进度、
+- Restore发布事务必须校验Attempt IMPORTING、lease、Chunk/row进度、
   `verified_content_hash IS NULL`和隐藏表精确身份；
-- RUNNING→VERIFYING、VERIFYING→PUBLISHING及最终发布前后逐点crash和接管；
+- 最终发布事务在IMPORTING CAS、SetOffset、Rename、DONE和lease释放前后逐点crash；
 - Restore发布成功必须同时清除lease、写`verified_content_hash`并把Attempt置为DONE；
 - 发布事务与deadline cleanup、旧worker cleanup逐点竞态，最终只能一方提交；
 - Rename后table ID保持不变，旧worker不得按ID删除正式目标表；
 - cleanup只能CAS非DONE Attempt，并校验隐藏名、database ID和table ID后按名称DROP；
 - cleanup CAS失败、目标名映射同一table ID、hidden identity不匹配和commit response lost；
-- `VERIFYING -> PUBLISHING`提交后、final transaction创建前CN crash；
-- PUBLISHING接管时target映射同一table ID停止清理，hidden精确映射时与迟到发布普通WW竞争；
-- PUBLISHING时target/hidden均不匹配，或cleanup `ErrTxnUnknown`结果尚不可判定时fail closed，
+- `PUBLISHING`不得由独立事务提交；rollback后外部仍为IMPORTING，commit后直接为DONE；
+- 发布响应未知时target映射同一table ID停止清理，hidden精确映射时与迟到发布普通WW竞争；
+- SQL重试发现`DONE + target名称/物理table ID`精确匹配时幂等成功，不创建第二个Attempt；
+  目标表DROP后旧DONE不再匹配，允许以后重新Restore；
+- in-doubt时target/hidden均不匹配，或cleanup `ErrTxnUnknown`结果尚不可判定时fail closed，
   不盲目DROP；
-- cleanup unknown后分别覆盖`ABORTED+hidden absent`、`nonterminal+hidden exact`、
+- cleanup unknown后分别覆盖`FAILED+hidden absent`、`nonterminal+hidden exact`、
   `DONE/target published`和矛盾组合；
 - DROP不等待lease或Provider，后台按相同CAS收敛。
 
@@ -168,7 +174,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 
 - Manifest按AUTO_INCREMENT列保存`has_positive_value/max_positive_value`，full
   readback从最终MO逻辑值复核；
-- 每个Chunk Receipt保存该Chunk的版本化列maxima；接管者按ordinal聚合后必须等于Manifest；
+- Manifest保存全局maxima并由Archive full readback从最终MO逻辑值验证；
 - Chunk提交后、最终发布前crash不能依赖进程内max，也不能重扫TB级隐藏表/Payload；
 - Restore Chunk在最终MO vectors上复核Hash和max后INSERT；
 - Rename/DONE事务先验证目标类型上限，再使用同一`TxnOperator`调用现有`SetOffset(max)`；
@@ -201,6 +207,8 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 ## 7. Object与Reader
 
 - Whole单/多源，任一source冲突全abort；
+- Whole在64 source/4 GiB初始Release Profile上按任一先到切分；一个批次只生成一个
+  Dataset/Root，不能回退为一Object一Dataset；
 - Mixed完整物理Block；
 - D/E/L随机交错属性测试；
 - all D、all E、all L；
@@ -240,7 +248,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - LogTxnEntry前后逐点失败，runtime exactly-once释放且Root文件不被txn rollback删除；
 - WAL replay后source/new Object可见性；
 - GC只删DropIntent源文件；
-- SyncProtection注册后重Stat、续租失败、TN restart。
+- SyncProtection注册后重Stat、attempt绝对deadline到期、TN restart。
 - Data source set与Tombstone set职责分离，但Reader输入和Protection identities必须来自同一
   Tombstone选择结果；注册后重新Stat证明两类exact文件都被保护；
 
@@ -287,7 +295,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - Stage unavailable；
 - unsupported schema version。
 
-## 13. DDL最后Gate
+## 13. 管理路径依赖与DDL Gate
 
 先测普通MO基线，再测Lifecycle：
 
@@ -296,8 +304,19 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - SET/UNSET Lifecycle；
 - schema digest变化；
 - finalizer与DDL同时到达。
+- 首次SET与Snapshot/PITR/Publication/Clone/Branch创建同时到达；
+- pessimistic/optimistic事务下`SET LIFECYCLE`的`mo_tables -> feature row`锁顺序，以及
+  普通表DDL不取得feature row；
+- feature关闭时只允许历史Cleanup Root的有界reconcile/sweep，不启动Binding、Restore或
+  数据路径；未绑定表的普通查询/DML/Merge不访问Lifecycle元数据，可能冲突的管理DDL仍只走
+  一次有界控制面检查；
+- 重复Coordinator tick不排队；Root放弃、Rollback、Close和临时清理在父context取消后仍
+  使用独立固定deadline终止；
+- 新CN→旧TN、旧CN→新TN、滚动升级、关闭retirement后降级。
 
-验收必须证明真实锁或WW conflict，不能以“最后读取值正确”代替互斥。
+验收必须证明真实锁或WW conflict，不能以“最后读取值正确”代替互斥。CDC使用PITR
+依赖门禁；Lifecycle retirement gate开启时物理Backup必须全局拒绝，DR不能静默恢复
+不完整历史。
 
 ## 14. 规模
 

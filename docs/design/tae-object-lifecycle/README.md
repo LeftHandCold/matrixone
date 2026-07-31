@@ -20,7 +20,7 @@
 
 ## 2. 权威文档
 
-本目录采用“一份索引 + 一份总规范 + 一份需求追踪矩阵 + 八份单一职责子设计”，
+本目录采用“一份索引 + 一份总规范 + 一份需求追踪矩阵 + 九份单一职责子设计”，
 恢复开发所需细节，但不恢复旧重型协议：
 
 | 文档 | 唯一职责 |
@@ -36,6 +36,7 @@
 | [06-observability-capacity-cn.md](06-observability-capacity-cn.md) | 配置、指标、告警、隔离和放量 |
 | [07-p0-ga-test-matrix-cn.md](07-p0-ga-test-matrix-cn.md) | 基础安全门禁、协议P0全集、全路径故障测试和GA门禁 |
 | [08-implementation-plan-cn.md](08-implementation-plan-cn.md) | Gate、包边界、PR边界和Definition of Done |
+| [09-commercial-ga-runbook-cn.md](09-commercial-ga-runbook-cn.md) | Release gate、kill switch、故障处置、1/10 TiB与30天soak证据 |
 
 子设计不得复制另一子设计的第二份状态机。上位概要负责产品效果；ADR只记录决策理由；
 行业调研和Review输入都不是实现规范。
@@ -48,7 +49,7 @@
 - `NOT NULL DATE/DATETIME/TIMESTAMP` Lifecycle 列；
 - TTL Whole Object；
 - Archive Whole Object；
-- TTL 小 Mixed 的有界 `Relation.Delete`；
+- TTL 小 Mixed 的有界 `Relation.Delete`（可关闭优化，首个发布默认关闭）；
 - Archive Mixed 和中/大 TTL Mixed 的单源 Object Rewrite；
 - Parquet/ZSTD direct-readable Archive；
 - Provider full readback；
@@ -90,8 +91,9 @@
        |     -> Parquet/ZSTD + full readback
        |     -> Dataset + exact Object retire，同一事务
        |
-       +-- TTL小Mixed
-       |     -> 有界SI事务
+       +-- TTL小Mixed（可关闭优化，首个发布默认关闭）
+       |     -> 未单独通过Gate F认证时统一进入单源Rewrite或Blocked
+       |     -> 认证启用后才允许有界SI事务
        |     -> RowID/delete key + Relation.Delete
        |     -> TTL Receipt，同一事务
        |
@@ -107,6 +109,11 @@
 外部临时文件 -> Cleanup Root和Sweeper负责
 Restore -> Manifest校验 -> 隐藏staging新表 -> 普通INSERT -> 原子改名发布
 ```
+
+Whole不是“一Object一Dataset”。首个Release Profile在同一有界Metadata page内最多合并
+64个Whole source、累计最多4 GiB（任一先到即切分），一个batch只创建一个Dataset/Root并
+对完整source set做exact CAS；Mixed始终严格单source。该上限可在1/10 TiB认证后下调，
+不会成为Manifest持久格式的一部分。
 
 Lifecycle 不先过滤出 L 再拼 Batch，也不自己计算 destination mapping。
 `DoMergeAndWrite` 是存活行位置映射的唯一 producer。
@@ -190,8 +197,11 @@ database ID和table ID，禁止仅凭Rename后仍不变的table ID执行DROP。
 
 Dataset lease、隐藏表CREATE和Restore Attempt INSERT必须在第一个普通事务中原子提交。
 AUTO_INCREMENT归档最大正值写入Manifest并经full readback验证；最终Rename/DONE事务先
-校验目标类型上限，再复用现有`incrservice.SetOffset(max, txnOp)`推进新表水位。`PUBLISHING`后owner丢失按目标名/
-隐藏名与table ID的一致性身份决定停止清理或参与普通事务DROP竞争，不增加publish Journal。
+校验目标类型上限，再复用现有`incrservice.SetOffset(max, txnOp)`推进新表水位。
+`PUBLISHING`只允许作为最终普通事务内部的CAS中间值，不单独提交；owner丢失或响应未知时
+按目标名/隐藏名与table ID的一致性身份决定停止清理或参与普通事务DROP竞争，不增加
+publish Journal。SQL重试若发现`DONE` Attempt的target名称仍精确映射原
+`staging_table_id`，直接按发布成功收敛；目标表已经DROP时旧DONE不阻止同名新Restore。
 
 ### I-10 Ordinary MO stays ordinary
 
@@ -203,8 +213,11 @@ AUTO_INCREMENT归档最大正值写入Manifest并经full readback验证；最终
 - 普通 Merge/WAL/Replay/GC算法不变；
 - 不访问 Stage、Dataset、Root或Lifecycle admission。
 
-feature开启时，可能与Lifecycle冲突的DDL允许执行一次索引化Binding存在性查询；feature
-完全关闭时连该DDL查询也没有。这个控制面查询不能扩散到普通查询、DML或Merge热路径。
+可能与Lifecycle冲突的表级DDL只复用既有`mo_tables`行锁并执行一次索引化Binding
+存在性查询，不取得集群级feature-row写锁。release gate关闭后Binding仍可能处于
+PAUSED/BLOCKED并需要UNSET或DROP收敛，因此不为“feature off”另建CN缓存或第二套开关
+状态。Snapshot/PITR/Publication等scope级空集合发布才跨既有feature-row barrier。上述
+低频控制面检查不能扩散到普通查询、DML或Merge热路径。
 
 ### I-11 All growth is bounded
 
@@ -215,20 +228,28 @@ expired写放大和账户/集群固定窗口source bytes预算限制；Restore�
 单请求硬上限和active-coexistence门禁约束资源，不增加TN Lifecycle专用permit或比普通
 Merge更强的资源协议。
 
-### I-12 DDL fence is retained but implemented last
+### I-12 DDL fence is management-path only
 
-DDL fence 是 Commercial GA 的防御性合同，不是 Reader、Export-only、Whole/Mixed Rewrite
-原型的前置：
+DDL fence 不进入查询、DML或Merge热路径。实现只作用于`SET LIFECYCLE`和可能创建不兼容
+依赖/改变表身份的管理操作：
 
-1. 先测试普通 MO Merge/Object mutation 与 DROP/TRUNCATE/ALTER 的既有并发语义；
-2. 再测试 Lifecycle finalization 与 Binding/schema/physical table变化；
-3. 若证明是普通 MO 通用 Bug，提公共 Issue并修复公共路径，Lifecycle直接复用；
-4. 若只是 Lifecycle 的外部归档语义，才实现绑定表专用的薄 fence：
-   复用现有 `mo_tables` 行锁，重新校验 Binding generation、physical table和schema；
-5. 不引入 Feature Guard表、active-attempt锁或 DDL 专用分布式状态机。
+1. 表DDL与`SET LIFECYCLE`复用现有`mo_tables`行锁；表DDL随后只做索引化Binding
+   lookup或DROP detach，不写feature-row；
+2. `SET LIFECYCLE`在持有表锁后更新一次system account中已经存在的`LIFECYCLE`
+   `mo_feature_registry`行，关闭与scope级依赖发布的首次Binding空集合竞态；
+3. Snapshot、PITR、Publication和Clone/Branch创建跨同一个feature-row barrier，再按索引
+   查询目标scope中是否存在Binding；
+4. CDC依赖PITR，因此复用PITR准入；物理Backup不是Archive-aware，Lifecycle retirement
+   release gate开启期间全局fail closed，关闭并drain Lifecycle后才能执行；
+5. 已绑定表的TRUNCATE、ALTER、CREATE INDEX等不兼容DDL fail closed；DROP TABLE在同一
+   `mo_tables`锁事务中删除Binding，DROP DATABASE在原数据库DDL事务中按database identity
+   补删孤儿Binding；外部Payload按Cleanup Root异步回收；
+6. Finalizer仍校验Binding generation、physical table、schema和exact source identity。
 
-在该 Gate 完成前，受控 P0 可以在“无并发不兼容 DDL”环境运行；Commercial GA 不能跳过
-验证结果和最终决策。
+这个barrier复用已有单行，不为未绑定表创建Guard/Candidate/其他Catalog行，也不进入
+普通表级DDL。feature关闭时跳过Binding/Restore调度和数据路径，但历史Cleanup Root仍由
+Coordinator有界reconcile/sweep，避免关闭开关造成外部对象泄漏；仅scope级依赖发布和
+`SET LIFECYCLE`使用屏障，普通查询、DML、Merge、checkpoint、GC和logtail永远不访问它。
 
 ## 6. 最小权威数据
 
@@ -277,7 +298,7 @@ Gate D  Whole exact retire + thin commit-control
 Gate E  单源Mixed Rewrite + post-S DELETE
 Gate F  TTL小Mixed DELETE（可关闭的性能优化）
 Gate G  Restore/Purge lease
-Gate H  DDL fence验证与最小实现（最后）
+Gate H  管理路径依赖/DDL fence与滚动升级fail-closed
 Gate I  1/10 TiB、30天soak、50→1000表放量
 ```
 

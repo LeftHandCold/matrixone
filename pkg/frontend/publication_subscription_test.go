@@ -97,6 +97,9 @@ func Test_doCreatePublication(t *testing.T) {
 		// show tables
 		bh.EXPECT().Exec(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 		bh.EXPECT().GetExecResultSet().Return(mockedTblResults(ctrl))
+		// reject Lifecycle bindings in the publication scope
+		bh.EXPECT().Exec(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		bh.EXPECT().GetExecResultSet().Return(mockedSubInfoResults(ctrl))
 		// insert into mo_pubs
 		bh.EXPECT().Exec(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 		// getSubInfosFromPub

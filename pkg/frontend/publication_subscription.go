@@ -259,6 +259,10 @@ func createPublication(ctx context.Context, bh BackgroundExec, cp *tree.CreatePu
 		accountNamesStr string
 	)
 
+	if err = lockLifecycleDependencyPublication(ctx, bh); err != nil {
+		return err
+	}
+
 	accIdInfoMap, accNameInfoMap, err := getAccounts(ctx, bh, false)
 	if err != nil {
 		return
@@ -355,6 +359,19 @@ func createPublication(ctx context.Context, bh BackgroundExec, cp *tree.CreatePu
 		if tablesStr, err = genPubTablesStr(ctx, bh, dbName, cp.Table); err != nil {
 			return
 		}
+	}
+	sourceAccountID, err := defines.GetAccountId(ctx)
+	if err != nil {
+		return err
+	}
+	if err = rejectLifecyclePublicationScope(
+		ctx,
+		bh,
+		sourceAccountID,
+		dbId,
+		cp.Table,
+	); err != nil {
+		return err
 	}
 
 	sql, err = getSqlForInsertIntoMoPubs(ctx, accountId, accountName, pubName, dbName, dbId, len(cp.Table) == 0, tablesStr, accountNamesStr, comment, true)

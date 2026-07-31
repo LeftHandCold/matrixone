@@ -31,6 +31,14 @@ func doBackup(ctx context.Context, ses FeSession, bs *tree.BackupStart) error {
 	var (
 		err error
 	)
+	background := ses.GetBackgroundExec(ctx)
+	defer background.Close()
+	if err = rejectBackupWhenLifecycleRetirementEnabled(
+		ctx,
+		background,
+	); err != nil {
+		return err
+	}
 	conf := &backup.Config{
 		HAkeeper: getPu(ses.GetService()).HAKeeperClient,
 		Metas:    backup.NewMetas(),
