@@ -338,7 +338,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - Stage unavailable；
 - unsupported schema version。
 
-## 13. 管理路径依赖与DDL Gate
+## 13. 管理路径共存边界与DDL Gate
 
 先测普通MO基线，再测Lifecycle：
 
@@ -346,11 +346,18 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - ADD/DROP/RENAME Lifecycle列；
 - SET/UNSET Lifecycle；
 - schema digest变化；
-- finalizer与DDL同时到达。
-- 首次SET与Snapshot/PITR/Publication/Clone/Branch创建同时到达；
-- 已有`database_id=0`账户级Publication时SET必须拒绝；
-- 当前生产悲观事务下`SET LIFECYCLE`的`mo_tables -> feature row`锁顺序，以及普通表DDL
-  不取得feature row；
+- finalizer与DDL同时到达；
+- 当前生产悲观事务下`SET LIFECYCLE`的`mo_tables -> feature row`锁顺序只串行Lifecycle
+  自身控制面，普通表DDL以及Snapshot/PITR/Clone/Branch/Publication不取得feature row；
+- 退休前创建的Snapshot能读取旧Object，退休后创建的Snapshot只看到退休后的活动表；
+  PITR窗口覆盖退休CommitTS时旧Object受现有GC引用保护，引用到期后普通GC可以回收；
+- Lifecycle Archive scope的Snapshot/PITR Restore在任何破坏性Restore事务提交前拒绝；
+  `ARCHIVE` Binding、非`PURGED` Dataset、非`CLEANED`的`ARCHIVE_*` Root三类状态分别
+  覆盖；测试执行前关闭并drain Lifecycle数据任务；
+- Clone/Data Branch与finalizer并发时，目标得到一个普通MVCC一致活动快照，且不产生目标
+  Binding、Dataset或Payload引用；
+- 普通同集群Publication/Subscription与finalizer并发时，旧查询保持原snapshot，新查询看到
+  发布者退休后的活动状态；账户级`DATABASE *` Publication不阻止SET；
 - feature关闭时只允许历史Cleanup Root的有界reconcile/sweep、过期Restore隐藏表清理和
   终态元数据压缩，不启动Binding调度、新Restore或数据路径；未绑定表的普通查询/DML/Merge
   不访问Lifecycle元数据，可能冲突的管理DDL仍只走一次有界控制面检查；
@@ -358,11 +365,13 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
   使用独立固定deadline终止；
 - 新CN→旧TN、旧CN→新TN、滚动升级、关闭retirement后降级。
 
-验收必须证明真实锁或WW conflict，不能以“最后读取值正确”代替互斥。CDC不进入
-Phase 1 Lifecycle准入或DDL fence，其下游完整性明确不在本功能SLA内。Lifecycle不得修改
-或阻断普通物理Backup；回归只验证Backup路径没有新增Lifecycle Catalog扫描或准入条件。
-Backup不复制外部Archive Payload，恢复后的活动数据不包含此前已退休历史，DR不能把这种
-活动数据恢复宣传为完整历史恢复。
+表级DDL/finalizer验收必须证明真实锁或WW conflict，不能以“最后读取值正确”代替互斥；
+周边共存路径则必须证明没有Lifecycle feature-row访问或全局管理锁。CDC/CCPR不进入Phase 1
+Lifecycle准入或DDL fence，其下游完整性明确不在本功能SLA内。Lifecycle不得修改或阻断
+普通物理Backup创建；回归验证Backup路径没有新增Lifecycle Catalog扫描或准入条件。
+物理Backup可能恢复Lifecycle Catalog却不包含外部Payload，该Restore组合明确unsupported；
+在独立兼容PR完成前，认证记录必须说明恢复环境在任何Lifecycle tick前隔离任务和原Archive
+删除凭据，不能把`enabled=false`写成充分隔离条件。
 
 ## 14. 规模
 

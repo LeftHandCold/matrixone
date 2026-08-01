@@ -346,13 +346,31 @@ DROP TABLE/DATABASE/ACCOUNT沿用普通MO业务语义：
 - Restore进行中遇DROP owner：Phase 1立即停止新GET/chunk、abort Attempt并按本节身份事务
   清理隐藏表。
 
-## 10. Backup/PITR/DR
+## 10. Snapshot/PITR、Clone/Publication与Backup/DR
 
-Lifecycle绑定表的普通Snapshot/PITR/Clone/Branch在Phase 1准入时拒绝。Lifecycle不修改、
-扫描或阻断普通物理Backup；Backup继续按MO现有语义备份活动数据，不复制Stage中的外部
-Archive Payload。由该Backup恢复出的活动表不包含备份前已经退休的历史行，也不承诺
-Archive Catalog、Stage或`RESTORE ARCHIVE`可用。DR目标没有Archive能力时必须明确返回
-unsupported，不能把活动数据恢复宣传为完整历史恢复。
+Snapshot/PITR创建和保留允许与Lifecycle共存。Lifecycle退休沿用普通Object create/drop TS，
+退休前的Snapshot或覆盖退休时间的PITR由现有MVCC/GC保护旧Object；引用到期后仍由普通GC
+回收。Lifecycle不增加Snapshot/PITR专用引用、WAL或Replay协议。
+
+Phase 1不支持Snapshot/PITR Restore Lifecycle Archive scope。源或目标scope只要存在
+`ARCHIVE` Binding、非`PURGED` Dataset或非`CLEANED`的`ARCHIVE_*` Root，Restore必须在
+任何破坏性Restore事务提交前fail closed；不跨完整Restore持有Lifecycle锁，也不尝试恢复
+外部Payload。该只读检查不与并发`SET LIFECYCLE`/Archive finalizer建立新线性化协议，
+Phase 1运维必须先关闭并drain Lifecycle数据任务，再执行Snapshot/PITR Restore。
+
+Clone/Data Branch只复制目标时间点的活动数据。目标表使用普通新表身份，不继承Binding、
+Dataset或Archive Payload；用户需要时对新表重新执行`SET LIFECYCLE`。普通同集群
+Publication/Subscription直接读取发布者物理表的活动视图，可以与Lifecycle共存；旧查询
+继续服从其普通MVCC snapshot，新查询看到退休后的活动状态。CDC/CCPR属于另一条复制链路，
+Phase 1不接入、不修改，也不承诺其下游收到Object退休对应的逐行DELETE。
+
+Lifecycle不修改、扫描或阻断普通物理Backup创建。物理Backup可能包含Binding、Dataset、
+Cleanup Root、Stage和release gate等Catalog状态，但不会复制Stage中的外部Archive Payload。
+因此含Lifecycle状态的物理Backup Restore在Phase 1 unsupported：恢复环境不得自动启动
+Lifecycle Coordinator/Cleanup Sweeper，也不得继续持有原Archive namespace的删除权限；
+这两项隔离必须在任何Lifecycle tick前完成。仅设置`enabled=false`不足，因为正常集群在gate
+关闭后仍会收敛历史Root。完整Backup/DR兼容由后续独立设计实现，不能把这种活动数据恢复
+宣传为完整历史恢复。
 
 ## 11. Purge与Root一致性
 

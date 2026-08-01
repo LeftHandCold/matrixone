@@ -17,11 +17,9 @@ package frontend
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
-	"github.com/matrixorigin/matrixone/pkg/common/pubsub"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 )
@@ -37,11 +35,11 @@ func ignoreMissingLifecycleCatalog(err error) error {
 	return err
 }
 
-// lockLifecycleDependencyPublication serializes the rare Lifecycle Binding
-// control operation with Snapshot/PITR/Publication/Clone publication. It uses
-// the bootstrap-created feature row as an empty-set write barrier and never
-// enters ordinary query, DML, or Merge paths.
-func lockLifecycleDependencyPublication(
+// lockLifecycleFeatureConfiguration serializes SET LIFECYCLE with changes to
+// the Lifecycle release gate and deployment certification. It is deliberately
+// not used by Snapshot, PITR, Clone, Branch, Publication, ordinary DDL, DML,
+// query, or Merge paths.
+func lockLifecycleFeatureConfiguration(
 	ctx context.Context,
 	background BackgroundExec,
 ) error {
@@ -53,303 +51,269 @@ func lockLifecycleDependencyPublication(
 	)
 }
 
-// runLifecycleCloneDependencyFence keeps Data Branch Clone on the same lock
-// order as SET LIFECYCLE: source mo_tables row(s), feature-row publication
-// barrier, then the Binding probe. Ordinary Clone does not request the source
-// row lock, so its behavior is unchanged.
-func runLifecycleCloneDependencyFence(
-	lockSource func() error,
-	lockPublication func() error,
-	probeBinding func() error,
-) error {
-	if err := lockSource(); err != nil {
-		return err
-	}
-	if err := lockPublication(); err != nil {
-		return err
-	}
-	return probeBinding()
+// lifecycleArchiveRestoreScope describes one source or target scope checked by
+// Snapshot/PITR restore. snapshotTS == 0 means the current Catalog. The check
+// is Archive-only: TTL state has no external payload and does not make restore
+// incomplete.
+type lifecycleArchiveRestoreScope struct {
+	level        tree.RestoreLevel
+	accountID    uint32
+	databaseName string
+	tableName    string
+	snapshotTS   int64
 }
 
-func rejectLifecyclePublicationScope(
-	ctx context.Context,
-	background BackgroundExec,
-	accountID uint32,
-	databaseID uint64,
-	tableNames tree.TableNames,
-) error {
-	names := make([]string, 0, len(tableNames))
-	for _, tableName := range tableNames {
-		if tableName == nil {
-			return moerr.NewInvalidInput(
-				ctx,
-				"CREATE PUBLICATION contains an empty table identity",
+type lifecycleArchiveRestoreProbe struct {
+	accountID uint32
+	sql       string
+}
+
+func lifecycleArchiveRestoreProbes(
+	scope lifecycleArchiveRestoreScope,
+) ([]lifecycleArchiveRestoreProbe, error) {
+	if scope.level == tree.RESTORELEVELCLUSTER {
+		return nil, moerr.NewInvalidInputNoCtx(
+			"cluster Lifecycle Archive restore scope must be expanded by account",
+		)
+	}
+
+	timeTravel := ""
+	if scope.snapshotTS != 0 {
+		timeTravel = fmt.Sprintf(" {MO_TS = %d}", scope.snapshotTS)
+	}
+	tablePredicate, bindingPredicate, err := lifecycleArchiveRestorePredicates(
+		scope,
+		timeTravel,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	tenantPrefix := fmt.Sprintf("account_id=%d", scope.accountID)
+	rootPrefix := fmt.Sprintf("owner_account_id=%d", scope.accountID)
+	if bindingPredicate != "" {
+		bindingPredicate = " and " + bindingPredicate
+	}
+	if tablePredicate != "" {
+		tablePredicate = " and " + tablePredicate
+	}
+
+	return []lifecycleArchiveRestoreProbe{
+		{
+			accountID: scope.accountID,
+			sql: fmt.Sprintf(
+				`select binding_id from mo_catalog.mo_lifecycle_bindings%s
+where %s and action='ARCHIVE' and state in ('ACTIVE','PAUSED','BLOCKED')%s limit 1`,
+				timeTravel,
+				tenantPrefix,
+				bindingPredicate,
+			),
+		},
+		{
+			accountID: scope.accountID,
+			sql: fmt.Sprintf(
+				`select dataset_id from mo_catalog.mo_lifecycle_datasets%s
+where %s and state<>'PURGED'%s limit 1`,
+				timeTravel,
+				tenantPrefix,
+				tablePredicate,
+			),
+		},
+		{
+			accountID: catalog.System_Account,
+			sql: fmt.Sprintf(
+				`select root_id from mo_catalog.mo_lifecycle_cleanup_roots%s
+where %s and mode in ('ARCHIVE_WHOLE','ARCHIVE_REWRITE') and state<>'CLEANED'%s limit 1`,
+				timeTravel,
+				rootPrefix,
+				tablePredicate,
+			),
+		},
+	}, nil
+}
+
+func lifecycleArchiveRestorePredicates(
+	scope lifecycleArchiveRestoreScope,
+	timeTravel string,
+) (tablePredicate string, bindingPredicate string, err error) {
+	switch scope.level {
+	case tree.RESTORELEVELACCOUNT:
+		return "", "", nil
+
+	case tree.RESTORELEVELDATABASE:
+		if scope.databaseName == "" {
+			return "", "", moerr.NewInvalidInputNoCtx(
+				"database restore scope has no database name",
 			)
 		}
-		names = append(names, tableName.ObjectName.String())
-	}
-	return rejectLifecyclePublicationTableNames(
-		ctx,
-		background,
-		accountID,
-		databaseID,
-		names,
-		"CREATE PUBLICATION",
-	)
-}
-
-func rejectLifecyclePublicationTableNames(
-	ctx context.Context,
-	background BackgroundExec,
-	accountID uint32,
-	databaseID uint64,
-	tableNames []string,
-	operation string,
-) error {
-	if len(tableNames) == 0 {
-		return rejectLifecycleBindingInScope(
-			ctx,
-			background,
-			accountID,
-			databaseID,
-			0,
-			operation,
+		predicate := fmt.Sprintf(
+			`logical_table_id in (select rel_logical_id from mo_catalog.mo_tables%s
+where account_id=%d and reldatabase=%s)`,
+			timeTravel,
+			scope.accountID,
+			quoteSQLStringLiteral(scope.databaseName),
 		)
-	}
-	quoted := make([]string, 0, len(tableNames))
-	for _, tableName := range tableNames {
-		if tableName == "" {
-			return moerr.NewInvalidInput(
-				ctx,
-				operation+" contains an empty table identity",
+		return predicate, predicate, nil
+
+	case tree.RESTORELEVELTABLE:
+		if scope.databaseName == "" || scope.tableName == "" {
+			return "", "", moerr.NewInvalidInputNoCtx(
+				"table restore scope has no database or table name",
 			)
 		}
-		quoted = append(
-			quoted,
-			quoteSQLStringLiteral(tableName),
+		predicate := fmt.Sprintf(
+			`logical_table_id in (select rel_logical_id from mo_catalog.mo_tables%s
+where account_id=%d and reldatabase=%s and relname=%s)`,
+			timeTravel,
+			scope.accountID,
+			quoteSQLStringLiteral(scope.databaseName),
+			quoteSQLStringLiteral(scope.tableName),
+		)
+		return predicate, predicate, nil
+
+	default:
+		return "", "", moerr.NewInvalidInputf(
+			context.Background(),
+			"unknown Lifecycle Archive restore scope %d",
+			scope.level,
 		)
 	}
-	accountCtx := defines.AttachAccountId(ctx, accountID)
-	background.ClearExecResultSet()
-	sql := fmt.Sprintf(
-		`select b.binding_id from mo_catalog.mo_lifecycle_bindings b
-join mo_catalog.mo_tables t on t.rel_id=b.logical_table_id
-where b.state in ('ACTIVE','PAUSED','BLOCKED') and b.database_id=%d
-and t.relname in (%s) limit 1`,
-		databaseID,
-		strings.Join(quoted, ","),
-	)
-	if err := background.Exec(accountCtx, sql); err != nil {
-		return ignoreMissingLifecycleCatalog(err)
-	}
-	results, err := getResultSet(accountCtx, background)
+}
+
+// rejectLifecycleArchiveRestoreScope is a read-only management-path guard.
+// Phase 1 does not restore Archive Dataset/Root metadata together with active
+// table data, so a matching Archive owner makes Snapshot/PITR restore
+// unsupported. It adds no lock or state machine to ordinary MO paths.
+// Phase 1 requires operators to disable and drain Lifecycle data jobs before
+// Snapshot/PITR restore; concurrent SET/finalization is intentionally outside
+// the certified contract instead of reintroducing a global feature barrier.
+func rejectLifecycleArchiveRestoreScope(
+	ctx context.Context,
+	background BackgroundExec,
+	scope lifecycleArchiveRestoreScope,
+	operation string,
+) error {
+	probes, err := lifecycleArchiveRestoreProbes(scope)
 	if err != nil {
 		return err
 	}
-	if execResultArrayHasData(results) {
-		return moerr.NewNotSupportedf(
-			ctx,
-			"%s while a selected table has a Lifecycle binding",
-			operation,
-		)
-	}
-	return nil
-}
-
-func rejectLifecycleStoredPublicationScope(
-	ctx context.Context,
-	background BackgroundExec,
-	accountID uint32,
-	databaseID uint64,
-	tables string,
-	operation string,
-) error {
-	var tableNames []string
-	if tables != "" && tables != pubsub.TableAll {
-		tableNames = strings.Split(tables, pubsub.Sep)
-	}
-	return rejectLifecyclePublicationTableNames(
-		ctx,
-		background,
-		accountID,
-		databaseID,
-		tableNames,
-		operation,
-	)
-}
-
-// fenceLifecycleAlterPublicationScope keeps account/comment-only ALTERs off
-// the Lifecycle barrier. A source database/table change crosses the same
-// management-path barrier as CREATE PUBLICATION and validates the final scope.
-func fenceLifecycleAlterPublicationScope(
-	ctx context.Context,
-	background BackgroundExec,
-	scopeChanged bool,
-	accountID uint32,
-	databaseID uint64,
-	tables string,
-) error {
-	if !scopeChanged {
-		return nil
-	}
-	if err := lockLifecycleDependencyPublication(ctx, background); err != nil {
-		return err
-	}
-	return rejectLifecycleStoredPublicationScope(
-		ctx,
-		background,
-		accountID,
-		databaseID,
-		tables,
-		"ALTER PUBLICATION",
-	)
-}
-
-func rejectLifecycleBindingByName(
-	ctx context.Context,
-	background BackgroundExec,
-	accountID uint32,
-	databaseName string,
-	tableName string,
-	operation string,
-) error {
-	accountCtx := defines.AttachAccountId(ctx, accountID)
-	background.ClearExecResultSet()
-	predicate := fmt.Sprintf(
-		"t.reldatabase=%s",
-		quoteSQLStringLiteral(databaseName),
-	)
-	if tableName != "" {
-		predicate += fmt.Sprintf(
-			" and t.relname=%s",
-			quoteSQLStringLiteral(tableName),
-		)
-	}
-	sql := fmt.Sprintf(
-		`select b.binding_id from mo_catalog.mo_lifecycle_bindings b
-join mo_catalog.mo_tables t on t.rel_id=b.logical_table_id
-where b.state in ('ACTIVE','PAUSED','BLOCKED') and %s limit 1`,
-		predicate,
-	)
-	if err := background.Exec(accountCtx, sql); err != nil {
-		return ignoreMissingLifecycleCatalog(err)
-	}
-	results, err := getResultSet(accountCtx, background)
-	if err != nil {
-		return err
-	}
-	if execResultArrayHasData(results) {
-		return moerr.NewNotSupportedf(
-			ctx,
-			"%s while the source contains a Lifecycle-bound table",
-			operation,
-		)
-	}
-	return nil
-}
-
-func lifecycleBindingScopeProbeSQL(
-	databaseID uint64,
-	physicalTableID uint64,
-) string {
-	sql := "select binding_id from mo_catalog.mo_lifecycle_bindings where state in ('ACTIVE','PAUSED','BLOCKED')"
-	switch {
-	case physicalTableID != 0:
-		sql += fmt.Sprintf(" and physical_table_id=%d", physicalTableID)
-	case databaseID != 0:
-		sql += fmt.Sprintf(" and database_id=%d", databaseID)
-	}
-	return sql + " limit 1"
-}
-
-// rejectLifecycleBindingInScope is a management-path-only fail-closed check.
-// Callers must hold lockLifecycleDependencyPublication in the same transaction
-// so an empty probe cannot race the first Binding insert.
-func rejectLifecycleBindingInScope(
-	ctx context.Context,
-	background BackgroundExec,
-	accountID uint32,
-	databaseID uint64,
-	physicalTableID uint64,
-	operation string,
-) error {
-	accountCtx := defines.AttachAccountId(ctx, accountID)
-	background.ClearExecResultSet()
-	if err := background.Exec(
-		accountCtx,
-		lifecycleBindingScopeProbeSQL(databaseID, physicalTableID),
-	); err != nil {
-		return ignoreMissingLifecycleCatalog(err)
-	}
-	results, err := getResultSet(accountCtx, background)
-	if err != nil {
-		return err
-	}
-	if execResultArrayHasData(results) {
-		return moerr.NewNotSupportedf(
-			ctx,
-			"%s while the target scope contains a Lifecycle-bound table",
-			operation,
-		)
-	}
-	return nil
-}
-
-func rejectLifecycleBindingsInAllAccounts(
-	ctx context.Context,
-	background BackgroundExec,
-	operation string,
-) error {
-	accounts, _, err := getAccounts(ctx, background, false)
-	if err != nil {
-		return err
-	}
-	for accountID := range accounts {
-		if accountID < 0 {
+	for _, probe := range probes {
+		probeCtx := defines.AttachAccountId(ctx, probe.accountID)
+		background.ClearExecResultSet()
+		if err = background.Exec(probeCtx, probe.sql); err != nil {
+			if err = ignoreMissingLifecycleCatalog(err); err != nil {
+				return err
+			}
 			continue
 		}
-		if err := rejectLifecycleBindingInScope(
+		results, resultErr := getResultSet(probeCtx, background)
+		if resultErr != nil {
+			return resultErr
+		}
+		if execResultArrayHasData(results) {
+			return moerr.NewNotSupportedf(
+				ctx,
+				"%s while the target scope contains Lifecycle Archive state",
+				operation,
+			)
+		}
+	}
+	return nil
+}
+
+func lifecycleArchiveRootProbeSQL(snapshotTS int64) string {
+	timeTravel := ""
+	if snapshotTS != 0 {
+		timeTravel = fmt.Sprintf(" {MO_TS = %d}", snapshotTS)
+	}
+	return fmt.Sprintf(
+		`select root_id from mo_catalog.mo_lifecycle_cleanup_roots%s
+where mode in ('ARCHIVE_WHOLE','ARCHIVE_REWRITE') and state<>'CLEANED' limit 1`,
+		timeTravel,
+	)
+}
+
+func rejectLifecycleArchiveClusterRestore(
+	ctx context.Context,
+	ses *Session,
+	background BackgroundExec,
+	ownerName string,
+	snapshotTS int64,
+	operation string,
+) error {
+	// A dropped account can leave a system-owned Cleanup Root after its tenant
+	// Catalog is gone. Account enumeration cannot discover that owner, so guard
+	// the cluster-wide Root set explicitly before restoring system metadata.
+	systemCtx := defines.AttachAccountId(ctx, catalog.System_Account)
+	for _, rootSnapshotTS := range []int64{0, snapshotTS} {
+		background.ClearExecResultSet()
+		if err := background.Exec(
+			systemCtx,
+			lifecycleArchiveRootProbeSQL(rootSnapshotTS),
+		); err != nil {
+			if err = ignoreMissingLifecycleCatalog(err); err != nil {
+				return err
+			}
+			continue
+		}
+		results, err := getResultSet(systemCtx, background)
+		if err != nil {
+			return err
+		}
+		if execResultArrayHasData(results) {
+			return moerr.NewNotSupportedf(
+				ctx,
+				"%s while the target scope contains Lifecycle Archive state",
+				operation,
+			)
+		}
+	}
+
+	currentAccounts, err := getRestoreAcurrentExistsAccount(
+		ctx,
+		ses.GetService(),
+		background,
+		ownerName,
+	)
+	if err != nil {
+		return err
+	}
+	pastAccounts, err := getPastExistsAccounts(
+		ctx,
+		ses.GetService(),
+		background,
+		ownerName,
+		snapshotTS,
+	)
+	if err != nil {
+		return err
+	}
+	for _, account := range currentAccounts {
+		if err = rejectLifecycleArchiveRestoreScope(
 			ctx,
 			background,
-			uint32(accountID),
-			0,
-			0,
+			lifecycleArchiveRestoreScope{
+				level:     tree.RESTORELEVELACCOUNT,
+				accountID: uint32(account.accountId),
+			},
+			operation,
+		); err != nil {
+			return err
+		}
+	}
+	for _, account := range pastAccounts {
+		if err = rejectLifecycleArchiveRestoreScope(
+			ctx,
+			background,
+			lifecycleArchiveRestoreScope{
+				level:      tree.RESTORELEVELACCOUNT,
+				accountID:  uint32(account.accountId),
+				snapshotTS: snapshotTS,
+			},
 			operation,
 		); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func rejectLifecycleHistoricalOwnerScope(
-	ctx context.Context,
-	background BackgroundExec,
-	level string,
-	accountID uint32,
-	objectID uint64,
-	operation string,
-) error {
-	switch level {
-	case "cluster":
-		return rejectLifecycleBindingsInAllAccounts(ctx, background, operation)
-	case "account":
-		return rejectLifecycleBindingInScope(
-			ctx, background, accountID, 0, 0, operation,
-		)
-	case "database":
-		return rejectLifecycleBindingInScope(
-			ctx, background, accountID, objectID, 0, operation,
-		)
-	case "table":
-		return rejectLifecycleBindingInScope(
-			ctx, background, accountID, 0, objectID, operation,
-		)
-	default:
-		return moerr.NewInvalidInputf(
-			ctx,
-			"unknown Lifecycle dependency scope %q",
-			level,
-		)
-	}
 }

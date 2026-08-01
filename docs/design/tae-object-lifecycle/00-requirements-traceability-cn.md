@@ -31,11 +31,27 @@
 | Account/Database继承 | 不实现 | 后续Phase |
 | Table Policy | 支持 | Phase 1 |
 | 逻辑分区表 | 不实现 | Phase 1在Bind时拒绝；后续按物理child展开 |
-| Time Travel/Fail-safe | 不替代现有Snapshot/PITR | 独立产品平面 |
+| Time Travel/Fail-safe | 不替代现有Snapshot/PITR | 创建和保留可共存，复用MVCC/GC |
 | Archive继续在线UPDATE | 不支持 | 应继续留在活动TAE |
 | DROP后合规保留 | 不支持 | 无Legal Hold/WORM |
 
 因此Phase 1是#24853的可商用子集，不是原Issue全部能力。
+
+### 3.1 周边功能支持边界
+
+| 功能 | Phase 1决定 | 边界 |
+|---|---|---|
+| Snapshot/PITR创建与历史保护 | 支持 | 旧Object由现有MVCC/GC引用保护；Lifecycle不增加专用GC协议 |
+| Snapshot/PITR Restore Lifecycle Archive scope | 不支持，破坏性Restore提交前fail closed | 不恢复ARCHIVE Binding、Dataset、ARCHIVE Root或外部Payload；执行前关闭并drain Lifecycle数据任务 |
+| Clone/Data Branch活动数据 | 支持 | 复制目标时间点活动数据；目标不继承Binding、Dataset或Payload |
+| 普通同集群Publication/Subscription | 支持 | 订阅端直接读取发布者活动表，不需要退休事件 |
+| CDC/CCPR | 不接入、不提供兼容性SLA | Lifecycle不修改其创建/运行路径，也不生成逐行退休事件 |
+| 普通物理Backup创建 | 不修改、不阻断 | 外部Archive Payload不进入Backup |
+| 含Lifecycle状态的物理Backup Restore | Phase 1不支持 | 可能恢复Catalog/Stage/Root却仍指向原namespace；启动任何Lifecycle任务前必须隔离任务和原namespace删除凭据 |
+
+上述共存能力不使用跨租户Lifecycle feature-row barrier。Backup Restore兼容性属于后续独立
+设计；仅把Lifecycle release gate设为disabled不能替代恢复隔离，因为历史Root cleanup仍需
+在正常集群中运行。
 
 ## 4. 已确认的非功能需求
 
@@ -53,5 +69,5 @@
 
 ## 5. 需求变更规则
 
-增加ONLINE_COLD、Deep Archive、继承、Legal Hold或Backup/DR时，必须建立独立Phase设计，
-不能把字段悄悄加入Phase 1状态机。
+增加ONLINE_COLD、Deep Archive、继承、Legal Hold或Lifecycle-aware Backup/DR与物理恢复
+兼容时，必须建立独立Phase设计，不能把字段悄悄加入Phase 1状态机。

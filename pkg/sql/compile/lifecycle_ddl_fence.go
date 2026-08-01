@@ -24,8 +24,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/pb/lock"
-	plan2 "github.com/matrixorigin/matrixone/pkg/pb/plan"
-	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
 )
 
@@ -160,8 +158,7 @@ func (c *Compile) rejectBoundLifecycleDDL(
 	}
 	// The caller and SET LIFECYCLE already hold the same target mo_tables row
 	// lock. That existing lock closes their first-Binding race, so table DDL
-	// needs only one indexed Binding lookup and must not take the cluster-wide
-	// feature-row barrier used by Snapshot/PITR/Publication scope publishing.
+	// needs only one indexed Binding lookup and no cluster-wide Lifecycle lock.
 	accountID, err := defines.GetAccountId(c.proc.Ctx)
 	if err != nil {
 		return err
@@ -286,86 +283,4 @@ func (c *Compile) detachLifecycleBindingsForDatabaseDrop(
 		lifecycleDatabaseDropBindingDeleteSQL(accountID, databaseID),
 		int32(accountID),
 	))
-}
-
-func (c *Compile) lockLifecycleDependencyPublication() error {
-	return c.runSqlWithAccountId(
-		"update mo_catalog.mo_feature_registry set scope_spec = scope_spec, updated_at = updated_at where feature_code = 'LIFECYCLE'",
-		int32(0),
-	)
-}
-
-func lifecyclePitrBindingProbeSQL(
-	level tree.PitrLevel,
-	objectID uint64,
-) string {
-	sql := `select binding_id from mo_catalog.mo_lifecycle_bindings
-where state in ('ACTIVE','PAUSED','BLOCKED')`
-	switch level {
-	case tree.PITRLEVELDATABASE:
-		sql += fmt.Sprintf(" and database_id=%d", objectID)
-	case tree.PITRLEVELTABLE:
-		sql += fmt.Sprintf(" and physical_table_id=%d", objectID)
-	}
-	return sql + " limit 1"
-}
-
-func (c *Compile) rejectLifecyclePitrBindings(
-	createPitr *plan2.CreatePitr,
-	objectID uint64,
-) error {
-	if createPitr == nil {
-		return moerr.NewInternalError(
-			c.proc.Ctx,
-			"Lifecycle PITR fence input is incomplete",
-		)
-	}
-	level := tree.PitrLevel(createPitr.GetLevel())
-	accountIDs := []uint32{createPitr.GetAccountId()}
-	if level == tree.PITRLEVELCLUSTER {
-		result, err := c.runSqlWithResultAndOptions(
-			"select account_id from mo_catalog.mo_account",
-			0,
-			executor.StatementOption{}.WithDisableLog(),
-		)
-		if err != nil {
-			return err
-		}
-		defer result.Close()
-		accountIDs = accountIDs[:0]
-		result.ReadRows(func(rows int, vectors []*vector.Vector) bool {
-			if rows == 0 || len(vectors) == 0 {
-				return false
-			}
-			values := vector.MustFixedColWithTypeCheck[uint32](vectors[0])
-			accountIDs = append(accountIDs, values[:rows]...)
-			return true
-		})
-	}
-	for _, accountID := range accountIDs {
-		result, err := c.runSqlWithResultAndOptions(
-			lifecyclePitrBindingProbeSQL(level, objectID),
-			int32(accountID),
-			executor.StatementOption{}.WithDisableLog(),
-		)
-		if err != nil {
-			if ignoreErr := ignoreMissingLifecycleCatalog(err); ignoreErr != nil {
-				return ignoreErr
-			}
-			continue
-		}
-		bound := false
-		result.ReadRows(func(rows int, _ []*vector.Vector) bool {
-			bound = rows > 0
-			return false
-		})
-		result.Close()
-		if bound {
-			return moerr.NewNotSupported(
-				c.proc.Ctx,
-				"CREATE PITR while the target scope contains a Lifecycle-bound table",
-			)
-		}
-	}
-	return nil
 }

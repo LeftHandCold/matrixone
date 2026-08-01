@@ -4888,19 +4888,11 @@ func (s *Scope) CreatePitr(c *Compile) error {
 		return err
 	}
 
-	// INTERNAL PITR creation bypasses the frontend path. Cross the same stable
-	// publication barriers, in the same global order as frontend Snapshot/PITR,
-	// before refreshing the target object ID. Retain both writes until the PITR
-	// row commits.
-	// This prevents COPY ALTER from swapping the table generation between
-	// planning and publication.
+	// INTERNAL PITR creation bypasses the frontend path. Cross the existing Data
+	// Branch lineage publication lock before refreshing the target object ID.
+	// Lifecycle does not add a second cross-feature barrier here.
 	pitrObjectID, err := preparePitrPublication(
-		func() error {
-			return lockPitrDependencyPublications(
-				c.lockDataBranchLineageOwnerPublication,
-				c.lockLifecycleDependencyPublication,
-			)
-		},
+		c.lockDataBranchLineageOwnerPublication,
 		func() error {
 			txnMeta := c.proc.GetTxnOperator().Txn()
 			if shouldAdvanceAlterDataBranchLineageSnapshot(
@@ -4918,10 +4910,6 @@ func (s *Scope) CreatePitr(c *Compile) error {
 	if err != nil {
 		return err
 	}
-	if err = c.rejectLifecyclePitrBindings(createPitr, pitrObjectID); err != nil {
-		return err
-	}
-
 	// check pitr if exists（pitr_name + create_account）
 	checkExistSql := getSqlForCheckPitrExists(pitrName, accountId)
 	existRes, err := c.runSqlWithResultAndOptions(checkExistSql, int32(sysAccountId), executor.StatementOption{}.WithDisableLog())
@@ -5090,16 +5078,6 @@ func preparePitrPublication(
 		return 0, err
 	}
 	return resolveObjectID()
-}
-
-func lockPitrDependencyPublications(
-	lockSnapshot func() error,
-	lockLifecycle func() error,
-) error {
-	if err := lockSnapshot(); err != nil {
-		return err
-	}
-	return lockLifecycle()
 }
 
 func (c *Compile) resolveCurrentPitrObjectID(createPitr *plan.CreatePitr) (uint64, error) {

@@ -713,33 +713,16 @@ func handleCloneTable(
 		err = moerr.NewInternalErrorNoCtxf("only sys can clone table to another account")
 		return
 	}
-	if err = runLifecycleCloneDependencyFence(
-		func() error {
-			return withDataBranchCloneSourceLock(snapshot, func() error {
-				return lockDataBranchCloneSource(
-					reqCtx,
-					ses,
-					bh,
-					fromAccountId,
-					stmt.SrcTable.SchemaName.String(),
-					stmt.SrcTable.ObjectName.String(),
-				)
-			})
-		},
-		func() error {
-			return lockLifecycleDependencyPublication(reqCtx, bh)
-		},
-		func() error {
-			return rejectLifecycleBindingByName(
-				reqCtx,
-				bh,
-				fromAccountId,
-				stmt.SrcTable.SchemaName.String(),
-				stmt.SrcTable.ObjectName.String(),
-				"CLONE TABLE",
-			)
-		},
-	); err != nil {
+	if err = withDataBranchCloneSourceLock(snapshot, func() error {
+		return lockDataBranchCloneSource(
+			reqCtx,
+			ses,
+			bh,
+			fromAccountId,
+			stmt.SrcTable.SchemaName.String(),
+			stmt.SrcTable.ObjectName.String(),
+		)
+	}); err != nil {
 		return
 	}
 	if err = lockNamedDataBranchCloneSnapshot(
@@ -895,24 +878,7 @@ func handleCloneDatabaseWithSource(
 	if source.snapshot != nil && source.snapshot.Tenant != nil {
 		fromAccountID = source.snapshot.Tenant.TenantID
 	}
-	if err = runLifecycleCloneDependencyFence(
-		func() error {
-			return lockDataBranchCloneDatabaseSources(reqCtx, ses, bh, source)
-		},
-		func() error {
-			return lockLifecycleDependencyPublication(reqCtx, bh)
-		},
-		func() error {
-			return rejectLifecycleBindingByName(
-				reqCtx,
-				bh,
-				fromAccountID,
-				source.srcResolveDBName,
-				"",
-				"CLONE DATABASE",
-			)
-		},
-	); err != nil {
+	if err = lockDataBranchCloneDatabaseSources(reqCtx, ses, bh, source); err != nil {
 		return
 	}
 	if err = lockNamedDataBranchCloneSnapshot(

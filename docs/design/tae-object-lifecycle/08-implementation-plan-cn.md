@@ -145,31 +145,37 @@ Gate F不通过时关闭本路径，TTL Mixed统一Rewrite/Blocked，不阻塞�
 
 Restore不增加tagged entry。
 
-## 8. Gate H：管理路径依赖/DDL fence与升级兼容
+## 8. Gate H：表级DDL fence、恢复边界与升级兼容
 
 交付：
 
 1. unknown Lifecycle Entry在Batch解析和TAE mutation前fail closed；
 2. retirement默认关闭，完成CN/TN滚动升级准入后才能开启；
 3. `SET LIFECYCLE`采用`mo_tables -> LIFECYCLE feature row`锁顺序，普通表DDL只复用
-   `mo_tables`锁和索引化Binding lookup；
-4. Snapshot/PITR/Publication/Clone/Branch创建跨同一feature-row barrier并按scope探测
-   Binding，关闭首次Binding空集合竞态；
-5. 不修改CDC控制面；SET不查询CDC Task/Watermark，CDC下游完整性不属于Phase 1 SLA；
-   Publication scope包含当前database和`database_id=0`账户级发布；不修改或阻断普通物理
-   Backup，Backup只保存活动数据且不复制外部Archive Payload，其他未实现的历史复制能力
-   显式拒绝；
-6. 绑定表按01的Phase 1矩阵fail closed；DROP TABLE移除目标Binding，DROP DATABASE按
+   `mo_tables`锁和索引化Binding lookup；feature row只服务Lifecycle release/config/capacity，
+   不再作为跨功能barrier；
+4. 删除Snapshot/PITR创建、Clone/Data Branch、普通同集群Publication/Subscription路径中的
+   Lifecycle barrier和Binding互斥；补共存测试，确认Clone/Branch目标只含活动数据且不继承
+   Binding、Dataset或Payload，Publication直接读取发布者活动视图；
+5. Snapshot/PITR Restore在任何破坏性提交前对Lifecycle Archive scope fail closed；不持有
+   全程全局锁，不建设archive-aware restore状态机；Phase 1执行前关闭并drain Lifecycle
+   数据任务，不承诺与SET/finalizer并发；
+6. 不修改CDC/CCPR控制面；SET不查询Task/Watermark，其下游完整性不属于Phase 1 SLA。
+   不修改或阻断普通物理Backup创建；含Lifecycle Catalog但缺少外部Payload的物理Backup
+   Restore显式unsupported，恢复环境必须在任何Lifecycle tick前隔离任务和原Archive删除
+   凭据，完整兼容留给独立Issue/PR；
+7. 绑定表按01的Phase 1矩阵fail closed；DROP TABLE移除目标Binding，DROP DATABASE按
    database identity补删孤儿Binding，二者都由Cleanup异步收敛外部Payload；
-7. 未绑定表不创建Guard或其他Lifecycle元数据，普通查询/DML/Merge不访问barrier；
-8. finalizer/DDL、SET/dependency create及滚动升级竞态测试通过。
-9. 新集群bootstrap和存量集群upgrade都写入同一个Lifecycle Coordinator cron task；任务
+8. 未绑定表不创建Guard或其他Lifecycle元数据，普通查询/DML/Merge和上述共存功能不访问
+   Lifecycle feature row；
+9. finalizer/表级DDL、周边功能共存、Restore拒绝及滚动升级竞态测试通过；
+10. 新集群bootstrap和存量集群upgrade都写入同一个Lifecycle Coordinator cron task；任务
    在release开关关闭时只收敛已有Cleanup Root、过期Restore隐藏表和终态元数据并检查开关，
    不执行Binding扫描、创建新Root或启动新Restore。
-10. Cleanup Root复用已有Cluster Table的`account_id=0`租户过滤，Restore Attempt/Chunk保留
+11. Cleanup Root复用已有Cluster Table的`account_id=0`租户过滤，Restore Attempt/Chunk保留
     同名兼容哨兵列，使旧CN在新Catalog出现后仍能安全执行`DROP ACCOUNT`；业务Owner仍只认
     `owner_account_id`/tenant Catalog上下文。
-11. tenant异步upgrade尚未创建Lifecycle表时，普通管理DDL的Binding引用探测和DROP detach
+12. tenant异步upgrade尚未创建Lifecycle表时，普通管理DDL的Binding引用探测和DROP detach
     仅忽略精确`ErrNoSuchTable`；Lifecycle命令和所有其他错误保持fail closed。
 
 若测试暴露普通Merge/事务/DDL通用Bug，记录公共Issue并复用公共修复，不在Lifecycle新增

@@ -154,18 +154,17 @@ func handleAlterTableLifecycle(ctx context.Context, ses *Session, alter *tree.Al
 		))
 	}
 	if option.Operation == tree.LifecycleOperationSet {
-		// SET takes the existing mo_tables row lock before the scope-publication
-		// feature-row barrier. Ordinary table DDL uses only the table lock and an
-		// indexed Binding lookup; the feature row closes the first-Binding
-		// empty-probe race with Snapshot/PITR/Publication/Clone creation.
-		if err = lockLifecycleDependencyPublication(ctx, background); err != nil {
+		// SET takes the existing mo_tables row lock before serializing its own
+		// release-gate and Stage-certification snapshot. Snapshot, PITR, Clone,
+		// Branch, and ordinary Publication do not use this Lifecycle-only lock.
+		if err = lockLifecycleFeatureConfiguration(ctx, background); err != nil {
 			return rollback(err)
 		}
 	}
 	if option.Operation == tree.LifecycleOperationSet ||
 		option.Operation == tree.LifecycleOperationResume {
 		// The pre-BEGIN probe is only a fast rejection. Recheck after the
-		// table lock (and, for SET, after the feature-row barrier) so a release
+		// table lock (and, for SET, after the feature configuration lock) so a release
 		// gate disable that wins the race cannot create or resume a Binding.
 		if err = ensureLifecycleFeatureEnabled(ctx, ses, background); err != nil {
 			return rollback(err)
@@ -178,19 +177,10 @@ func handleAlterTableLifecycle(ctx context.Context, ses *Session, alter *tree.Al
 		if validateErr != nil {
 			return rollback(validateErr)
 		}
-		if validateErr = validateLifecycleExistingDependencies(
-			ctx,
-			background,
-			accountID,
-			tableDef,
-		); validateErr != nil {
-			return rollback(validateErr)
-		}
-
 		var stageIdentity *lifecycleStageIdentity
 		if option.Policy.Action == tree.LifecycleActionArchive {
-			// Read the deployment certification while holding the same feature-row
-			// barrier used to publish the Binding. A pre-transaction snapshot can be
+			// Read deployment certification while holding the Lifecycle feature
+			// configuration lock. A pre-transaction snapshot can be
 			// revoked or replaced before this transaction commits.
 			archiveStageCertifications, certificationErr :=
 				loadLifecycleArchiveStageCertifications(ctx, background)
@@ -270,103 +260,6 @@ func validateLifecycleBindingAccount(ctx context.Context, accountID uint32) erro
 			ctx,
 			"Lifecycle bindings in the system account",
 		)
-	}
-	return nil
-}
-
-func validateLifecycleExistingDependencies(
-	ctx context.Context,
-	background BackgroundExec,
-	accountID uint32,
-	tableDef *plan.TableDef,
-) error {
-	if background == nil || tableDef == nil {
-		return moerr.NewInvalidInput(
-			ctx,
-			"Lifecycle dependency validation is incomplete",
-		)
-	}
-	tenantCtx := defines.AttachAccountId(ctx, accountID)
-	systemCtx := defines.AttachAccountId(ctx, sysAccountID)
-	queries := []struct {
-		ctx  context.Context
-		name string
-		sql  string
-	}{
-		{
-			ctx:  tenantCtx,
-			name: "Snapshot/Clone/Branch",
-			sql: fmt.Sprintf(
-				`select snapshot_id from mo_catalog.mo_snapshots
-where ((level='account' and obj_id=%d)
-or (level='database' and obj_id=%d)
-or (level='table' and obj_id=%d))
-limit 1`,
-				accountID,
-				tableDef.DbId,
-				tableDef.TblId,
-			),
-		},
-		{
-			ctx:  systemCtx,
-			name: "Snapshot/Clone/Branch",
-			sql: fmt.Sprintf(
-				`select snapshot_id from mo_catalog.mo_snapshots
-where (level='cluster'
-or (level='account' and obj_id=%d)
-or (level='database' and obj_id=%d)
-or (level='table' and obj_id=%d))
-limit 1`,
-				accountID,
-				tableDef.DbId,
-				tableDef.TblId,
-			),
-		},
-		{
-			ctx:  systemCtx,
-			name: "PITR",
-			sql: fmt.Sprintf(
-				`select pitr_id from mo_catalog.mo_pitr
-where pitr_status=1 and (level='cluster'
-or (account_id=%d and (level='account'
-or (level='database' and obj_id=%d)
-or (level='table' and obj_id=%d))))
-limit 1`,
-				accountID,
-				tableDef.DbId,
-				tableDef.TblId,
-			),
-		},
-		{
-			ctx:  systemCtx,
-			name: "Publication",
-			sql: fmt.Sprintf(
-				`select pub_name from mo_catalog.mo_pubs
-where account_id=%d and (database_id=0 or database_id=%d)
-and (all_table=true or table_list='*' or find_in_set(%s,table_list)>0)
-limit 1`,
-				accountID,
-				tableDef.DbId,
-				quoteSQLStringLiteral(tableDef.Name),
-			),
-		},
-	}
-	for _, query := range queries {
-		background.ClearExecResultSet()
-		if err := background.Exec(query.ctx, query.sql); err != nil {
-			return err
-		}
-		results, err := getResultSet(query.ctx, background)
-		if err != nil {
-			return err
-		}
-		if execResultArrayHasData(results) {
-			return moerr.NewNotSupportedf(
-				ctx,
-				"Lifecycle while %s references the table",
-				query.name,
-			)
-		}
 	}
 	return nil
 }

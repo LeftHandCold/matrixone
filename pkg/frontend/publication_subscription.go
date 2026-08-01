@@ -259,10 +259,6 @@ func createPublication(ctx context.Context, bh BackgroundExec, cp *tree.CreatePu
 		accountNamesStr string
 	)
 
-	if err = lockLifecycleDependencyPublication(ctx, bh); err != nil {
-		return err
-	}
-
 	accIdInfoMap, accNameInfoMap, err := getAccounts(ctx, bh, false)
 	if err != nil {
 		return
@@ -360,20 +356,6 @@ func createPublication(ctx context.Context, bh BackgroundExec, cp *tree.CreatePu
 			return
 		}
 	}
-	sourceAccountID, err := defines.GetAccountId(ctx)
-	if err != nil {
-		return err
-	}
-	if err = rejectLifecyclePublicationScope(
-		ctx,
-		bh,
-		sourceAccountID,
-		dbId,
-		cp.Table,
-	); err != nil {
-		return err
-	}
-
 	sql, err = getSqlForInsertIntoMoPubs(ctx, accountId, accountName, pubName, dbName, dbId, len(cp.Table) == 0, tablesStr, accountNamesStr, comment, true)
 	if err != nil {
 		return
@@ -572,17 +554,6 @@ func doAlterPublication(ctx context.Context, ses *Session, ap *tree.AlterPublica
 			return
 		}
 	}
-	if err = fenceLifecycleAlterPublicationScope(
-		ctx,
-		bh,
-		ap.DbName != "" || len(ap.Table) > 0,
-		accountId,
-		dbId,
-		tablesStr,
-	); err != nil {
-		return
-	}
-
 	if sql, err = getSqlForUpdatePubInfo(ctx, string(ap.Name), accountNamesStr, comment, dbName, dbId, tablesStr, false); err != nil {
 		return
 	}

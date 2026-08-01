@@ -293,9 +293,6 @@ func doCreateSnapshot(ctx context.Context, ses *Session, stmt *tree.CreateSnapSh
 	if err = lockDataBranchLineageOwnerPublication(ctx, bh); err != nil {
 		return err
 	}
-	if err = lockLifecycleDependencyPublication(ctx, bh); err != nil {
-		return err
-	}
 
 	// 3.1 generate snapshot id
 	newUUid, err := uuid.NewV7()
@@ -516,24 +513,6 @@ func doCreateSnapshot(ctx context.Context, ses *Session, stmt *tree.CreateSnapSh
 		}
 	}
 
-	scopeAccountID := tenantInfo.GetTenantID()
-	if contextualAccountID, accountErr := defines.GetAccountId(ctx); accountErr == nil {
-		scopeAccountID = contextualAccountID
-	}
-	if snapshotLevel == tree.SNAPSHOTLEVELACCOUNT {
-		scopeAccountID = uint32(objId)
-	}
-	if err = rejectLifecycleHistoricalOwnerScope(
-		ctx,
-		bh,
-		snapshotLevel.String(),
-		scopeAccountID,
-		objId,
-		"CREATE SNAPSHOT",
-	); err != nil {
-		return err
-	}
-
 	getLogger(ses.GetService()).Debug("create pitr", zap.String("sql", sql))
 	err = bh.Exec(ctx, sql)
 	if err != nil {
@@ -681,6 +660,51 @@ func doRestoreSnapshot(ctx context.Context, ses *Session, stmt *tree.RestoreSnap
 		return stats, err
 	}
 
+	// Snapshot/PITR protect active TAE Objects through the existing MVCC/GC
+	// path, so creation is compatible with Lifecycle. Phase 1 does not restore
+	// Archive Dataset/Root metadata or external payload, however; reject that
+	// unsupported restore combination before any table/account mutation.
+	if stmt.Level == tree.RESTORELEVELCLUSTER {
+		if err = rejectLifecycleArchiveClusterRestore(
+			ctx,
+			ses,
+			bh,
+			snapshotName,
+			snapshot.ts,
+			"RESTORE SNAPSHOT",
+		); err != nil {
+			return stats, err
+		}
+	} else if !(snapshot.level == tree.RESTORELEVELCLUSTER.String() && len(srcAccountName) != 0) {
+		sourceAccountID := ses.GetTenantInfo().GetTenantID()
+		if stmt.Level == tree.RESTORELEVELACCOUNT {
+			sourceAccountID = uint32(snapshot.objId)
+		} else if snapshot.accountName != "" {
+			if sourceAccountID, err = getAccountIdByTS(
+				ctx,
+				bh,
+				snapshot.accountName,
+				snapshot.ts,
+			); err != nil {
+				return stats, err
+			}
+		}
+		if err = rejectLifecycleArchiveRestoreScope(
+			ctx,
+			bh,
+			lifecycleArchiveRestoreScope{
+				level:        stmt.Level,
+				accountID:    sourceAccountID,
+				databaseName: dbName,
+				tableName:    tblName,
+				snapshotTS:   snapshot.ts,
+			},
+			"RESTORE SNAPSHOT",
+		); err != nil {
+			return stats, err
+		}
+	}
+
 	// default restore to src account
 	restoreAccount, toAccountId, err = getFromAccountIdAndToAccountId(ctx, ses, bh, stmt, *snapshot)
 	if err != nil {
@@ -719,6 +743,20 @@ func doRestoreSnapshot(ctx context.Context, ses *Session, stmt *tree.RestoreSnap
 			return stats, err
 		}
 		return
+	}
+
+	if err = rejectLifecycleArchiveRestoreScope(
+		ctx,
+		bh,
+		lifecycleArchiveRestoreScope{
+			level:        stmt.Level,
+			accountID:    toAccountId,
+			databaseName: dbName,
+			tableName:    tblName,
+		},
+		"RESTORE SNAPSHOT",
+	); err != nil {
+		return stats, err
 	}
 
 	// drop foreign key related tables first
@@ -2738,6 +2776,18 @@ func restoreToAccountUsingCluster(
 	if err != nil {
 		return err
 	}
+	if err = rejectLifecycleArchiveRestoreScope(
+		ctx,
+		bh,
+		lifecycleArchiveRestoreScope{
+			level:      tree.RESTORELEVELACCOUNT,
+			accountID:  uint32(ar.accountId),
+			snapshotTS: snapshotTs,
+		},
+		"RESTORE SNAPSHOT",
+	); err != nil {
+		return err
+	}
 
 	destAccount := string(stmt.ToAccountName)
 	if len(destAccount) > 0 {
@@ -2761,6 +2811,17 @@ func restoreToAccountUsingCluster(
 			}
 			isNeedToCleanToDatabase = false
 		}
+	}
+	if err = rejectLifecycleArchiveRestoreScope(
+		ctx,
+		bh,
+		lifecycleArchiveRestoreScope{
+			level:     tree.RESTORELEVELACCOUNT,
+			accountID: toAccountId,
+		},
+		"RESTORE SNAPSHOT",
+	); err != nil {
+		return err
 	}
 
 	err = restoreAccountUsingClusterSnapshotToNew(ctx, ses, bh, snapshotName, snapshotTs, *ar, uint64(toAccountId), nil, isRestoreToCluster, isNeedToCleanToDatabase)

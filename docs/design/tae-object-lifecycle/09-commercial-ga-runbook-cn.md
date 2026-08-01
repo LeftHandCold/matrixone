@@ -71,9 +71,28 @@ Provider审计日志证明；它不是Lifecycle在每次PUT中注入的请求hea
 `REMOVE`会在Provider删除期间持有该Stage行锁，可能串行同一Stage的管理操作；这不进入
 普通DML/查询/Merge热路径，Provider deadline沿用现有Stage操作合同。
 
-Phase 1 Lifecycle不修改或阻断普通物理Backup。Backup继续按MO现有语义保存活动数据，
-不复制Archive Payload；备份前已经退休的历史行不在活动表备份中。由该Backup恢复后，
-Archive Catalog、Stage和`RESTORE ARCHIVE`均不属于恢复保证，DR目标也不承诺Archive可用。
+Phase 1 Lifecycle不修改或阻断普通物理Backup创建。Backup会按MO现有物理语义保存活动数据
+和当时可见的Catalog状态，因而可能包含Binding、Dataset、Cleanup Root、Stage、release gate
+与Coordinator元数据，但不会复制外部Archive Payload；备份前已经退休的历史行也不在活动
+表数据中。
+
+含上述Lifecycle状态的物理Backup Restore在Phase 1 unsupported。若仅为离线调查而恢复，
+必须在任何Lifecycle Coordinator/Cleanup Sweeper tick前同时完成：
+
+1. 禁止恢复环境注册或运行Lifecycle Coordinator/Sweeper任务；
+2. 移除或隔离原Archive namespace的删除凭据，使用无法写删原namespace的身份；
+3. 不执行`RESTORE ARCHIVE`、Purge或任何依赖恢复Catalog指向原Payload的操作。
+
+仅把Catalog release gate设为`enabled=false`不是隔离措施：Kill switch语义明确允许历史Root
+cleanup继续运行。没有满足上述前置条件时不得启动恢复集群；完整Backup/DR兼容、namespace
+迁移和安全重新激活由后续独立Issue/PR负责。
+
+Snapshot/PITR创建和保留、Clone/Data Branch活动数据复制及普通同集群Publication/
+Subscription不需要Lifecycle gate或全局barrier。Snapshot/PITR Restore前必须关闭新
+Lifecycle数据任务并等待active/finalizing任务drain；若源或目标scope含`ARCHIVE` Binding、
+非`PURGED` Dataset或非`CLEANED`的`ARCHIVE_*` Root，Phase 1在任何破坏性Restore事务提交前
+返回unsupported。Restore与`SET LIFECYCLE`/Archive finalizer并发不在Phase 1认证范围。
+Clone/Branch目标不继承Binding、Dataset或Payload；CDC/CCPR不在Lifecycle兼容性SLA内。
 
 ## 3. 分阶段放量
 

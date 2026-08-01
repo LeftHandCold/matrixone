@@ -48,9 +48,10 @@ JOBS/DATASETS默认和最大page size均为1000，使用时间+唯一ID排序，
 `OFFSET + LIMIT <= 1,000,000`。它是live Catalog的best-effort诊断翻页，不承诺并发变更
 期间的跨页一致快照。
 
-绑定表必须拒绝当前不支持的FK、Publication、隐藏索引、Snapshot/PITR/
-Clone/Branch和插件组合。Phase 1还拒绝逻辑分区表、物理Partition child，以及未经部署认证
-或启用对象Versioning的Archive Stage。
+绑定表必须拒绝当前不支持的FK、隐藏索引和插件组合。Phase 1还拒绝逻辑分区表、物理
+Partition child，以及未经部署认证或启用对象Versioning的Archive Stage。Snapshot/PITR
+创建、Clone/Data Branch活动数据复制和普通同集群Publication/Subscription允许与Lifecycle
+共存；CDC/CCPR不接入，也不提供退休事件完整性SLA。
 
 普通查询、DML和Merge在未绑定路径不读取Lifecycle Catalog。可能冲突的表级管理DDL只复用
 已有`mo_tables`锁并执行一次索引化Binding存在性查询，不跨feature-row barrier；release
@@ -543,25 +544,32 @@ EOB或Drop Intent不能单独触发Root清理。任一`COMMIT_UNKNOWN` Root暂�
 retirement，不为精确overlap建设Object列表；达到数量/bytes上限暂停Lifecycle并告警。
 长期未知由运维处理。
 
-## 15. 管理路径依赖与DDL fence
+## 15. Lifecycle控制面、表级DDL fence与周边功能
 
 最终实现采用已有Catalog行组成的薄fence：
 
 1. `SET LIFECYCLE`和表DDL复用`mo_tables`行锁；
 2. 只有`SET LIFECYCLE`在持有表锁后更新一次system account的`LIFECYCLE` feature row，
-   形成与scope级依赖发布之间的write barrier；普通表DDL只做索引化Binding lookup；
-3. Snapshot/PITR/Publication/Clone/Branch创建先跨feature-row barrier，再查询目标scope
-   Binding；Lifecycle不接入CDC控制面，CDC下游完整性不属于Phase 1 SLA；Publication
-   scope包含当前database及`database_id=0`账户级发布；Lifecycle不修改或阻断普通物理
-   Backup，Backup只保存活动数据且不复制外部Archive Payload；
-4. 绑定表的不兼容DDL直接拒绝，DROP在同一barrier下删除Binding；
-5. Finalizer重新校验Binding generation、physical table、schema digest、Lifecycle列和exact
+   只串行Lifecycle自身的release/config/capacity控制；普通表DDL只做索引化Binding lookup，
+   该行不是跨功能write barrier；
+3. Snapshot/PITR创建和保留复用现有MVCC/GC，不访问Lifecycle Catalog；Snapshot/PITR
+   Restore若源或目标scope含`ARCHIVE` Binding、非`PURGED` Dataset或非`CLEANED`的
+   `ARCHIVE_*` Root，在任何破坏性Restore事务提交前fail closed；Phase 1执行前关闭并drain
+   Lifecycle数据任务，不承诺与`SET LIFECYCLE`/Archive finalizer并发；
+4. Clone/Data Branch只复制目标时间点活动数据，目标不继承Binding、Dataset或Payload；普通
+   同集群Publication/Subscription直接读取发布者活动视图。上述路径不访问feature row；
+5. Lifecycle不接入CDC/CCPR控制面，其下游完整性不属于Phase 1 SLA。普通物理Backup创建
+   不修改、不阻断；但物理Backup可能包含Lifecycle Catalog/Stage/release gate而不包含外部
+   Payload，含这些状态的Restore在Phase 1 unsupported。恢复环境必须在任何Lifecycle tick
+   前隔离任务和原Archive删除凭据，`enabled=false`不足以隔离历史Root cleanup；
+6. 绑定表的不兼容DDL直接拒绝，DROP在同一`mo_tables`事务中删除Binding；
+7. Finalizer重新校验Binding generation、physical table、schema digest、Lifecycle列和exact
    source Object；
-6. 未绑定表不创建Feature Guard、active-attempt或dependency行，普通查询/DML/Merge不访问
-   该barrier。
+8. 未绑定表不创建Feature Guard、active-attempt或dependency行，普通查询/DML/Merge不访问
+   Lifecycle feature row。
 
-`SET LIFECYCLE`锁顺序固定为`mo_tables -> feature row`；只需要全局scope的管理操作仅取得
-feature row，普通表DDL不取得feature row。
+`SET LIFECYCLE`锁顺序固定为`mo_tables -> feature row`，但只作用于Lifecycle自身控制面；
+普通表DDL以及Snapshot/PITR/Clone/Branch/Publication不取得feature row。
 若测试暴露普通MO通用事务/DDL缺陷，走公共Issue，不为Lifecycle增加分布式状态机。
 
 ## 16. TTL小Mixed
@@ -724,6 +732,8 @@ pkg/taskservice                       Scheduler
 - 明确资源Owner、deadline和hard cap；
 - feature off不启动Lifecycle调度或数据路径；未绑定表的普通查询/DML/Merge零访问，相关
   表级管理DDL只复用`mo_tables`锁并执行一次索引化Binding lookup；
+- Snapshot/PITR创建、Clone/Data Branch和普通同集群Publication/Subscription零Lifecycle
+  feature-row访问；Snapshot/PITR Restore按Phase 1 scope边界fail closed；
 - `git diff --check`和Markdown检查通过；
 - 设计与实现没有恢复本README已删除的协议；
 - Gate H之前退休能力仅在受控无不兼容DDL环境验证，不能宣布GA。

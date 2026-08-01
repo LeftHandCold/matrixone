@@ -23,154 +23,150 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/sql/parsers/dialect/mysql"
+	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 )
 
-func TestLifecycleDependencyPublicationLockUsesSystemFeatureRow(t *testing.T) {
+func TestLifecycleFeatureConfigurationLockUsesSystemFeatureRow(t *testing.T) {
 	bh := &lineagePublicationLockExec{}
 	bh.init()
 	ctx := defines.AttachAccountId(context.Background(), 42)
 
-	require.NoError(t, lockLifecycleDependencyPublication(ctx, bh))
+	require.NoError(t, lockLifecycleFeatureConfiguration(ctx, bh))
 	require.Equal(t, uint32(catalog.System_Account), bh.accountID)
 	require.Equal(t, []string{
 		"update mo_catalog.mo_feature_registry set scope_spec = scope_spec, updated_at = updated_at where feature_code = 'LIFECYCLE'",
 	}, bh.executedSQLs)
 }
 
-func TestLifecycleCloneDependencyFenceLocksSourceBeforePublication(t *testing.T) {
-	steps := make([]string, 0, 3)
-	record := func(step string) func() error {
-		return func() error {
-			steps = append(steps, step)
-			return nil
-		}
+func TestRejectLifecycleArchiveRestoreScope(t *testing.T) {
+	ctx := defines.AttachAccountId(context.Background(), 17)
+	scope := lifecycleArchiveRestoreScope{
+		level:        tree.RESTORELEVELTABLE,
+		accountID:    17,
+		snapshotTS:   123456,
+		databaseName: "db1",
+		tableName:    "t1",
+	}
+	probes, err := lifecycleArchiveRestoreProbes(scope)
+	require.NoError(t, err)
+	require.Len(t, probes, 3)
+	require.Contains(t, probes[0].sql, "action='ARCHIVE'")
+	require.Contains(t, probes[0].sql, "logical_table_id in (select rel_logical_id")
+	require.Contains(t, probes[0].sql, "reldatabase='db1'")
+	require.Contains(t, probes[0].sql, "relname='t1'")
+	require.NotContains(t, probes[0].sql, "logical_table_id=42")
+	require.Contains(t, probes[0].sql, "{MO_TS = 123456}")
+	require.Contains(t, probes[1].sql, "state<>'PURGED'")
+	require.Contains(t, probes[2].sql, "mode in ('ARCHIVE_WHOLE','ARCHIVE_REWRITE')")
+	require.Contains(t, probes[2].sql, "state<>'CLEANED'")
+	for _, probe := range probes {
+		_, parseErr := mysql.Parse(context.Background(), probe.sql, 1)
+		require.NoError(t, parseErr)
 	}
 
-	require.NoError(t, runLifecycleCloneDependencyFence(
-		record("source"),
-		record("publication"),
-		record("binding"),
-	))
-	require.Equal(t, []string{"source", "publication", "binding"}, steps)
+	for hit := range probes {
+		base := &backgroundExecTest{}
+		base.init()
+		background := &lifecycleRestoreContextExec{backgroundExecTest: base}
+		for index, probe := range probes {
+			rows := [][]interface{}(nil)
+			if index == hit {
+				rows = [][]interface{}{{"owner"}}
+			}
+			base.sql2result[probe.sql] = newMrsForPasswordOfUser(rows)
+		}
+
+		err = rejectLifecycleArchiveRestoreScope(
+			ctx,
+			background,
+			scope,
+			"RESTORE SNAPSHOT",
+		)
+		require.ErrorContains(t, err, "Lifecycle Archive")
+		require.Equal(t, probes[hit].accountID, background.accountIDs[hit])
+	}
 }
 
-func TestLifecycleAlterPublicationScopeFenceIsNarrowAndOrdered(t *testing.T) {
-	ctx := defines.AttachAccountId(context.Background(), 17)
-	lockSQL := "update mo_catalog.mo_feature_registry set scope_spec = scope_spec, updated_at = updated_at where feature_code = 'LIFECYCLE'"
-	probeSQL := `select b.binding_id from mo_catalog.mo_lifecycle_bindings b
-join mo_catalog.mo_tables t on t.rel_id=b.logical_table_id
-where b.state in ('ACTIVE','PAUSED','BLOCKED') and b.database_id=7
-and t.relname in ('t1','t2') limit 1`
-
-	bh := &backgroundExecTest{}
-	bh.init()
-	bh.sql2result[probeSQL] = newMrsForPasswordOfUser(nil)
-	require.NoError(t, fenceLifecycleAlterPublicationScope(
-		ctx,
-		bh,
-		true,
-		17,
-		7,
-		"t1,t2",
-	))
-	require.Equal(t, []string{lockSQL, probeSQL}, bh.executedSQLs)
-
-	bh = &backgroundExecTest{}
-	bh.init()
-	require.NoError(t, fenceLifecycleAlterPublicationScope(
-		ctx,
-		bh,
-		false,
-		17,
-		7,
-		"t1,t2",
-	))
-	require.Empty(t, bh.executedSQLs)
+func TestLifecycleArchiveClusterRootProbeCoversCurrentAndHistoricalOwners(t *testing.T) {
+	require.NotContains(t, lifecycleArchiveRootProbeSQL(0), "MO_TS")
+	require.Contains(t, lifecycleArchiveRootProbeSQL(123456), "{MO_TS = 123456}")
+	for _, ts := range []int64{0, 123456} {
+		sql := lifecycleArchiveRootProbeSQL(ts)
+		require.Contains(t, sql, "mode in ('ARCHIVE_WHOLE','ARCHIVE_REWRITE')")
+		require.Contains(t, sql, "state<>'CLEANED'")
+	}
 }
 
-func TestLifecycleAlterPublicationScopeFenceRejectsFinalBoundScope(t *testing.T) {
-	ctx := defines.AttachAccountId(context.Background(), 17)
-	probeSQL := `select b.binding_id from mo_catalog.mo_lifecycle_bindings b
-join mo_catalog.mo_tables t on t.rel_id=b.logical_table_id
-where b.state in ('ACTIVE','PAUSED','BLOCKED') and b.database_id=7
-and t.relname in ('t2') limit 1`
-	bh := &backgroundExecTest{}
-	bh.init()
-	bh.sql2result[probeSQL] = newMrsForPasswordOfUser(
-		[][]interface{}{{"binding"}},
-	)
+func TestLifecycleArchiveRestoreScopeIsArchiveOnlyAndFailsClosed(t *testing.T) {
+	scope := lifecycleArchiveRestoreScope{
+		level:        tree.RESTORELEVELDATABASE,
+		accountID:    17,
+		databaseName: "db'1",
+	}
+	probes, err := lifecycleArchiveRestoreProbes(scope)
+	require.NoError(t, err)
+	require.Len(t, probes, 3)
+	for _, probe := range probes {
+		require.NotContains(t, probe.sql, "TTL_REWRITE")
+		require.Contains(t, probe.sql, "reldatabase='db''1'")
+	}
 
-	err := fenceLifecycleAlterPublicationScope(
-		ctx,
-		bh,
-		true,
-		17,
-		7,
-		"t2",
-	)
-	require.ErrorContains(t, err, "ALTER PUBLICATION")
-}
-
-func TestLifecycleBindingScopeProbeSQL(t *testing.T) {
-	require.Equal(t,
-		"select binding_id from mo_catalog.mo_lifecycle_bindings where state in ('ACTIVE','PAUSED','BLOCKED') limit 1",
-		lifecycleBindingScopeProbeSQL(0, 0),
-	)
-	require.Equal(t,
-		"select binding_id from mo_catalog.mo_lifecycle_bindings where state in ('ACTIVE','PAUSED','BLOCKED') and database_id=17 limit 1",
-		lifecycleBindingScopeProbeSQL(17, 0),
-	)
-	require.Equal(t,
-		"select binding_id from mo_catalog.mo_lifecycle_bindings where state in ('ACTIVE','PAUSED','BLOCKED') and physical_table_id=23 limit 1",
-		lifecycleBindingScopeProbeSQL(17, 23),
-	)
-}
-
-func TestRejectLifecycleBindingInScopeFailsClosed(t *testing.T) {
-	bh := &backgroundExecTest{}
-	bh.init()
-	sql := lifecycleBindingScopeProbeSQL(17, 23)
-	bh.sql2result[sql] = newMrsForPasswordOfUser([][]interface{}{{"binding"}})
-
-	err := rejectLifecycleBindingInScope(
+	base := &backgroundExecTest{}
+	base.init()
+	background := &lifecycleRestoreContextExec{backgroundExecTest: base}
+	for _, probe := range probes {
+		base.sql2result[probe.sql] = newMrsForPasswordOfUser(nil)
+	}
+	require.NoError(t, rejectLifecycleArchiveRestoreScope(
 		context.Background(),
-		bh,
-		9,
-		17,
-		23,
-		"CREATE SNAPSHOT",
-	)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "Lifecycle-bound")
-}
+		background,
+		scope,
+		"RESTORE PITR",
+	))
+	require.Equal(t, []uint32{17, 17, catalog.System_Account}, background.accountIDs)
 
-func TestRejectLifecycleBindingInScopeAllowsTenantBeforeCatalogUpgrade(t *testing.T) {
-	bh := &backgroundExecTest{}
-	bh.init()
-	sql := lifecycleBindingScopeProbeSQL(17, 23)
-	bh.sql2err[sql] = moerr.NewNoSuchTableNoCtx(
-		"mo_catalog",
-		"mo_lifecycle_bindings",
-	)
-
-	require.NoError(t, rejectLifecycleBindingInScope(
+	base = &backgroundExecTest{}
+	base.init()
+	background = &lifecycleRestoreContextExec{backgroundExecTest: base}
+	for _, probe := range probes {
+		base.sql2result[probe.sql] = newMrsForPasswordOfUser(nil)
+		base.sql2err[probe.sql] = moerr.NewNoSuchTableNoCtx(
+			"mo_catalog",
+			"mo_lifecycle_bindings",
+		)
+	}
+	require.NoError(t, rejectLifecycleArchiveRestoreScope(
 		context.Background(),
-		bh,
-		9,
-		17,
-		23,
-		"CREATE SNAPSHOT",
+		background,
+		scope,
+		"RESTORE PITR",
 	))
 
 	wantErr := moerr.NewInternalErrorNoCtx("catalog read failed")
-	bh.sql2err[sql] = wantErr
-	err := rejectLifecycleBindingInScope(
+	base = &backgroundExecTest{}
+	base.init()
+	background = &lifecycleRestoreContextExec{backgroundExecTest: base}
+	base.sql2err[probes[0].sql] = wantErr
+	err = rejectLifecycleArchiveRestoreScope(
 		context.Background(),
-		bh,
-		9,
-		17,
-		23,
-		"CREATE SNAPSHOT",
+		background,
+		scope,
+		"RESTORE PITR",
 	)
 	require.ErrorIs(t, err, wantErr)
+}
+
+type lifecycleRestoreContextExec struct {
+	*backgroundExecTest
+	accountIDs []uint32
+}
+
+func (e *lifecycleRestoreContextExec) Exec(ctx context.Context, sql string) error {
+	accountID, err := defines.GetAccountId(ctx)
+	if err != nil {
+		return err
+	}
+	e.accountIDs = append(e.accountIDs, accountID)
+	return e.backgroundExecTest.Exec(ctx, sql)
 }

@@ -54,6 +54,9 @@
 - Parquet/ZSTD direct-readable Archive；
 - Provider full readback；
 - Restore 到独立新表；
+- Snapshot/PITR创建及其现有MVCC/GC历史保护；
+- Clone/Data Branch按目标时间点复制活动数据，目标表不继承Lifecycle；
+- 普通同集群Publication/Subscription直接读取发布者活动表；
 - DROP 后异步放弃 Restore 并清理归档；
 - 常见单表 1 TiB，认证目标单表 10 TiB；
 - 50 → 200 → 500 → 1000 张绑定表分阶段放量。
@@ -65,15 +68,18 @@
 - 逻辑分区表和物理Partition child（Phase 1在Bind时直接拒绝）；
 - Archive Mixed 普通 Row DELETE；
 - 修改普通 Merge 候选、排序、writer、WAL 或 GC；
-- FK、Publication、Fulltext、Vector、插件和隐藏索引表；
-- Lifecycle-aware Snapshot/PITR/Backup/Clone/Branch/DR；
+- FK、Fulltext、Vector、插件和隐藏索引表；
+- Snapshot/PITR Restore包含Lifecycle Archive状态的scope；
+- Lifecycle-aware Backup/DR，以及Clone/Branch继承Binding、Dataset或Archive Payload；
+- CDC/CCPR与Lifecycle的兼容性和退休事件完整性保证；
 - Legal Hold、WORM、maximum retention；
 - DROP 后继续保证 Restore；
 - 恢复回原表或自动适配原表当前 schema。
 
-不支持能力在开始前 fail closed，不能静默产生不完整结果。CDC不进入Phase 1兼容性
-合同：Lifecycle不查询或阻止CDC，也不为Object退休生成CDC行级DELETE事件。CDC能否创建
-和运行仍服从CDC自身的PITR前置条件；Lifecycle不保证其下游收到退休事件。
+Lifecycle自身入口能够识别、且继续执行会产生不完整Archive/Restore的不支持能力，在副作用
+前fail closed。CDC/CCPR不进入Phase 1兼容性合同：Lifecycle不查询或阻止其Catalog，不修改
+其创建/运行路径，也不为Object退休生成逐行DELETE事件；其下游完整性不属于Lifecycle GA
+保证。
 
 ## 4. 唯一 Object 路线
 
@@ -227,8 +233,10 @@ publish Journal。SQL重试若发现`DONE` Attempt的target名称仍精确映射
 可能与Lifecycle冲突的表级DDL只复用既有`mo_tables`行锁并执行一次索引化Binding
 存在性查询，不取得集群级feature-row写锁。release gate关闭后Binding仍可能处于
 PAUSED/BLOCKED并需要UNSET或DROP收敛，因此不为“feature off”另建CN缓存或第二套开关
-状态。Snapshot/PITR/Publication等scope级空集合发布才跨既有feature-row barrier。上述
-低频控制面检查不能扩散到普通查询、DML或Merge热路径。
+状态。Snapshot/PITR创建、Clone/Data Branch和普通同集群Publication/Subscription不访问
+Lifecycle feature row，也不与Binding互斥；Snapshot/PITR Restore仅在Restore管理路径的
+破坏性提交前执行Archive scope fail-closed检查，并要求先关闭、drain Lifecycle数据任务。
+上述低频控制面检查不能扩散到普通查询、DML或Merge热路径。
 
 ### I-11 All growth is bounded
 
@@ -240,38 +248,46 @@ Lifecycle。首个GA通过Scheduler/CN并发、
 单请求硬上限和active-coexistence门禁约束资源，不增加TN Lifecycle专用permit或比普通
 Merge更强的资源协议。
 
-### I-12 DDL fence is management-path only
+### I-12 Lifecycle控制面与表级DDL fence
 
-DDL fence 不进入查询、DML或Merge热路径。实现只作用于`SET LIFECYCLE`和可能创建不兼容
-依赖/改变表身份的管理操作：
+DDL fence 不进入查询、DML或Merge热路径。实现只作用于`SET LIFECYCLE`和改变绑定表
+身份、schema或不支持表内依赖的管理操作：
 
 1. 表DDL与`SET LIFECYCLE`复用现有`mo_tables`行锁；表DDL随后只做索引化Binding
    lookup或DROP detach，不写feature-row；
 2. `SET LIFECYCLE`在持有表锁后更新一次system account中已经存在的`LIFECYCLE`
-   `mo_feature_registry`行，关闭与scope级依赖发布的首次Binding空集合竞态；
-3. Snapshot、PITR、Publication和Clone/Branch创建跨同一个feature-row barrier，再按索引
-   查询目标scope中是否存在Binding；
-4. Lifecycle不接入尚未商用的CDC控制面，也不修改CDC创建/运行路径；Publication
-   scope包含当前database及`database_id=0`账户级发布。Lifecycle不修改或阻断普通物理
-   Backup；Backup继续按MO现有语义保存活动数据，不复制外部Archive Payload，也不承诺
-   从该Backup恢复后可执行`RESTORE ARCHIVE`，已经退休的历史行不属于活动表备份内容；
-5. 已绑定表的TRUNCATE、ALTER、CREATE INDEX等不兼容DDL fail closed；DROP TABLE在同一
+   `mo_feature_registry`行，只用于Lifecycle自身的release/config/capacity控制顺序；它不是
+   与其他产品功能共享的数据正确性barrier；
+3. Snapshot/PITR创建和保留直接复用现有MVCC/GC；Clone/Data Branch只复制目标时间点的
+   活动数据，新表不继承Binding、Dataset或Archive Payload；普通同集群Publication/
+   Subscription直接读取发布者物理表的活动视图。上述路径都不访问Lifecycle feature row；
+4. Snapshot/PITR Restore若源或目标scope含`ARCHIVE` Binding、非`PURGED` Dataset或非
+   `CLEANED`的`ARCHIVE_*` Root，在任何破坏性Restore事务提交前fail closed；不跨Restore
+   过程持有全局Lifecycle锁。Phase 1执行前关闭并drain Lifecycle数据任务，不承诺与
+   `SET LIFECYCLE`/Archive finalizer并发；
+5. Lifecycle不接入CDC/CCPR控制面，也不修改其创建/运行路径。Lifecycle不修改或阻断普通
+   物理Backup创建；但物理Backup可能包含Binding、Dataset、Root、Stage和release gate等
+   Catalog状态，却不复制外部Archive Payload。含这些状态的物理Backup Restore在Phase 1
+   unsupported：恢复环境必须在任何Lifecycle Coordinator/Sweeper tick前隔离Lifecycle任务
+   和原Archive namespace的删除凭据；仅设置`enabled=false`不足以隔离仍需运行的cleanup；
+6. 已绑定表的TRUNCATE、ALTER、CREATE INDEX等不兼容DDL fail closed；DROP TABLE在同一
    `mo_tables`锁事务中删除Binding，DROP DATABASE在原数据库DDL事务中按database identity
    补删孤儿Binding；外部Payload按Cleanup Root异步回收；
-6. Finalizer仍校验Binding generation、physical table、schema和exact source identity；
-7. tenant异步upgrade期间，普通管理DDL仅把Lifecycle表的精确`ErrNoSuchTable`视为尚无
+7. Finalizer仍校验Binding generation、physical table、schema和exact source identity；
+8. tenant异步upgrade期间，普通管理DDL仅把Lifecycle表的精确`ErrNoSuchTable`视为尚无
    Binding；Lifecycle命令仍fail closed。Cleanup Root的物理`account_id=0`和Restore表的
    同名哨兵列只兼容旧CN，不进入Lifecycle业务状态。
 
-这个barrier复用已有单行，不为未绑定表创建Guard/Candidate/其他Catalog行，也不进入
-普通表级DDL。feature关闭时跳过Binding/Restore调度和数据路径，但历史Cleanup Root仍由
-Coordinator有界reconcile/sweep，避免关闭开关造成外部对象泄漏；仅scope级依赖发布和
-`SET LIFECYCLE`使用屏障，普通查询、DML、Merge、checkpoint、GC和logtail永远不访问它。
+这条feature row只服务Lifecycle自身控制面，不为未绑定表创建Guard/Candidate/其他Catalog
+行，也不进入普通表级DDL或Snapshot/PITR/Clone/Branch/Publication路径。feature关闭时跳过
+Binding/Restore调度和数据路径，但历史Cleanup Root仍由Coordinator有界reconcile/sweep，
+避免关闭开关造成外部对象泄漏；普通查询、DML、Merge、checkpoint、GC和logtail永远不
+访问它。
 
 接受的控制面代价仅限少量管理操作：新增FK为关闭父表首次Binding竞态会锁父表
-`mo_tables`行；Clone/Branch等scope发布在其后台事务期间持有feature-row barrier；
-`REMOVE @stage/...`在Provider删除期间持有对应Stage行锁。它们可能串行同一资源上的管理
-操作，但不进入普通查询、DML或Merge，也不扩展成所有表DDL的全局锁。
+`mo_tables`行；`REMOVE @stage/...`在Provider删除期间持有对应Stage行锁。它们可能串行
+同一资源上的管理操作，但不进入普通查询、DML或Merge，也不扩展成跨租户管理功能的
+全局锁。
 
 ## 6. 最小权威数据
 
@@ -320,7 +336,7 @@ Gate D  Whole exact retire + thin commit-control
 Gate E  单源Mixed Rewrite + post-S DELETE
 Gate F  TTL小Mixed DELETE（可关闭的性能优化）
 Gate G  Restore/Purge lease
-Gate H  管理路径依赖/DDL fence与滚动升级fail-closed
+Gate H  表级DDL fence、Restore支持边界与滚动升级fail-closed
 Gate I  1/10 TiB、30天soak、50→1000表放量
 ```
 

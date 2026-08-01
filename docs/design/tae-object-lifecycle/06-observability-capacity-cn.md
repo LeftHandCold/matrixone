@@ -186,9 +186,15 @@ continue purge and cleanup
 这里的`pause retirement`指不再启动新的child；已经进入执行的child可能完成当前Archive、
 readback或final transaction。Kill switch不强制清理FINALIZING/COMMIT_UNKNOWN，也不取消
 已进入普通事务Prepare的操作。普通Backup不以Lifecycle gate或in-flight drain为前置条件，
-其范围只包含MO现有Backup能够保存的活动数据，不包含外部Archive Payload。
+但这只说明Backup创建路径不被Lifecycle阻断，不代表其产物具备Lifecycle恢复能力。物理
+Backup可能包含Lifecycle Catalog、Stage和release gate，却不包含外部Archive Payload。
 Export-only只用于测试/认证Writer与Provider，不作为Phase 1生产模式。关闭retirement release
 后不创建新Root或执行Provider PUT，只继续Purge、收敛已有Root和终态元数据。
+
+因此`enabled=false`不是物理Backup Restore的隔离开关：本节定义的历史Root cleanup仍会
+运行。含Lifecycle状态的物理Backup Restore在Phase 1 unsupported；恢复环境必须在任何
+Coordinator/Sweeper tick前禁用Lifecycle任务，并隔离原Archive namespace的删除凭据。完整
+Backup/DR兼容由独立PR实现，不在Lifecycle运行时增加cluster identity或恢复状态机。
 
 ## 7. 普通MO隔离
 
@@ -201,7 +207,9 @@ feature off：
 - 除上述历史Root清理外无新的Provider PUT/readback；
 - 普通查询、DML、Merge、checkpoint、GC和logtail无Lifecycle Catalog访问；
 - 表级管理DDL仍执行一次索引化Binding检查，但不取得集群级feature-row写锁；
-- Snapshot/PITR/Publication等scope级发布才使用既有feature-row barrier；
+- Snapshot/PITR创建、Clone/Data Branch和普通同集群Publication/Subscription不访问
+  Lifecycle feature row；Snapshot/PITR Restore仅在破坏性提交前执行Archive scope
+  fail-closed检查，并要求先关闭、drain Lifecycle数据任务；
 - 普通Merge语义、默认参数、候选、排序、writer、WAL和GC不变；每个Block只增加一次
   `lifecycleReadBudget == nil`快速分支，feature-off开销由Gate I对照基准验证；
 - unknown Entry安全解析只增加可测的常数分支。

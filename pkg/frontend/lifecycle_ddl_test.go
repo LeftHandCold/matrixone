@@ -26,7 +26,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
-	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/features"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
@@ -636,84 +635,4 @@ where rel_id=42 and reldatabase_id=7 for update`
 		err,
 		"disappeared",
 	)
-}
-
-func TestValidateLifecycleExistingDependenciesFailsClosed(t *testing.T) {
-	ctx := defines.AttachAccountId(context.Background(), 17)
-	definition := lifecycleTableDef(types.T_timestamp)
-	queries := []string{
-		`select snapshot_id from mo_catalog.mo_snapshots
-where ((level='account' and obj_id=17)
-or (level='database' and obj_id=7)
-or (level='table' and obj_id=42))
-limit 1`,
-		`select snapshot_id from mo_catalog.mo_snapshots
-where (level='cluster'
-or (level='account' and obj_id=17)
-or (level='database' and obj_id=7)
-or (level='table' and obj_id=42))
-limit 1`,
-		`select pitr_id from mo_catalog.mo_pitr
-where pitr_status=1 and (level='cluster'
-or (account_id=17 and (level='account'
-or (level='database' and obj_id=7)
-or (level='table' and obj_id=42))))
-limit 1`,
-		`select pub_name from mo_catalog.mo_pubs
-where account_id=17 and (database_id=0 or database_id=7)
-and (all_table=true or table_list='*' or find_in_set('events',table_list)>0)
-limit 1`,
-	}
-	for index, dependency := range []string{
-		"Snapshot", "Snapshot", "PITR", "Publication",
-	} {
-		base := &backgroundExecTest{}
-		base.init()
-		background := &lifecycleDependencyContextExec{backgroundExecTest: base}
-		for queryIndex, query := range queries {
-			rows := [][]interface{}(nil)
-			if queryIndex == index {
-				rows = [][]interface{}{{"dependency"}}
-			}
-			base.sql2result[query] = newMrsForPasswordOfUser(rows)
-		}
-		err := validateLifecycleExistingDependencies(
-			ctx,
-			background,
-			17,
-			definition,
-		)
-		require.ErrorContains(t, err, dependency)
-		require.Len(t, background.executedSQLs, index+1)
-		wantAccountIDs := []uint32{17, 0, 0, 0}
-		require.Equal(t, wantAccountIDs[:index+1], background.accountIDs)
-	}
-
-	base := &backgroundExecTest{}
-	base.init()
-	background := &lifecycleDependencyContextExec{backgroundExecTest: base}
-	for _, query := range queries {
-		base.sql2result[query] = newMrsForPasswordOfUser(nil)
-	}
-	require.NoError(t, validateLifecycleExistingDependencies(
-		ctx,
-		background,
-		17,
-		definition,
-	))
-	require.Equal(t, []uint32{17, 0, 0, 0}, background.accountIDs)
-}
-
-type lifecycleDependencyContextExec struct {
-	*backgroundExecTest
-	accountIDs []uint32
-}
-
-func (e *lifecycleDependencyContextExec) Exec(ctx context.Context, sql string) error {
-	accountID, err := defines.GetAccountId(ctx)
-	if err != nil {
-		return err
-	}
-	e.accountIDs = append(e.accountIDs, accountID)
-	return e.backgroundExecTest.Exec(ctx, sql)
 }

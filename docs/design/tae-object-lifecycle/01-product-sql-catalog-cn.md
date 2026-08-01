@@ -93,17 +93,17 @@ Lifecycle列必须：
 Phase 1拒绝：
 
 - 逻辑分区表和物理Partition child；
-- FK、Publication/Subscription；
+- FK；
 - Fulltext、Vector、插件和隐藏索引表；
-- Snapshot/PITR/Clone/Branch与Lifecycle同时启用；
 - inline-only Stage secret；
 - 未经部署认证的Archive Stage，以及启用对象Versioning的Bucket/Container；
 - `ENUM`、`SET`和typed ARRAY等仅靠OID不能无损重建的编码SQL类型；
 - append-only语义无法保证的外部表。
 
-这些检查只发生在Binding DDL和相关能力DDL，不进入普通DML。CDC不属于Phase 1准入
-依赖：Lifecycle既不查询CDC Catalog，也不修改CDC接口；Object退休不会产生CDC行级DELETE，
-因此CDC下游完整性不属于Lifecycle GA保证。
+这些检查只发生在Binding DDL和相关表级DDL，不进入普通DML。Snapshot/PITR创建、Clone/
+Data Branch和普通同集群Publication/Subscription允许与Lifecycle共存，不属于Binding准入
+依赖。CDC/CCPR不属于Phase 1准入依赖：Lifecycle既不查询其Catalog，也不修改其接口；
+Object退休不会产生逐行DELETE，因此其下游完整性不属于Lifecycle GA保证。
 
 权限合同：
 
@@ -412,36 +412,45 @@ Manifest中的全局最大值，不在Receipt中再维护第二份逐Chunk最大
 回收按5分钟一个有界account page持续推进，而不是每天只回收一页；单个unknown Root只
 保留自己的Receipt，不能阻塞同账户其他Binding的终态回收。
 
-## 12. DDL与依赖发布fence
+## 12. 表级DDL fence与周边功能边界
 
-Lifecycle采用薄的管理路径fence，不建设Feature Guard表：
+Lifecycle只保留自身需要的薄管理路径fence，不建设Feature Guard表：
 
-- 表DDL和`SET LIFECYCLE`复用现有`mo_tables`逻辑行锁；只有`SET LIFECYCLE`随后更新
-  system account中已存在的`mo_feature_registry(feature_code='LIFECYCLE')`行作为与
-  scope级依赖发布之间的write barrier；
-- Snapshot/PITR/Publication/Clone/Branch创建跨同一write barrier，然后按目标scope索引化
-  查询Binding；
-- 该行只承担管理操作发布顺序，不保存per-table owner、attempt或dependency集合；
-- Lifecycle不接入CDC控制面；SET不查询Task/Watermark，CREATE CDC也不增加Lifecycle
-  barrier。CDC能否创建和运行仍服从其自身PITR前置条件；Lifecycle不保证下游收到Object
-  退休对应的逐行DELETE。Publication scope检查必须同时覆盖当前database和`database_id=0`的账户级
-  `DATABASE *`。Lifecycle不修改普通物理Backup的准入和执行路径。Backup只按MO现有
-  语义保存活动数据，不复制外部Archive Payload；从该Backup恢复后不承诺Archive Catalog、
-  Stage或`RESTORE ARCHIVE`可用，已经从活动表退休的历史行不属于该Backup的数据完整性
-  范围。DR恢复仍必须显式声明Archive不可用，不能把活动数据恢复宣传为完整历史恢复；
+- 表DDL和`SET LIFECYCLE`复用现有`mo_tables`逻辑行锁；绑定表的identity/schema/不支持
+  表内依赖变更由该锁、Binding generation和Finalizer exact检查共同关闭；
+- `SET LIFECYCLE`在持有表锁后访问system account中已存在的
+  `mo_feature_registry(feature_code='LIFECYCLE')`行，只用于Lifecycle自己的release、配置
+  和容量控制顺序。该行不是跨产品功能的数据正确性barrier；
+- Snapshot/PITR创建和保留直接复用现有Object MVCC与GC保护，不读取Binding，也不访问
+  Lifecycle feature row。Snapshot/PITR Restore若源或目标scope包含`ARCHIVE` Binding、非
+  `PURGED` Dataset或非`CLEANED`的`ARCHIVE_*` Root，必须在任何破坏性Restore事务提交前
+  fail closed；Restore与`SET LIFECYCLE`/Archive finalizer并发不在Phase 1认证范围，执行前
+  必须关闭并drain Lifecycle数据任务；
+- Clone/Data Branch只复制目标时间点的活动数据，目标表使用新身份且不继承Binding、
+  Dataset或Archive Payload；普通同集群Publication/Subscription直接读取发布者活动表。
+  这些创建和运行路径不访问Lifecycle feature row；
+- Lifecycle不接入CDC/CCPR控制面；SET不查询其Task/Watermark，其创建和运行路径也不增加
+  Lifecycle hook。Lifecycle不保证下游收到Object退休对应的逐行DELETE；
+- Lifecycle不修改普通物理Backup的准入和创建路径。物理Backup可能包含Binding、Dataset、
+  Root、Stage和release gate等Catalog状态，但不会复制Stage中的外部Archive Payload。
+  含这些状态的物理Backup Restore在Phase 1 unsupported：恢复环境必须在任何Lifecycle
+  Coordinator/Sweeper tick前隔离Lifecycle任务和原Archive namespace删除凭据；仅设置
+  `enabled=false`不足，因为历史Root cleanup在正常集群中不受release gate阻断；
 - Finalizer仍使用Binding generation/physical table/schema与exact source Object检查决定
   是否退休，不把feature row当作数据正确性Owner。
 
-`SET LIFECYCLE`固定采用`mo_tables -> feature row`锁顺序，避免首次Binding的空查询竞态和
-锁顺序反转。普通表DDL只取得已有`mo_tables`锁并执行索引化Binding lookup；普通查询、
-DML、Merge不访问feature row，未绑定表不创建任何Lifecycle Guard元数据。
+`SET LIFECYCLE`固定采用`mo_tables -> Lifecycle feature row`锁顺序，只串行Lifecycle自身
+控制面。普通表DDL只取得已有`mo_tables`锁并执行索引化Binding lookup；Snapshot/PITR/
+Clone/Branch/Publication、普通查询、DML和Merge均不访问feature row，未绑定表不创建任何
+Lifecycle Guard元数据。
 
 Phase 1产品行为采用fail-closed：
 
 - DROP TABLE/DATABASE/ACCOUNT允许，按05放弃Restore并异步清理；
 - SET LIFECYCLE拒绝逻辑分区表和物理Partition child；已绑定表拒绝转换为分区表；
 - UNSET/PAUSE/RESUME和Policy更新允许，但必须推进Binding generation；
-- 绑定期间TRUNCATE、ALTER COPY、Lifecycle列变更、其他schema变更和新增不支持依赖拒绝；
+- 绑定期间TRUNCATE、ALTER COPY、Lifecycle列变更、其他schema变更和新增不支持表内依赖
+  拒绝；
 - 用户需要这些DDL时先UNSET，待在途Root收敛后执行，再按新physical/schema重新SET；
 - 未绑定表的不兼容DDL只复用现有`mo_tables`锁并执行按`(account_id,
   physical_table_id)`的Binding存在性查询，不跨feature-row barrier，也不创建Guard或其他
