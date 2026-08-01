@@ -31,6 +31,25 @@ func TestLifecycleRestorePublishedRetryNeedsNoStaging(t *testing.T) {
 	require.False(t, lifecycleRestoreAlreadyPublished(false, "DONE"))
 }
 
+func TestLifecycleRestoreCNAdmissionIsFailFastAndExactlyOnce(t *testing.T) {
+	slots := make(chan struct{}, 1)
+	release, acquired := tryAcquireLifecycleRestoreSlot(slots)
+	require.True(t, acquired)
+	require.Len(t, slots, 1)
+
+	blockedRelease, acquired := tryAcquireLifecycleRestoreSlot(slots)
+	require.False(t, acquired)
+	require.Nil(t, blockedRelease)
+
+	release()
+	release()
+	require.Empty(t, slots)
+
+	release, acquired = tryAcquireLifecycleRestoreSlot(slots)
+	require.True(t, acquired)
+	release()
+}
+
 func TestFrontendResolveRejectsLifecycleRestoreStagingBeforeEngineAccess(t *testing.T) {
 	proc := testutil.NewProc(nil)
 	proc.Base.IsFrontend = true

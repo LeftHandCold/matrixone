@@ -148,6 +148,8 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 ### 6.3 Tombstone unknown fail-closed
 
 - Snapshot Reader和SyncProtection消费同一次Tombstone选择的exact identities；
+- TN拒绝空SyncProtection job ID、其他attempt的job ID、超过V1常量的delta rows/bytes，且
+  拒绝发生在Booking I/O和TAE mutation之前；
 - 有效ZoneMap明确不相交时才允许排除；
 - ZoneMap缺失、未初始化、legacy、截断、解码失败和异常RowID范围均保守纳入；
 - unknown路径不得调用`RowidPrefixEq`决定排除；
@@ -299,6 +301,11 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - `expire + late arrival`和`purge`超过106751天时SET必须拒绝，边界值不能在worker的
   `time.Duration`计算中溢出；
 - 1000 Binding公平性。
+- kill switch在排队child取得并发槽后和同一Binding进入下一个Object前重查；关闭后不再
+  启动新Object，已经执行中的Object允许完成；
+- Dataset/Job超过1000行时使用稳定ID tie-breaker和LIMIT/OFFSET有界查询；
+  `OFFSET + LIMIT`超过1,000,000必须拒绝。Catalog静止时验证完整翻页，并发变更时只验证
+  单次查询稳定和资源有界，不承诺跨页一致快照。
 
 ## 11. Cleanup
 
@@ -323,6 +330,10 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - deadline abort；
 - hidden table publish response lost；
 - multiple Restore；
+- 同一CN第二个Restore在任何Dataset/Provider/hidden-table副作用前fail-fast，第一个退出后
+  permit exactly-once释放；
+- Dataset与Manifest的root/attempt、Manifest SHA、schema digest、verification status或
+  Root-scoped namespace任一不一致均禁止创建隐藏表；
 - DROP table/database/account；
 - Stage unavailable；
 - unsupported schema version。
@@ -337,6 +348,7 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - schema digest变化；
 - finalizer与DDL同时到达。
 - 首次SET与Snapshot/PITR/Publication/Clone/Branch创建同时到达；
+- 已有`database_id=0`账户级Publication时SET必须拒绝；
 - 当前生产悲观事务下`SET LIFECYCLE`的`mo_tables -> feature row`锁顺序，以及普通表DDL
   不取得feature row；
 - feature关闭时只允许历史Cleanup Root的有界reconcile/sweep、过期Restore隐藏表清理和
@@ -346,8 +358,8 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
   使用独立固定deadline终止；
 - 新CN→旧TN、旧CN→新TN、滚动升级、关闭retirement后降级。
 
-验收必须证明真实锁或WW conflict，不能以“最后读取值正确”代替互斥。CDC使用PITR
-依赖门禁。物理Backup在retirement gate开启、任一账户仍有Binding/非`PURGED` Dataset，
+验收必须证明真实锁或WW conflict，不能以“最后读取值正确”代替互斥。CDC不进入
+Phase 1 Lifecycle准入或DDL fence，其下游完整性明确不在本功能SLA内。物理Backup在retirement gate开启、任一账户仍有Binding/非`PURGED` Dataset，
 或system account仍有非`CLEANED` Root时必须拒绝；只有gate关闭且三类状态均清空/收敛后
 才允许。DR不能静默恢复不完整历史。
 

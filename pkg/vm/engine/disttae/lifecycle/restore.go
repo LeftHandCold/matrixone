@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"path"
 	"time"
 
 	metricv2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
@@ -30,7 +31,10 @@ type RestoreDataset struct {
 	DatasetID       string
 	AccountID       uint32
 	RootID          string
+	AttemptID       string
 	ManifestKey     string
+	ManifestDigest  [sha256.Size]byte
+	SchemaDigest    [sha256.Size]byte
 	ContentHash     [sha256.Size]byte
 	RowCount        uint64
 	LogicalBytes    uint64
@@ -163,6 +167,9 @@ func (coordinator RestoreCoordinator) Restore(
 	}
 	manifest, err := ReadArchiveManifest(ctx, coordinator.Store, dataset.ManifestKey)
 	if err != nil {
+		return err
+	}
+	if err := validateRestoreDatasetManifestIdentity(dataset, manifest); err != nil {
 		return err
 	}
 	if manifest.ContentHash != dataset.ContentHash ||
@@ -305,6 +312,39 @@ func (coordinator RestoreCoordinator) Restore(
 		return err
 	}
 	return faults.Inject(ctx, FaultAfterRestorePublish)
+}
+
+func validateRestoreDatasetManifestIdentity(
+	dataset RestoreDataset,
+	manifest *ArchiveManifest,
+) error {
+	if manifest == nil ||
+		dataset.RootID == "" ||
+		dataset.AttemptID == "" ||
+		manifest.RootID != dataset.RootID ||
+		manifest.AttemptID != dataset.AttemptID ||
+		manifest.SchemaDigest != dataset.SchemaDigest ||
+		manifest.VerificationStatus != "FULL_READBACK_VERIFIED" {
+		return fmt.Errorf("Lifecycle Dataset and Manifest identity mismatch")
+	}
+	manifestDigest, err := manifestDigestFromKey(dataset.ManifestKey)
+	if err != nil || manifestDigest != dataset.ManifestDigest {
+		return fmt.Errorf("Lifecycle Dataset Manifest digest mismatch")
+	}
+	prefix := path.Dir(dataset.ManifestKey)
+	if !lifecycleRootScopedPrefix(
+		prefix,
+		dataset.RootID,
+		dataset.AttemptID,
+	) || !cleanupKeyWithinPrefix(dataset.ManifestKey, prefix) {
+		return fmt.Errorf("Lifecycle Dataset Manifest namespace mismatch")
+	}
+	for _, file := range manifest.Files {
+		if !cleanupKeyWithinPrefix(file.Key, prefix) {
+			return fmt.Errorf("Lifecycle Dataset Payload namespace mismatch")
+		}
+	}
+	return nil
 }
 
 func (coordinator RestoreCoordinator) Purge(

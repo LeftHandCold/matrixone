@@ -187,6 +187,10 @@ Dataset/Receipt及Cleanup Root负责，不在TN退休entry中复制。
 
 V1不包含D/E业务值、SourceLayoutProof、destination bitmap或第二份mapping。
 SyncProtection job ID复用现有`PrecommitWriteCmd.SyncProtectionJobId`，不在entry内重复。
+TN在任何Booking I/O、Catalog mutation前要求该ID非空且属于`attempt_id`命名空间；
+正确worker使用`<attempt-id>-<protection-digest>`。V1同时在TN冻结
+`max_delta_rows <= 100000`、`max_delta_bytes <= 32 MiB`和`max_delta_blocks <= source
+block count`，不能只相信CN传入的非零数值。这是wire输入校验，不是TN专用permit。
 
 Digest统一使用SHA-256和固定domain separator：
 

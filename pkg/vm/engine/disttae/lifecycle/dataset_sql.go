@@ -46,7 +46,8 @@ func (reader SQLDatasetReader) GetRestoreDataset(
 	result, err := reader.Executor.Exec(
 		ctx,
 		fmt.Sprintf(
-			`select hex(dataset_id),hex(root_id),manifest_key,hex(content_hash),
+			`select hex(dataset_id),hex(root_id),hex(attempt_id),manifest_key,
+hex(manifest_sha256),hex(schema_descriptor_digest),hex(content_hash),
 row_count,logical_bytes,version,state,stage_id,stage_identity_blob,
 date_format(purge_eligible_at,'%%Y-%%m-%%d %%H:%%i:%%s.%%f'),
 coalesce(hex(restore_lease_id),''),
@@ -64,18 +65,28 @@ from mo_catalog.mo_lifecycle_datasets where dataset_id=unhex('%s')`,
 	rowsRead := 0
 	var decodeErr error
 	result.ReadRows(func(rows int, columns []*vector.Vector) bool {
-		if len(columns) != 13 || rowsRead+rows != 1 {
+		if len(columns) != 16 || rowsRead+rows != 1 {
 			decodeErr = fmt.Errorf("Lifecycle Dataset row is invalid")
 			return false
 		}
-		contentHash, err := decodeDatasetDigest(columns[3].GetStringAt(0))
+		manifestDigest, err := decodeDatasetDigest(columns[4].GetStringAt(0))
+		if err != nil {
+			decodeErr = err
+			return false
+		}
+		schemaDigest, err := decodeDatasetDigest(columns[5].GetStringAt(0))
+		if err != nil {
+			decodeErr = err
+			return false
+		}
+		contentHash, err := decodeDatasetDigest(columns[6].GetStringAt(0))
 		if err != nil {
 			decodeErr = err
 			return false
 		}
 		purgeTime, err := time.ParseInLocation(
 			lifecycleSQLTimestampLayout,
-			columns[10].GetStringAt(0),
+			columns[13].GetStringAt(0),
 			time.UTC,
 		)
 		if err != nil {
@@ -86,18 +97,21 @@ from mo_catalog.mo_lifecycle_datasets where dataset_id=unhex('%s')`,
 			DatasetID:       parseDatasetUUID(columns[0].GetStringAt(0)),
 			AccountID:       accountID,
 			RootID:          parseDatasetUUID(columns[1].GetStringAt(0)),
-			ManifestKey:     columns[2].GetStringAt(0),
+			AttemptID:       parseDatasetUUID(columns[2].GetStringAt(0)),
+			ManifestKey:     columns[3].GetStringAt(0),
+			ManifestDigest:  manifestDigest,
+			SchemaDigest:    schemaDigest,
 			ContentHash:     contentHash,
-			RowCount:        vector.GetFixedAtNoTypeCheck[uint64](columns[4], 0),
-			LogicalBytes:    vector.GetFixedAtNoTypeCheck[uint64](columns[5], 0),
-			Version:         vector.GetFixedAtNoTypeCheck[uint64](columns[6], 0),
-			State:           columns[7].GetStringAt(0),
-			StageID:         vector.GetFixedAtNoTypeCheck[uint64](columns[8], 0),
-			StageIdentity:   append([]byte(nil), columns[9].GetBytesAt(0)...),
+			RowCount:        vector.GetFixedAtNoTypeCheck[uint64](columns[7], 0),
+			LogicalBytes:    vector.GetFixedAtNoTypeCheck[uint64](columns[8], 0),
+			Version:         vector.GetFixedAtNoTypeCheck[uint64](columns[9], 0),
+			State:           columns[10].GetStringAt(0),
+			StageID:         vector.GetFixedAtNoTypeCheck[uint64](columns[11], 0),
+			StageIdentity:   append([]byte(nil), columns[12].GetBytesAt(0)...),
 			PurgeEligibleAt: purgeTime,
-			RestoreLeaseID:  parseDatasetUUID(columns[11].GetStringAt(0)),
+			RestoreLeaseID:  parseDatasetUUID(columns[14].GetStringAt(0)),
 		}
-		if deadline := columns[12].GetStringAt(0); deadline != "" {
+		if deadline := columns[15].GetStringAt(0); deadline != "" {
 			dataset.RestoreDeadline, decodeErr = time.ParseInLocation(
 				lifecycleSQLTimestampLayout,
 				deadline,
@@ -107,7 +121,11 @@ from mo_catalog.mo_lifecycle_datasets where dataset_id=unhex('%s')`,
 				return false
 			}
 		}
-		if dataset.DatasetID == "" || dataset.RootID == "" {
+		if dataset.DatasetID == "" ||
+			dataset.RootID == "" ||
+			dataset.AttemptID == "" ||
+			dataset.StageID == 0 ||
+			len(dataset.StageIdentity) == 0 {
 			decodeErr = fmt.Errorf("Lifecycle Dataset identity is corrupt")
 			return false
 		}

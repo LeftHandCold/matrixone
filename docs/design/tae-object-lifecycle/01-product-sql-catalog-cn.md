@@ -48,11 +48,18 @@ ALTER TABLE db.t UNSET LIFECYCLE;
 
 SHOW LIFECYCLE FOR TABLE db.t;
 SHOW LIFECYCLE JOBS;
+SHOW LIFECYCLE JOBS LIMIT 1000 OFFSET 1000;
 SHOW LIFECYCLE DATASETS FOR TABLE db.t;
+SHOW LIFECYCLE DATASETS FOR TABLE db.t LIMIT 1000 OFFSET 1000;
 
 RESTORE ARCHIVE DATASET '<dataset-id>' TO TABLE db.restored_t;
 PURGE ARCHIVE DATASET '<dataset-id>';
 ```
+
+`JOBS`和`DATASETS`默认、最大每页均为1000行，使用稳定的时间+ID排序；
+`OFFSET + LIMIT`最大为1,000,000，禁止通过移除LIMIT改成无界查询。该接口读取live
+Catalog，属于诊断性best-effort翻页：Catalog静止时可枚举窗口内全部Dataset ID，并发新增、
+状态变化或终态回收期间跨页可能重复或漏项。`FOR TABLE`的Binding结果仍是单行。
 
 时间语义：
 
@@ -86,7 +93,7 @@ Lifecycle列必须：
 Phase 1拒绝：
 
 - 逻辑分区表和物理Partition child；
-- CDC、FK、Publication/Subscription；
+- FK、Publication/Subscription；
 - Fulltext、Vector、插件和隐藏索引表；
 - Snapshot/PITR/Backup/Clone/Branch与Lifecycle同时启用；
 - inline-only Stage secret；
@@ -94,7 +101,9 @@ Phase 1拒绝：
 - `ENUM`、`SET`和typed ARRAY等仅靠OID不能无损重建的编码SQL类型；
 - append-only语义无法保证的外部表。
 
-这些检查只发生在Binding DDL和相关能力DDL，不进入普通DML。
+这些检查只发生在Binding DDL和相关能力DDL，不进入普通DML。CDC不属于Phase 1准入
+依赖：Lifecycle既不查询CDC Catalog，也不修改CDC接口；Object退休不会产生CDC行级DELETE，
+因此CDC下游完整性不属于Lifecycle GA保证。
 
 权限合同：
 
@@ -413,7 +422,11 @@ Lifecycle采用薄的管理路径fence，不建设Feature Guard表：
 - Snapshot/PITR/Publication/Clone/Branch创建跨同一write barrier，然后按目标scope索引化
   查询Binding；
 - 该行只承担管理操作发布顺序，不保存per-table owner、attempt或dependency集合；
-- CDC创建依赖PITR，因而复用PITR gate；物理Backup不是Archive-aware。关闭retirement
+- Lifecycle不接入CDC控制面；SET不查询Task/Watermark，CREATE CDC也不增加Lifecycle
+  barrier。CDC能否创建和运行仍服从其自身PITR前置条件；Lifecycle不保证下游收到Object
+  退休对应的逐行DELETE。Publication scope检查必须同时覆盖当前database和`database_id=0`的账户级
+  `DATABASE *`。物理Backup
+  不是Archive-aware。关闭retirement
   release gate只能停止新任务，不能消除已有外部Payload，因此Backup还必须确认全集群
   不存在Binding、非`PURGED` Dataset和未收敛Cleanup Root。DR恢复仍必须显式声明Archive
   不可用，不能静默生成缺失历史的数据副本；

@@ -504,7 +504,7 @@ func TestLifecycleWholeCommitUsesTAECommitAndSurvivesReplay(t *testing.T) {
 
 	table := newLifecycleRPCTable(t, ctx, h)
 	sourceSnapshot := h.db.TxnMgr.Now()
-	jobID := "lifecycle-whole-replay"
+	jobID := "attempt-whole-replay"
 	registerLifecycleRPCProtection(t, h, jobID, table.source)
 	request := lifecycleWholeCommitRequest(t, table, sourceSnapshot, jobID)
 	_, err := h.HandleCommit(ctx, mock1PCTxn(h.db), nil, request)
@@ -531,7 +531,7 @@ func TestLifecycleWholeCommitIsAtomicWithOrdinaryWrite(t *testing.T) {
 	table := newLifecycleRPCTable(t, ctx, h)
 	marker := newLifecycleRPCMarkerTable(t, ctx, h, table.databaseID)
 	sourceSnapshot := h.db.TxnMgr.Now()
-	jobID := "lifecycle-whole-atomic-success"
+	jobID := "attempt-whole-atomic-success"
 	registerLifecycleRPCProtection(t, h, jobID, table.source)
 	request := lifecycleWholeCommitRequest(t, table, sourceSnapshot, jobID)
 	prependLifecycleRPCEntry(t, request, lifecycleRPCMarkerInsertEntry(t, marker))
@@ -555,7 +555,7 @@ func TestLifecycleWholeFailureRollsBackOrdinaryWrite(t *testing.T) {
 	table := newLifecycleRPCTable(t, ctx, h)
 	marker := newLifecycleRPCMarkerTable(t, ctx, h, table.databaseID)
 	sourceSnapshot := h.db.TxnMgr.Now()
-	jobID := "lifecycle-whole-atomic-failure"
+	jobID := "attempt-whole-atomic-failure"
 	registerLifecycleRPCProtection(t, h, jobID, table.source)
 	request := lifecycleWholeCommitRequest(t, table, sourceSnapshot, jobID)
 	control := prependLifecycleRPCEntry(
@@ -603,7 +603,7 @@ func TestLifecycleWholeMultiSourceExactSetIsAtomic(t *testing.T) {
 		table := newLifecycleRPCMultiSourceTable(t, ctx, h)
 		require.Len(t, table.sources, 2)
 		sourceSnapshot := h.db.TxnMgr.Now()
-		jobID := "lifecycle-whole-multi-success"
+		jobID := "attempt-whole-multi-success"
 		registerLifecycleRPCProtectionSet(t, h, jobID, table.sources)
 		request := lifecycleWholeCommitRequest(t, table, sourceSnapshot, jobID)
 		meta := mock1PCTxn(h.db)
@@ -633,7 +633,7 @@ func TestLifecycleWholeMultiSourceExactSetIsAtomic(t *testing.T) {
 		table := newLifecycleRPCMultiSourceTable(t, ctx, h)
 		require.Len(t, table.sources, 2)
 		sourceSnapshot := h.db.TxnMgr.Now()
-		jobID := "lifecycle-whole-multi-conflict"
+		jobID := "attempt-whole-multi-conflict"
 		registerLifecycleRPCProtectionSet(t, h, jobID, table.sources)
 		request := lifecycleWholeCommitRequest(t, table, sourceSnapshot, jobID)
 		command := new(api.PrecommitWriteCmd)
@@ -680,7 +680,7 @@ func TestLifecycleWholeMultiSourceExactSetIsAtomic(t *testing.T) {
 		require.Len(t, table.sources, 2)
 		sourceSnapshot := h.db.TxnMgr.Now()
 		deleteLifecycleRPCObjectRows(t, ctx, h, table, table.sources[1])
-		jobID := "lifecycle-whole-multi-post-s-delete"
+		jobID := "attempt-whole-multi-post-s-delete"
 		registerLifecycleRPCProtectionSet(t, h, jobID, table.sources)
 		request := lifecycleWholeCommitRequest(t, table, sourceSnapshot, jobID)
 		prependLifecycleRPCEntry(t, request, lifecycleRPCMarkerInsertEntry(t, marker))
@@ -713,7 +713,7 @@ func TestLifecycleWholePostSnapshotDeleteAbortsRetirement(t *testing.T) {
 	table := newLifecycleRPCTable(t, ctx, h)
 	sourceSnapshot := h.db.TxnMgr.Now()
 	deleteLifecycleRPCSourceRows(t, ctx, h, table)
-	jobID := "lifecycle-whole-post-s-delete"
+	jobID := "attempt-whole-post-s-delete"
 	registerLifecycleRPCProtection(t, h, jobID, table.source)
 	request := lifecycleWholeCommitRequest(t, table, sourceSnapshot, jobID)
 	_, err := h.HandleCommit(ctx, mock1PCTxn(h.db), nil, request)
@@ -755,7 +755,7 @@ func TestLifecycleWholeExactSourceCASLosesToOrdinaryMerge(t *testing.T) {
 	require.False(t, lifecycleRPCObjectVisible(t, ctx, h.db, table))
 	require.Positive(t, lifecycleRPCVisibleObjectCount(t, ctx, h.db, table))
 
-	jobID := "lifecycle-whole-merge-conflict"
+	jobID := "attempt-whole-merge-conflict"
 	registerLifecycleRPCProtection(t, h, jobID, table.source)
 	request := lifecycleWholeCommitRequest(t, table, sourceSnapshot, jobID)
 	_, err = h.HandleCommit(ctx, mock1PCTxn(h.db), nil, request)

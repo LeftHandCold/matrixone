@@ -121,18 +121,17 @@ CN/TN内存、Merge/GC/logtail backlog复用MO现有指标，不复制Lifecycle�
 
 ## 3. SHOW
 
-`SHOW LIFECYCLE FOR TABLE`至少显示：
+`SHOW LIFECYCLE FOR TABLE`显示action、state、expire/purge days、Stage ID、Binding
+generation和更新时间；扫描cursor、eligible/blocked估算及累计值通过metrics/日志诊断。
 
-- action/cutoff/Stage；
-- Binding generation/state；
-- last page/last full scan；
-- eligible/blocked估算；
-- active child和最后错误；
-- Archive/TTL累计结果。
+`SHOW LIFECYCLE JOBS`显示Root ID、mode、state、cleanup time和last error。
 
-`SHOW LIFECYCLE JOBS`显示child、source count/bytes、mode、阶段、deadline和blocked reason。
+`SHOW LIFECYCLE DATASETS`显示Dataset ID、state、rows/bytes、purge time和Manifest key。
 
-`SHOW LIFECYCLE DATASETS`显示Dataset、时间范围、rows/bytes、Stage、purge time、lease和状态。
+JOBS和DATASETS均使用默认/最大1000行的`LIMIT ... OFFSET ...`有界翻页，且
+`OFFSET + LIMIT <= 1,000,000`；排序包含唯一ID tie-breaker。它是live Catalog的
+best-effort诊断接口，并发变更时不承诺跨页一致快照；更丰富字段继续由现有metrics、日志和
+受控Catalog运维查询提供，不扩大首期SHOW实现。
 
 ## 4. Structured log与Trace
 
@@ -332,9 +331,11 @@ Whole调度不能退化成“一Object一Dataset/Root”。首个Release Profile
 final transaction；Mixed仍单源。Object数、source bytes、Manifest chunk数、protection集合、
 wire bytes或wall time任一达到上限都提前切分或`RESOURCE_BLOCKED`。
 
-`max-bound-tables`是发布认证的全集群配置上限，允许另设每账户配额；它不是预分配Slot或
-跨租户事务不变量。超过认证值拒绝新Binding或停止扩大放量，不能恢复Cluster Activation
-Slot协议。
+`max-bound-tables`是发布认证的全集群运维上限，允许另设可在tenant事务内精确执行的每账户
+配额；它不是预分配Slot或跨租户事务不变量。Phase 1不为“跨所有tenant精确COUNT后拒绝”
+建设system-owned Slot/counter/reconcile协议；发布控制面必须在50/200/500/1000阶段记录
+实际Binding总量并停止继续放量。若未来产品要求数据库内强制全局上限，应作为独立控制面
+能力设计，不能伪装成`MaxBindingsPerRun`调度限制。
 
 ## 10. Runbook
 

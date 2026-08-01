@@ -89,6 +89,14 @@ var (
 		},
 		[]string{"mode"},
 	)
+	LifecycleActiveRestoreGauge = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "mo",
+			Subsystem: "lifecycle",
+			Name:      "active_restores",
+			Help:      "Currently running Lifecycle Restore commands on this CN process.",
+		},
+	)
 	LifecycleFullScanAgeGauge = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: "mo",
@@ -133,6 +141,7 @@ func initLifecycleMetrics() {
 	registry.MustRegister(LifecycleRestoreCounter)
 	registry.MustRegister(LifecycleResourceRejectionCounter)
 	registry.MustRegister(LifecycleActiveJobGauge)
+	registry.MustRegister(LifecycleActiveRestoreGauge)
 	registry.MustRegister(LifecycleFullScanAgeGauge)
 	registry.MustRegister(LifecycleActiveCleanupRootGauge)
 	registry.MustRegister(LifecycleReservedCleanupBytesGauge)

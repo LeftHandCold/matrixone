@@ -186,7 +186,7 @@ func newLifecycleRPCRewriteFixture(
 		TransferMappingDigest:        append([]byte(nil), transferDigest[:]...),
 		FinalPrepareDeadlineUnixNano: time.Now().Add(time.Minute).UnixNano(),
 		MaxDeltaRows:                 uint64(table.source.Rows()),
-		MaxDeltaBytes:                64 << 20,
+		MaxDeltaBytes:                lifecycleRewriteMaxDeltaBytes,
 		MaxDeltaBlocks:               uint32(table.source.BlkCnt()),
 		MergeLevel:                   int32(table.source.GetLevel()),
 	}
@@ -445,7 +445,7 @@ func TestLifecycleRewriteTransfersLiveDeleteAndSurvivesReplay(t *testing.T) {
 
 	table := newLifecycleRPCTable(t, ctx, h)
 	sourceSnapshot := h.db.TxnMgr.Now()
-	jobID := "lifecycle-rewrite-live-delete"
+	jobID := "attempt-rewrite-live-delete"
 	registerLifecycleRPCProtection(t, h, jobID, table.source)
 	rewrite := newLifecycleRPCRewriteFixture(
 		t,
@@ -583,7 +583,7 @@ func TestLifecycleRewriteNoTransferDeleteAborts(t *testing.T) {
 
 	table := newLifecycleRPCTable(t, ctx, h)
 	sourceSnapshot := h.db.TxnMgr.Now()
-	jobID := "lifecycle-rewrite-no-transfer-delete"
+	jobID := "attempt-rewrite-no-transfer-delete"
 	registerLifecycleRPCProtection(t, h, jobID, table.source)
 	rewrite := newLifecycleRPCRewriteFixture(
 		t,
@@ -660,7 +660,7 @@ func TestLifecycleRewritePostSnapshotDeleteBudgetAborts(t *testing.T) {
 
 			table := newLifecycleRPCTable(t, ctx, h)
 			sourceSnapshot := h.db.TxnMgr.Now()
-			jobID := "lifecycle-rewrite-delta-budget-" + test.name
+			jobID := "attempt-rewrite-delta-budget-" + test.name
 			registerLifecycleRPCProtection(t, h, jobID, table.source)
 			rewrite := newLifecycleRPCRewriteFixture(
 				t,
@@ -725,7 +725,7 @@ func TestLifecycleRewritePreRegistrationTransferFaultCleansRuntimeOnly(
 
 	table := newLifecycleRPCTable(t, ctx, h)
 	sourceSnapshot := h.db.TxnMgr.Now()
-	jobID := "lifecycle-rewrite-pre-registration-fault"
+	jobID := "attempt-rewrite-pre-registration-fault"
 	registerLifecycleRPCProtection(t, h, jobID, table.source)
 	rewrite := newLifecycleRPCRewriteFixture(t, ctx, h, table, sourceSnapshot)
 	deleteLifecycleRPCSourceRow(t, ctx, h, table, 1)
@@ -769,7 +769,7 @@ func TestLifecycleRewriteRegisteredTransferFaultRollsBackCatalogOnly(
 
 	table := newLifecycleRPCTable(t, ctx, h)
 	sourceSnapshot := h.db.TxnMgr.Now()
-	jobID := "lifecycle-rewrite-registered-fault"
+	jobID := "attempt-rewrite-registered-fault"
 	registerLifecycleRPCProtection(t, h, jobID, table.source)
 	rewrite := newLifecycleRPCRewriteFixture(t, ctx, h, table, sourceSnapshot)
 	finalTxn, err := h.db.StartTxn(nil)
@@ -814,7 +814,7 @@ func TestLifecycleRewriteNeedRetryRebuildsFromImmutableBooking(t *testing.T) {
 
 	table := newLifecycleRPCTable(t, ctx, h)
 	sourceSnapshot := h.db.TxnMgr.Now()
-	jobID := "lifecycle-rewrite-need-retry"
+	jobID := "attempt-rewrite-need-retry"
 	registerLifecycleRPCProtection(t, h, jobID, table.source)
 	rewrite := newLifecycleRPCRewriteFixture(t, ctx, h, table, sourceSnapshot)
 	deletedPrimaryKey := deleteLifecycleRPCSourceRow(t, ctx, h, table, 1)
@@ -875,7 +875,7 @@ func TestLifecycleRewriteRestartLosesProtectionAndFailsClosed(t *testing.T) {
 
 	table := newLifecycleRPCTable(t, ctx, h)
 	sourceSnapshot := h.db.TxnMgr.Now()
-	jobID := "lifecycle-rewrite-protection-restart"
+	jobID := "attempt-rewrite-protection-restart"
 	registerLifecycleRPCProtection(t, h, jobID, table.source)
 	rewrite := newLifecycleRPCRewriteFixture(t, ctx, h, table, sourceSnapshot)
 

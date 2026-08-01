@@ -472,6 +472,16 @@ func (runner *lifecycleBindingExecutor) run(
 		runner.now == nil {
 		return fmt.Errorf("Lifecycle binding executor dependencies are incomplete")
 	}
+	enabled, err := runner.release.Enabled(ctx)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		// The coordinator may have loaded and queued this Binding before an
+		// operator closed the release gate. Do not start a new child after the
+		// gate closes; an Object already past this check is allowed to finish.
+		return nil
+	}
 	archiveAction := strings.EqualFold(binding.Action, "ARCHIVE")
 	deleteAction := strings.EqualFold(binding.Action, "DELETE")
 	if !archiveAction && !deleteAction {
@@ -689,6 +699,15 @@ func (runner *lifecycleBindingExecutor) run(
 		Faults: runner.faults,
 	}
 	for _, objectPlan := range planLifecycleObjectTasks(planInputs) {
+		enabled, gateErr := runner.release.Enabled(accountCtx)
+		if gateErr != nil {
+			return gateErr
+		}
+		if !enabled {
+			// Recheck between Objects so a long Binding page cannot continue
+			// starting retirements after the kill switch is closed.
+			return nil
+		}
 		var maxCreated uint32
 		var deltaRows uint64
 		var deltaBytes uint64

@@ -67,6 +67,16 @@ deadline到期后当前I/O/事务应由现有context取消并停止新GET/INSERT
 Restore lease获取与Purge CAS同一条Dataset行；两者只能一个成功。Purge不会先改变state或
 `access_generation`再允许旧Restore继续读取。
 
+每个CN在读取Dataset/Manifest、创建Archive FileService、获取lease或创建隐藏表之前，先
+通过一个进程内fail-fast semaphore；首发容量为1。占满时只返回`RESOURCE_BUSY`且不产生
+任何Restore副作用，并暴露active Restore gauge。这个限制只隔离Restore解码、canonical
+cells和MO Batch的CN heap峰值，不建设TaskService Slot、TN permit或持久状态机。
+
+读取Manifest后、初始化隐藏表前必须校验Dataset冻结的`root_id/attempt_id`、
+`manifest_sha256`、`schema_descriptor_digest`、`FULL_READBACK_VERIFIED`以及Root-scoped
+Manifest/Payload namespace完全一致。Stage/FileService仍由Dataset冻结的Stage identity
+构造；不增加第二套Archive Profile。
+
 ## 4. Hidden staging table
 
 名称：

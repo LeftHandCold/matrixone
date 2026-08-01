@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -40,6 +41,8 @@ const (
 	lifecycleWholeMaxSources          = 64
 	lifecycleWholeMaxSourceBytes      = uint64(4 << 30)
 	lifecycleRewriteMaxCreatedObjects = 32
+	lifecycleRewriteMaxDeltaRows      = uint64(100_000)
+	lifecycleRewriteMaxDeltaBytes     = uint64(32 << 20)
 )
 
 func validateLifecycleCommitControl(
@@ -82,7 +85,9 @@ func validateLifecycleCommitControl(
 			len(entry.TransferBookingLocations) == 0 ||
 			len(entry.TransferMappingDigest) != sha256.Size ||
 			entry.MaxDeltaRows == 0 ||
+			entry.MaxDeltaRows > lifecycleRewriteMaxDeltaRows ||
 			entry.MaxDeltaBytes == 0 ||
+			entry.MaxDeltaBytes > lifecycleRewriteMaxDeltaBytes ||
 			entry.MaxDeltaBlocks == 0 ||
 			entry.MergeLevel < 0 ||
 			entry.MergeLevel > 7 {
@@ -145,6 +150,18 @@ func validateLifecycleCommitControl(
 	return nil
 }
 
+func validateLifecycleProtectionJobID(attemptID, jobID string) error {
+	if attemptID == "" || jobID == "" {
+		return fmt.Errorf("Lifecycle SyncProtection identity is incomplete")
+	}
+	// Production jobs are named <attempt-id>-<digest>. A job from another
+	// attempt must be rejected before Booking I/O or any TAE mutation.
+	if !strings.HasPrefix(jobID, attemptID+"-") {
+		return fmt.Errorf("Lifecycle SyncProtection does not belong to the attempt")
+	}
+	return nil
+}
+
 func lifecycleSourceSetDigest(values [][]byte) []byte {
 	sorted := make([]objectio.ObjectStats, len(values))
 	for index, raw := range values {
@@ -170,6 +187,12 @@ func (h *Handle) HandleLifecycleCommit(
 	entry *api.LifecycleCommitEntry,
 ) error {
 	if err := validateLifecycleCommitControl(entry, time.Now()); err != nil {
+		return moerr.NewInvalidInputf(ctx, "%v", err)
+	}
+	if err := validateLifecycleProtectionJobID(
+		entry.AttemptId,
+		txn.GetSyncProtectionJobID(),
+	); err != nil {
 		return moerr.NewInvalidInputf(ctx, "%v", err)
 	}
 	database, err := txn.GetDatabaseByID(entry.DatabaseId)

@@ -59,6 +59,7 @@ Provider审计日志证明；它不是Lifecycle在每次PUT中注入的请求hea
 紧急停止时将 `enabled=false`。Kill switch 的语义是：
 
 - 立即停止新 Binding、Discovery和新Archive/TTL child；
+- 已排队child在取得本地并发槽后、每个Binding进入下一Object前都重新读取gate；
 - 已经进入执行的child可能完成当前Archive/readback/final transaction。运维必须等待
   Lifecycle in-flight指标归零，并在整个drain与后续Backup窗口保持gate关闭；
 - 已存在的 Cleanup Root reconciliation、Provider cleanup、Purge、Restore超时隐藏表清理和

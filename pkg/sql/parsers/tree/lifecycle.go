@@ -103,6 +103,7 @@ type ShowLifecycle struct {
 	statementImpl
 	Kind  ShowLifecycleKind
 	Table *TableName
+	Page  *Limit
 }
 
 func (node *ShowLifecycle) Format(ctx *FmtCtx) {
@@ -115,6 +116,10 @@ func (node *ShowLifecycle) Format(ctx *FmtCtx) {
 	case ShowLifecycleDatasets:
 		ctx.WriteString("show lifecycle datasets for table ")
 		node.Table.Format(ctx)
+	}
+	if node.Page != nil {
+		ctx.WriteByte(' ')
+		node.Page.Format(ctx)
 	}
 }
 

@@ -617,20 +617,23 @@ func TestRejectReferencedLifecycleStageMutation(t *testing.T) {
 
 func TestLockLifecycleTableDDLRequiresTheExactCatalogRow(t *testing.T) {
 	ctx := context.Background()
-	sql := `select rel_id from mo_catalog.mo_tables
+	sql := `select rel_id,rel_version from mo_catalog.mo_tables
 where rel_id=42 and reldatabase_id=7 for update`
 	background := &backgroundExecTest{}
 	background.init()
 	background.sql2result[sql] = newMrsForPasswordOfUser(
-		[][]interface{}{{uint64(42)}},
+		[][]interface{}{{uint64(42), uint64(9)}},
 	)
-	require.NoError(t, lockLifecycleTableDDL(ctx, background, 7, 42))
+	version, err := lockLifecycleTableDDL(ctx, background, 7, 42)
+	require.NoError(t, err)
+	require.Equal(t, uint32(9), version)
 
 	background = &backgroundExecTest{}
 	background.init()
 	background.sql2result[sql] = newMrsForPasswordOfUser(nil)
+	_, err = lockLifecycleTableDDL(ctx, background, 7, 42)
 	require.ErrorContains(t,
-		lockLifecycleTableDDL(ctx, background, 7, 42),
+		err,
 		"disappeared",
 	)
 }
@@ -656,15 +659,13 @@ or (account_id=17 and (level='account'
 or (level='database' and obj_id=7)
 or (level='table' and obj_id=42))))
 limit 1`,
-		`select task_id from mo_catalog.mo_cdc_watermark
-where account_id=17 and db_name='db' and table_name='events' limit 1`,
 		`select pub_name from mo_catalog.mo_pubs
-where account_id=17 and database_id=7
+where account_id=17 and (database_id=0 or database_id=7)
 and (all_table=true or table_list='*' or find_in_set('events',table_list)>0)
 limit 1`,
 	}
 	for index, dependency := range []string{
-		"Snapshot", "Snapshot", "PITR", "CDC", "Publication",
+		"Snapshot", "Snapshot", "PITR", "Publication",
 	} {
 		base := &backgroundExecTest{}
 		base.init()
@@ -684,7 +685,7 @@ limit 1`,
 		)
 		require.ErrorContains(t, err, dependency)
 		require.Len(t, background.executedSQLs, index+1)
-		wantAccountIDs := []uint32{17, 0, 0, 0, 0}
+		wantAccountIDs := []uint32{17, 0, 0, 0}
 		require.Equal(t, wantAccountIDs[:index+1], background.accountIDs)
 	}
 
@@ -700,7 +701,7 @@ limit 1`,
 		17,
 		definition,
 	))
-	require.Equal(t, []uint32{17, 0, 0, 0, 0}, background.accountIDs)
+	require.Equal(t, []uint32{17, 0, 0, 0}, background.accountIDs)
 }
 
 type lifecycleDependencyContextExec struct {

@@ -65,13 +65,15 @@
 - 逻辑分区表和物理Partition child（Phase 1在Bind时直接拒绝）；
 - Archive Mixed 普通 Row DELETE；
 - 修改普通 Merge 候选、排序、writer、WAL 或 GC；
-- CDC、FK、Publication、Fulltext、Vector、插件和隐藏索引表；
+- FK、Publication、Fulltext、Vector、插件和隐藏索引表；
 - Lifecycle-aware Snapshot/PITR/Backup/Clone/Branch/DR；
 - Legal Hold、WORM、maximum retention；
 - DROP 后继续保证 Restore；
 - 恢复回原表或自动适配原表当前 schema。
 
-不支持能力在开始前 fail closed，不能静默产生不完整结果。
+不支持能力在开始前 fail closed，不能静默产生不完整结果。CDC不进入Phase 1兼容性
+合同：Lifecycle不查询或阻止CDC，也不为Object退休生成CDC行级DELETE事件。CDC能否创建
+和运行仍服从CDC自身的PITR前置条件；Lifecycle不保证其下游收到退休事件。
 
 ## 4. 唯一 Object 路线
 
@@ -249,7 +251,8 @@ DDL fence 不进入查询、DML或Merge热路径。实现只作用于`SET LIFECY
    `mo_feature_registry`行，关闭与scope级依赖发布的首次Binding空集合竞态；
 3. Snapshot、PITR、Publication和Clone/Branch创建跨同一个feature-row barrier，再按索引
    查询目标scope中是否存在Binding；
-4. CDC依赖PITR，因此复用PITR准入；物理Backup不是Archive-aware，因此只有release gate
+4. Lifecycle不接入尚未商用的CDC控制面，也不修改CDC创建/运行路径；Publication
+   scope包含当前database及`database_id=0`账户级发布。物理Backup不是Archive-aware，因此只有release gate
    已关闭、全集群不存在Binding、非`PURGED` Dataset和未收敛Cleanup Root时才允许执行；
 5. 已绑定表的TRUNCATE、ALTER、CREATE INDEX等不兼容DDL fail closed；DROP TABLE在同一
    `mo_tables`锁事务中删除Binding，DROP DATABASE在原数据库DDL事务中按database identity

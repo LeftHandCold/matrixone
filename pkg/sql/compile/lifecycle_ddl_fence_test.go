@@ -131,8 +131,8 @@ func TestLifecycleForeignKeyParentsAreDeduplicatedAndExcludeSelf(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, []lifecycleForeignKeyParent{
-		{databaseName: "parent_db", tableName: "parent"},
 		{databaseName: "child_db", tableName: "parent_in_same_db"},
+		{databaseName: "parent_db", tableName: "parent"},
 	}, parents)
 }
 

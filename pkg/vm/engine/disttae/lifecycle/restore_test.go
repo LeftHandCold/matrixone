@@ -50,34 +50,79 @@ func TestRestoreCoordinatorImportsStableChunksAndPublishes(t *testing.T) {
 		TargetDatabaseName: "restore_db",
 		TargetName:         "events_history",
 	}
-	err = coordinator.Restore(context.Background(), RestoreDataset{
-		DatasetID:    "dataset-1",
-		RootID:       manifest.RootID,
-		ManifestKey:  manifestKey,
-		ContentHash:  manifest.ContentHash,
-		RowCount:     manifest.RowCount,
-		LogicalBytes: manifest.LogicalBytes,
-		Version:      1,
-		State:        "PUBLISHED",
-	}, attempt)
+	dataset := restoreTestDataset(t, "dataset-1", manifestKey, manifest)
+	err = coordinator.Restore(context.Background(), dataset, attempt)
 	require.NoError(t, err)
 	require.True(t, repository.published)
 	require.Len(t, repository.receipts, int(manifest.TotalChunkCount))
 	require.Len(t, repository.rows, int(manifest.RowCount))
 
 	// A takeover sees committed receipts and does not insert the rows twice.
-	err = coordinator.Restore(context.Background(), RestoreDataset{
-		DatasetID:    "dataset-1",
-		RootID:       manifest.RootID,
-		ManifestKey:  manifestKey,
-		ContentHash:  manifest.ContentHash,
-		RowCount:     manifest.RowCount,
-		LogicalBytes: manifest.LogicalBytes,
-		Version:      1,
-		State:        "PUBLISHED",
-	}, attempt)
+	err = coordinator.Restore(context.Background(), dataset, attempt)
 	require.NoError(t, err)
 	require.Len(t, repository.rows, int(manifest.RowCount))
+}
+
+func TestRestoreRejectsDatasetManifestIdentityMismatch(t *testing.T) {
+	store := newMemoryArchiveStore()
+	manifestKey := writeArchiveTestDataset(t, store)
+	manifest, err := ReadArchiveManifest(context.Background(), store, manifestKey)
+	require.NoError(t, err)
+	dataset := restoreTestDataset(t, "dataset-identity", manifestKey, manifest)
+	require.NoError(t, validateRestoreDatasetManifestIdentity(dataset, manifest))
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*RestoreDataset, *ArchiveManifest)
+	}{
+		{
+			name: "root",
+			mutate: func(value *RestoreDataset, _ *ArchiveManifest) {
+				value.RootID = "other-root"
+			},
+		},
+		{
+			name: "attempt",
+			mutate: func(value *RestoreDataset, _ *ArchiveManifest) {
+				value.AttemptID = "other-attempt"
+			},
+		},
+		{
+			name: "manifest digest",
+			mutate: func(value *RestoreDataset, _ *ArchiveManifest) {
+				value.ManifestDigest[0] ^= 1
+			},
+		},
+		{
+			name: "schema digest",
+			mutate: func(value *RestoreDataset, _ *ArchiveManifest) {
+				value.SchemaDigest[0] ^= 1
+			},
+		},
+		{
+			name: "verification",
+			mutate: func(_ *RestoreDataset, value *ArchiveManifest) {
+				value.VerificationStatus = "SOURCE_ENCODED"
+			},
+		},
+		{
+			name: "payload namespace",
+			mutate: func(_ *RestoreDataset, value *ArchiveManifest) {
+				value.Files[0].Key = "archive/other/root/payload.parquet"
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			copyDataset := dataset
+			copyManifest := *manifest
+			copyManifest.Files = append([]ArchiveFile(nil), manifest.Files...)
+			test.mutate(&copyDataset, &copyManifest)
+			require.Error(t, validateRestoreDatasetManifestIdentity(
+				copyDataset,
+				&copyManifest,
+			))
+		})
+	}
 }
 
 func TestRestoreDeadlineCoversManifestRead(t *testing.T) {
@@ -232,16 +277,7 @@ func TestRestoreFaultAfterCommittedChunkResumesWithoutDuplicateRows(t *testing.T
 		TargetDatabaseName: "restore_db",
 		TargetName:         "events_history",
 	}
-	dataset := RestoreDataset{
-		DatasetID:    "dataset-resume",
-		RootID:       manifest.RootID,
-		ManifestKey:  manifestKey,
-		ContentHash:  manifest.ContentHash,
-		RowCount:     manifest.RowCount,
-		LogicalBytes: manifest.LogicalBytes,
-		Version:      1,
-		State:        "PUBLISHED",
-	}
+	dataset := restoreTestDataset(t, "dataset-resume", manifestKey, manifest)
 	require.ErrorIs(t, coordinator.Restore(
 		context.Background(),
 		dataset,
@@ -296,16 +332,12 @@ func TestRestorePreSideEffectFaultsResumeWithoutDuplicateRows(t *testing.T) {
 				TargetDatabaseName: "restore_db",
 				TargetName:         "events_history",
 			}
-			dataset := RestoreDataset{
-				DatasetID:    "dataset-" + string(point),
-				RootID:       manifest.RootID,
-				ManifestKey:  manifestKey,
-				ContentHash:  manifest.ContentHash,
-				RowCount:     manifest.RowCount,
-				LogicalBytes: manifest.LogicalBytes,
-				Version:      1,
-				State:        "PUBLISHED",
-			}
+			dataset := restoreTestDataset(
+				t,
+				"dataset-"+string(point),
+				manifestKey,
+				manifest,
+			)
 
 			require.EqualError(
 				t,
@@ -374,16 +406,12 @@ func TestRestoreInitializationFaultsPreserveSingleHiddenOwner(t *testing.T) {
 				TargetDatabaseName: "restore_db",
 				TargetName:         "events_history",
 			}
-			dataset := RestoreDataset{
-				DatasetID:    "dataset-init-" + string(point),
-				RootID:       manifest.RootID,
-				ManifestKey:  manifestKey,
-				ContentHash:  manifest.ContentHash,
-				RowCount:     manifest.RowCount,
-				LogicalBytes: manifest.LogicalBytes,
-				Version:      1,
-				State:        "PUBLISHED",
-			}
+			dataset := restoreTestDataset(
+				t,
+				"dataset-init-"+string(point),
+				manifestKey,
+				manifest,
+			)
 
 			require.ErrorContains(t, coordinator.Restore(
 				context.Background(),
@@ -438,16 +466,12 @@ func TestRestoreFaultAfterPublishReconcilesWithoutDuplicatePublish(t *testing.T)
 		TargetDatabaseName: "restore_db",
 		TargetName:         "events_history",
 	}
-	dataset := RestoreDataset{
-		DatasetID:    "dataset-publish-unknown",
-		RootID:       manifest.RootID,
-		ManifestKey:  manifestKey,
-		ContentHash:  manifest.ContentHash,
-		RowCount:     manifest.RowCount,
-		LogicalBytes: manifest.LogicalBytes,
-		Version:      1,
-		State:        "PUBLISHED",
-	}
+	dataset := restoreTestDataset(
+		t,
+		"dataset-publish-unknown",
+		manifestKey,
+		manifest,
+	)
 	require.EqualError(t,
 		coordinator.Restore(context.Background(), dataset, attempt),
 		"publish-response-lost",
@@ -460,6 +484,32 @@ func TestRestoreFaultAfterPublishReconcilesWithoutDuplicatePublish(t *testing.T)
 	)
 	require.Equal(t, 1, repository.publishCount)
 	require.Len(t, repository.rows, int(manifest.RowCount))
+}
+
+func restoreTestDataset(
+	t *testing.T,
+	datasetID string,
+	manifestKey string,
+	manifest *ArchiveManifest,
+) RestoreDataset {
+	t.Helper()
+	digest, err := manifestDigestFromKey(manifestKey)
+	require.NoError(t, err)
+	return RestoreDataset{
+		DatasetID:      datasetID,
+		RootID:         manifest.RootID,
+		AttemptID:      manifest.AttemptID,
+		ManifestKey:    manifestKey,
+		ManifestDigest: digest,
+		SchemaDigest:   manifest.SchemaDigest,
+		ContentHash:    manifest.ContentHash,
+		RowCount:       manifest.RowCount,
+		LogicalBytes:   manifest.LogicalBytes,
+		Version:        1,
+		State:          "PUBLISHED",
+		StageID:        1,
+		StageIdentity:  []byte("test-frozen-stage"),
+	}
 }
 
 type oneShotRestoreFault struct {

@@ -134,29 +134,25 @@ func handleAlterTableLifecycle(ctx context.Context, ses *Session, alter *tree.Al
 		}
 		return cause
 	}
-	if err = lockLifecycleTableDDL(
+	lockedVersion, lockErr := lockLifecycleTableDDL(
 		ctx,
 		background,
 		tableDef.DbId,
 		tableDef.TblId,
-	); err != nil {
-		return rollback(err)
-	}
-	_, lockedTableDef, resolveErr := ses.GetTxnCompileCtx().Resolve(
-		databaseName,
-		tableName,
-		nil,
 	)
-	if resolveErr != nil {
-		return rollback(resolveErr)
+	if lockErr != nil {
+		return rollback(lockErr)
 	}
-	if lockedTableDef == nil || lockedTableDef.TblId != tableDef.TblId {
+	// The frontend statement snapshot may predate a concurrent ALTER that won
+	// before this background transaction acquired the mo_tables row lock. Use
+	// the authoritative locked row version as a fail/retry fence instead of
+	// resolving the schema again through that older frontend snapshot.
+	if lockedVersion != tableDef.Version {
 		return rollback(moerr.NewInvalidInput(
 			ctx,
-			"Lifecycle table identity changed while acquiring the DDL fence",
+			"Lifecycle table schema changed while acquiring the DDL fence; retry SET LIFECYCLE",
 		))
 	}
-	tableDef = lockedTableDef
 	if option.Operation == tree.LifecycleOperationSet {
 		// SET takes the existing mo_tables row lock before the scope-publication
 		// feature-row barrier. Ordinary table DDL uses only the table lock and an
@@ -343,21 +339,10 @@ limit 1`,
 		},
 		{
 			ctx:  systemCtx,
-			name: "CDC",
-			sql: fmt.Sprintf(
-				`select task_id from mo_catalog.mo_cdc_watermark
-where account_id=%d and db_name=%s and table_name=%s limit 1`,
-				accountID,
-				quoteSQLStringLiteral(tableDef.DbName),
-				quoteSQLStringLiteral(tableDef.Name),
-			),
-		},
-		{
-			ctx:  systemCtx,
 			name: "Publication",
 			sql: fmt.Sprintf(
 				`select pub_name from mo_catalog.mo_pubs
-where account_id=%d and database_id=%d
+where account_id=%d and (database_id=0 or database_id=%d)
 and (all_table=true or table_list='*' or find_in_set(%s,table_list)>0)
 limit 1`,
 				accountID,
@@ -415,28 +400,42 @@ func lockLifecycleTableDDL(
 	background BackgroundExec,
 	databaseID uint64,
 	physicalTableID uint64,
-) error {
+) (uint32, error) {
 	background.ClearExecResultSet()
 	sql := fmt.Sprintf(
-		`select rel_id from mo_catalog.mo_tables
+		`select rel_id,rel_version from mo_catalog.mo_tables
 where rel_id=%d and reldatabase_id=%d for update`,
 		physicalTableID,
 		databaseID,
 	)
 	if err := background.Exec(ctx, sql); err != nil {
-		return err
+		return 0, err
 	}
 	results, err := getResultSet(ctx, background)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !execResultArrayHasData(results) {
-		return moerr.NewInvalidInput(
+		return 0, moerr.NewInvalidInput(
 			ctx,
 			"Lifecycle table disappeared while acquiring the DDL fence",
 		)
 	}
-	return nil
+	lockedTableID, err := results[0].GetUint64(ctx, 0, 0)
+	if err != nil {
+		return 0, err
+	}
+	lockedVersion, err := results[0].GetUint64(ctx, 0, 1)
+	if err != nil || lockedTableID != physicalTableID || lockedVersion > uint64(^uint32(0)) {
+		if err != nil {
+			return 0, err
+		}
+		return 0, moerr.NewInvalidInput(
+			ctx,
+			"Lifecycle locked table identity is invalid",
+		)
+	}
+	return uint32(lockedVersion), nil
 }
 
 func lifecycleBindingExists(

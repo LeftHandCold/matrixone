@@ -17,12 +17,19 @@ package frontend
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
+)
+
+const (
+	lifecycleShowDefaultLimit = int64(1000)
+	lifecycleShowMaxLimit     = int64(1000)
+	lifecycleShowMaxWindow    = int64(1_000_000)
 )
 
 var lifecycleBindingShowColumns = []Column{
@@ -81,6 +88,10 @@ from mo_catalog.mo_lifecycle_bindings where account_id = %d and physical_table_i
 		columns = lifecycleBindingShowColumns
 
 	case tree.ShowLifecycleDatasets:
+		limit, offset, err := lifecycleShowPage(ctx, statement)
+		if err != nil {
+			return err
+		}
 		tableDef, err := resolveLifecycleShowTable(ctx, ses, statement.Table)
 		if err != nil {
 			return err
@@ -91,17 +102,27 @@ from mo_catalog.mo_lifecycle_bindings where account_id = %d and physical_table_i
 		}
 		query = fmt.Sprintf(
 			`select hex(dataset_id),state,row_count,logical_bytes,cast(purge_eligible_at as varchar),manifest_key
-from mo_catalog.mo_lifecycle_datasets where account_id = %d and logical_table_id = %d order by created_at desc limit 1000`,
+from mo_catalog.mo_lifecycle_datasets where account_id = %d and logical_table_id = %d
+order by created_at desc,dataset_id desc limit %d offset %d`,
 			accountID,
 			logicalTableID,
+			limit,
+			offset,
 		)
 		columns = lifecycleDatasetShowColumns
 
 	case tree.ShowLifecycleJobs:
+		limit, offset, err := lifecycleShowPage(ctx, statement)
+		if err != nil {
+			return err
+		}
 		query = fmt.Sprintf(
 			`select hex(root_id),mode,state,cast(cleanup_after as varchar),last_error
-from mo_catalog.mo_lifecycle_cleanup_roots where owner_account_id = %d order by updated_at desc limit 1000`,
+from mo_catalog.mo_lifecycle_cleanup_roots where owner_account_id = %d
+order by updated_at desc,root_id desc limit %d offset %d`,
 			accountID,
+			limit,
+			offset,
 		)
 		columns = lifecycleJobShowColumns
 		system = true
@@ -152,6 +173,48 @@ from mo_catalog.mo_lifecycle_cleanup_roots where owner_account_id = %d order by 
 		resultSet.AddRow(values)
 	}
 	return trySaveQueryResult(ctx, ses, resultSet)
+}
+
+func lifecycleShowPage(
+	ctx context.Context,
+	statement *tree.ShowLifecycle,
+) (int64, int64, error) {
+	limit := lifecycleShowDefaultLimit
+	offset := int64(0)
+	if statement.Page != nil {
+		var err error
+		limit, err = lifecycleShowLiteral(statement.Page.Count)
+		if err != nil {
+			return 0, 0, moerr.NewInvalidInputf(ctx, "SHOW LIFECYCLE LIMIT must be a non-negative integer literal")
+		}
+		if statement.Page.Offset != nil {
+			offset, err = lifecycleShowLiteral(statement.Page.Offset)
+			if err != nil {
+				return 0, 0, moerr.NewInvalidInputf(ctx, "SHOW LIFECYCLE OFFSET must be a non-negative integer literal")
+			}
+		}
+	}
+	if limit <= 0 || limit > lifecycleShowMaxLimit || offset > lifecycleShowMaxWindow-limit {
+		return 0, 0, moerr.NewInvalidInputf(
+			ctx,
+			"SHOW LIFECYCLE pagination requires LIMIT in [1,%d] and OFFSET+LIMIT <= %d",
+			lifecycleShowMaxLimit,
+			lifecycleShowMaxWindow,
+		)
+	}
+	return limit, offset, nil
+}
+
+func lifecycleShowLiteral(expr tree.Expr) (int64, error) {
+	value, ok := expr.(*tree.NumVal)
+	if !ok || value.Kind() != tree.Int || value.Negative() {
+		return 0, moerr.NewInternalErrorNoCtx("not a non-negative integer literal")
+	}
+	unsigned, ok := value.Uint64()
+	if !ok || unsigned > math.MaxInt64 {
+		return 0, moerr.NewInternalErrorNoCtx("not a non-negative integer literal")
+	}
+	return int64(unsigned), nil
 }
 
 func resolveLifecycleShowTable(

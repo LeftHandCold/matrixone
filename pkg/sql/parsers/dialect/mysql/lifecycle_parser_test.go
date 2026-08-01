@@ -42,7 +42,9 @@ func TestLifecycleStatementsParseAndFormat(t *testing.T) {
 		{sql: "alter table db.t unset lifecycle", wantType: &tree.AlterTable{}},
 		{sql: "show lifecycle for table db.t", wantType: &tree.ShowLifecycle{}},
 		{sql: "show lifecycle jobs", wantType: &tree.ShowLifecycle{}},
+		{sql: "show lifecycle jobs limit 100 offset 2000", wantType: &tree.ShowLifecycle{}},
 		{sql: "show lifecycle datasets for table db.t", wantType: &tree.ShowLifecycle{}},
+		{sql: "show lifecycle datasets for table db.t limit 500 offset 1000", wantType: &tree.ShowLifecycle{}},
 		{sql: "restore archive dataset 'dataset-1' to table db.restored_t", wantType: &tree.RestoreArchiveDataset{}},
 		{sql: "purge archive dataset 'dataset-1'", wantType: &tree.PurgeArchiveDataset{}},
 	}
@@ -56,6 +58,28 @@ func TestLifecycleStatementsParseAndFormat(t *testing.T) {
 			require.Equal(t, test.sql, tree.String(stmt, dialect.MYSQL))
 		})
 	}
+}
+
+func TestShowLifecyclePaginationAST(t *testing.T) {
+	stmt, err := ParseOne(
+		context.Background(),
+		"show lifecycle datasets for table db.t limit 500 offset 1000",
+		1,
+	)
+	require.NoError(t, err)
+	defer stmt.Free()
+	show := stmt.(*tree.ShowLifecycle)
+	require.NotNil(t, show.Page)
+	count, ok := show.Page.Count.(*tree.NumVal)
+	require.True(t, ok)
+	countValue, ok := count.Uint64()
+	require.True(t, ok)
+	require.Equal(t, uint64(500), countValue)
+	offset, ok := show.Page.Offset.(*tree.NumVal)
+	require.True(t, ok)
+	offsetValue, ok := offset.Uint64()
+	require.True(t, ok)
+	require.Equal(t, uint64(1000), offsetValue)
 }
 
 func TestLifecyclePolicyAST(t *testing.T) {

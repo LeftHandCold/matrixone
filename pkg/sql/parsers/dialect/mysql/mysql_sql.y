@@ -4735,13 +4735,13 @@ show_lifecycle_stmt:
     {
         $$ = &tree.ShowLifecycle{Kind: tree.ShowLifecycleBinding, Table: $5}
     }
-|   SHOW LIFECYCLE JOBS
+|   SHOW LIFECYCLE JOBS limit_opt
     {
-        $$ = &tree.ShowLifecycle{Kind: tree.ShowLifecycleJobs}
+        $$ = &tree.ShowLifecycle{Kind: tree.ShowLifecycleJobs, Page: $4}
     }
-|   SHOW LIFECYCLE DATASETS FOR TABLE table_name
+|   SHOW LIFECYCLE DATASETS FOR TABLE table_name limit_opt
     {
-        $$ = &tree.ShowLifecycle{Kind: tree.ShowLifecycleDatasets, Table: $6}
+        $$ = &tree.ShowLifecycle{Kind: tree.ShowLifecycleDatasets, Table: $6, Page: $7}
     }
 
 lifecycle_data_stmt:

@@ -18,16 +18,19 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	moruntime "github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/incrservice"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
+	metricv2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae"
 	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
 )
@@ -35,6 +38,12 @@ import (
 const (
 	lifecycleMaxRestoreStagingBytesPerAccount = uint64(12) << 40
 	lifecycleArchiveCloseTimeout              = 30 * time.Second
+	lifecycleMaxConcurrentRestoresPerCN       = 1
+)
+
+var lifecycleRestoreSlots = make(
+	chan struct{},
+	lifecycleMaxConcurrentRestoresPerCN,
 )
 
 func handleRestoreArchiveDataset(
@@ -45,6 +54,19 @@ func handleRestoreArchiveDataset(
 	if statement == nil || statement.Target == nil {
 		return fmt.Errorf("Lifecycle Restore target is required")
 	}
+	releaseRestore, acquired := tryAcquireLifecycleRestoreSlot(
+		lifecycleRestoreSlots,
+	)
+	if !acquired {
+		metricv2.LifecycleResourceRejectionCounter.WithLabelValues(
+			"restore_cn_concurrency",
+		).Inc()
+		return moerr.NewInternalError(
+			ctx,
+			"RESOURCE_BUSY: this CN is already running the certified number of Lifecycle Restores",
+		)
+	}
+	defer releaseRestore()
 	background := ses.GetBackgroundExec(ctx)
 	defer background.Close()
 	if err := ensureLifecycleFeatureEnabled(ctx, ses, background); err != nil {
@@ -130,6 +152,9 @@ func handleRestoreArchiveDataset(
 	if err != nil {
 		return err
 	}
+	if target.StageID != dataset.StageID {
+		return fmt.Errorf("Lifecycle Dataset Stage identity mismatch")
+	}
 	archiveFS, err := lifecyclepkg.NewArchiveFileService(ctx, target)
 	if err != nil {
 		return err
@@ -155,6 +180,24 @@ func handleRestoreArchiveDataset(
 		dataset,
 		restoreAttempt,
 	)
+}
+
+func tryAcquireLifecycleRestoreSlot(
+	slots chan struct{},
+) (func(), bool) {
+	select {
+	case slots <- struct{}{}:
+		metricv2.LifecycleActiveRestoreGauge.Inc()
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				<-slots
+				metricv2.LifecycleActiveRestoreGauge.Dec()
+			})
+		}, true
+	default:
+		return nil, false
+	}
 }
 
 func newLifecycleRestoreCoordinator(

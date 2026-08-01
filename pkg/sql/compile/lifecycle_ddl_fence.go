@@ -17,6 +17,7 @@ package compile
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -91,6 +92,15 @@ func lifecycleForeignKeyParents(
 			tableName:    tableName,
 		})
 	}
+	sort.Slice(parents, func(left, right int) bool {
+		leftDatabase := strings.ToLower(parents[left].databaseName)
+		rightDatabase := strings.ToLower(parents[right].databaseName)
+		if leftDatabase != rightDatabase {
+			return leftDatabase < rightDatabase
+		}
+		return strings.ToLower(parents[left].tableName) <
+			strings.ToLower(parents[right].tableName)
+	})
 	return parents, nil
 }
 

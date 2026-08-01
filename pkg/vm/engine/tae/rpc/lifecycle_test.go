@@ -225,6 +225,29 @@ func TestValidateLifecycleCommitControlEnforcesRewriteAllocationBounds(t *testin
 	control.CreatedObjectStats = control.CreatedObjectStats[:1]
 	control.MaxDeltaBlocks = uint32(stats.BlkCnt()) + 1
 	require.Error(t, validateLifecycleCommitControl(control, now))
+
+	control.MaxDeltaBlocks = uint32(stats.BlkCnt())
+	control.MaxDeltaRows = lifecycleRewriteMaxDeltaRows + 1
+	require.ErrorContains(
+		t,
+		validateLifecycleCommitControl(control, now),
+		"incomplete",
+	)
+
+	control.MaxDeltaRows = lifecycleRewriteMaxDeltaRows
+	control.MaxDeltaBytes = lifecycleRewriteMaxDeltaBytes + 1
+	require.ErrorContains(
+		t,
+		validateLifecycleCommitControl(control, now),
+		"incomplete",
+	)
+}
+
+func TestValidateLifecycleProtectionJobID(t *testing.T) {
+	require.NoError(t, validateLifecycleProtectionJobID("attempt", "attempt-a1b2"))
+	require.Error(t, validateLifecycleProtectionJobID("attempt", "attempt"))
+	require.Error(t, validateLifecycleProtectionJobID("attempt", "other-a1b2"))
+	require.Error(t, validateLifecycleProtectionJobID("attempt", ""))
 }
 
 func lifecycleRPCControl(

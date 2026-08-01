@@ -155,7 +155,8 @@ Restore不增加tagged entry。
    `mo_tables`锁和索引化Binding lookup；
 4. Snapshot/PITR/Publication/Clone/Branch创建跨同一feature-row barrier并按scope探测
    Binding，关闭首次Binding空集合竞态；
-5. CDC复用PITR gate；物理Backup只有在Lifecycle retirement release gate关闭，且全集群
+5. 不修改CDC控制面；SET不查询CDC Task/Watermark，CDC下游完整性不属于Phase 1 SLA；
+   Publication scope包含当前database和`database_id=0`账户级发布；物理Backup只有在Lifecycle retirement release gate关闭，且全集群
    不存在Binding、非`PURGED` Dataset和未收敛Cleanup Root时才允许，其他未实现的历史
    复制能力显式拒绝；
 6. 绑定表按01的Phase 1矩阵fail closed；DROP TABLE移除目标Binding，DROP DATABASE按
