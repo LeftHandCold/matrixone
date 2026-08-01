@@ -18,6 +18,8 @@ full-scan-interval
 candidate-count/bytes
 child-concurrency
 rewrite-concurrency
+cluster-child-concurrency
+cleanup-sweep-budget
 max-rewrite-amplification
 rewrite-budget-window
 max-rewrite-source-bytes-per-account/window
@@ -75,6 +77,8 @@ wire/WAL和时长认证结果反推，并受release profile hard cap约束；用
 中的本地、fail-fast semaphore：只包围Mixed Rewrite build/finalize，不进入TN、普通Merge
 或普通事务；并发已满时在Root和外部副作用创建前返回`RESOURCE_BLOCKED`，由后续metadata
 扫描重试。认证后最多放宽到4，不能由租户SQL修改。
+`cluster-child-concurrency`首发固定为2；`cleanup-sweep-budget`固定为1分钟，慢Provider只延后
+Lifecycle维护页，不建立TN permit或分布式资源状态。
 
 运行时配置可以调低Writer目标，但已有Dataset所需值超过当前配置时，Restore返回
 `RESOURCE_BLOCKED`并报告所需rows/logical bytes，不能标记corruption。运维可在release
@@ -340,11 +344,11 @@ Whole调度不能退化成“一Object一Dataset/Root”。首个Release Profile
 final transaction；Mixed仍单源。Object数、source bytes、Manifest chunk数、protection集合、
 wire bytes或wall time任一达到上限都提前切分或`RESOURCE_BLOCKED`。
 
-`max-bound-tables`是发布认证的全集群运维上限，允许另设可在tenant事务内精确执行的每账户
-配额；它不是预分配Slot或跨租户事务不变量。Phase 1不为“跨所有tenant精确COUNT后拒绝”
-建设system-owned Slot/counter/reconcile协议；发布控制面必须在50/200/500/1000阶段记录
-实际Binding总量并停止继续放量。若未来产品要求数据库内强制全局上限，应作为独立控制面
-能力设计，不能伪装成`MaxBindingsPerRun`调度限制。
+`max-bound-tables=1000`是发布认证的全集群硬上限。所有SET已经由system account中现存的
+Lifecycle feature row串行，因此在该短事务内用system account精确COUNT Binding（更新已有
+Binding时排除自身）并拒绝第1001张表；这不是预分配Slot、持久counter或reconcile协议，
+也不进入Scheduler、普通DDL、DML或查询路径。`MaxBindingsPerRun`仍只是单轮调度上限，不能
+替代SET准入。发布控制面继续在50/200/500/1000阶段记录实际Binding总量并停止继续放量。
 
 ## 10. Runbook
 

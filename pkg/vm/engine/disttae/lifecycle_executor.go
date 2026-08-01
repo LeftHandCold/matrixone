@@ -52,6 +52,8 @@ const (
 	lifecycleWholeBatchMaxSourceBytes   = 4 << 30
 	lifecycleFullScanInterval           = 24 * time.Hour
 	lifecycleMetadataCompactionInterval = 5 * time.Minute
+	lifecycleMaxClusterChildren         = 2
+	lifecycleCleanupSweepBudget         = time.Minute
 )
 
 func lifecycleMetadataCompactionDue(last, now time.Time) bool {
@@ -131,6 +133,19 @@ type lifecycleBindingExecutor struct {
 	epoch        uint64
 }
 
+func lifecycleCoordinatorConfig() lifecyclepkg.CoordinatorConfig {
+	return lifecyclepkg.CoordinatorConfig{
+		Enabled:             true,
+		PageSize:            64,
+		MaxPagesPerRun:      4,
+		MaxBindingsPerRun:   1000,
+		MaxClusterChildren:  lifecycleMaxClusterChildren,
+		MaxAccountChildren:  4,
+		MaxDatabaseChildren: 2,
+		MaxTableChildren:    1,
+	}
+}
+
 // LifecycleTaskExecutorFactory wires the existing TaskService, transaction
 // engine, FileService, Merge producer, and GC SyncProtection path. Ordinary
 // tables are untouched because the coordinator pages only explicit Bindings.
@@ -159,16 +174,7 @@ func LifecycleTaskExecutorFactory(
 	var lastMetadataCompaction time.Time
 	var activeRunner *lifecycleBindingExecutor
 	coordinator := lifecyclepkg.NewCoordinator(
-		lifecyclepkg.CoordinatorConfig{
-			Enabled:             true,
-			PageSize:            64,
-			MaxPagesPerRun:      4,
-			MaxBindingsPerRun:   1000,
-			MaxClusterChildren:  8,
-			MaxAccountChildren:  4,
-			MaxDatabaseChildren: 2,
-			MaxTableChildren:    1,
-		},
+		lifecycleCoordinatorConfig(),
 		pager,
 		func(ctx context.Context, binding lifecyclepkg.Binding) error {
 			// runSlots keeps activeRunner stable until every child from this
@@ -329,16 +335,28 @@ func sweepLifecycleCleanupRoots(
 		len(reconcileable) == 0 {
 		return nextCursor, nil
 	}
+	// Cleanup is maintenance work. Bound one processing pass so a slow
+	// Provider cannot monopolize the single Lifecycle coordinator and starve
+	// later reconciliation or Restore cleanup. An unfinished idempotent page is
+	// replayed on the next tick.
+	sweepDeadline := time.Now().Add(lifecycleCleanupSweepBudget)
 	taeStore := lifecyclepkg.FileServiceArchiveStore{
 		FileService:    taeFS,
 		MaxListEntries: 100_000,
 	}
 	var sweepErr error
 	for _, root := range temporary {
+		rootTimeout, ok := lifecycleCleanupRootTimeout(
+			time.Now(),
+			sweepDeadline,
+		)
+		if !ok {
+			break
+		}
 		cleaned, cleanupErr := func() (lifecyclepkg.CleanupRoot, error) {
 			rootCtx, cancelRoot := context.WithTimeout(
 				ctx,
-				lifecycleTemporaryCleanupTimeout,
+				rootTimeout,
 			)
 			defer cancelRoot()
 			return lifecyclepkg.CleanupPublishedTemporary(
@@ -375,13 +393,78 @@ func sweepLifecycleCleanupRoots(
 		Catalog: reconcileCatalog,
 	}
 	now := time.Now()
+	processedReconcileable := 0
 	for _, root := range reconcileable {
-		_, reconcileErr := reconciler.ReconcileOne(ctx, root, now)
+		rootTimeout, ok := lifecycleCleanupRootTimeout(
+			time.Now(),
+			sweepDeadline,
+		)
+		if !ok {
+			break
+		}
+		rootCtx, cancelRoot := context.WithTimeout(ctx, rootTimeout)
+		_, reconcileErr := reconciler.ReconcileOne(rootCtx, root, now)
+		cancelRoot()
 		sweepErr = errors.Join(sweepErr, reconcileErr)
+		processedReconcileable++
 	}
-	archiveServices := make([]fileservice.FileService, 0, len(due))
-	defer func() {
-		for _, archiveFS := range archiveServices {
+	now = time.Now()
+	for _, root := range due {
+		rootTimeout, ok := lifecycleCleanupRootTimeout(
+			time.Now(),
+			sweepDeadline,
+		)
+		if !ok {
+			break
+		}
+		var archiveFS fileservice.FileService
+		sweeper := lifecyclepkg.CleanupSweeper{
+			Roots: roots,
+			ResolveArchive: func(
+				resolveCtx context.Context,
+				root lifecyclepkg.CleanupRoot,
+			) (lifecyclepkg.CleanupObjectStore, error) {
+				if root.ArchivePrefix == "" {
+					return nil, nil
+				}
+				target, parseErr := lifecyclepkg.ParseFrozenArchiveTarget(
+					[]byte(root.ArchiveNamespace),
+				)
+				if parseErr != nil {
+					return nil, parseErr
+				}
+				created, createErr := lifecyclepkg.NewArchiveFileService(
+					resolveCtx,
+					target,
+				)
+				if createErr != nil {
+					return nil, createErr
+				}
+				archiveFS = created
+				return lifecyclepkg.FileServiceArchiveStore{
+					FileService:    created,
+					MaxListEntries: 100_000,
+				}, nil
+			},
+			ResolveTAE: func(
+				context.Context,
+				lifecyclepkg.CleanupRoot,
+			) (lifecyclepkg.CleanupObjectStore, error) {
+				return taeStore, nil
+			},
+			FinalizePublication: reconcileCatalog.FinalizeCleanup,
+			QuiescenceWindow:    10 * time.Minute,
+			Faults:              faults,
+		}
+		rootErr := func() error {
+			rootCtx, cancelRoot := context.WithTimeout(
+				ctx,
+				rootTimeout,
+			)
+			defer cancelRoot()
+			return sweeper.SweepOne(rootCtx, root.RootID, now)
+		}()
+		if archiveFS != nil {
 			closeCtx, cancelClose := context.WithTimeout(
 				context.WithoutCancel(ctx),
 				lifecycleProtectionReleaseTimeout,
@@ -389,55 +472,6 @@ func sweepLifecycleCleanupRoots(
 			archiveFS.Close(closeCtx)
 			cancelClose()
 		}
-	}()
-	sweeper := lifecyclepkg.CleanupSweeper{
-		Roots: roots,
-		ResolveArchive: func(
-			resolveCtx context.Context,
-			root lifecyclepkg.CleanupRoot,
-		) (lifecyclepkg.CleanupObjectStore, error) {
-			if root.ArchivePrefix == "" {
-				return nil, nil
-			}
-			target, parseErr := lifecyclepkg.ParseFrozenArchiveTarget(
-				[]byte(root.ArchiveNamespace),
-			)
-			if parseErr != nil {
-				return nil, parseErr
-			}
-			archiveFS, createErr := lifecyclepkg.NewArchiveFileService(
-				resolveCtx,
-				target,
-			)
-			if createErr != nil {
-				return nil, createErr
-			}
-			archiveServices = append(archiveServices, archiveFS)
-			return lifecyclepkg.FileServiceArchiveStore{
-				FileService:    archiveFS,
-				MaxListEntries: 100_000,
-			}, nil
-		},
-		ResolveTAE: func(
-			context.Context,
-			lifecyclepkg.CleanupRoot,
-		) (lifecyclepkg.CleanupObjectStore, error) {
-			return taeStore, nil
-		},
-		FinalizePublication: reconcileCatalog.FinalizeCleanup,
-		QuiescenceWindow:    10 * time.Minute,
-		Faults:              faults,
-	}
-	now = time.Now()
-	for _, root := range due {
-		rootErr := func() error {
-			rootCtx, cancelRoot := context.WithTimeout(
-				ctx,
-				lifecycleTemporaryCleanupTimeout,
-			)
-			defer cancelRoot()
-			return sweeper.SweepOne(rootCtx, root.RootID, now)
-		}()
 		if rootErr != nil {
 			_, deferErr := lifecyclepkg.DeferCleanupRoot(
 				ctx,
@@ -449,7 +483,24 @@ func sweepLifecycleCleanupRoots(
 			sweepErr = errors.Join(sweepErr, rootErr, deferErr)
 		}
 	}
+	if processedReconcileable != len(reconcileable) {
+		// Do not advance past Roots that were not visited before the pass
+		// budget expired. Reconciliation is idempotent, so replaying already
+		// processed rows is safe and keeps the cursor contract simple.
+		nextCursor = reconcileCursor
+	}
 	return nextCursor, sweepErr
+}
+
+func lifecycleCleanupRootTimeout(
+	now time.Time,
+	sweepDeadline time.Time,
+) (time.Duration, bool) {
+	remaining := sweepDeadline.Sub(now)
+	if remaining <= 0 {
+		return 0, false
+	}
+	return min(remaining, lifecycleTemporaryCleanupTimeout), true
 }
 
 func lifecycleTaskEpoch(scheduled taskpb.Task) uint64 {

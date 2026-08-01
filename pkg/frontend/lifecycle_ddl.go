@@ -37,7 +37,10 @@ import (
 	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
 )
 
-const featureCodeLifecycle = "LIFECYCLE"
+const (
+	featureCodeLifecycle          = "LIFECYCLE"
+	lifecycleMaxCertifiedBindings = uint64(1000)
+)
 
 // Purge eligibility is evaluated with time.Duration in the worker. Keep every
 // accepted interval inside that exact representation so a large SQL literal
@@ -167,6 +170,19 @@ func handleAlterTableLifecycle(ctx context.Context, ses *Session, alter *tree.Al
 		// table lock (and, for SET, after the feature configuration lock) so a release
 		// gate disable that wins the race cannot create or resume a Binding.
 		if err = ensureLifecycleFeatureEnabled(ctx, ses, background); err != nil {
+			return rollback(err)
+		}
+	}
+	if option.Operation == tree.LifecycleOperationSet {
+		// SET operations are serialized by the Lifecycle feature row above.
+		// Enforce the certified population here rather than confusing the
+		// scheduler's per-run page limit with a durable admission limit.
+		if err = ensureLifecycleBindingCapacity(
+			ctx,
+			background,
+			accountID,
+			tableDef.TblId,
+		); err != nil {
 			return rollback(err)
 		}
 	}
@@ -351,6 +367,56 @@ func lifecycleBindingExists(
 		return false, err
 	}
 	return execResultArrayHasData(results), nil
+}
+
+func lifecycleBindingCapacitySQL(
+	accountID uint32,
+	physicalTableID uint64,
+) string {
+	return fmt.Sprintf(
+		`select count(*) from mo_catalog.mo_lifecycle_bindings
+where not (account_id=%d and physical_table_id=%d)`,
+		accountID,
+		physicalTableID,
+	)
+}
+
+func ensureLifecycleBindingCapacity(
+	ctx context.Context,
+	background BackgroundExec,
+	accountID uint32,
+	physicalTableID uint64,
+) error {
+	systemCtx := defines.AttachAccountId(ctx, catalog.System_Account)
+	background.ClearExecResultSet()
+	if err := background.Exec(
+		systemCtx,
+		lifecycleBindingCapacitySQL(accountID, physicalTableID),
+	); err != nil {
+		return err
+	}
+	results, err := getResultSet(systemCtx, background)
+	if err != nil {
+		return err
+	}
+	if !execResultArrayHasData(results) {
+		return moerr.NewInternalError(
+			ctx,
+			"Lifecycle Binding capacity query returned no row",
+		)
+	}
+	count, err := results[0].GetUint64(systemCtx, 0, 0)
+	if err != nil {
+		return err
+	}
+	if count >= lifecycleMaxCertifiedBindings {
+		return moerr.NewNotSupportedf(
+			ctx,
+			"Lifecycle Binding certified limit of %d tables has been reached",
+			lifecycleMaxCertifiedBindings,
+		)
+	}
+	return nil
 }
 
 func loadLifecycleStageIdentity(

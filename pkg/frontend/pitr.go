@@ -1063,9 +1063,10 @@ func doRestorePitr(ctx context.Context, ses *Session, stmt *tree.RestorePitr) (s
 				ctx,
 				bh,
 				lifecycleArchiveRestoreScope{
-					level:      tree.RESTORELEVELACCOUNT,
-					accountID:  uint32(accountRecord.accountId),
-					snapshotTS: ts,
+					level:             tree.RESTORELEVELACCOUNT,
+					accountID:         uint32(accountRecord.accountId),
+					snapshotTS:        ts,
+					rejectTTLBindings: true,
 				},
 				"RESTORE PITR",
 			); rtnErr != nil {
@@ -1075,8 +1076,9 @@ func doRestorePitr(ctx context.Context, ses *Session, stmt *tree.RestorePitr) (s
 				ctx,
 				bh,
 				lifecycleArchiveRestoreScope{
-					level:     tree.RESTORELEVELACCOUNT,
-					accountID: toAccountId,
+					level:             tree.RESTORELEVELACCOUNT,
+					accountID:         toAccountId,
+					rejectTTLBindings: true,
 				},
 				"RESTORE PITR",
 			); rtnErr != nil {
@@ -1141,11 +1143,12 @@ func doRestorePitr(ctx context.Context, ses *Session, stmt *tree.RestorePitr) (s
 			ctx,
 			bh,
 			lifecycleArchiveRestoreScope{
-				level:        restoreLevel,
-				accountID:    tenantInfo.GetTenantID(),
-				databaseName: dbName,
-				tableName:    tblName,
-				snapshotTS:   ts,
+				level:             restoreLevel,
+				accountID:         tenantInfo.GetTenantID(),
+				databaseName:      dbName,
+				tableName:         tblName,
+				snapshotTS:        ts,
+				rejectTTLBindings: restoreLevel == tree.RESTORELEVELACCOUNT,
 			},
 			"RESTORE PITR",
 		); err != nil {
@@ -1155,10 +1158,11 @@ func doRestorePitr(ctx context.Context, ses *Session, stmt *tree.RestorePitr) (s
 			ctx,
 			bh,
 			lifecycleArchiveRestoreScope{
-				level:        restoreLevel,
-				accountID:    tenantInfo.GetTenantID(),
-				databaseName: dbName,
-				tableName:    tblName,
+				level:             restoreLevel,
+				accountID:         tenantInfo.GetTenantID(),
+				databaseName:      dbName,
+				tableName:         tblName,
+				rejectTTLBindings: restoreLevel == tree.RESTORELEVELACCOUNT,
 			},
 			"RESTORE PITR",
 		); err != nil {

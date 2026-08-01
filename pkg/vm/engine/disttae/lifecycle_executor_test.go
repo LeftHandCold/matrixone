@@ -431,6 +431,32 @@ func TestLifecycleCoordinatorRunSlotDoesNotQueueDuplicateRun(t *testing.T) {
 	releaseSecond()
 }
 
+func TestLifecycleCoordinatorDefaultsBoundClusterChildren(t *testing.T) {
+	config := lifecycleCoordinatorConfig()
+	require.Equal(t, 2, config.MaxClusterChildren)
+	require.Equal(t, 1, config.MaxTableChildren)
+}
+
+func TestLifecycleCleanupRootTimeoutUsesRemainingSweepBudget(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	timeout, ok := lifecycleCleanupRootTimeout(
+		now,
+		now.Add(30*time.Second),
+	)
+	require.True(t, ok)
+	require.Equal(t, 30*time.Second, timeout)
+
+	timeout, ok = lifecycleCleanupRootTimeout(
+		now,
+		now.Add(5*time.Minute),
+	)
+	require.True(t, ok)
+	require.Equal(t, lifecycleTemporaryCleanupTimeout, timeout)
+
+	_, ok = lifecycleCleanupRootTimeout(now, now)
+	require.False(t, ok)
+}
+
 func TestLifecycleMetadataCompactionRunsOnBoundedMaintenanceCadence(t *testing.T) {
 	now := time.Date(2026, 8, 1, 0, 5, 0, 0, time.UTC)
 	require.True(t, lifecycleMetadataCompactionDue(time.Time{}, now))

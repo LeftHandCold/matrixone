@@ -693,11 +693,12 @@ func doRestoreSnapshot(ctx context.Context, ses *Session, stmt *tree.RestoreSnap
 			ctx,
 			bh,
 			lifecycleArchiveRestoreScope{
-				level:        stmt.Level,
-				accountID:    sourceAccountID,
-				databaseName: dbName,
-				tableName:    tblName,
-				snapshotTS:   snapshot.ts,
+				level:             stmt.Level,
+				accountID:         sourceAccountID,
+				databaseName:      dbName,
+				tableName:         tblName,
+				snapshotTS:        snapshot.ts,
+				rejectTTLBindings: stmt.Level == tree.RESTORELEVELACCOUNT,
 			},
 			"RESTORE SNAPSHOT",
 		); err != nil {
@@ -749,10 +750,11 @@ func doRestoreSnapshot(ctx context.Context, ses *Session, stmt *tree.RestoreSnap
 		ctx,
 		bh,
 		lifecycleArchiveRestoreScope{
-			level:        stmt.Level,
-			accountID:    toAccountId,
-			databaseName: dbName,
-			tableName:    tblName,
+			level:             stmt.Level,
+			accountID:         toAccountId,
+			databaseName:      dbName,
+			tableName:         tblName,
+			rejectTTLBindings: stmt.Level == tree.RESTORELEVELACCOUNT,
 		},
 		"RESTORE SNAPSHOT",
 	); err != nil {
@@ -2110,6 +2112,13 @@ func buildTableInfoListWhereClause(dbName string, tblName string, accountId uint
 		quoteSQLStringLiteral(catalog.SystemPartitionRel),
 		accountClause,
 	)
+	// Lifecycle Restore staging tables are ordinary persistent TAE tables so a
+	// crashed Restore can resume. They are nevertheless internal implementation
+	// objects and must not become Clone/Data Branch/bulk-Restore sources.
+	whereClause += fmt.Sprintf(
+		" and not regexp_like(lower(relname), %s)",
+		quoteSQLStringLiteral(catalog.LifecycleRestoreTableSQLRegexpPattern),
+	)
 	if dbName == moCatalog {
 		indexTablePattern := quoteSQLLikePattern(catalog.IndexTableNamePrefix)
 		whereClause += fmt.Sprintf(
@@ -2780,9 +2789,10 @@ func restoreToAccountUsingCluster(
 		ctx,
 		bh,
 		lifecycleArchiveRestoreScope{
-			level:      tree.RESTORELEVELACCOUNT,
-			accountID:  uint32(ar.accountId),
-			snapshotTS: snapshotTs,
+			level:             tree.RESTORELEVELACCOUNT,
+			accountID:         uint32(ar.accountId),
+			snapshotTS:        snapshotTs,
+			rejectTTLBindings: true,
 		},
 		"RESTORE SNAPSHOT",
 	); err != nil {
@@ -2816,8 +2826,9 @@ func restoreToAccountUsingCluster(
 		ctx,
 		bh,
 		lifecycleArchiveRestoreScope{
-			level:     tree.RESTORELEVELACCOUNT,
-			accountID: toAccountId,
+			level:             tree.RESTORELEVELACCOUNT,
+			accountID:         toAccountId,
+			rejectTTLBindings: true,
 		},
 		"RESTORE SNAPSHOT",
 	); err != nil {

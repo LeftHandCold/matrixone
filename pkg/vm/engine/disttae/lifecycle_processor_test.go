@@ -1092,6 +1092,27 @@ type lifecycleProcessorTable struct {
 	rewriteCalls    int
 }
 
+func TestLifecycleCleanupReservationUsesPhysicalBookingRowWidth(t *testing.T) {
+	source := lifecyclePlanTestSource(t, 1)
+	require.NoError(t, objectio.SetObjectStatsRowCnt(&source.ObjectStats, 10))
+	reserved, archive, err := lifecycleCleanupReservation(
+		LifecycleObjectTask{
+			Sources:                    []objectio.ObjectEntry{source},
+			MaxCreatedObjects:          1,
+			TargetObjectSize:           1,
+			MaxCertifiedBlockReadBytes: 1,
+		},
+		false,
+	)
+	require.NoError(t, err)
+	require.Zero(t, archive)
+	require.Equal(
+		t,
+		uint64(2)+lifecycleBookingPhysicalOverhead+10*uint64(15),
+		reserved,
+	)
+}
+
 func (table *lifecycleProcessorTable) LifecycleReadObject(
 	ctx context.Context,
 	_ types.TS,

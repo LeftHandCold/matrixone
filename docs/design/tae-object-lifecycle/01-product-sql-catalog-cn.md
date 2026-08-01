@@ -422,10 +422,11 @@ Lifecycle只保留自身需要的薄管理路径fence，不建设Feature Guard�
   `mo_feature_registry(feature_code='LIFECYCLE')`行，只用于Lifecycle自己的release、配置
   和容量控制顺序。该行不是跨产品功能的数据正确性barrier；
 - Snapshot/PITR创建和保留直接复用现有Object MVCC与GC保护，不读取Binding，也不访问
-  Lifecycle feature row。Snapshot/PITR Restore若源或目标scope包含`ARCHIVE` Binding、非
-  `PURGED` Dataset或非`CLEANED`的`ARCHIVE_*` Root，必须在任何破坏性Restore事务提交前
-  fail closed；Restore与`SET LIFECYCLE`/Archive finalizer并发不在Phase 1认证范围，执行前
-  必须关闭并drain Lifecycle数据任务；
+  Lifecycle feature row。Snapshot/PITR Database/Table Restore若源或目标scope包含
+  `ARCHIVE` Binding、非`PURGED` Dataset或非`CLEANED`的`ARCHIVE_*` Root，必须在任何
+  破坏性Restore事务提交前fail closed；直接Account Restore存在任意Lifecycle Binding时
+  拒绝，Cluster逻辑Restore不扩展TTL兼容；Restore与`SET LIFECYCLE`/Archive finalizer并发
+  不在Phase 1认证范围，执行前必须关闭并drain Lifecycle数据任务；
 - Clone/Data Branch只复制目标时间点的活动数据，目标表使用新身份且不继承Binding、
   Dataset或Archive Payload；普通同集群Publication/Subscription直接读取发布者活动表。
   这些创建和运行路径不访问Lifecycle feature row；

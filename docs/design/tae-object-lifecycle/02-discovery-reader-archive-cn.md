@@ -122,7 +122,7 @@ crash后丢失并重扫。final transaction从不信任Candidate。
 per table child       1
 per database          2
 per account           4
-cluster child         8
+cluster child         2
 cluster Rewrite       1
 ```
 

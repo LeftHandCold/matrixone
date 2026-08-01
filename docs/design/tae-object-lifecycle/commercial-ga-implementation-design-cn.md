@@ -315,11 +315,13 @@ final transaction从不信任cursor或Candidate。
 初始并发：
 
 ```text
-per table 1, per database 2, per account 4, cluster child 8,
+per table 1, per database 2, per account 4, cluster child 2,
 cluster Rewrite 1, provider read/write分别限流
 ```
 
-1000张绑定表是配置与认证上限，不实现分布式activation slot。
+1000张绑定表是SET控制面的硬上限和认证上限；SET在已有Lifecycle feature-row短临界区内
+由system account执行一次精确COUNT并拒绝第1001张表，不实现分布式activation slot，也不
+把该COUNT带入Scheduler、普通DDL、DML或查询路径。
 
 普通Merge不查询Lifecycle。Merge抢先时Lifecycle exact CAS失败；Lifecycle不要求Merge等待。
 

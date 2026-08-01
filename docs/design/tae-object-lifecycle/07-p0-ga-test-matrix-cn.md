@@ -351,9 +351,10 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
   自身控制面，普通表DDL以及Snapshot/PITR/Clone/Branch/Publication不取得feature row；
 - 退休前创建的Snapshot能读取旧Object，退休后创建的Snapshot只看到退休后的活动表；
   PITR窗口覆盖退休CommitTS时旧Object受现有GC引用保护，引用到期后普通GC可以回收；
-- Lifecycle Archive scope的Snapshot/PITR Restore在任何破坏性Restore事务提交前拒绝；
-  `ARCHIVE` Binding、非`PURGED` Dataset、非`CLEANED`的`ARCHIVE_*` Root三类状态分别
-  覆盖；测试执行前关闭并drain Lifecycle数据任务；
+- Lifecycle Archive scope的Snapshot/PITR Database/Table Restore在任何破坏性Restore事务
+  提交前拒绝；`ARCHIVE` Binding、非`PURGED` Dataset、非`CLEANED`的`ARCHIVE_*` Root三类
+  状态分别覆盖；直接Account Restore还要覆盖TTL Binding并拒绝；Cluster逻辑Restore不扩展
+  TTL兼容测试；执行前关闭并drain Lifecycle数据任务；
 - Clone/Data Branch与finalizer并发时，目标得到一个普通MVCC一致活动快照，且不产生目标
   Binding、Dataset或Payload引用；
 - 普通同集群Publication/Subscription与finalizer并发时，旧查询保持原snapshot，新查询看到

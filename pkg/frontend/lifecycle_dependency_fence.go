@@ -52,15 +52,17 @@ func lockLifecycleFeatureConfiguration(
 }
 
 // lifecycleArchiveRestoreScope describes one source or target scope checked by
-// Snapshot/PITR restore. snapshotTS == 0 means the current Catalog. The check
-// is Archive-only: TTL state has no external payload and does not make restore
-// incomplete.
+// Snapshot/PITR restore. snapshotTS == 0 means the current Catalog. Database
+// and table restore checks are Archive-only. Direct Account restore also
+// rejects TTL Bindings because restoring the tenant Lifecycle Catalog would
+// reactivate a Binding that refers to the old physical table identity.
 type lifecycleArchiveRestoreScope struct {
-	level        tree.RestoreLevel
-	accountID    uint32
-	databaseName string
-	tableName    string
-	snapshotTS   int64
+	level             tree.RestoreLevel
+	accountID         uint32
+	databaseName      string
+	tableName         string
+	snapshotTS        int64
+	rejectTTLBindings bool
 }
 
 type lifecycleArchiveRestoreProbe struct {
@@ -97,15 +99,20 @@ func lifecycleArchiveRestoreProbes(
 	if tablePredicate != "" {
 		tablePredicate = " and " + tablePredicate
 	}
+	bindingAction := " and action='ARCHIVE'"
+	if scope.rejectTTLBindings {
+		bindingAction = ""
+	}
 
 	return []lifecycleArchiveRestoreProbe{
 		{
 			accountID: scope.accountID,
 			sql: fmt.Sprintf(
 				`select binding_id from mo_catalog.mo_lifecycle_bindings%s
-where %s and action='ARCHIVE' and state in ('ACTIVE','PAUSED','BLOCKED')%s limit 1`,
+where %s%s and state in ('ACTIVE','PAUSED','BLOCKED')%s limit 1`,
 				timeTravel,
 				tenantPrefix,
+				bindingAction,
 				bindingPredicate,
 			),
 		},
@@ -211,10 +218,15 @@ func rejectLifecycleArchiveRestoreScope(
 			return resultErr
 		}
 		if execResultArrayHasData(results) {
+			state := "Lifecycle Archive state"
+			if scope.rejectTTLBindings {
+				state = "Lifecycle state"
+			}
 			return moerr.NewNotSupportedf(
 				ctx,
-				"%s while the target scope contains Lifecycle Archive state",
+				"%s while the target scope contains %s",
 				operation,
+				state,
 			)
 		}
 	}

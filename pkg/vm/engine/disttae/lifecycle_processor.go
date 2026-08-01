@@ -597,7 +597,9 @@ func lifecycleCleanupAfter(
 const (
 	lifecycleArchivePhysicalOverhead = uint64(32 << 20)
 	lifecycleBookingPhysicalOverhead = uint64(1 << 20)
-	lifecycleTransferEntryBytes      = uint64(11)
+	// External booking stores src_blk(int32), src_row(uint32),
+	// dest_obj(uint8), dest_blk(uint16), and dest_row(uint32).
+	lifecycleTransferEntryBytes = uint64(15)
 )
 
 // lifecycleCleanupReservation freezes a conservative, executable upper bound

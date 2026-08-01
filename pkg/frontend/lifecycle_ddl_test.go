@@ -26,8 +26,10 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/features"
+	"github.com/matrixorigin/matrixone/pkg/sql/parsers/dialect/mysql"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
 )
@@ -541,6 +543,39 @@ func TestLifecycleCommandFailsClosedBeforeCatalogUpgrade(t *testing.T) {
 	_, err := lifecycleBindingExists(ctx, background, 17, 42)
 	require.Error(t, err)
 	require.True(t, moerr.IsMoErrCode(err, moerr.ErrNoSuchTable))
+}
+
+func TestEnsureLifecycleBindingCapacityUsesSystemAccountAndExcludesCurrentTable(t *testing.T) {
+	ctx := defines.AttachAccountId(context.Background(), 17)
+	sql := lifecycleBindingCapacitySQL(17, 42)
+	statements, err := mysql.Parse(context.Background(), sql, 1)
+	require.NoError(t, err)
+	require.Len(t, statements, 1)
+
+	base := &backgroundExecTest{}
+	base.init()
+	background := &lifecycleRestoreContextExec{backgroundExecTest: base}
+	base.sql2result[sql] = newMrsForPasswordOfUser(
+		[][]interface{}{{uint64(lifecycleMaxCertifiedBindings - 1)}},
+	)
+	require.NoError(t, ensureLifecycleBindingCapacity(
+		ctx,
+		background,
+		17,
+		42,
+	))
+	require.Equal(t, []uint32{catalog.System_Account}, background.accountIDs)
+	require.Contains(t, sql, "not (account_id=17 and physical_table_id=42)")
+
+	base = &backgroundExecTest{}
+	base.init()
+	background = &lifecycleRestoreContextExec{backgroundExecTest: base}
+	base.sql2result[sql] = newMrsForPasswordOfUser(
+		[][]interface{}{{uint64(lifecycleMaxCertifiedBindings)}},
+	)
+	err = ensureLifecycleBindingCapacity(ctx, background, 17, 42)
+	require.ErrorContains(t, err, "certified limit")
+	require.Equal(t, []uint32{catalog.System_Account}, background.accountIDs)
 }
 
 func TestRejectReferencedLifecycleStageMutation(t *testing.T) {

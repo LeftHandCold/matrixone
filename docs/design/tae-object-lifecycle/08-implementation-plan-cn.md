@@ -157,9 +157,10 @@ Restore不增加tagged entry。
 4. 删除Snapshot/PITR创建、Clone/Data Branch、普通同集群Publication/Subscription路径中的
    Lifecycle barrier和Binding互斥；补共存测试，确认Clone/Branch目标只含活动数据且不继承
    Binding、Dataset或Payload，Publication直接读取发布者活动视图；
-5. Snapshot/PITR Restore在任何破坏性提交前对Lifecycle Archive scope fail closed；不持有
-   全程全局锁，不建设archive-aware restore状态机；Phase 1执行前关闭并drain Lifecycle
-   数据任务，不承诺与SET/finalizer并发；
+5. Snapshot/PITR Database/Table Restore在任何破坏性提交前对Lifecycle Archive scope
+   fail closed；直接Account Restore存在任意Lifecycle Binding时拒绝；Cluster逻辑Restore
+   不扩展TTL兼容。不持有全程全局锁，不建设archive-aware restore状态机；Phase 1执行前
+   关闭并drain Lifecycle数据任务，不承诺与SET/finalizer并发；
 6. 不修改CDC/CCPR控制面；SET不查询Task/Watermark，其下游完整性不属于Phase 1 SLA。
    不修改或阻断普通物理Backup创建；含Lifecycle Catalog但缺少外部Payload的物理Backup
    Restore显式unsupported，恢复环境必须在任何Lifecycle tick前隔离任务和原Archive删除

@@ -42,7 +42,7 @@
 | 功能 | Phase 1决定 | 边界 |
 |---|---|---|
 | Snapshot/PITR创建与历史保护 | 支持 | 旧Object由现有MVCC/GC引用保护；Lifecycle不增加专用GC协议 |
-| Snapshot/PITR Restore Lifecycle Archive scope | 不支持，破坏性Restore提交前fail closed | 不恢复ARCHIVE Binding、Dataset、ARCHIVE Root或外部Payload；执行前关闭并drain Lifecycle数据任务 |
+| Snapshot/PITR Restore Lifecycle Archive scope | 不支持，破坏性Restore提交前fail closed | Database/Table不恢复ARCHIVE Binding、Dataset、ARCHIVE Root或外部Payload；直接Account Restore存在任意Binding时拒绝；Cluster逻辑Restore不扩展TTL兼容；执行前关闭并drain Lifecycle数据任务 |
 | Clone/Data Branch活动数据 | 支持 | 复制目标时间点活动数据；目标不继承Binding、Dataset或Payload |
 | 普通同集群Publication/Subscription | 支持 | 订阅端直接读取发布者活动表，不需要退休事件 |
 | CDC/CCPR | 不接入、不提供兼容性SLA | Lifecycle不修改其创建/运行路径，也不生成逐行退休事件 |

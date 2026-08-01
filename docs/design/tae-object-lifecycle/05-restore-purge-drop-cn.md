@@ -352,11 +352,13 @@ Snapshot/PITR创建和保留允许与Lifecycle共存。Lifecycle退休沿用普�
 退休前的Snapshot或覆盖退休时间的PITR由现有MVCC/GC保护旧Object；引用到期后仍由普通GC
 回收。Lifecycle不增加Snapshot/PITR专用引用、WAL或Replay协议。
 
-Phase 1不支持Snapshot/PITR Restore Lifecycle Archive scope。源或目标scope只要存在
-`ARCHIVE` Binding、非`PURGED` Dataset或非`CLEANED`的`ARCHIVE_*` Root，Restore必须在
-任何破坏性Restore事务提交前fail closed；不跨完整Restore持有Lifecycle锁，也不尝试恢复
-外部Payload。该只读检查不与并发`SET LIFECYCLE`/Archive finalizer建立新线性化协议，
-Phase 1运维必须先关闭并drain Lifecycle数据任务，再执行Snapshot/PITR Restore。
+Phase 1不支持Snapshot/PITR Restore Lifecycle Archive scope。Database/Table源或目标scope
+只要存在`ARCHIVE` Binding、非`PURGED` Dataset或非`CLEANED`的`ARCHIVE_*` Root，Restore
+必须在任何破坏性Restore事务提交前fail closed。直接Account Restore会恢复tenant Lifecycle
+Catalog，因此存在任意TTL/Archive Binding时也拒绝，避免旧physical table identity的Binding
+被重新激活。Cluster逻辑Restore兼容性不在Phase 1范围，保留已有Archive安全检查而不扩展
+TTL修复。上述检查不跨完整Restore持有Lifecycle锁，也不恢复外部Payload；运维必须先关闭并
+drain Lifecycle数据任务。
 
 Clone/Data Branch只复制目标时间点的活动数据。目标表使用普通新表身份，不继承Binding、
 Dataset或Archive Payload；用户需要时对新表重新执行`SET LIFECYCLE`。普通同集群

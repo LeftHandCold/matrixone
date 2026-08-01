@@ -5,7 +5,7 @@
 >
 > 上位设计：[MatrixOne TAE 对象级数据生命周期概要设计](../issue-24552-24853-tae-object-lifecycle-overview-design-cn.md)
 >
-> 状态：**Conditional Go**。Object 路线可以进入 P0 开发；完成本文定义的正确性、
+> 状态：**Conditional Go**。Object 路线与代码已进入稳定性认证；完成本文定义的正确性、
 > 故障、TB 级和放量门禁后，才能宣布 Commercial GA。
 
 ## 1. 设计目标
@@ -69,7 +69,8 @@
 - Archive Mixed 普通 Row DELETE；
 - 修改普通 Merge 候选、排序、writer、WAL 或 GC；
 - FK、Fulltext、Vector、插件和隐藏索引表；
-- Snapshot/PITR Restore包含Lifecycle Archive状态的scope；
+- Snapshot/PITR Database/Table Restore包含Lifecycle Archive状态的scope，以及含任意
+  Lifecycle Binding的直接Account Restore；
 - Lifecycle-aware Backup/DR，以及Clone/Branch继承Binding、Dataset或Archive Payload；
 - CDC/CCPR与Lifecycle的兼容性和退休事件完整性保证；
 - Legal Hold、WORM、maximum retention；
@@ -261,10 +262,11 @@ DDL fence 不进入查询、DML或Merge热路径。实现只作用于`SET LIFECY
 3. Snapshot/PITR创建和保留直接复用现有MVCC/GC；Clone/Data Branch只复制目标时间点的
    活动数据，新表不继承Binding、Dataset或Archive Payload；普通同集群Publication/
    Subscription直接读取发布者物理表的活动视图。上述路径都不访问Lifecycle feature row；
-4. Snapshot/PITR Restore若源或目标scope含`ARCHIVE` Binding、非`PURGED` Dataset或非
-   `CLEANED`的`ARCHIVE_*` Root，在任何破坏性Restore事务提交前fail closed；不跨Restore
-   过程持有全局Lifecycle锁。Phase 1执行前关闭并drain Lifecycle数据任务，不承诺与
-   `SET LIFECYCLE`/Archive finalizer并发；
+4. Snapshot/PITR Database/Table Restore若源或目标scope含`ARCHIVE` Binding、非`PURGED`
+   Dataset或非`CLEANED`的`ARCHIVE_*` Root，在任何破坏性Restore事务提交前fail closed；
+   直接Account Restore存在任意Lifecycle Binding时拒绝，避免恢复旧physical table identity；
+   Cluster逻辑Restore不扩展TTL兼容。检查不跨Restore过程持有全局Lifecycle锁，Phase 1执行
+   前关闭并drain Lifecycle数据任务；
 5. Lifecycle不接入CDC/CCPR控制面，也不修改其创建/运行路径。Lifecycle不修改或阻断普通
    物理Backup创建；但物理Backup可能包含Binding、Dataset、Root、Stage和release gate等
    Catalog状态，却不复制外部Archive Payload。含这些状态的物理Backup Restore在Phase 1
