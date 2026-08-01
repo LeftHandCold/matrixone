@@ -60,8 +60,8 @@ Provider审计日志证明；它不是Lifecycle在每次PUT中注入的请求hea
 
 - 立即停止新 Binding、Discovery和新Archive/TTL child；
 - 已排队child在取得本地并发槽后、每个Binding进入下一Object前都重新读取gate；
-- 已经进入执行的child可能完成当前Archive/readback/final transaction。运维必须等待
-  Lifecycle in-flight指标归零，并在整个drain与后续Backup窗口保持gate关闭；
+- 已经进入执行的child可能完成当前Archive/readback/final transaction。需要停止退休时，
+  运维等待Lifecycle in-flight指标归零；普通Backup不要求为此关闭gate或等待drain；
 - 已存在的 Cleanup Root reconciliation、Provider cleanup、Purge、Restore超时隐藏表清理和
   终态元数据回收继续运行；新Restore与其他新工作一样停止；
 - 不删除 `COMMIT_UNKNOWN` Root，不猜测普通 MO 事务终态。
@@ -71,10 +71,9 @@ Provider审计日志证明；它不是Lifecycle在每次PUT中注入的请求hea
 `REMOVE`会在Provider删除期间持有该Stage行锁，可能串行同一Stage的管理操作；这不进入
 普通DML/查询/Merge热路径，Provider deadline沿用现有Stage操作合同。
 
-Phase 1物理Backup不复制Archive Payload。`enabled=true`期间`BACKUP`会显式拒绝；仅关闭
-release gate和等待在途child收敛仍不够，因为Binding、已发布Dataset与Payload继续存在。
-执行Backup前必须同时满足：全集群不存在Binding、所有Dataset已`PURGED`、所有Cleanup
-Root已`CLEANED`。任一条件不满足都拒绝Backup。DR目标也不承诺`RESTORE ARCHIVE`可用。
+Phase 1 Lifecycle不修改或阻断普通物理Backup。Backup继续按MO现有语义保存活动数据，
+不复制Archive Payload；备份前已经退休的历史行不在活动表备份中。由该Backup恢复后，
+Archive Catalog、Stage和`RESTORE ARCHIVE`均不属于恢复保证，DR目标也不承诺Archive可用。
 
 ## 3. 分阶段放量
 

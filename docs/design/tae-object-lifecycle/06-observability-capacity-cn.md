@@ -185,7 +185,8 @@ continue purge and cleanup
 
 这里的`pause retirement`指不再启动新的child；已经进入执行的child可能完成当前Archive、
 readback或final transaction。Kill switch不强制清理FINALIZING/COMMIT_UNKNOWN，也不取消
-已进入普通事务Prepare的操作。需要Backup时必须保持gate关闭并等待in-flight指标归零。
+已进入普通事务Prepare的操作。普通Backup不以Lifecycle gate或in-flight drain为前置条件，
+其范围只包含MO现有Backup能够保存的活动数据，不包含外部Archive Payload。
 Export-only只用于测试/认证Writer与Provider，不作为Phase 1生产模式。关闭retirement release
 后不创建新Root或执行Provider PUT，只继续Purge、收敛已有Root和终态元数据。
 

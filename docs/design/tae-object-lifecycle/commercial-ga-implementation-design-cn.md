@@ -48,7 +48,7 @@ JOBS/DATASETS默认和最大page size均为1000，使用时间+唯一ID排序，
 `OFFSET + LIMIT <= 1,000,000`。它是live Catalog的best-effort诊断翻页，不承诺并发变更
 期间的跨页一致快照。
 
-绑定表必须拒绝当前不支持的FK、Publication、隐藏索引、Snapshot/PITR/Backup/
+绑定表必须拒绝当前不支持的FK、Publication、隐藏索引、Snapshot/PITR/
 Clone/Branch和插件组合。Phase 1还拒绝逻辑分区表、物理Partition child，以及未经部署认证
 或启用对象Versioning的Archive Stage。
 
@@ -552,8 +552,8 @@ retirement，不为精确overlap建设Object列表；达到数量/bytes上限暂
    形成与scope级依赖发布之间的write barrier；普通表DDL只做索引化Binding lookup；
 3. Snapshot/PITR/Publication/Clone/Branch创建先跨feature-row barrier，再查询目标scope
    Binding；Lifecycle不接入CDC控制面，CDC下游完整性不属于Phase 1 SLA；Publication
-   scope包含当前database及`database_id=0`账户级发布；物理Backup只有在Lifecycle retirement gate关闭且全集群
-   不存在Binding、非`PURGED` Dataset和未收敛Cleanup Root时才允许；
+   scope包含当前database及`database_id=0`账户级发布；Lifecycle不修改或阻断普通物理
+   Backup，Backup只保存活动数据且不复制外部Archive Payload；
 4. 绑定表的不兼容DDL直接拒绝，DROP在同一barrier下删除Binding；
 5. Finalizer重新校验Binding generation、physical table、schema digest、Lifecycle列和exact
    source Object；

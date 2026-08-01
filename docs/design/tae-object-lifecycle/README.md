@@ -252,8 +252,9 @@ DDL fence 不进入查询、DML或Merge热路径。实现只作用于`SET LIFECY
 3. Snapshot、PITR、Publication和Clone/Branch创建跨同一个feature-row barrier，再按索引
    查询目标scope中是否存在Binding；
 4. Lifecycle不接入尚未商用的CDC控制面，也不修改CDC创建/运行路径；Publication
-   scope包含当前database及`database_id=0`账户级发布。物理Backup不是Archive-aware，因此只有release gate
-   已关闭、全集群不存在Binding、非`PURGED` Dataset和未收敛Cleanup Root时才允许执行；
+   scope包含当前database及`database_id=0`账户级发布。Lifecycle不修改或阻断普通物理
+   Backup；Backup继续按MO现有语义保存活动数据，不复制外部Archive Payload，也不承诺
+   从该Backup恢复后可执行`RESTORE ARCHIVE`，已经退休的历史行不属于活动表备份内容；
 5. 已绑定表的TRUNCATE、ALTER、CREATE INDEX等不兼容DDL fail closed；DROP TABLE在同一
    `mo_tables`锁事务中删除Binding，DROP DATABASE在原数据库DDL事务中按database identity
    补删孤儿Binding；外部Payload按Cleanup Root异步回收；

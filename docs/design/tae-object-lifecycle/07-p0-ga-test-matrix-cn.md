@@ -359,9 +359,10 @@ PK、UNIQUE/CHECK/FK、二级索引、CDC等不应自动出现。
 - 新CN→旧TN、旧CN→新TN、滚动升级、关闭retirement后降级。
 
 验收必须证明真实锁或WW conflict，不能以“最后读取值正确”代替互斥。CDC不进入
-Phase 1 Lifecycle准入或DDL fence，其下游完整性明确不在本功能SLA内。物理Backup在retirement gate开启、任一账户仍有Binding/非`PURGED` Dataset，
-或system account仍有非`CLEANED` Root时必须拒绝；只有gate关闭且三类状态均清空/收敛后
-才允许。DR不能静默恢复不完整历史。
+Phase 1 Lifecycle准入或DDL fence，其下游完整性明确不在本功能SLA内。Lifecycle不得修改
+或阻断普通物理Backup；回归只验证Backup路径没有新增Lifecycle Catalog扫描或准入条件。
+Backup不复制外部Archive Payload，恢复后的活动数据不包含此前已退休历史，DR不能把这种
+活动数据恢复宣传为完整历史恢复。
 
 ## 14. 规模
 

@@ -17,7 +17,6 @@ package frontend
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
@@ -26,16 +25,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 )
-
-const lifecycleBackupGateProbeSQL = `select feature_code
-from mo_catalog.mo_feature_registry
-where feature_code = 'LIFECYCLE' and enabled = true
-limit 1`
-
-const lifecycleBackupRootProbeSQL = `select root_id
-from mo_catalog.mo_lifecycle_cleanup_roots
-where state <> 'CLEANED'
-limit 1`
 
 // ignoreMissingLifecycleCatalog keeps ordinary management operations usable
 // while a tenant's asynchronous upgrade has not created Lifecycle tables yet.
@@ -46,22 +35,6 @@ func ignoreMissingLifecycleCatalog(err error) error {
 		return nil
 	}
 	return err
-}
-
-func lifecycleBackupBindingProbeSQL(accountID uint32) string {
-	return fmt.Sprintf(
-		`select binding_id from mo_catalog.mo_lifecycle_bindings
-where account_id=%d limit 1`,
-		accountID,
-	)
-}
-
-func lifecycleBackupDatasetProbeSQL(accountID uint32) string {
-	return fmt.Sprintf(
-		`select dataset_id from mo_catalog.mo_lifecycle_datasets
-where account_id=%d and state <> 'PURGED' limit 1`,
-		accountID,
-	)
 }
 
 // lockLifecycleDependencyPublication serializes the rare Lifecycle Binding
@@ -379,115 +352,4 @@ func rejectLifecycleHistoricalOwnerScope(
 			level,
 		)
 	}
-}
-
-func lifecycleBackupProbeHasRows(
-	ctx context.Context,
-	background BackgroundExec,
-	sql string,
-) (bool, error) {
-	background.ClearExecResultSet()
-	if err := background.Exec(ctx, sql); err != nil {
-		if ignoreErr := ignoreMissingLifecycleCatalog(err); ignoreErr != nil {
-			return false, ignoreErr
-		}
-		return false, nil
-	}
-	results, err := getResultSet(ctx, background)
-	if err != nil {
-		return false, err
-	}
-	return execResultArrayHasData(results), nil
-}
-
-// rejectBackupWithLifecycleState makes the Phase 1 support boundary explicit:
-// physical BACKUP is not archive-aware. Turning off the release gate stops new
-// retirement, but it does not remove Bindings, Datasets, Cleanup Roots, or
-// external payloads. BACKUP is therefore allowed only after the gate is off
-// and all Lifecycle-owned state in the cluster has been explicitly removed or
-// converged. These checks run only in the rare BACKUP control path.
-func rejectBackupWithLifecycleState(
-	ctx context.Context,
-	background BackgroundExec,
-) error {
-	systemCtx := defines.AttachAccountId(ctx, catalog.System_Account)
-	background.ClearExecResultSet()
-	if err := background.Exec(systemCtx, lifecycleBackupGateProbeSQL); err != nil {
-		return err
-	}
-	results, err := getResultSet(systemCtx, background)
-	if err != nil {
-		return err
-	}
-	if execResultArrayHasData(results) {
-		return moerr.NewNotSupported(
-			ctx,
-			"BACKUP while TAE object Lifecycle retirement is enabled; disable Lifecycle first",
-		)
-	}
-
-	accounts, _, err := getAccounts(ctx, background, false)
-	if err != nil {
-		return err
-	}
-	accountIDs := make([]int, 0, len(accounts))
-	for accountID := range accounts {
-		// System-account Lifecycle bindings are forbidden by the product
-		// contract. Cluster-owned Cleanup Roots are checked separately below.
-		if accountID > 0 {
-			accountIDs = append(accountIDs, int(accountID))
-		}
-	}
-	sort.Ints(accountIDs)
-	for _, rawAccountID := range accountIDs {
-		accountID := uint32(rawAccountID)
-		accountCtx := defines.AttachAccountId(ctx, accountID)
-		hasBinding, err := lifecycleBackupProbeHasRows(
-			accountCtx,
-			background,
-			lifecycleBackupBindingProbeSQL(accountID),
-		)
-		if err != nil {
-			return err
-		}
-		if hasBinding {
-			return moerr.NewNotSupportedf(
-				ctx,
-				"BACKUP while account %d contains a Lifecycle Binding; UNSET LIFECYCLE first",
-				accountID,
-			)
-		}
-
-		hasDataset, err := lifecycleBackupProbeHasRows(
-			accountCtx,
-			background,
-			lifecycleBackupDatasetProbeSQL(accountID),
-		)
-		if err != nil {
-			return err
-		}
-		if hasDataset {
-			return moerr.NewNotSupportedf(
-				ctx,
-				"BACKUP while account %d contains a non-PURGED Lifecycle Dataset; PURGE it first",
-				accountID,
-			)
-		}
-	}
-
-	hasRoot, err := lifecycleBackupProbeHasRows(
-		systemCtx,
-		background,
-		lifecycleBackupRootProbeSQL,
-	)
-	if err != nil {
-		return err
-	}
-	if hasRoot {
-		return moerr.NewNotSupported(
-			ctx,
-			"BACKUP while a Lifecycle Cleanup Root has not converged to CLEANED",
-		)
-	}
-	return nil
 }

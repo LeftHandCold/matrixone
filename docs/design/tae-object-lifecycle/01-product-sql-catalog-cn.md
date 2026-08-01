@@ -95,7 +95,7 @@ Phase 1拒绝：
 - 逻辑分区表和物理Partition child；
 - FK、Publication/Subscription；
 - Fulltext、Vector、插件和隐藏索引表；
-- Snapshot/PITR/Backup/Clone/Branch与Lifecycle同时启用；
+- Snapshot/PITR/Clone/Branch与Lifecycle同时启用；
 - inline-only Stage secret；
 - 未经部署认证的Archive Stage，以及启用对象Versioning的Bucket/Container；
 - `ENUM`、`SET`和typed ARRAY等仅靠OID不能无损重建的编码SQL类型；
@@ -425,11 +425,10 @@ Lifecycle采用薄的管理路径fence，不建设Feature Guard表：
 - Lifecycle不接入CDC控制面；SET不查询Task/Watermark，CREATE CDC也不增加Lifecycle
   barrier。CDC能否创建和运行仍服从其自身PITR前置条件；Lifecycle不保证下游收到Object
   退休对应的逐行DELETE。Publication scope检查必须同时覆盖当前database和`database_id=0`的账户级
-  `DATABASE *`。物理Backup
-  不是Archive-aware。关闭retirement
-  release gate只能停止新任务，不能消除已有外部Payload，因此Backup还必须确认全集群
-  不存在Binding、非`PURGED` Dataset和未收敛Cleanup Root。DR恢复仍必须显式声明Archive
-  不可用，不能静默生成缺失历史的数据副本；
+  `DATABASE *`。Lifecycle不修改普通物理Backup的准入和执行路径。Backup只按MO现有
+  语义保存活动数据，不复制外部Archive Payload；从该Backup恢复后不承诺Archive Catalog、
+  Stage或`RESTORE ARCHIVE`可用，已经从活动表退休的历史行不属于该Backup的数据完整性
+  范围。DR恢复仍必须显式声明Archive不可用，不能把活动数据恢复宣传为完整历史恢复；
 - Finalizer仍使用Binding generation/physical table/schema与exact source Object检查决定
   是否退休，不把feature row当作数据正确性Owner。
 

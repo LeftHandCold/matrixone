@@ -348,11 +348,11 @@ DROP TABLE/DATABASE/ACCOUNT沿用普通MO业务语义：
 
 ## 10. Backup/PITR/DR
 
-Lifecycle绑定表的普通Snapshot/PITR/Clone/Branch在Phase 1准入时拒绝。物理Backup按
-全集群处理：release gate必须已关闭，且不得存在任何Binding、非`PURGED` Dataset或未收敛
-Cleanup Root；仅关闭开关或等待child drain不足以证明Backup包含完整历史。DR目标没有
-Archive Catalog/Stage时，`RESTORE ARCHIVE`明确返回unsupported，不能返回空数据或声称
-恢复完整。
+Lifecycle绑定表的普通Snapshot/PITR/Clone/Branch在Phase 1准入时拒绝。Lifecycle不修改、
+扫描或阻断普通物理Backup；Backup继续按MO现有语义备份活动数据，不复制Stage中的外部
+Archive Payload。由该Backup恢复出的活动表不包含备份前已经退休的历史行，也不承诺
+Archive Catalog、Stage或`RESTORE ARCHIVE`可用。DR目标没有Archive能力时必须明确返回
+unsupported，不能把活动数据恢复宣传为完整历史恢复。
 
 ## 11. Purge与Root一致性
 
