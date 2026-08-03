@@ -27,6 +27,7 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/stage"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
@@ -232,7 +233,7 @@ func (config SQLReleaseConfig) load(
 			return false
 		}
 		enabled = vector.GetFixedAtNoTypeCheck[bool](columns[0], 0)
-		scope = columns[1].GetStringAt(0)
+		scope = types.DecodeJson(columns[1].GetBytesAt(0)).String()
 		rowsRead += rows
 		return true
 	})

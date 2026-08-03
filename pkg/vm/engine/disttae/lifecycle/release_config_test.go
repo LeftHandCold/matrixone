@@ -115,9 +115,11 @@ func lifecycleReleaseResult(
 	t.Helper()
 	value := batch.NewWithSize(2)
 	value.Vecs[0] = vector.NewVec(types.T_bool.ToType())
-	value.Vecs[1] = vector.NewVec(types.T_varchar.ToType())
+	value.Vecs[1] = vector.NewVec(types.T_json.ToType())
 	require.NoError(t, vector.AppendFixed(value.Vecs[0], enabled, false, mp))
-	require.NoError(t, vector.AppendBytes(value.Vecs[1], []byte(scope), false, mp))
+	encoded, err := types.ParseStringToByteJson(scope)
+	require.NoError(t, err)
+	require.NoError(t, vector.AppendByteJson(value.Vecs[1], encoded, false, mp))
 	value.SetRowCount(1)
 	return executor.Result{Batches: []*batch.Batch{value}, Mp: mp}
 }

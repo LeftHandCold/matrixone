@@ -524,12 +524,14 @@ func (fake *disabledLifecycleSQLExecutor) Exec(
 	if strings.Contains(strings.ToLower(sql), "mo_feature_registry") {
 		value := batch.NewWithSize(2)
 		value.Vecs[0] = vector.NewVec(types.T_bool.ToType())
-		value.Vecs[1] = vector.NewVec(types.T_varchar.ToType())
+		value.Vecs[1] = vector.NewVec(types.T_json.ToType())
 		require.NoError(fake.t, vector.AppendFixed(
 			value.Vecs[0], false, false, fake.mp,
 		))
-		require.NoError(fake.t, vector.AppendBytes(
-			value.Vecs[1], []byte(`{"archive_stages":[]}`), false, fake.mp,
+		scope, err := types.ParseStringToByteJson(`{"archive_stages":[]}`)
+		require.NoError(fake.t, err)
+		require.NoError(fake.t, vector.AppendByteJson(
+			value.Vecs[1], scope, false, fake.mp,
 		))
 		value.SetRowCount(1)
 		return executor.Result{

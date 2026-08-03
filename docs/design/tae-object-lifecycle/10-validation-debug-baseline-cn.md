@@ -267,3 +267,18 @@ ON DUPLICATE KEY UPDATE description = description
 `scope_spec`或Stage配置。回归测试必须断言具体更新目标，不能只检查SQL包含
 `ON DUPLICATE KEY`。本修复不修改系统表结构、普通事务、Merge、WAL、Replay或GC；50上的
 fresh bootstrap与主链E2E仍需在新提交部署后重新执行。
+
+### 11.3 2026-08-03：Release config误把ByteJson当作JSON文本
+
+输入基线为`98b0b7f837b23b3a2019658ccc52a795c23fa3e6`。50上的fresh bootstrap、
+Cleanup Root和默认关闭的feature row均已通过，两轮cron保持CN存活；但Coordinator读取
+`mo_feature_registry.scope_spec`后报`invalid character '\x01'`。
+
+`scope_spec`的SQL类型是JSON，内部SQL Executor返回`T_json` Vector，其中保存的是MO的
+ByteJson存储编码。Lifecycle直接调用`GetStringAt`会把以类型码开头的存储字节交给标准JSON
+Decoder。修复直接复用MO现有`types.DecodeJson(...).String()`读取方式，不修改查询、系统表、
+通用JSON实现或Coordinator状态机。
+
+Release config和Coordinator测试数据同步改为通过`AppendByteJson`构造真实`T_json` Vector，
+不再用`T_varchar`掩盖编码差异。50上的默认关闭空跑与后续ALTER/TTL/Archive主链仍需在新
+提交部署后继续验证。
