@@ -10,8 +10,8 @@ TTL large Mixed -> single-source Rewrite
 Archive Mixed   -> single-source Rewrite
 ```
 
-TTL small Mixed是可关闭的Gate F性能优化；未启用或认证失败时，TTL Mixed统一走Rewrite或
-`MIXED_LAYOUT_BLOCKED`。不修改普通Merge候选、排序、writer、Level、WAL或GC。
+TTL small Mixed是后续可选的Gate F性能优化，本版没有实现且保持关闭；TTL Mixed统一走
+Rewrite或`MIXED_LAYOUT_BLOCKED`。不修改普通Merge候选、排序、writer、Level、WAL或GC。
 
 ## 2. Build阶段
 
@@ -343,6 +343,8 @@ S前DELETE归D，不进入Archive/live。S后L DELETE经transfer。Prepare后仍
 INSERT不写入旧source Object，不属于当前attempt；后续cycle处理。
 
 ## 11. TTL Small Mixed
+
+本节冻结后续可选Gate F的合同，不代表当前代码已经交付该路径。本版不得进入该分支。
 
 仅`ACTION DELETE`可以走这条路径；Archive Mixed禁止使用。一个child：
 

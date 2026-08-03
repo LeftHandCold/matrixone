@@ -713,6 +713,11 @@ func handleCloneTable(
 		err = moerr.NewInternalErrorNoCtxf("only sys can clone table to another account")
 		return
 	}
+	if err = lockNamedDataBranchCloneSnapshot(
+		defines.AttachAccountId(reqCtx, fromAccountId), bh, snapshot,
+	); err != nil {
+		return
+	}
 	if err = withDataBranchCloneSourceLock(snapshot, func() error {
 		return lockDataBranchCloneSource(
 			reqCtx,
@@ -723,11 +728,6 @@ func handleCloneTable(
 			stmt.SrcTable.ObjectName.String(),
 		)
 	}); err != nil {
-		return
-	}
-	if err = lockNamedDataBranchCloneSnapshot(
-		defines.AttachAccountId(reqCtx, fromAccountId), bh, snapshot,
-	); err != nil {
 		return
 	}
 	if shouldRevalidateTimestampDataBranchCloneSource(reqCtx, snapshot) {
@@ -878,12 +878,12 @@ func handleCloneDatabaseWithSource(
 	if source.snapshot != nil && source.snapshot.Tenant != nil {
 		fromAccountID = source.snapshot.Tenant.TenantID
 	}
-	if err = lockDataBranchCloneDatabaseSources(reqCtx, ses, bh, source); err != nil {
-		return
-	}
 	if err = lockNamedDataBranchCloneSnapshot(
 		defines.AttachAccountId(reqCtx, fromAccountID), bh, source.snapshot,
 	); err != nil {
+		return
+	}
+	if err = lockDataBranchCloneDatabaseSources(reqCtx, ses, bh, source); err != nil {
 		return
 	}
 	if err = revalidateTimestampDataBranchCloneDatabaseSource(reqCtx, ses, bh, source); err != nil {

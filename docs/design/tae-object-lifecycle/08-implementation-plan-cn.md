@@ -11,7 +11,7 @@
 - 现有Binding Catalog的有界游标分页；
 - bounded `ScanLifecycleObjects`；
 - cursor wrap/full scan；
-- Dry-run和资源限额。
+- 资源限额；Dry-run仅作为测试/认证流程，不是Phase 1生产SQL入口。
 
 代码区域：
 
@@ -63,7 +63,7 @@ cap并从内存cursor续扫；分区表在任何副作用前被拒绝。
 - commit unknown只读对账；
 - hard caps/metrics。
 
-P0-1/P0-2通过后才能冻结。
+代码已交付；Provider故障、迟到PUT、multipart和quiescence证据在Gate I完成。
 
 ## 4. Gate D：Whole thin entry
 
@@ -83,7 +83,8 @@ P0-1/P0-2通过后才能冻结。
 - WAL/Replay/GC测试。
 
 不建设HAKeeper capability。先独立发布unknown Entry安全解析，再发布生成V1 entry的CN；
-集群升级控制面只判断全部TN达到这个兼容下限。
+由运维发布前置条件确认全部CN/TN达到兼容下限后才开启release gate，代码不宣称自动判断
+全部TN capability。
 
 ## 5. Gate E：Mixed Rewrite
 
@@ -102,7 +103,9 @@ P0-1/P0-2通过后才能冻结。
 
 ## 6. Gate F：TTL small Mixed（可关闭优化）
 
-交付：
+本版未交付该可选路径，默认关闭；当前TTL Mixed统一进入单源Rewrite或Blocked。
+
+后续交付（若决定启用）：
 
 - fixed SI transaction；
 - RowID + real/fake PK；

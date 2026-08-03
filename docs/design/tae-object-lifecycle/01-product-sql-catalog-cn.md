@@ -16,18 +16,9 @@ Phase 1是Issue #24552和#24853的首个Commercial GA子集：
 
 ## 2. SQL合同
 
-语法最终按Parser规范调整，但语义冻结为：
+Phase 1只交付建表后的`ALTER TABLE`管理语法，不承诺`CREATE TABLE ... LIFECYCLE`：
 
 ```sql
-CREATE TABLE db.ttl_t (
-  id BIGINT,
-  created_at TIMESTAMP NOT NULL
-) LIFECYCLE (
-  COLUMN created_at,
-  EXPIRE AFTER INTERVAL '7' DAY,
-  ACTION DELETE
-);
-
 ALTER TABLE db.t SET LIFECYCLE (
   COLUMN created_at,
   EXPIRE AFTER INTERVAL '90' DAY,
@@ -94,7 +85,7 @@ Phase 1拒绝：
 
 - 逻辑分区表和物理Partition child；
 - FK；
-- Fulltext、Vector、插件和隐藏索引表；
+- Fulltext、Vector、插件、隐藏索引表，以及已经存在二级/唯一索引的源基表；
 - inline-only Stage secret；
 - 未经部署认证的Archive Stage，以及启用对象Versioning的Bucket/Container；
 - `ENUM`、`SET`和typed ARRAY等仅靠OID不能无损重建的编码SQL类型；
@@ -105,13 +96,11 @@ Data Branch和普通同集群Publication/Subscription允许与Lifecycle共存，
 依赖。CDC/CCPR不属于Phase 1准入依赖：Lifecycle既不查询其Catalog，也不修改其接口；
 Object退休不会产生逐行DELETE，因此其下游完整性不属于Lifecycle GA保证。
 
-权限合同：
+Phase 1权限合同按当前实现冻结为管理员控制面，不在稳定性清理阶段放宽普通用户入口：
 
-- SET/UNSET/PAUSE/RESUME需要目标表`ALTER`权限；
-- Archive Binding还需要Stage `USAGE`和Lifecycle管理权限；
-- SHOW只返回调用者有表可见权限的Binding/Dataset；
-- RESTORE需要Dataset可见权限、Stage读取权限和目标database `CREATE TABLE`权限；
-- PURGE需要Dataset owner或账户管理员权限；
+- SET/UNSET/PAUSE/RESUME/SHOW/RESTORE/PURGE由account admin执行；
+- Archive Binding还必须通过Stage引用、部署认证和credential handle校验；
+- RESTORE还需要目标database可创建新表；
 - system-owned Root不允许tenant SQL直接查询或修改，只通过受审计的SHOW视图暴露摘要。
 
 ## 4. 新增Catalog原则

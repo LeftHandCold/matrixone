@@ -2,8 +2,9 @@
 
 ## 1. 决策
 
-Object算法可以进入原型。第2～5节是已保留的基础安全门禁；第6节汇总协议冻结前所有
-Lifecycle自身P0。全部通过前不能宣布协议完成或Commercial GA。
+Object算法和Phase 1协议代码已经进入验证冻结。第2～5节是必须持续成立的基础安全门禁；
+第6节汇总Lifecycle自身P0的测试证明义务。代码存在不等于认证证据完成，全部测试和Gate I
+通过前不能宣布Commercial GA。
 
 ## 2. P0-1 Cleanup Root闭环
 

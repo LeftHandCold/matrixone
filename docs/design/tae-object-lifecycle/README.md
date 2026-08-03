@@ -5,8 +5,9 @@
 >
 > 上位设计：[MatrixOne TAE 对象级数据生命周期概要设计](../issue-24552-24853-tae-object-lifecycle-overview-design-cn.md)
 >
-> 状态：**Conditional Go**。Object 路线与代码已进入稳定性认证；完成本文定义的正确性、
-> 故障、TB 级和放量门禁后，才能宣布 Commercial GA。
+> 状态：**Conditional Go**。Phase 1核心功能开发基本完成，Object路线与代码已进入稳定性
+> 认证；完成本文定义的正确性、故障、TB级和放量门禁后，才能宣布Commercial GA。后续执行
+> 状态和问题分类统一记录在[10-validation-debug-baseline-cn.md](10-validation-debug-baseline-cn.md)。
 
 ## 1. 设计目标
 
@@ -20,7 +21,8 @@
 
 ## 2. 权威文档
 
-本目录采用“一份索引 + 一份总规范 + 一份需求追踪矩阵 + 九份单一职责子设计”，
+本目录采用“一份索引 + 一份总规范 + 一份需求追踪矩阵 + 九份单一职责子设计 + 一份验证
+基线”，
 恢复开发所需细节，但不恢复旧重型协议：
 
 | 文档 | 唯一职责 |
@@ -37,6 +39,7 @@
 | [07-p0-ga-test-matrix-cn.md](07-p0-ga-test-matrix-cn.md) | 基础安全门禁、协议P0全集、全路径故障测试和GA门禁 |
 | [08-implementation-plan-cn.md](08-implementation-plan-cn.md) | Gate、包边界、PR边界和Definition of Done |
 | [09-commercial-ga-runbook-cn.md](09-commercial-ga-runbook-cn.md) | Release gate、kill switch、故障处置、1/10 TiB与30天soak证据 |
+| [10-validation-debug-baseline-cn.md](10-validation-debug-baseline-cn.md) | 开发冻结结论、问题分类、验证顺序、Stop-Ship和决策日志 |
 
 子设计不得复制另一子设计的第二份状态机。上位概要负责产品效果；ADR只记录决策理由；
 行业调研和Review输入都不是实现规范。
@@ -49,7 +52,6 @@
 - `NOT NULL DATE/DATETIME/TIMESTAMP` Lifecycle 列；
 - TTL Whole Object；
 - Archive Whole Object；
-- TTL 小 Mixed 的有界 `Relation.Delete`（可关闭优化，首个发布默认关闭）；
 - Archive Mixed 和中/大 TTL Mixed 的单源 Object Rewrite；
 - Parquet/ZSTD direct-readable Archive；
 - Provider full readback；
@@ -67,8 +69,9 @@
 - Restore-required Deep Archive；
 - 逻辑分区表和物理Partition child（Phase 1在Bind时直接拒绝）；
 - Archive Mixed 普通 Row DELETE；
+- TTL 小 Mixed 的有界 `Relation.Delete`优化（本版未交付，统一Rewrite或Blocked）；
 - 修改普通 Merge 候选、排序、writer、WAL 或 GC；
-- FK、Fulltext、Vector、插件和隐藏索引表；
+- FK、Fulltext、Vector、插件、隐藏索引表，以及带二级/唯一索引的源基表；
 - Snapshot/PITR Database/Table Restore包含Lifecycle Archive状态的scope，以及含任意
   Lifecycle Binding的直接Account Restore；
 - Lifecycle-aware Backup/DR，以及Clone/Branch继承Binding、Dataset或Archive Payload；
@@ -100,11 +103,9 @@ Lifecycle自身入口能够识别、且继续执行会产生不完整Archive/Res
        |     -> Parquet/ZSTD + full readback
        |     -> Dataset + exact Object retire，同一事务
        |
-       +-- TTL小Mixed（可关闭优化，首个发布默认关闭）
-       |     -> 未单独通过Gate F认证时统一进入单源Rewrite或Blocked
-       |     -> 认证启用后才允许有界SI事务
-       |     -> RowID/delete key + Relation.Delete
-       |     -> TTL Receipt，同一事务
+       +-- TTL小Mixed
+       |     -> 本版统一进入单源Rewrite或Blocked
+       |     -> 后续只有单独实现并通过Gate F认证，才允许Relation.Delete优化
        |
        +-- Archive Mixed / 中大TTL Mixed
              -> 严格单source Object

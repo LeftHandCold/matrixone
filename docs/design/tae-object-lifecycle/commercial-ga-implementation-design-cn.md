@@ -3,9 +3,10 @@
 > 本文是首个 Commercial GA 的总实现规范。全局范围和不变量见 [README.md](README.md)，
 > 精确Catalog、接口、状态机、测试和代码任务以README列出的01–08单一职责子设计为准。
 >
-> 当前协议结论：**Conditional Go**。Whole/Mixed Object算法冻结，Gate A/B可开发；
-> [07-p0-ga-test-matrix-cn.md](07-p0-ga-test-matrix-cn.md)汇总的Lifecycle P0，以及既有
-> Cleanup/格式/升级安全门禁完成前，不能宣布协议和Commercial GA完成。
+> 当前协议结论：**Conditional Go**。Phase 1核心功能开发基本完成，Whole/Mixed Object算法
+> 冻结并进入验证与Debug；Gate I规模、故障和长期稳定性证据完成前，不能宣布Commercial GA。
+> 后续执行状态统一记录在
+> [10-validation-debug-baseline-cn.md](10-validation-debug-baseline-cn.md)。
 
 ## 1. 交付边界
 
@@ -580,8 +581,8 @@ retirement，不为精确overlap建设Object列表；达到数量/bytes上限暂
 同事务写TTL Receipt。rows、预计Tombstone bytes、affected blocks、事务时长和backlog任一
 超限就改走Rewrite或`MIXED_LAYOUT_BLOCKED`，不得无限拆分重试。
 
-这是可关闭的性能优化，不是Whole/Rewrite核心GA前置。Gate F未通过时关闭该路径，所有TTL
-Mixed走Rewrite或Blocked。
+这是可关闭的性能优化，不是Whole/Rewrite核心GA前置。本版尚未交付并保持关闭，所有TTL
+Mixed走Rewrite或Blocked；后续如实现，必须单独完成Gate F认证。
 
 ## 17. Restore与Purge
 

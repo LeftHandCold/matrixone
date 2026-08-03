@@ -356,6 +356,7 @@ func createPublication(ctx context.Context, bh BackgroundExec, cp *tree.CreatePu
 			return
 		}
 	}
+
 	sql, err = getSqlForInsertIntoMoPubs(ctx, accountId, accountName, pubName, dbName, dbId, len(cp.Table) == 0, tablesStr, accountNamesStr, comment, true)
 	if err != nil {
 		return
@@ -554,6 +555,7 @@ func doAlterPublication(ctx context.Context, ses *Session, ap *tree.AlterPublica
 			return
 		}
 	}
+
 	if sql, err = getSqlForUpdatePubInfo(ctx, string(ap.Name), accountNamesStr, comment, dbName, dbId, tablesStr, false); err != nil {
 		return
 	}
