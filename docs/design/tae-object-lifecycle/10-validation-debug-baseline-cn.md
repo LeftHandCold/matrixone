@@ -282,3 +282,20 @@ Decoder。修复直接复用MO现有`types.DecodeJson(...).String()`读取方式
 Release config和Coordinator测试数据同步改为通过`AppendByteJson`构造真实`T_json` Vector，
 不再用`T_varchar`掩盖编码差异。50上的默认关闭空跑与后续ALTER/TTL/Archive主链仍需在新
 提交部署后继续验证。
+
+### 11.4 2026-08-03：Coordinator误用空默认名的聚合FileServices
+
+输入基线为`c05dd3adfaadaf0ffce70593a9d92517f4a24041`。50上的Release Gate、
+SET LIFECYCLE、真实flush和incremental checkpoint均已通过。非排序键表在加载Object
+metadata时失败，排序键Whole TTL在SyncProtection注册后的精确Stat失败；两条路径都返回
+`service  not found`，保护lease随后正常释放。
+
+CN持有的`FileServices`是默认名为空的聚合服务，而TAE Object路径不携带service前缀。
+普通disttae初始化会先从聚合服务解析`SHARED`单FileService，Lifecycle Task wiring遗漏了
+相同步骤。修复在`LifecycleTaskExecutorFactory`创建时解析一次`SHARED`，metadata、Reader、
+temporary staging和SyncProtection继续共享该单FileService；不修改通用FileServices路由或
+普通TAE路径。
+
+回归测试使用默认名为空的真实聚合FileServices和无service前缀的真实Object文件，同时覆盖
+非排序键metadata ZoneMap加载与SyncProtection exact Stat。50上应继续按真实异步时序完成
+TTL，再验证Archive、Manifest/Dataset和Restore。

@@ -27,7 +27,10 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
+	objectioio "github.com/matrixorigin/matrixone/pkg/objectio/ioutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/task"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
 	lifecyclepkg "github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/lifecycle"
@@ -85,6 +88,65 @@ func TestLifecycleObjectExpirationUsesOnlyLifecycleSortKeyProof(t *testing.T) {
 	)
 	require.False(t, whole)
 	require.False(t, skip)
+}
+
+func TestResolveLifecycleTAEFileServiceRoutesUnqualifiedObjectIO(t *testing.T) {
+	ctx := context.Background()
+	shared, err := fileservice.NewMemoryFS(
+		defines.SharedFileServiceName,
+		fileservice.DisabledCacheConfig,
+		nil,
+	)
+	require.NoError(t, err)
+	fileServices, err := fileservice.NewFileServices("", shared)
+	require.NoError(t, err)
+	defer fileServices.Close(ctx)
+	require.Empty(t, fileServices.Name())
+
+	taeFS, err := resolveLifecycleTAEFileService(fileServices)
+	require.NoError(t, err)
+	require.Equal(t, defines.SharedFileServiceName, taeFS.Name())
+
+	mp := mpool.MustNewZero()
+	defer mpool.DeleteMPool(mp)
+	value := batch.NewWithSize(1)
+	value.Vecs[0] = vector.NewVec(types.T_timestamp.ToType())
+	require.NoError(t, vector.AppendFixed(
+		value.Vecs[0], types.Timestamp(100), false, mp,
+	))
+	value.SetRowCount(1)
+	defer value.Clean(mp)
+
+	writer := objectioio.ConstructWriter(
+		0,
+		[]uint16{0},
+		-1,
+		false,
+		false,
+		taeFS,
+	)
+	_, err = writer.WriteBatch(value)
+	require.NoError(t, err)
+	blocks, _, err := writer.Sync(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, blocks)
+	stats := writer.Stats()
+	require.NoError(t, objectio.SetObjectStatsBlkCnt(
+		&stats,
+		uint32(len(blocks)),
+	))
+
+	// This is the production failure mode: an unqualified TAE Object name
+	// cannot be routed through the aggregate whose default service is empty.
+	_, err = fileServices.StatFile(ctx, stats.ObjectLocation().Name().String())
+	require.ErrorContains(t, err, "service  not found")
+
+	zoneMap, err := loadLifecycleObjectColumnZoneMap(ctx, taeFS, stats, 0)
+	require.NoError(t, err)
+	require.True(t, zoneMap.IsInited())
+	require.NoError(t, (lifecyclepkg.SQLSyncProtectionClient{
+		FileService: taeFS,
+	}).StatExact(ctx, []objectio.ObjectStats{stats}))
 }
 
 func TestClassifyLifecycleDiscoveryPageLoadsNonSortKeyZoneMap(t *testing.T) {

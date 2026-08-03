@@ -148,6 +148,20 @@ func lifecycleCoordinatorConfig() lifecyclepkg.CoordinatorConfig {
 	}
 }
 
+func resolveLifecycleTAEFileService(
+	fileServices fileservice.FileService,
+) (fileservice.FileService, error) {
+	if fileServices == nil {
+		// Unit tests that only exercise disabled/maintenance paths do not touch
+		// TAE objects and may intentionally omit a FileService.
+		return nil, nil
+	}
+	return fileservice.Get[fileservice.FileService](
+		fileServices,
+		defines.SharedFileServiceName,
+	)
+}
+
 // LifecycleTaskExecutorFactory wires the existing TaskService, transaction
 // engine, FileService, Merge producer, and GC SyncProtection path. Ordinary
 // tables are untouched because the coordinator pages only explicit Bindings.
@@ -155,9 +169,10 @@ func LifecycleTaskExecutorFactory(
 	txnEngine engine.Engine,
 	txnClient client.TxnClient,
 	sqlExecutor executor.SQLExecutor,
-	taeFS fileservice.FileService,
+	fileServices fileservice.FileService,
 	faults lifecyclepkg.FaultInjector,
 ) func(context.Context, taskpb.Task) error {
+	taeFS, taeFSErr := resolveLifecycleTAEFileService(fileServices)
 	release := lifecyclepkg.SQLReleaseConfig{Executor: sqlExecutor}
 	pager := lifecyclepkg.SQLBindingPager{Executor: sqlExecutor}
 	admission, admissionErr := lifecyclepkg.NewRewriteAdmission(
@@ -206,6 +221,9 @@ func LifecycleTaskExecutorFactory(
 		defer releaseRun()
 		if admissionErr != nil {
 			return admissionErr
+		}
+		if taeFSErr != nil {
+			return fmt.Errorf("resolve Lifecycle SHARED FileService: %w", taeFSErr)
 		}
 		var cleanupErr error
 		var cleanupScanComplete bool
