@@ -33,7 +33,8 @@ func TestLifecycleFreshSystemBootstrapSQLs(t *testing.T) {
 	require.Contains(t, featureSQL, "'tae object lifecycle retirement'")
 	require.Contains(t, featureSQL, "'{\"archive_stages\":[]}'")
 	require.Contains(t, featureSQL, "false")
-	require.Contains(t, featureSQL, "on duplicate key")
+	require.Contains(t, featureSQL, "on duplicate key update description = description")
+	require.NotContains(t, featureSQL, "on duplicate key update feature_code")
 
 	// System-owned Cleanup Roots must not be created by the per-tenant path.
 	require.NotContains(t, createSqls, catalog.MoLifecycleCleanupRootsDDL)

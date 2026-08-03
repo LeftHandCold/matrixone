@@ -215,6 +215,8 @@ Object退休不是逐行DELETE事件，CDC/CCPR下游可能无法得到完整删
 - 不在本PR实现Lifecycle-aware Backup/DR；
 - 不把Cluster逻辑Restore公共问题扩展成Lifecycle状态机；
 - Gate F保持可选且默认关闭；
+- Phase 1继续实现Issue #24853的online/HOT到Archive再到独立新表Restore；仅延后中间的
+  COLD/ONLINE_COLD，不把产品收窄成TTL-only；
 - Gate I证据未完成前，结论始终是Conditional Go。
 
 ## 11. Fresh bootstrap E2E缺陷记录
@@ -241,3 +243,27 @@ MinIO隔离集群确认了两个Lifecycle自身缺陷：
 
 本地已增加fresh SYS bootstrap合同、无deadline Task context和首个维护错误短路测试。50上的
 fresh bootstrap与主链E2E需要在新提交部署后重新执行，完成前Gate A仍保留该验证项。
+
+### 11.2 2026-08-03：Lifecycle feature row初始化SQL被Planner拒绝
+
+输入基线为`c4e0dca014e2559a1e76ae46b124602be0b5f0b3`。50上的第二次fresh bootstrap
+确认Cleanup Root建表已经成功，但随后初始化`LIFECYCLE` feature row时失败。SQL使用：
+
+```sql
+ON DUPLICATE KEY UPDATE feature_code = feature_code
+```
+
+`feature_code`是`mo_feature_registry`的主键。MO Planner在编译ODKU时会拒绝任何主键
+更新目标，即使右值仍是该列且fresh bootstrap运行时不存在重复键。因此该错误发生在SQL
+规划阶段，SYS初始化事务回滚，尚未进入Lifecycle cron。
+
+修复保持为一条fresh bootstrap和upgrade共用的幂等SQL，只把no-op更新列改为非主键：
+
+```sql
+ON DUPLICATE KEY UPDATE description = description
+```
+
+该写法沿用MO已有的非主键no-op ODKU能力；重复执行时不会修改已有`enabled`、
+`scope_spec`或Stage配置。回归测试必须断言具体更新目标，不能只检查SQL包含
+`ON DUPLICATE KEY`。本修复不修改系统表结构、普通事务、Merge、WAL、Replay或GC；50上的
+fresh bootstrap与主链E2E仍需在新提交部署后重新执行。

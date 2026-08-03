@@ -423,7 +423,7 @@ var (
 	MoCatalogLifecycleFeatureRegistryInitData = fmt.Sprintf(`insert into mo_catalog.%s(
 		feature_code, description, scope_spec, enabled)
 		values ('LIFECYCLE', 'TAE object lifecycle retirement', '{"archive_stages":[]}', false)
-		on duplicate key update feature_code = feature_code;`, catalog.MO_FEATURE_REGISTRY)
+		on duplicate key update description = description;`, catalog.MO_FEATURE_REGISTRY)
 
 	MoCatalogMoRoleRuleDDL = fmt.Sprintf("create table %s.%s ("+
 		"role_id int signed,"+
