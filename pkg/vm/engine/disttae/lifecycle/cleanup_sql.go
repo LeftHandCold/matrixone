@@ -953,12 +953,24 @@ where root_id=unhex('%s') and attempt_id=unhex('%s') limit 1`,
 	}
 	defer result.Close()
 	state := ""
+	rowsRead := 0
 	result.ReadRows(func(rows int, columns []*vector.Vector) bool {
-		if rows == 1 && len(columns) == 1 {
-			state = columns[0].GetStringAt(0)
+		if len(columns) != 1 || rowsRead+rows > 1 {
+			state = "CORRUPT"
+			return false
 		}
-		return false
+		if rows == 1 {
+			state = columns[0].GetStringAt(0)
+			rowsRead++
+		}
+		return true
 	})
+	if rowsRead == 0 && state == "" {
+		// A failed Archive attempt reaches DELETE_PENDING before any Dataset is
+		// published. Once its Root-owned namespace has passed the physical
+		// quiescence check, there is no tenant publication left to finalize.
+		return nil
+	}
 	if state == "PURGED" {
 		return nil
 	}

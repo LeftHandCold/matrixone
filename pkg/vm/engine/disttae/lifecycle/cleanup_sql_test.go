@@ -281,6 +281,105 @@ func TestSQLCleanupReconcileCatalogFinalizesDatasetAfterPhysicalCleanup(t *testi
 	require.Equal(t, len(fake.steps), fake.offset)
 }
 
+func TestSQLCleanupReconcileCatalogFinalizesFailedArchiveWithoutDataset(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(2000, 0).UTC()
+	root := lifecycleSQLCleanupRoot()
+	root.State = CleanupRootDeleting
+	root.CleanupAfter = now
+	root.QuiescenceSince = now.Add(-time.Minute)
+	root.TemporaryCleanupDone = true
+	root.SegmentID = ""
+	root.BookingPrefix = ""
+	root.OrdinalUpperBound = 0
+
+	repository := newMemoryCleanupRootRepository()
+	require.NoError(t, repository.Register(ctx, root))
+	mp := mpool.MustNewZero()
+	fake := &scriptedLifecycleSQLExecutor{
+		t: t,
+		steps: []lifecycleSQLStep{
+			{
+				contains:  "from mo_catalog.mo_account",
+				accountID: 0,
+				result: lifecycleAccountResult(
+					t,
+					mp,
+					uint64(root.OwnerAccountID),
+				),
+			},
+			{
+				contains:  "set state='purged'",
+				accountID: root.OwnerAccountID,
+				result: executor.Result{
+					AffectedRows: 0,
+					Mp:           mp,
+				},
+			},
+			{
+				contains:  "select state from mo_catalog.mo_lifecycle_datasets",
+				accountID: root.OwnerAccountID,
+				result:    executor.Result{Mp: mp},
+			},
+		},
+	}
+	sweeper := CleanupSweeper{
+		Roots:            repository,
+		Archive:          newMemoryArchiveStore(),
+		QuiescenceWindow: time.Second,
+		FinalizePublication: (SQLCleanupReconcileCatalog{
+			Executor: fake,
+		}).FinalizeCleanup,
+	}
+
+	require.NoError(t, sweeper.SweepOne(ctx, root.RootID, now))
+	current, err := repository.Get(ctx, root.RootID)
+	require.NoError(t, err)
+	require.Equal(t, CleanupRootCleaned, current.State)
+	require.Equal(t, len(fake.steps), fake.offset)
+}
+
+func TestSQLCleanupReconcileCatalogRejectsPublishedDatasetAfterPhysicalCleanup(t *testing.T) {
+	root := lifecycleSQLCleanupRoot()
+	root.State = CleanupRootDeleting
+	mp := mpool.MustNewZero()
+	fake := &scriptedLifecycleSQLExecutor{
+		t: t,
+		steps: []lifecycleSQLStep{
+			{
+				contains:  "from mo_catalog.mo_account",
+				accountID: 0,
+				result: lifecycleAccountResult(
+					t,
+					mp,
+					uint64(root.OwnerAccountID),
+				),
+			},
+			{
+				contains:  "set state='purged'",
+				accountID: root.OwnerAccountID,
+				result: executor.Result{
+					AffectedRows: 0,
+					Mp:           mp,
+				},
+			},
+			{
+				contains:  "select state from mo_catalog.mo_lifecycle_datasets",
+				accountID: root.OwnerAccountID,
+				result: lifecycleStringResult(
+					t,
+					mp,
+					"PUBLISHED",
+				),
+			},
+		},
+	}
+
+	require.ErrorContains(t, (SQLCleanupReconcileCatalog{Executor: fake}).
+		FinalizeCleanup(context.Background(), root), "state \"PUBLISHED\"")
+	require.Equal(t, len(fake.steps), fake.offset)
+}
+
 func lifecycleStringResult(
 	t *testing.T,
 	mp *mpool.MPool,
