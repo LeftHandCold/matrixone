@@ -17,6 +17,7 @@ package disttae
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -494,6 +495,18 @@ func TestLifecycleDisabledContinuesMaintenanceAndSkipsBindingScan(t *testing.T) 
 	require.True(t, sawMetadataCompaction)
 }
 
+func TestLifecycleCoordinatorStopsAfterFirstMaintenanceFailure(t *testing.T) {
+	expected := errors.New("cleanup root catalog unavailable")
+	fake := &failingLifecycleSQLExecutor{
+		t:   t,
+		err: expected,
+	}
+	run := LifecycleTaskExecutorFactory(nil, nil, fake, nil, nil)
+	err := run(context.Background(), &task.AsyncTask{})
+	require.ErrorIs(t, err, expected)
+	require.Equal(t, 1, fake.calls)
+}
+
 type disabledLifecycleSQLExecutor struct {
 	t       *testing.T
 	mp      *mpool.MPool
@@ -501,10 +514,12 @@ type disabledLifecycleSQLExecutor struct {
 }
 
 func (fake *disabledLifecycleSQLExecutor) Exec(
-	_ context.Context,
+	ctx context.Context,
 	sql string,
 	_ executor.Options,
 ) (executor.Result, error) {
+	_, hasDeadline := ctx.Deadline()
+	require.True(fake.t, hasDeadline)
 	fake.queries = append(fake.queries, strings.ToLower(sql))
 	if strings.Contains(strings.ToLower(sql), "mo_feature_registry") {
 		value := batch.NewWithSize(2)
@@ -523,6 +538,31 @@ func (fake *disabledLifecycleSQLExecutor) Exec(
 		}, nil
 	}
 	return executor.Result{Mp: fake.mp}, nil
+}
+
+type failingLifecycleSQLExecutor struct {
+	t     *testing.T
+	err   error
+	calls int
+}
+
+func (fake *failingLifecycleSQLExecutor) Exec(
+	ctx context.Context,
+	_ string,
+	_ executor.Options,
+) (executor.Result, error) {
+	fake.calls++
+	_, hasDeadline := ctx.Deadline()
+	require.True(fake.t, hasDeadline)
+	return executor.Result{}, fake.err
+}
+
+func (*failingLifecycleSQLExecutor) ExecTxn(
+	context.Context,
+	func(executor.TxnExecutor) error,
+	executor.Options,
+) error {
+	panic("unexpected Lifecycle failure transaction")
 }
 
 func (*disabledLifecycleSQLExecutor) ExecTxn(

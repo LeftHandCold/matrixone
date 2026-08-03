@@ -54,6 +54,8 @@ const (
 	lifecycleMetadataCompactionInterval = 5 * time.Minute
 	lifecycleMaxClusterChildren         = 2
 	lifecycleCleanupSweepBudget         = time.Minute
+	lifecycleObjectAttemptTimeout       = 30 * time.Minute
+	lifecycleCoordinatorRunTimeout      = lifecycleObjectAttemptTimeout + 5*time.Minute
 )
 
 func lifecycleMetadataCompactionDue(last, now time.Time) bool {
@@ -187,6 +189,11 @@ func LifecycleTaskExecutorFactory(
 		},
 	)
 	return func(ctx context.Context, scheduled taskpb.Task) error {
+		// TaskService runner contexts do not necessarily carry a deadline, while
+		// every internal SQL transaction requires one. Keep this boundary local
+		// to Lifecycle and allow an earlier caller deadline to win.
+		ctx, cancelRun := context.WithTimeout(ctx, lifecycleCoordinatorRunTimeout)
+		defer cancelRun()
 		// TaskService declares coordinator concurrency one, and this local guard
 		// also protects cursors if a duplicate invocation is delivered during
 		// runner handoff. A duplicate tick is skipped instead of queued behind a
@@ -201,13 +208,17 @@ func LifecycleTaskExecutorFactory(
 			return admissionErr
 		}
 		var cleanupErr error
-		cleanupReconcileCursor, cleanupErr = sweepLifecycleCleanupRoots(
+		var cleanupScanComplete bool
+		cleanupReconcileCursor, cleanupScanComplete, cleanupErr = sweepLifecycleCleanupRoots(
 			ctx,
 			sqlExecutor,
 			taeFS,
 			faults,
 			cleanupReconcileCursor,
 		)
+		if !cleanupScanComplete {
+			return cleanupErr
+		}
 		var restoreCleanupErr error
 		restoreCleanupCursor, restoreCleanupErr =
 			cleanupExpiredLifecycleRestores(
@@ -312,11 +323,11 @@ func sweepLifecycleCleanupRoots(
 	taeFS fileservice.FileService,
 	faults lifecyclepkg.FaultInjector,
 	reconcileCursor string,
-) (string, error) {
+) (string, bool, error) {
 	roots := lifecyclepkg.SQLCleanupRootRepository{Executor: sqlExecutor}
 	temporary, err := roots.ListPublishedTemporary(ctx, 64)
 	if err != nil {
-		return reconcileCursor, err
+		return reconcileCursor, false, err
 	}
 	reconcileable, nextCursor, _, err := roots.ListReconcileable(
 		ctx,
@@ -324,16 +335,16 @@ func sweepLifecycleCleanupRoots(
 		64,
 	)
 	if err != nil {
-		return reconcileCursor, err
+		return reconcileCursor, false, err
 	}
 	due, err := roots.ListSweepable(ctx, time.Now(), 64)
 	if err != nil {
-		return reconcileCursor, err
+		return reconcileCursor, false, err
 	}
 	if len(due) == 0 &&
 		len(temporary) == 0 &&
 		len(reconcileable) == 0 {
-		return nextCursor, nil
+		return nextCursor, true, nil
 	}
 	// Cleanup is maintenance work. Bound one processing pass so a slow
 	// Provider cannot monopolize the single Lifecycle coordinator and starve
@@ -489,7 +500,7 @@ func sweepLifecycleCleanupRoots(
 		// processed rows is safe and keeps the cursor contract simple.
 		nextCursor = reconcileCursor
 	}
-	return nextCursor, sweepErr
+	return nextCursor, true, sweepErr
 }
 
 func lifecycleCleanupRootTimeout(
@@ -790,7 +801,7 @@ func (runner *lifecycleBindingExecutor) run(
 			Whole:                      objectPlan.Whole,
 			Cutoff:                     cutoff,
 			Now:                        evaluation,
-			Deadline:                   evaluation.Add(30 * time.Minute),
+			Deadline:                   evaluation.Add(lifecycleObjectAttemptTimeout),
 			ExecutorEpoch:              runner.epoch,
 			TargetObjectSize:           lifecycleTargetObjectBytes,
 			MaxCreatedObjects:          maxCreated,

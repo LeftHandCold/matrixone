@@ -19,6 +19,7 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/bootstrap/versions"
 	"github.com/matrixorigin/matrixone/pkg/catalog"
+	"github.com/matrixorigin/matrixone/pkg/frontend"
 	"github.com/matrixorigin/matrixone/pkg/pb/task"
 	"github.com/matrixorigin/matrixone/pkg/predefine"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
@@ -44,10 +45,7 @@ func makeLifecycleClusterUpgradeEntries() []versions.UpgradeEntry {
 		Schema:    catalog.MO_CATALOG,
 		TableName: catalog.MO_FEATURE_REGISTRY,
 		UpgType:   versions.MODIFY_METADATA,
-		UpgSql: `insert into mo_catalog.mo_feature_registry(
-feature_code, description, scope_spec, enabled)
-values ('LIFECYCLE', 'TAE object lifecycle retirement', '{"archive_stages":[]}', false)
-on duplicate key update feature_code = feature_code`,
+		UpgSql:    frontend.MoCatalogLifecycleFeatureRegistryInitData,
 		CheckFunc: func(txn executor.TxnExecutor, accountID uint32) (bool, error) {
 			return versions.CheckTableDataExist(
 				txn,

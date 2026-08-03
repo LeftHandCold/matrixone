@@ -71,7 +71,7 @@
 
 | Gate | 当前状态 | 后续动作 |
 |---|---|---|
-| A Catalog/Binding/Discovery | 代码完成 | 回归ALTER语法、Catalog upgrade、分页和1000 Binding上限 |
+| A Catalog/Binding/Discovery | 代码完成；fresh bootstrap缺陷已修复 | 在50重新fresh bootstrap后回归ALTER语法、Catalog upgrade、分页和1000 Binding上限 |
 | B Reader/Archive格式 | 代码完成 | 类型矩阵、最大Block、Manifest golden和full readback故障测试 |
 | C Cleanup Root/Stage | 代码完成 | Provider超时、迟到PUT、multipart和quiescence验证 |
 | D Whole exact retire | 代码完成 | Merge抢先、post-S DELETE、commit unknown和TN restart |
@@ -216,3 +216,28 @@ Object退休不是逐行DELETE事件，CDC/CCPR下游可能无法得到完整删
 - 不把Cluster逻辑Restore公共问题扩展成Lifecycle状态机；
 - Gate F保持可选且默认关闭；
 - Gate I证据未完成前，结论始终是Conditional Go。
+
+## 11. Fresh bootstrap E2E缺陷记录
+
+### 11.1 2026-08-03：首次Lifecycle cron导致CN退出
+
+输入基线为`a8b4df3ea97102adc3624641704cdb8d1ae8a4f6`。50上的fresh LogService + TN + CN +
+MinIO隔离集群确认了两个Lifecycle自身缺陷：
+
+1. SYS fresh bootstrap只创建了五张tenant Lifecycle表，没有创建system-owned
+   `mo_lifecycle_cleanup_roots`，也没有插入默认关闭的`LIFECYCLE` feature row；
+2. TaskService传给Coordinator的context没有deadline。Cleanup Root查询报表不存在后，
+   Coordinator仍继续执行Restore cleanup，最终在内部SQL事务校验处触发FATAL。
+
+修复边界保持在Lifecycle内部：
+
+- SYS fresh bootstrap显式创建`LifecycleClusterTableDefinitions`并插入默认`enabled=false`的
+  Lifecycle feature row；普通tenant bootstrap不创建Cleanup Root；
+- Coordinator入口为本次Task补充35分钟总deadline，覆盖30分钟Object attempt和维护余量；
+- Cleanup Root的Catalog扫描未完成时立即结束本次tick，不再串联后续内部SQL；扫描完成后，
+  单个Root、Restore cleanup或metadata cleanup错误仍按原逻辑聚合，避免一个Provider故障
+  饿死其他维护；下一次cron继续重试；
+- 不修改TaskService、普通事务、Merge、WAL、Replay或GC。
+
+本地已增加fresh SYS bootstrap合同、无deadline Task context和首个维护错误短路测试。50上的
+fresh bootstrap与主链E2E需要在新提交部署后重新执行，完成前Gate A仍保留该验证项。
