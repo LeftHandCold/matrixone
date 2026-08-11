@@ -6,7 +6,7 @@
 >
 > 实现方案定稿：[11-domain-model-and-data-flow-cn.md](11-domain-model-and-data-flow-cn.md)
 >
-> 使用与领导演示：[13-leader-demo-and-usage-guide-cn.md](13-leader-demo-and-usage-guide-cn.md)
+> 测试过程与使用步骤：[13-phase1-test-process-and-usage-cn.md](13-phase1-test-process-and-usage-cn.md)
 >
 > 结论：**Phase 1 的核心功能正确性已获得多层 E2E 证据，Commercial GA 仍为 Conditional Go。**
 
