@@ -5,6 +5,9 @@
 > 对应实现：PR [#26655](https://github.com/matrixorigin/matrixone/pull/26655)、Issue [#24853](https://github.com/matrixorigin/matrixone/issues/24853)
 >
 > 实现方案定稿：[11-domain-model-and-data-flow-cn.md](11-domain-model-and-data-flow-cn.md)
+>
+> 使用与领导演示：[13-leader-demo-and-usage-guide-cn.md](13-leader-demo-and-usage-guide-cn.md)
+>
 > 结论：**Phase 1 的核心功能正确性已获得多层 E2E 证据，Commercial GA 仍为 Conditional Go。**
 
 本文只汇总已经实际执行并保留证据的测试，不把设计目标、单元测试推断或后续计划写成

@@ -8,7 +8,8 @@
 > 状态：**Conditional Go**。Phase 1核心功能开发基本完成，Object路线与代码已进入稳定性
 > 认证；完成本文定义的正确性、故障、TB级和放量门禁后，才能宣布Commercial GA。后续执行
 > 状态和问题分类统一记录在[10-validation-debug-baseline-cn.md](10-validation-debug-baseline-cn.md)，
-> 已完成的阶段性E2E证据汇总于[12-phase1-e2e-test-summary-cn.md](12-phase1-e2e-test-summary-cn.md)。
+> 已完成的阶段性E2E证据汇总于[12-phase1-e2e-test-summary-cn.md](12-phase1-e2e-test-summary-cn.md)，
+> 领导演示和产品使用步骤见[13-leader-demo-and-usage-guide-cn.md](13-leader-demo-and-usage-guide-cn.md)。
 
 ## 1. 设计目标
 
@@ -42,6 +43,7 @@
 | [10-validation-debug-baseline-cn.md](10-validation-debug-baseline-cn.md) | 开发冻结结论、问题分类、验证顺序、Stop-Ship和决策日志 |
 | [11-domain-model-and-data-flow-cn.md](11-domain-model-and-data-flow-cn.md) | PR #26655 已实现能力、核心对象、处理原理、隔离边界与定稿口径 |
 | [12-phase1-e2e-test-summary-cn.md](12-phase1-e2e-test-summary-cn.md) | 已执行的Phase 1 E2E证据、版本口径、通过项、限制与未完成认证 |
+| [13-leader-demo-and-usage-guide-cn.md](13-leader-demo-and-usage-guide-cn.md) | 领导演示顺序、公开SQL、每步数据库状态、产品效果与常见问题 |
 
 子设计不得复制另一子设计的第二份状态机。上位概要负责产品效果；ADR只记录决策理由；
 行业调研和Review输入都不是实现规范。
