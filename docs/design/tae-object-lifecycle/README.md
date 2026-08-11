@@ -21,9 +21,8 @@
 
 ## 2. 权威文档
 
-本目录采用“一份索引 + 一份总规范 + 一份需求追踪矩阵 + 九份单一职责子设计 + 一份验证
-基线”，
-恢复开发所需细节，但不恢复旧重型协议：
+本目录采用“一份索引 + 一份总规范 + 一份需求追踪矩阵 + 单一职责子设计 + 一份实现定稿
+总结”，恢复开发所需细节，但不恢复旧重型协议：
 
 | 文档 | 唯一职责 |
 |---|---|
@@ -40,6 +39,7 @@
 | [08-implementation-plan-cn.md](08-implementation-plan-cn.md) | Gate、包边界、PR边界和Definition of Done |
 | [09-commercial-ga-runbook-cn.md](09-commercial-ga-runbook-cn.md) | Release gate、kill switch、故障处置、1/10 TiB与30天soak证据 |
 | [10-validation-debug-baseline-cn.md](10-validation-debug-baseline-cn.md) | 开发冻结结论、问题分类、验证顺序、Stop-Ship和决策日志 |
+| [11-domain-model-and-data-flow-cn.md](11-domain-model-and-data-flow-cn.md) | PR #26655 已实现能力、核心对象、处理原理、隔离边界与定稿口径 |
 
 子设计不得复制另一子设计的第二份状态机。上位概要负责产品效果；ADR只记录决策理由；
 行业调研和Review输入都不是实现规范。
@@ -55,7 +55,7 @@
 - Archive Mixed 和中/大 TTL Mixed 的单源 Object Rewrite；
 - Parquet/ZSTD direct-readable Archive；
 - Provider full readback；
-- Restore 到独立新表；
+- 按单个Dataset或源表时间范围Restore到独立新表；
 - Snapshot/PITR创建及其现有MVCC/GC历史保护；
 - Clone/Data Branch按目标时间点复制活动数据，目标表不继承Lifecycle；
 - 普通同集群Publication/Subscription直接读取发布者活动表；
