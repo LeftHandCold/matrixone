@@ -68,6 +68,14 @@ func (c Policy) CacheFullFile() bool {
 
 type contextKeyPolicy struct{}
 
+type smallExtentReadsKey struct{}
+
+// WithSmallExtentReads opts a foreground reader into bounded range fills
+// without changing the cache policy or merge keys of its other requests.
+func WithSmallExtentReads(ctx context.Context) context.Context {
+	return context.WithValue(ctx, smallExtentReadsKey{}, struct{}{})
+}
+
 // WithFileServicePolicy attaches a read/write cache policy to ctx.
 // Callers deeper in the stack (e.g. LoadPersistedColumnData) will pick it
 // up automatically, so no interface changes are required.

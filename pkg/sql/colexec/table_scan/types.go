@@ -91,6 +91,8 @@ type TableScan struct {
 	LocalDomainProbes  []runtimefilter.LocalDomainBinding
 	ReadPolicy         fileservice.Policy // added to the read context's fileservice policy
 
+	PreferSmallExtentReads bool
+
 	vm.OperatorBase
 	colexec.Projection
 }

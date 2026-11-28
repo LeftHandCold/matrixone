@@ -1358,6 +1358,74 @@ func TestS3FSReadPolicyPreservesFullObjectDefault(t *testing.T) {
 	}
 }
 
+type missPublishedExtentOnce struct {
+	memoryCacheBacking
+	missed bool
+}
+
+func (m *missPublishedExtentOnce) Get(ctx context.Context, k fscache.CacheKey) (fscache.Data, bool) {
+	if k.Path == "published" && !m.missed {
+		m.missed = true
+		return nil, false
+	}
+	return m.memoryCacheBacking.Get(ctx, k)
+}
+
+func TestS3FSSmallExtentRead(t *testing.T) {
+	ctx := WithSmallExtentReads(t.Context())
+	dir := t.TempDir()
+	capacity := toml.ByteSize(4 << 20)
+	fs, err := NewS3FS(ctx, ObjectStorageArguments{Name: "extents", Endpoint: "disk", Bucket: t.TempDir()},
+		CacheConfig{MemoryCapacity: &capacity, DiskCapacity: &capacity, DiskPath: &dir}, nil, false, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { fs.Close(context.Background()) })
+	cache := &missPublishedExtentOnce{memoryCacheBacking: fs.memCache.cache}
+	fs.memCache.cache = cache
+	storage := new(generatedRangeObjectStorage)
+	fs.storage = storage
+	e := IOEntry{Offset: minExpensiveRangeReadSpan, Size: rangeReadSmall, ToCacheData: CacheOriginalData}
+	v := IOVector{FilePath: "obj", Entries: []IOEntry{e}}
+	require.False(t, fs.preferSmallExtent(t.Context(), &v))
+	require.False(t, (&S3FS{diskCache: fs.diskCache}).preferSmallExtent(ctx, &v))
+	require.False(t, (&S3FS{memCache: fs.memCache}).preferSmallExtent(ctx, &v))
+	for _, skip := range []Policy{SkipFullFilePreloads, NarrowRead, SkipDiskCacheWrites, SkipMemoryCacheWrites, MemoryCacheNoEvict} {
+		v.Policy = skip
+		require.False(t, fs.preferSmallExtent(ctx, &v))
+	}
+	v.Policy = 0
+	for _, other := range [][]IOEntry{
+		{{Offset: e.Offset - 1, Size: e.Size, ToCacheData: CacheOriginalData}},
+		{{Offset: e.Offset, Size: e.Size + 1, ToCacheData: CacheOriginalData}},
+		{{Offset: e.Offset, Size: -1, ToCacheData: CacheOriginalData}},
+		{{Offset: e.Offset, Size: e.Size}}, {e, e},
+	} {
+		v.Entries = other
+		require.False(t, fs.preferSmallExtent(ctx, &v))
+	}
+	for range 2 {
+		v.Entries = []IOEntry{e}
+		require.NoError(t, fs.Read(ctx, &v))
+		require.Equal(t, Policy(0), v.Policy, "range choice is local to this read")
+		require.Len(t, v.Entries[0].CachedData.Bytes(), int(e.Size))
+		v.Release()
+	}
+	require.Equal(t, []objectStorageReadRange{{key: "obj", min: ptrTo(e.Offset), max: ptrTo(e.Offset + e.Size)}}, storage.readRanges())
+
+	// Model a miss just before the previous leader publishes to memory. The
+	// next generation must recheck after election instead of issuing a GET.
+	warm := IOVector{FilePath: "published", Entries: []IOEntry{e}}
+	want := bytes.Repeat([]byte{7}, int(e.Size))
+	warm.Entries[0].CachedData = fs.memCache.CopyToCacheData(ctx, want)
+	require.NoError(t, fs.memCache.Update(ctx, &warm, false))
+	warm.Release()
+	v = IOVector{FilePath: "published", Entries: []IOEntry{e}}
+	require.NoError(t, fs.Read(ctx, &v))
+	defer v.Release()
+	require.True(t, cache.missed)
+	require.Equal(t, want, v.Entries[0].CachedData.Bytes())
+	require.Len(t, storage.readRanges(), 1)
+}
+
 func TestS3FSRangeReadSkipsFullObjectDiskCacheUpdate(t *testing.T) {
 	ctx := context.Background()
 	fs, err := NewS3FS(

@@ -709,10 +709,31 @@ func (s *S3FS) write(ctx context.Context, vector IOVector) (bytesWritten int, er
 	return bytesWritten, nil
 }
 
+// For a small decoded extent far into a cold object, fetching even the
+// prefix of a full fill costs at least 32 times the requested bytes. Keep
+// the full-file default when concurrent reads cannot share a memory entry:
+// an asynchronous disk entry need not be published when its reader returns.
+func (s *S3FS) preferSmallExtent(ctx context.Context, vector *IOVector) bool {
+	if s.memCache == nil || s.diskCache == nil || len(vector.Entries) != 1 ||
+		vector.Policy.Any(SkipFullFilePreloads, NarrowRead, SkipMemoryCache, SkipDiskCache, MemoryCacheNoEvict) {
+		return false
+	}
+	e := &vector.Entries[0]
+	return e.Offset >= minExpensiveRangeReadSpan && e.Size > 0 && e.Size <= rangeReadSmall &&
+		e.ToCacheData != nil && e.WriterForRead == nil && e.ReadCloserForRead == nil &&
+		ctx.Value(smallExtentReadsKey{}) != nil
+}
+
 func (s *S3FS) Read(ctx context.Context, vector *IOVector) (err error) {
 	if vector.Policy.Any(NarrowRead) && !vector.Policy.Any(SkipFullFilePreloads) &&
 		s.WholeObjectPreloadSkipped(vector.FilePath, GetPreloadGroup(ctx)) {
 		vector.Policy |= SkipFullFilePreloads
+	}
+	smallExtent := s.preferSmallExtent(ctx, vector)
+	if smallExtent {
+		old := vector.Policy
+		vector.Policy |= SkipFullFilePreloads
+		defer func() { vector.Policy = old }()
 	}
 	var finishDecode func()
 	var decodePrepared bool
@@ -953,6 +974,16 @@ read_disk_cache:
 			metric.FSReadDurationIOMerger.Observe(time.Since(startLock).Seconds())
 			LogEvent(ctx, str_ioMerger_Merge_initiate)
 			LogEvent(ctx, str_ioMerger_Merge_end)
+			// A previous range leader can publish after our miss but before
+			// we acquire the next generation. Reuse its decoded entry.
+			if smallExtent {
+				if err := readCache(ctx, s.memCache, vector); err != nil {
+					return err
+				}
+				if vector.allDone() {
+					return finishCacheUpdates()
+				}
+			}
 		} else {
 			LogEvent(ctx, str_ioMerger_Merge_wait)
 			completed, waitErr := waitForIOGeneration(ctx, mergeKey, generation, waitDuration)

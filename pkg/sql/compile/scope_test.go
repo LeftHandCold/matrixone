@@ -658,6 +658,40 @@ func TestScopeRunAppliesScanReadPolicy(t *testing.T) {
 	}
 }
 
+func TestScopeSmallExtentReadsOnlyForTPLockingSelect(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		execType plan2.ExecType
+		stmt     plan.Query_StatementType
+		lock     bool
+		want     bool
+	}{
+		{"TP locking select", plan2.ExecTypeTP, plan.Query_SELECT, true, true},
+		{"TP plain select", plan2.ExecTypeTP, plan.Query_SELECT, false, false},
+		{"AP locking select", plan2.ExecTypeAP_ONECN, plan.Query_SELECT, true, false},
+		{"TP DML", plan2.ExecTypeTP, plan.Query_UPDATE, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proc := testutil.NewProcess(t)
+			proc.BuildPipelineContext(t.Context())
+			c := &Compile{proc: proc, execType: tc.execType}
+			q := &plan.Query{StmtType: tc.stmt}
+			if tc.lock {
+				q.Nodes = []*plan.Node{{NodeType: plan.Node_LOCK_OP}}
+			}
+			require.NoError(t, c.validateLockPlan(&plan.Plan{Plan: &plan.Plan_Query{Query: q}}))
+			scan := table_scan.NewArgument()
+			scan.PreferSmallExtentReads = !tc.want
+			reader := &mockReaderForParallelOrderBy{onRead: func() {
+				require.Equal(t, tc.want, scan.PreferSmallExtentReads)
+			}}
+			scope := &Scope{Proc: proc, RootOp: scan, DataSource: &Source{R: reader}}
+			require.NoError(t, scope.Run(c))
+			require.Len(t, reader.readPolicies, 1)
+		})
+	}
+}
+
 func TestPreparedScopeRunReleasesBuiltReader(t *testing.T) {
 	for _, parallel := range []bool{false, true} {
 		name := "direct"

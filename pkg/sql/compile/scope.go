@@ -423,6 +423,7 @@ func (s *Scope) Run(c *Compile) (err error) {
 			}
 			if ts, ok := vm.GetLeafOp(s.RootOp).(*table_scan.TableScan); ok {
 				ts.ReadPolicy = scanReadPolicy(s.DataSource.node)
+				ts.PreferSmallExtentReads = c.IsTpQuery() && c.lockingReadPlan
 			}
 			s.ScopeAnalyzer.Stop()
 			_, err = p.RunWithReader(s.DataSource.R, tag, s.Proc)

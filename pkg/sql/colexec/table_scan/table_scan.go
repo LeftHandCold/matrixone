@@ -187,6 +187,9 @@ func (tableScan *TableScan) Call(proc *process.Process) (vm.CallResult, error) {
 			newCtx = fileservice.WithFileServicePolicy(newCtx, fileservice.GetFileServicePolicy(newCtx)|tableScan.ReadPolicy)
 			newCtx = fileservice.WithPreloadGroup(newCtx, tableScan.TableID)
 		}
+		if tableScan.PreferSmallExtentReads {
+			newCtx = fileservice.WithSmallExtentReads(newCtx)
+		}
 		isEnd, err := tableScan.readBatch(newCtx, proc)
 		if err != nil {
 			return vm.CancelResult, err
